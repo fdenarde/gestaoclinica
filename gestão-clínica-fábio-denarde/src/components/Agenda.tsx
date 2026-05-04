@@ -318,13 +318,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
             ? state.patients.flatMap(p => getVirtualSessions(p, dayStr, dayKey, holidays))
             : [];
 
-          // Merge standard times with any custom fixedTime values not in the schedule
-          const extraTimes = allVirtualForDay
-            .map(vs => vs.time)
-            .filter(t => !scheduledTimes.includes(t));
-          const times = [...scheduledTimes, ...extraTimes]
-            .filter((v, i, a) => a.indexOf(v) === i)
-            .sort();
+          // Use only the scheduled times; ignore virtual times not in the schedule config
+          const times = scheduledTimes;
+
           
           return (
             <div key={day.toISOString()} className={cn("rounded-xl border shadow-sm flex flex-col h-full overflow-hidden", holiday ? "bg-status-red-bg/5 border-status-red-text/20" : "bg-clinic-surface border-clinic-border")}>
