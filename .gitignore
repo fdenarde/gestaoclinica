@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+node_modules/
+gestão-clínica-fábio-denarde/.wwebjs_auth/
+gestão-clínica-fábio-denarde/.wwebjs_auth_temp/
+gestão-clínica-fábio-denarde/firebase-key.json
+.claude/settings.json
