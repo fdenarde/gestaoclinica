@@ -1,0 +1,1679 @@
+import React, { useState, useMemo } from 'react';
+import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution } from '../types';
+import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X } from 'lucide-react';
+import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate } from '../lib/utils';
+import Modal from './Common/Modal';
+import { showToast } from './Common/Toast';
+import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
+import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
+
+interface PatientsProps {
+  state: AppState;
+  onUpdate: (newState: Partial<AppState>) => void;
+}
+
+export default function Patients({ state, onUpdate }: PatientsProps) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
+  const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
+  
+  // Registration Form State
+  const [newPatient, setNewPatient] = useState<Partial<Patient>>({
+    status: 'Ativo',
+    paymentModal: PaymentModal.PIX_FULL,
+    fixedDay: 'terça',
+    fixedTime: '08:00',
+    startDate: format(new Date(), 'yyyy-MM-dd'),
+    anamnese: {
+      complaint: '',
+      school: '',
+      grade: '',
+      referredBy: '',
+      diagnoses: '',
+      initialNotes: ''
+    }
+  });
+
+  const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  const filteredPatients = state.patients.filter(p => {
+    if (!showInactive && p.status === 'Concluído') return false;
+    return normalize(p.name).includes(normalize(searchTerm)) || 
+           normalize(p.guardianName).includes(normalize(searchTerm));
+  }).sort((a,b) => a.name.localeCompare(b.name));
+
+  const handleCreatePatient = () => {
+    if (!newPatient.name || !newPatient.birthDate || !newPatient.guardianName || !newPatient.whatsapp) {
+      showToast('Preencha os campos obrigatórios!', 'error');
+      return;
+    }
+
+    const id = Math.random().toString(36).substr(2, 9);
+    const patient: Patient = {
+      ...newPatient as Patient,
+      id,
+      anamnese: { ...newPatient.anamnese as any },
+      clinicalNotes: '',
+    };
+
+    // Auto-generate 1st package sessions and payments
+    const DAYS_MAP: Record<string, number> = {
+      'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6
+    };
+    
+    const startDateRaw = patient.startDate || format(new Date(), 'yyyy-MM-dd');
+    const d = parseISO(startDateRaw);
+    const targetDay = DAYS_MAP[patient.fixedDay?.toLowerCase()] ?? 2;
+    const currentDay = getDay(d);
+    const add = (targetDay - currentDay + 7) % 7;
+    const realStartDate = addDays(d, add);
+
+    const generatedSessions: Session[] = [];
+    for (let i = 0; i < 10; i++) {
+      generatedSessions.push({
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: id,
+        date: format(addDays(realStartDate, i * 7), 'yyyy-MM-dd'),
+        time: patient.fixedTime || '08:00',
+        type: SessionType.SIMPLES,
+        status: SessionStatus.AGENDADA,
+        packageNumber: 1
+      });
+    }
+
+    const generatedPayments: Payment[] = [];
+    if (patient.paymentModal === PaymentModal.PIX_FULL) {
+      generatedPayments.push({
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: id,
+        amount: 1000,
+        date: generatedSessions[0].date,
+        installment: 'Pagamento integral',
+        method: 'Pix'
+      });
+    } else {
+      generatedPayments.push({
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: id,
+        amount: 500,
+        date: generatedSessions[0].date,
+        installment: '1ª parcela',
+        method: 'Pix'
+      });
+      generatedPayments.push({
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: id,
+        amount: 500,
+        date: generatedSessions[4].date,
+        installment: '2ª parcela',
+        method: 'Pix'
+      });
+    }
+
+    onUpdate({ 
+      patients: [...state.patients, patient],
+      sessions: [...state.sessions, ...generatedSessions],
+      payments: [...state.payments, ...generatedPayments]
+    });
+    showToast('Atendente e ciclo inicial cadastrados com sucesso!');
+    setIsNewPatientModalOpen(false);
+    resetNewPatientForm();
+  };
+
+  const resetNewPatientForm = () => {
+    setNewPatient({
+      status: 'Ativo',
+      paymentModal: PaymentModal.PIX_FULL,
+      fixedDay: 'terça',
+      fixedTime: '08:00',
+      startDate: format(new Date(), 'yyyy-MM-dd'),
+      anamnese: {
+        complaint: '',
+        school: '',
+        grade: '',
+        referredBy: '',
+        diagnoses: '',
+        initialNotes: ''
+      }
+    });
+  };
+
+  const confirmDelete = () => {
+    if (patientToDelete) {
+      const updatedPatients = state.patients.filter(p => p.id !== patientToDelete);
+      const updatedSessions = state.sessions.filter(s => s.patientId !== patientToDelete);
+      const updatedPayments = state.payments.filter(p => p.patientId !== patientToDelete);
+      const updatedRepositions = state.repositions.filter(r => r.patientId !== patientToDelete);
+      
+      onUpdate({ 
+        patients: updatedPatients, 
+        sessions: updatedSessions,
+        payments: updatedPayments,
+        repositions: updatedRepositions
+      });
+      showToast('Atendente excluído.');
+      setPatientToDelete(null);
+    }
+  };
+
+  const selectedPatient = state.patients.find(p => p.id === selectedPatientId);
+
+  return (
+    <div className="space-y-6 pb-10">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm">
+        <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
+          <div className="relative w-full md:w-96">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-clinic-text-faint" size={20} />
+            <input 
+              type="text" 
+              placeholder="Buscar por nome da criança ou responsável..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm"
+            />
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer mt-2 md:mt-0 text-sm font-medium text-clinic-text-muted hover:text-clinic-text transition-colors">
+            <input 
+              type="checkbox" 
+              checked={showInactive}
+              onChange={e => setShowInactive(e.target.checked)}
+              className="w-4 h-4 rounded text-clinic-primary accent-clinic-primary bg-clinic-bg border-clinic-border focus:ring-clinic-primary"
+            />
+            Mostrar Concluídos
+          </label>
+        </div>
+        <button 
+          onClick={() => setIsNewPatientModalOpen(true)}
+          className="flex items-center gap-2 px-6 py-3 bg-clinic-primary text-white font-bold rounded-xl shadow-lg hover:bg-clinic-primary-hover transition-all uppercase tracking-widest text-sm w-full md:w-auto justify-center"
+        >
+          <Plus size={20} />
+          Novo Atendente
+        </button>
+      </div>
+
+      <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
+        <div className="p-6 space-y-4">
+          {filteredPatients.length > 0 ? (
+            filteredPatients.map(patient => {
+              const totalRealized = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
+              const attendedInCycle = totalRealized % 10;
+              const remainingInCycle = attendedInCycle === 0 && totalRealized > 0 ? 0 : 10 - attendedInCycle;
+              // If exactly 10, 20, etc sessions are realized, we show 10 realized and 0 remaining for that cycle
+              const displayAttended = attendedInCycle === 0 && totalRealized > 0 ? 10 : attendedInCycle;
+              const displayRemaining = attendedInCycle === 0 && totalRealized > 0 ? 0 : 10 - attendedInCycle;
+
+              const hasPendingReposition = state.repositions.some(r => r.patientId === patient.id && r.status === 'Pendente');
+              
+              return (
+                <div key={patient.id} className="p-5 rounded-2xl border border-clinic-border hover:bg-clinic-bg/40 transition-all flex flex-col md:flex-row items-center gap-6">
+                  <div className="w-14 h-14 rounded-full bg-clinic-primary/10 text-clinic-primary flex items-center justify-center font-serif text-xl font-bold border-2 border-clinic-primary/20 shrink-0">
+                    {patient.name.split(' ').map(n => n[0]).slice(0, 2).join('')}
+                  </div>
+                  
+                  <div className="flex-1 min-w-0 w-full text-center md:text-left">
+                    <div className="flex flex-col md:flex-row items-center gap-2 mb-1">
+                      <h3 className="font-serif text-xl font-bold truncate leading-tight">{patient.name}</h3>
+                      <span className="text-xs text-clinic-text-muted px-2 py-0.5 bg-clinic-bg rounded-full">{calculateAge(patient.birthDate)} anos</span>
+                    </div>
+                    <div className="flex flex-col md:flex-row items-center gap-x-4 gap-y-1 text-sm text-clinic-text-muted">
+                      <span className="font-medium whitespace-nowrap">Responsável: {patient.guardianName}</span>
+                      <span className="flex items-center gap-1"><MessageCircle size={14} className="text-status-green-text" /> {patient.whatsapp}</span>
+                    </div>
+                    
+                    <div className="mt-4 flex flex-col md:flex-row items-center gap-4">
+                      <div className="flex-1 w-full max-w-sm space-y-1">
+                        <div className="flex justify-between text-[10px] font-bold uppercase text-clinic-text-faint">
+                          <span>Progresso do Pacote</span>
+                          <span>{displayAttended} atendidas • {displayRemaining} restantes</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-clinic-bg rounded-full overflow-hidden">
+                          <div className="h-full bg-clinic-primary rounded-full transition-all duration-700" style={{ width: `${(displayAttended/10)*100}%` }}></div>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        {patient.status === 'Ativo' ? (
+                          <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Ativo</span>
+                        ) : (
+                          <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-clinic-bg text-clinic-text-muted">Concluído</span>
+                        )}
+                        {hasPendingReposition && (
+                          <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-orange-bg text-status-orange-text">Falta Pendente</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 w-full md:w-auto justify-center">
+                    <a 
+                      href={`https://wa.me/55${patient.whatsapp.replace(/\D/g, '')}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-3 bg-status-green-bg text-status-green-text rounded-xl hover:scale-105 transition-transform"
+                      title="WhatsApp"
+                    >
+                      <MessageCircle size={20} />
+                    </a>
+                    <button 
+                      onClick={() => setSelectedPatientId(patient.id)}
+                      className="flex items-center gap-2 px-5 py-3 bg-clinic-header text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:bg-clinic-text transition-colors shadow-md"
+                    >
+                      <FileText size={18} />
+                      Ver Detalhes
+                    </button>
+                    <button 
+                      onClick={() => setPatientToDelete(patient.id)}
+                      className="p-3 text-status-red-text hover:bg-status-red-bg rounded-xl transition-all"
+                      title="Excluir"
+                    >
+                      <Trash2 size={20} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="py-20 text-center text-clinic-text-muted">
+              <p className="text-lg italic font-serif opacity-50">Nenhum atendente encontrado.</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Modal Novo Atendente */}
+      <Modal 
+        isOpen={isNewPatientModalOpen} 
+        onClose={() => setIsNewPatientModalOpen(false)} 
+        title="Cadastrar Novo Atendente"
+        width="max-w-6xl"
+      >
+        <div className="space-y-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
+              <h4 className="font-serif text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
+                <Users size={18} className="text-clinic-primary" />
+                Dados Pessoais
+              </h4>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Nome da Criança *</label>
+                <input 
+                  type="text" 
+                  value={newPatient.name || ''}
+                  onChange={e => setNewPatient({...newPatient, name: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Nascimento *</label>
+                  <input 
+                    type="date" 
+                    value={newPatient.birthDate || ''}
+                    onChange={e => setNewPatient({...newPatient, birthDate: e.target.value})}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Idade Estimada</label>
+                  <div className="px-4 py-3 bg-clinic-bg/50 rounded-xl border border-clinic-border text-clinic-text-muted italic text-sm">
+                    {newPatient.birthDate ? `${calculateAge(newPatient.birthDate)} anos` : '--'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Responsável *</label>
+                <input 
+                  type="text" 
+                  value={newPatient.guardianName || ''}
+                  onChange={e => setNewPatient({...newPatient, guardianName: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">WhatsApp *</label>
+                <input 
+                  type="text" 
+                  placeholder="27 99999-0000"
+                  value={newPatient.whatsapp || ''}
+                  onChange={e => setNewPatient({...newPatient, whatsapp: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Foto</label>
+                <input 
+                  type="file" 
+                  accept="image/*"
+                  onChange={e => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, photoUrl: reader.result as string }));
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                  className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h4 className="font-serif text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
+                <FileText size={18} className="text-clinic-primary" />
+                Escolar e Clínico
+              </h4>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Escola</label>
+                <input 
+                  type="text" 
+                  value={newPatient.school || ''}
+                  onChange={e => setNewPatient({...newPatient, school: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Ano Escolar</label>
+                  <input 
+                    type="text" 
+                    value={newPatient.grade || ''}
+                    onChange={e => setNewPatient({...newPatient, grade: e.target.value})}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Turno</label>
+                  <select 
+                    value={newPatient.shift || ''}
+                    onChange={e => setNewPatient({...newPatient, shift: e.target.value})}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                  >
+                    <option value="">-</option>
+                    <option value="Manhã">Manhã</option>
+                    <option value="Tarde">Tarde</option>
+                    <option value="Integral">Integral</option>
+                  </select>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Médico Cuidando</label>
+                <input 
+                  type="text" 
+                  value={newPatient.doctorName || ''}
+                  onChange={e => setNewPatient({...newPatient, doctorName: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Medicação em Uso</label>
+                <input 
+                  type="text" 
+                  value={newPatient.medication || ''}
+                  onChange={e => setNewPatient({...newPatient, medication: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1 pt-2">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Upload Relatório (PDF)</label>
+                <input 
+                  type="file" 
+                  accept="application/pdf"
+                  onChange={e => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, reportPdfUrl: reader.result as string }));
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                  className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Upload Parecer (PDF)</label>
+                <input 
+                  type="file" 
+                  accept="application/pdf"
+                  onChange={e => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, opinionPdfUrl: reader.result as string }));
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                  className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h4 className="font-serif text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
+                <Clock size={18} className="text-clinic-primary" />
+                Configuração do Pacote
+              </h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Dia Fixo</label>
+                  <select 
+                    value={newPatient.fixedDay}
+                    onChange={e => setNewPatient({...newPatient, fixedDay: e.target.value})}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                  >
+                    {AVAILABLE_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Horário Fixo</label>
+                  <select 
+                    value={newPatient.fixedTime}
+                    onChange={e => setNewPatient({...newPatient, fixedTime: e.target.value})}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                  >
+                    {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+              {/* Toggle Sessão Dupla */}
+              <label className="flex items-center gap-3 cursor-pointer p-3 rounded-xl border border-clinic-border bg-clinic-bg hover:bg-clinic-primary/5 transition-all">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={!!newPatient.doubleSession}
+                    onChange={e => setNewPatient({...newPatient, doubleSession: e.target.checked})}
+                  />
+                  <div className={`w-10 h-6 rounded-full transition-colors ${newPatient.doubleSession ? 'bg-clinic-primary' : 'bg-clinic-border'}`}>
+                    <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${newPatient.doubleSession ? 'translate-x-5' : 'translate-x-1'}`} />
+                  </div>
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-clinic-text">Sessão Dupla (2 × 50 min)</p>
+                  <p className="text-[10px] text-clinic-text-muted">Ocupa dois horários consecutivos na agenda</p>
+                </div>
+              </label>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Modalidade de Pagamento</label>
+                <select 
+                  value={newPatient.paymentModal}
+                  onChange={e => setNewPatient({...newPatient, paymentModal: e.target.value as PaymentModal})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                >
+                  <option value={PaymentModal.PIX_FULL}>{PaymentModal.PIX_FULL}</option>
+                  <option value={PaymentModal.PARCELADO}>{PaymentModal.PARCELADO}</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Início do Pacote</label>
+                <input 
+                  type="date" 
+                  value={newPatient.startDate || ''}
+                  onChange={e => setNewPatient({...newPatient, startDate: e.target.value})}
+                  className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                />
+              </div>
+            </div>
+          </div>
+
+
+
+          <button 
+            onClick={handleCreatePatient}
+            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest"
+          >
+            Salvar Atendente
+          </button>
+        </div>
+      </Modal>
+
+      {/* Modal Confirmar Exclusão */}
+      <Modal
+        isOpen={!!patientToDelete}
+        onClose={() => setPatientToDelete(null)}
+        title="Confirmar Exclusão"
+        width="max-w-md"
+      >
+        <div className="space-y-6">
+          <p className="text-clinic-text">
+            Deseja realmente excluir este atendente? Todos os dados vinculados (sessões, pagamentos, etc) serão perdidos.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setPatientToDelete(null)}
+              className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={confirmDelete}
+              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
+            >
+              Excluir Atendente
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal Detalhes do Atendente */}
+      {selectedPatientId && selectedPatient && (
+        <PatientDetailsModal 
+          key={selectedPatientId}
+          isOpen={true} 
+          onClose={() => setSelectedPatientId(null)} 
+          patient={selectedPatient}
+          state={state}
+          onUpdate={onUpdate}
+        />
+      )}
+    </div>
+  );
+}
+
+function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void }) {
+  const [activeSubTab, setActiveSubTab] = useState('dados');
+  const [isEditingData, setIsEditingData] = useState(false);
+  const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
+  const [editForm, setEditForm] = useState<Partial<Patient>>(patient);
+  const [repositionModalSession, setRepositionModalSession] = useState<Session | null>(null);
+  const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [repoTime, setRepoTime] = useState(patient?.fixedTime || '08:00');
+  
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentData, setPaymentData] = useState<{
+    date: string;
+    installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral';
+    amount: number;
+    method: 'Pix' | 'Dinheiro' | 'Transferência' | 'Outro';
+  }>({
+    date: format(new Date(), 'yyyy-MM-dd'),
+    installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
+    amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
+    method: 'Pix'
+  });
+
+  const [confirmInactivate, setConfirmInactivate] = useState(false);
+  const [confirmNewPackage, setConfirmNewPackage] = useState(false);
+  
+  const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [newEvoNotes, setNewEvoNotes] = useState('');
+
+  if (!patient) return null;
+
+  const patientSessions = state.sessions.filter(s => s.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const patientPayments = state.payments.filter(p => p.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const patientEvolutions = (state.evolutions || []).filter(e => e.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const handleSaveEvolution = () => {
+    if (!newEvoNotes.trim()) return;
+    const newEvolution: Evolution = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId: patient.id,
+      date: newEvoDate,
+      notes: newEvoNotes.trim()
+    };
+    onUpdate({ evolutions: [...(state.evolutions || []), newEvolution] });
+    setNewEvoNotes('');
+    showToast('Evolução salva com sucesso!');
+  };
+  const realizedCount = patientSessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
+  const realizedInPackage = realizedCount % 10 || (realizedCount > 0 ? 10 : 0);
+  
+  const realizedSessionsChronological = patientSessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).slice().reverse();
+  const isLate = patient.paymentModal === PaymentModal.PARCELADO && realizedCount >= 6 && !patientPayments.some(p => p.installment === '2ª parcela');
+  let daysLate = 0;
+  if (isLate && realizedSessionsChronological[5]) {
+    daysLate = differenceInDays(new Date(), new Date(realizedSessionsChronological[5].date));
+  }
+
+  const handleSavePatientData = () => {
+    const isBecomingInactive = editForm.status === 'Concluído' && patient.status !== 'Concluído';
+    
+    if (isBecomingInactive) {
+      setConfirmInactivate(true);
+      return;
+    }
+
+    executeSavePatientData(false);
+  };
+
+  const executeSavePatientData = (deleteFutureSessions: boolean) => {
+    if (deleteFutureSessions) {
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+      const updatedSessions = state.sessions.filter(s => {
+        if (s.patientId !== patient.id) return true;
+        if (s.status === SessionStatus.AGENDADA && s.date >= todayStr) return false;
+        return true;
+      });
+      const updatedRepositions = state.repositions.filter(r => {
+        if (r.patientId !== patient.id) return true;
+        if (r.status === 'Pendente') return false;
+        if (r.status === 'Agendada') return false; 
+        return true;
+      });
+      
+      onUpdate({ 
+        patients: state.patients.map(p => p.id === patient.id ? { ...p, ...editForm } as Patient : p),
+        sessions: updatedSessions,
+        repositions: updatedRepositions
+      });
+      setIsEditingData(false);
+      showToast('Atendente desativado e sessões futuras removidas.', 'error');
+      setConfirmInactivate(false);
+      return;
+    }
+
+    const updatedPatients = state.patients.map(p => p.id === patient.id ? { ...p, ...editForm } as Patient : p);
+    onUpdate({ patients: updatedPatients });
+    setIsEditingData(false);
+    showToast('Dados atualizados com sucesso!', 'success');
+    setConfirmInactivate(false);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'photoUrl' | 'reportPdfUrl' | 'opinionPdfUrl') => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setEditForm(prev => ({ ...prev, [field]: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleGenerateNewPackage = () => {
+    setConfirmNewPackage(true);
+  };
+
+  const executeGenerateNewPackage = () => {
+    const DAYS_MAP: Record<string, number> = { 'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6 };
+    const targetDay = DAYS_MAP[patient.fixedDay?.toLowerCase() || ''] ?? 1;
+
+    const newPackageNumber = patientSessions.length > 0 
+      ? Math.max(...patientSessions.map(s => s.packageNumber || 1)) + 1 
+      : 1;
+
+    const scheduledAndRealized = patientSessions;
+    let startDate = new Date();
+
+    if (scheduledAndRealized.length > 0) {
+       startDate = addDays(parseISO(scheduledAndRealized[0].date), 7);
+    } else {
+       const currentDay = getDay(startDate);
+       const add = (targetDay - currentDay + 7) % 7;
+       startDate = addDays(startDate, add === 0 ? 7 : add);
+    }
+
+    // Force date to be the targetDay, just in case last session was off-schedule
+    while(getDay(startDate) !== targetDay) {
+        startDate = addDays(startDate, 1);
+    }
+
+    const generatedSessions: Session[] = [];
+    for (let i = 0; i < 10; i++) {
+       generatedSessions.push({
+           id: Math.random().toString(36).substr(2, 9),
+           patientId: patient.id,
+           date: format(addDays(startDate, i * 7), 'yyyy-MM-dd'),
+           time: patient.fixedTime || '08:00',
+           type: SessionType.SIMPLES,
+           status: SessionStatus.AGENDADA,
+           packageNumber: newPackageNumber
+       });
+    }
+
+    onUpdate({ sessions: [...state.sessions, ...generatedSessions] });
+    showToast(`Novo pacote gerado com ${generatedSessions.length} sessões.`, 'success');
+    setConfirmNewPackage(false);
+  };
+
+  const updateSessionStatus = (sessionId: string, newStatus: SessionStatus) => {
+    let finalStatus = newStatus;
+    const session = state.sessions.find(s => s.id === sessionId);
+    if (newStatus === SessionStatus.REALIZADA && session?.notes?.includes('Reposição referente')) {
+        finalStatus = SessionStatus.REPOSICAO;
+    }
+
+    let updatedSessions = state.sessions.map(s => s.id === sessionId ? { ...s, status: finalStatus } : s);
+    let updatedRepositions = state.repositions;
+    if ((finalStatus === SessionStatus.FALTA || finalStatus === SessionStatus.FALTA_PROF)) {
+       const existingRepo = state.repositions.find(r => r.originalSessionId === sessionId);
+       if (!existingRepo) {
+           const newReposition: Reposition = {
+               id: Math.random().toString(36).substr(2, 9),
+               patientId: patient.id,
+               originalSessionId: sessionId,
+               status: 'Pendente'
+           };
+           updatedRepositions = [...state.repositions, newReposition];
+       }
+    } else {
+        // Se mudou de FALTA para outro status, remover ou cancelar a reposição pendente
+        updatedRepositions = updatedRepositions.filter(r => r.originalSessionId !== sessionId || r.status !== 'Pendente');
+    }
+    onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+    showToast(`Status atualizado para ${finalStatus}.`);
+  };
+
+  const handleRegisterPaymentClick = () => {
+    setPaymentData(prev => ({
+      ...prev,
+      installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
+      amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
+      date: format(new Date(), 'yyyy-MM-dd')
+    }));
+    setPaymentModalOpen(true);
+  };
+
+  const handleSavePayment = () => {
+    const newPayment: Payment = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId: patient.id,
+      amount: paymentData.amount,
+      date: paymentData.date,
+      installment: paymentData.installment,
+      method: paymentData.method
+    };
+    
+    onUpdate({ payments: [...state.payments, newPayment] });
+    showToast('Pagamento registrado com sucesso!', 'success');
+    setPaymentModalOpen(false);
+  };
+
+  const handleScheduleReposition = () => {
+    if (!repositionModalSession) return;
+    
+    const newSession: Session = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId: patient.id,
+      date: repoDate,
+      time: repoTime,
+      type: repositionModalSession.type,
+      status: SessionStatus.AGENDADA,
+      notes: `Reposição referente à falta do dia ${safeFormatDate(repositionModalSession.date, 'dd/MM/yyyy')}`,
+      packageNumber: repositionModalSession.packageNumber
+    };
+
+    let updatedRepositions = [...state.repositions];
+    const existingRepoIndex = updatedRepositions.findIndex(r => r.originalSessionId === repositionModalSession.id);
+    if (existingRepoIndex >= 0) {
+        updatedRepositions[existingRepoIndex] = { ...updatedRepositions[existingRepoIndex], status: 'Agendada' };
+    } else {
+        updatedRepositions.push({
+            id: Math.random().toString(36).substr(2, 9),
+            patientId: patient.id,
+            originalSessionId: repositionModalSession.id,
+            status: 'Agendada'
+        });
+    }
+
+    onUpdate({
+      sessions: [...state.sessions, newSession],
+      repositions: updatedRepositions
+    });
+
+    showToast('Reposição agendada com sucesso!', 'success');
+    setRepositionModalSession(null);
+  };
+
+  // --- Histórico de Pacotes ---
+  // Group ALL sessions (realized + reposition) by packageNumber, in chronological order
+  const realizedAll = patientSessions
+    .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
+    .slice()
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  // Also group by packageNumber field when available; fall back to sequential chunks of 10
+  const packageMap: Record<number, typeof realizedAll> = {};
+  realizedAll.forEach((s, i) => {
+    const pkgNum = s.packageNumber && s.packageNumber > 0 ? s.packageNumber : Math.floor(i / 10) + 1;
+    if (!packageMap[pkgNum]) packageMap[pkgNum] = [];
+    packageMap[pkgNum].push(s);
+  });
+
+  // Current in-progress sessions (AGENDADA or FALTA/FALTA_PROF not yet realized)
+  const inProgressSessions = patientSessions.filter(
+    s => s.status === SessionStatus.AGENDADA || s.status === SessionStatus.FALTA || s.status === SessionStatus.FALTA_PROF
+  );
+
+  const packageHistory = Object.entries(packageMap)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([num, sessions]) => ({
+      number: Number(num),
+      sessions,
+      startDate: sessions[0]?.date ?? '',
+      endDate: sessions[sessions.length - 1]?.date ?? '',
+      count: sessions.length,
+      completed: sessions.length >= 10,
+    }));
+
+  // Determine current package number for in-progress display
+  const currentPkgNumber = packageHistory.length > 0
+    ? (packageHistory[packageHistory.length - 1].completed
+      ? packageHistory[packageHistory.length - 1].number + 1
+      : packageHistory[packageHistory.length - 1].number)
+    : 1;
+  const currentPkgProgress = realizedInPackage;
+
+  const confirmSessionMessage = `Olá ${patient.guardianName}! Confirmando a sessão de ${patient.name} em ${format(new Date(), 'dd/MM')} às ${patient.fixedTime}. Qualquer dúvida estou à disposição. Fábio Denarde.`;
+  const paymentMessage = `Olá ${patient.guardianName}! Passando para lembrar que a 2ª parcela do pacote de ${patient.name} (R$500,00) será na próxima sessão. Qualquer dúvida estou à disposição. Fábio Denarde.`;
+  const renovationMessage = `Olá ${patient.guardianName}! O pacote de sessões de ${patient.name} está chegando ao fim. Gostaria de conversar sobre a continuidade do atendimento? Fábio Denarde.`;
+
+  const tabs = [
+    { id: 'dados', label: 'Dados Cadastrais', icon: Users },
+    { id: 'sessoes', label: 'Sessões', icon: Calendar },
+    { id: 'pacotes', label: 'Hist. Pacotes', icon: RefreshCw },
+    { id: 'financeiro', label: 'Financeiro', icon: DollarSign },
+    { id: 'anotacoes', label: 'Anotações Gerais', icon: Edit3 },
+    { id: 'evolucao', label: 'Evolução Clínica', icon: FileText },
+  ];
+
+  const updateNotes = (notes: string) => {
+    const updatedPatients = state.patients.map(p => p.id === patient.id ? { ...p, clinicalNotes: notes } : p);
+    onUpdate({ patients: updatedPatients });
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={patient.name} width="max-w-5xl">
+       <div className="flex flex-col gap-6">
+          {/* Header Actions */}
+          <div className="flex flex-wrap items-center gap-3 bg-clinic-bg/50 p-4 rounded-xl border border-clinic-border">
+            <a 
+              href={`https://wa.me/55${(patient.whatsapp || '').replace(/\D/g, '')}?text=${encodeURIComponent(confirmSessionMessage)}`}
+              target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2 bg-status-green-bg text-status-green-text rounded-lg font-bold text-[10px] uppercase tracking-wide hover:scale-105 transition-all"
+            >
+              <MessageCircle size={14} /> Confirmar Sessão
+            </a>
+            {patient.paymentModal === PaymentModal.PARCELADO && realizedInPackage >= 4 && (
+               <a 
+                href={`https://wa.me/55${(patient.whatsapp || '').replace(/\D/g, '')}?text=${encodeURIComponent(paymentMessage)}`}
+                target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 bg-status-orange-bg text-status-orange-text rounded-lg font-bold text-[10px] uppercase tracking-wide hover:scale-105 transition-all"
+               >
+                 <DollarSign size={14} /> Lembrar Pagamento
+               </a>
+            )}
+            {realizedInPackage >= 8 && (
+               <div className="flex items-center gap-2">
+                 <a 
+                  href={`https://wa.me/55${(patient.whatsapp || '').replace(/\D/g, '')}?text=${encodeURIComponent(renovationMessage)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-2 bg-status-blue-bg text-status-blue-text rounded-lg font-bold text-[10px] uppercase tracking-wide hover:scale-105 transition-all"
+                  title="Enviar mensagem WhatsApp lembrando da renovação"
+                 >
+                   <MessageCircle size={14} /> Lembrar Renovação
+                 </a>
+                 <button 
+                  onClick={handleGenerateNewPackage}
+                  className="flex items-center gap-2 px-4 py-2 bg-clinic-text text-white rounded-lg font-bold text-[10px] uppercase tracking-wide hover:scale-105 transition-all"
+                  title="Adicionar 10 novas sessões ao calendário"
+                 >
+                   <Plus size={14} /> Gerar Novo Pacote
+                 </button>
+               </div>
+            )}
+          </div>
+
+          {/* Nav */}
+          <div className="flex flex-wrap border-b border-clinic-border gap-1">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveSubTab(tab.id)}
+                className={cn(
+                  "px-4 py-2 font-bold text-xs uppercase tracking-wider transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap",
+                  activeSubTab === tab.id ? "border-clinic-primary text-clinic-primary bg-clinic-primary/5" : "border-transparent text-clinic-text-faint hover:text-clinic-primary"
+                )}
+              >
+                <tab.icon size={13} />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4">
+            {activeSubTab === 'dados' && (
+              <div className="animate-in fade-in slide-in-from-top-2">
+                {!isEditingData ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                    <div className="col-span-1 md:col-span-2 flex items-center justify-between border-b border-clinic-border pb-2">
+                      <div className="flex gap-4 items-center">
+                        {patient.photoUrl ? (
+                          <img 
+                            src={patient.photoUrl} 
+                            alt={patient.name} 
+                            onClick={() => setIsPhotoExpanded(true)}
+                            className="w-14 h-14 rounded-full object-cover border border-clinic-border/50 shadow-sm cursor-pointer hover:opacity-80 transition" 
+                          />
+                        ) : (
+                          <div className="w-14 h-14 rounded-full bg-clinic-bg flex items-center justify-center border border-clinic-border/50 text-clinic-text-faint text-xl font-serif shadow-sm">
+                            {patient.name.charAt(0)}
+                          </div>
+                        )}
+                        <div className="flex-1">
+                           <p className="text-lg font-bold text-clinic-text leading-tight">{patient.name}</p>
+                           <p className="text-xs font-medium text-clinic-text-muted">{calculateAge(patient.birthDate)} anos</p>
+                        </div>
+                      </div>
+                      <button onClick={() => { setEditForm(patient); setIsEditingData(true); }} className="text-clinic-primary hover:underline text-xs flex items-center gap-1 font-bold">
+                        <Edit3 size={12} /> Editar
+                      </button>
+                    </div>
+
+                    {/* Photo Lightbox */}
+                    {isPhotoExpanded && patient.photoUrl && (
+                      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm shadow-2xl" onClick={() => setIsPhotoExpanded(false)}>
+                        <img src={patient.photoUrl} className="max-w-full max-h-full rounded-2xl object-cover shadow-2xl animate-in zoom-in-95 cursor-pointer" alt="Expanded" />
+                        <button className="absolute top-4 right-4 text-white bg-black/50 p-2 rounded-full hover:bg-black/80 transition-colors">
+                          <X size={24} />
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="space-y-3">
+                      <h6 className="text-[10px] font-bold text-clinic-text-faint uppercase bg-clinic-border/30 px-2 py-0.5 rounded inline-block tracking-wider">Contato e Contrato</h6>
+                      <div className="grid grid-cols-1 gap-1">
+                        {[
+                          { l: 'Responsável', v: patient.guardianName },
+                          { l: 'Nascimento', v: safeFormatDate(patient.birthDate, 'dd/MM/yyyy') },
+                          { l: 'WhatsApp', v: <a href={`https://wa.me/55${(patient.whatsapp || '').replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="text-clinic-primary hover:underline flex items-center gap-1 justify-end"><MessageCircle size={12}/>{patient.whatsapp}</a> },
+                          { l: 'Dia/Hora Fixo', v: `${patient.fixedDay} - ${patient.fixedTime}` },
+                          { l: 'Início', v: safeFormatDate(patient.startDate, 'dd/MM/yyyy') },
+                          { l: 'Modalidade', v: patient.paymentModal },
+                        ].map(item => (
+                          <div key={item.l} className="flex justify-between text-sm py-1 border-b border-clinic-border/30">
+                            <span className="text-clinic-text-faint font-bold text-[10px] uppercase">{item.l}</span>
+                            <span className="text-clinic-text font-medium text-right max-w-[200px] truncate" title={item.v}>{item.v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <h6 className="text-[10px] font-bold text-clinic-text-faint uppercase bg-clinic-border/30 px-2 py-0.5 rounded inline-block tracking-wider">Escolar e Clínico</h6>
+                      <div className="grid grid-cols-1 gap-1">
+                        {[
+                          { l: 'Escola', v: patient.school || '-' },
+                          { l: 'Ano Escolar', v: patient.grade || '-' },
+                          { l: 'Turno', v: patient.shift || '-' },
+                          { l: 'Médico', v: patient.doctorName || '-' },
+                          { l: 'Medicação', v: patient.medication || '-' },
+                        ].map(item => (
+                          <div key={item.l} className="flex justify-between text-sm py-0.5 border-b border-clinic-border/30">
+                            <span className="text-clinic-text-faint font-bold text-[10px] uppercase">{item.l}</span>
+                            <span className="text-clinic-text font-medium text-right max-w-[200px] truncate" title={item.v}>{item.v}</span>
+                          </div>
+                        ))}
+                      </div>
+                      
+                      <div className="pt-2">
+                        <p className="text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Documentos da Criança</p>
+                        <div className="space-y-1">
+                          {patient.reportPdfUrl ? (
+                            <a href={patient.reportPdfUrl} download="Relatorio.pdf" className="w-full flex items-center gap-2 justify-center py-1.5 px-3 bg-clinic-bg border border-clinic-border rounded text-xs font-bold text-clinic-primary hover:bg-clinic-border/40 transition shadow-sm">
+                              <FileText size={14}/> Ver Relatório
+                            </a>
+                          ) : (
+                             <p className="text-xs text-clinic-text-faint/60 italic py-0.5">Sem Relatório anexado</p>
+                          )}
+                          {patient.opinionPdfUrl ? (
+                            <a href={patient.opinionPdfUrl} download="Parecer.pdf" className="w-full flex items-center gap-2 justify-center py-1.5 px-3 bg-clinic-bg border border-clinic-border rounded text-xs font-bold text-clinic-primary hover:bg-clinic-border/40 transition shadow-sm">
+                              <FileText size={14}/> Ver Parecer
+                            </a>
+                          ) : (
+                             <p className="text-xs text-clinic-text-faint/60 italic py-0.5 border-t border-clinic-border/10">Sem Parecer anexado</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="col-span-1 md:col-span-2 pt-2 border-t border-clinic-border space-y-2">
+                      <h5 className="font-serif text-[15px] font-bold text-clinic-text">Histórico de Pacotes</h5>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {packageHistory.filter(p => p.completed).length > 0 ? packageHistory.filter(p => p.completed).map(pkg => (
+                          <div key={pkg.number} className="flex justify-between items-center text-sm py-2 px-3 border border-clinic-border/50 rounded-lg bg-clinic-bg/30 shadow-sm">
+                            <span className="text-clinic-text font-bold text-xs uppercase tracking-wide">Pacote {pkg.number}</span>
+                            <span className="text-[10px] font-medium text-clinic-text-muted bg-white/50 px-2 py-0.5 rounded">
+                              {safeFormatDate(pkg.startDate, 'dd/MM')} a {safeFormatDate(pkg.endDate, 'dd/MM/yy')}
+                            </span>
+                          </div>
+                        )) : (
+                          <p className="col-span-full text-[10px] uppercase text-clinic-text-faint font-bold tracking-widest py-2">Nenhum pacote anterior finalizado</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4 bg-clinic-bg/30 p-4 shrink-0 border border-clinic-border rounded-xl">
+                    <div className="flex items-center justify-between border-b border-clinic-border pb-4 mb-4">
+                      <h5 className="font-serif text-lg font-bold text-clinic-text flex items-center gap-2">
+                        <Edit3 size={18} className="text-clinic-primary" />
+                        Editar Dados
+                      </h5>
+                      <div className="flex gap-2">
+                        <button onClick={() => setIsEditingData(false)} className="text-clinic-text-faint hover:text-clinic-text text-xs uppercase font-bold px-3 py-1.5 transition-colors">Cancelar</button>
+                        <button onClick={handleSavePatientData} className="bg-clinic-primary text-white text-xs uppercase font-bold px-4 py-1.5 rounded-lg hover:bg-clinic-primary/90 transition-colors">Salvar Alterações</button>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-4">
+                      {/* Column 1: Dados Pessoais */}
+                      <div className="space-y-4">
+                        <h4 className="font-serif text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
+                          <Users size={16} className="text-clinic-primary" />
+                          Dados Pessoais
+                        </h4>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Nome da Criança</label>
+                          <input type="text" value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Nascimento</label>
+                            <input type="date" value={editForm.birthDate || ''} onChange={e => setEditForm({...editForm, birthDate: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Idade</label>
+                            <div className="px-4 py-3 bg-clinic-bg/50 rounded-xl border border-clinic-border text-clinic-text-muted italic text-sm">
+                              {editForm.birthDate ? `${calculateAge(editForm.birthDate)} anos` : '--'}
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Responsável</label>
+                          <input type="text" value={editForm.guardianName || ''} onChange={e => setEditForm({...editForm, guardianName: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">WhatsApp</label>
+                          <input type="text" value={editForm.whatsapp || ''} onChange={e => setEditForm({...editForm, whatsapp: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Foto da Criança</label>
+                          <input type="file" accept="image/*" onChange={e => handleFileUpload(e, 'photoUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                        </div>
+                      </div>
+                      
+                      {/* Column 2: Escolar e Clínico */}
+                      <div className="space-y-4">
+                        <h4 className="font-serif text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
+                          <FileText size={16} className="text-clinic-primary" />
+                          Escolar e Clínico
+                        </h4>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Escola</label>
+                          <input type="text" value={editForm.school || ''} onChange={e => setEditForm({...editForm, school: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Ano Escolar</label>
+                            <input type="text" value={editForm.grade || ''} onChange={e => setEditForm({...editForm, grade: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Turno</label>
+                            <select value={editForm.shift || ''} onChange={e => setEditForm({...editForm, shift: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full">
+                              <option value="">-</option>
+                              <option value="Manhã">Manhã</option>
+                              <option value="Tarde">Tarde</option>
+                              <option value="Integral">Integral</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Médico Cuidando</label>
+                          <input type="text" value={editForm.doctorName || ''} onChange={e => setEditForm({...editForm, doctorName: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Medicação em Uso</label>
+                          <input type="text" value={editForm.medication || ''} onChange={e => setEditForm({...editForm, medication: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div className="space-y-4 pt-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Upload Relatório (PDF)</label>
+                            <input type="file" accept="application/pdf" onChange={e => handleFileUpload(e, 'reportPdfUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Upload Parecer (PDF)</label>
+                            <input type="file" accept="application/pdf" onChange={e => handleFileUpload(e, 'opinionPdfUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Column 3: Configuração do Pacote e Status */}
+                      <div className="space-y-4">
+                        <h4 className="font-serif text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
+                          <Clock size={16} className="text-clinic-primary" />
+                          Configuração do Pacote
+                        </h4>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Dia Fixo</label>
+                            <select value={editForm.fixedDay || ''} onChange={e => setEditForm({...editForm, fixedDay: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full">
+                              {AVAILABLE_DAYS.map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Horário Fixo</label>
+                            <select value={editForm.fixedTime || ''} onChange={e => setEditForm({...editForm, fixedTime: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full">
+                              {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        {/* Toggle Sessão Dupla */}
+                        <label className="flex items-center gap-3 cursor-pointer p-3 rounded-xl border border-clinic-border bg-clinic-bg hover:bg-clinic-primary/5 transition-all mt-2">
+                          <div className="relative">
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={!!editForm.doubleSession}
+                              onChange={e => setEditForm({...editForm, doubleSession: e.target.checked})}
+                            />
+                            <div className={`w-10 h-6 rounded-full transition-colors ${editForm.doubleSession ? 'bg-clinic-primary' : 'bg-clinic-border'}`}>
+                              <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${editForm.doubleSession ? 'translate-x-5' : 'translate-x-1'}`} />
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold text-clinic-text">Sessão Dupla (2 × 50 min)</p>
+                            <p className="text-[10px] text-clinic-text-muted">Ocupa dois horários consecutivos na agenda</p>
+                          </div>
+                        </label>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Modalidade de Pagamento</label>
+                          <select value={editForm.paymentModal || ''} onChange={e => setEditForm({...editForm, paymentModal: e.target.value as PaymentModal})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full">
+                            <option value={PaymentModal.PIX_FULL}>{PaymentModal.PIX_FULL}</option>
+                            <option value={PaymentModal.PARCELADO}>{PaymentModal.PARCELADO}</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Início do Pacote</label>
+                          <input type="date" value={editForm.startDate || ''} onChange={e => setEditForm({...editForm, startDate: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
+                        </div>
+                        <div className="pt-4 mt-2 border-t border-clinic-border">
+                          <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Status do Atendente</label>
+                          <select value={editForm.status || 'Ativo'} onChange={e => setEditForm({...editForm, status: e.target.value as 'Ativo' | 'Concluído'})} className={`px-4 py-3 rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full font-bold ${editForm.status === 'Concluído' ? 'bg-status-red-bg text-status-red-text' : 'bg-status-green-bg text-status-green-text'}`}>
+                            <option value="Ativo">🟢 Ativo</option>
+                            <option value="Concluído">🔴 Concluído (Inativo)</option>
+                          </select>
+                          {editForm.status === 'Concluído' && patient.status !== 'Concluído' && (
+                            <p className="text-[10px] text-status-red-text mt-2 font-medium bg-red-50 p-2 rounded">
+                              Atenção: Ao salvar como Concluído, todas as sessões e reposições futuras agendadas serão automaticamente excluídas.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeSubTab === 'sessoes' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
+                 <div className="flex items-center justify-between">
+                    <div className="flex-1 max-w-sm space-y-1">
+                      <div className="flex justify-between text-[10px] font-bold uppercase text-clinic-text-faint">
+                        <span>Progresso do Pacote Atual</span>
+                        <span>{realizedInPackage} / 10</span>
+                      </div>
+                      <div className="w-full h-2 bg-clinic-bg rounded-full overflow-hidden">
+                        <div className="h-full bg-clinic-primary rounded-full" style={{ width: `${(realizedInPackage/10)*100}%` }}></div>
+                      </div>
+                    </div>
+                 </div>
+                 <div className="space-y-3">
+                   {patientSessions.length > 0 ? (
+                     patientSessions.map(session => (
+                       <div key={session.id} className={cn(
+                         "p-4 rounded-xl border flex items-center justify-between",
+                         session.status === SessionStatus.REALIZADA ? 'bg-blue-500/10 border-blue-400 border-dashed' :
+                         session.status === SessionStatus.FALTA ? 'bg-red-500/10 border-red-500/20' :
+                         session.status === SessionStatus.FALTA_PROF ? 'bg-orange-500/10 border-orange-500/20' :
+                         'bg-transparent border-clinic-border'
+                       )}>
+                         <div className="flex items-center gap-4">
+                            <Calendar size={18} className="text-clinic-text-faint" />
+                            <div className="flex flex-col">
+                              <span className="font-bold text-sm">{safeFormatDate(session.date, 'dd/MM/yyyy')} — {session.time}</span>
+                              <span className="text-[10px] text-clinic-text-muted italic">{session.type}</span>
+                            </div>
+                         </div>
+                         <div className="flex items-center gap-3">
+                            {session.notes && <span className="text-[10px] bg-clinic-bg px-2 py-1 rounded italic text-clinic-text-muted" title={session.notes}>Ver Obs</span>}
+                            <div className="flex items-center gap-1 bg-clinic-bg/40 p-1 rounded-lg border border-clinic-border/50 mr-3">
+                               {session.status !== SessionStatus.REALIZADA && session.status !== SessionStatus.REPOSICAO && session.status !== SessionStatus.CANCELADA && (
+                                 <button onClick={() => updateSessionStatus(session.id, SessionStatus.REALIZADA)} className="p-1.5 rounded hover:bg-status-green-bg text-status-green-text transition-colors hover:shadow-sm" title="Marcar Presença">
+                                   <CheckCircle size={14} />
+                                 </button>
+                               )}
+                               {session.status !== SessionStatus.FALTA && session.status !== SessionStatus.FALTA_PROF && session.status !== SessionStatus.CANCELADA && (
+                                 <button onClick={() => updateSessionStatus(session.id, SessionStatus.FALTA)} className="p-1.5 rounded hover:bg-status-red-bg text-status-red-text transition-colors hover:shadow-sm" title="Registrar Falta Atendente">
+                                   <XCircle size={14} />
+                                 </button>
+                               )}
+                               {session.status !== SessionStatus.FALTA_PROF && session.status !== SessionStatus.CANCELADA && (
+                                 <button onClick={() => updateSessionStatus(session.id, SessionStatus.FALTA_PROF)} className="p-1.5 rounded hover:bg-status-orange-bg text-status-orange-text transition-colors hover:shadow-sm" title="Minha Falta">
+                                   <XCircle size={14} />
+                                 </button>
+                               )}
+                                                               {session.status !== SessionStatus.CANCELADA && session.status !== SessionStatus.REALIZADA && session.status !== SessionStatus.REPOSICAO && (
+                                  <button onClick={() => updateSessionStatus(session.id, SessionStatus.CANCELADA)} className="p-1.5 rounded hover:bg-gray-100 text-gray-400 transition-colors hover:shadow-sm text-sm" title="Cancelar (Feriado/Imprevisto) - nao gera reposicao">
+                                    🏖
+                                  </button>
+                                )}
+                                {(session.status === SessionStatus.FALTA || session.status === SessionStatus.FALTA_PROF) && (
+                                 <button onClick={() => setRepositionModalSession(session)} className="px-2 py-1.5 rounded hover:bg-status-blue-bg text-status-blue-text font-bold text-[10px] uppercase tracking-wide flex items-center gap-1 hover:shadow-sm transition-all" title="Agendar Reposição para esta Falta">
+                                   <RefreshCw size={12} />
+                                   <span className="hidden sm:inline">Repor</span>
+                                 </button>
+                               )}
+                             </div>
+                             <span className={cn("px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider", getStatusColor(session.status))}>
+                              {session.status}
+                            </span>
+                         </div>
+                       </div>
+                     ))
+                   ) : (
+                     <p className="text-center text-clinic-text-muted italic py-10">Nenhuma sessão registrada.</p>
+                   )}
+                 </div>
+              </div>
+            )}
+
+            {activeSubTab === 'pacotes' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center justify-between">
+                  <h5 className="font-serif text-lg font-bold text-clinic-text">Histórico de Pacotes</h5>
+                  <span className="text-xs font-bold text-clinic-text-faint uppercase bg-clinic-bg px-3 py-1 rounded-full border">
+                    Pacote Atual: #{currentPkgNumber} ({currentPkgProgress}/10 sessões)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {packageHistory.length > 0 ? (
+                    packageHistory.map(pkg => {
+                      const isCurrent = pkg.number === currentPkgNumber || !pkg.completed;
+                      return (
+                        <div
+                          key={pkg.number}
+                          className={cn(
+                            "p-5 rounded-xl border flex flex-col justify-between transition-all hover:shadow-md h-full bg-white",
+                            isCurrent
+                              ? "bg-clinic-primary/5 border-clinic-primary/40 ring-1 ring-clinic-primary/20"
+                              : "border-clinic-border/60"
+                          )}
+                        >
+                          <div className="flex items-center justify-between mb-3">
+                            <span className={cn(
+                              "text-xs font-black uppercase px-2.5 py-1 rounded-lg tracking-wider",
+                              isCurrent ? "bg-clinic-primary text-white" : "bg-clinic-bg text-clinic-text-faint"
+                            )}>
+                              Pacote #{pkg.number}
+                            </span>
+                            <span className={cn(
+                              "text-[10px] font-black uppercase px-2 py-0.5 rounded tracking-widest",
+                              pkg.completed ? "bg-status-green-bg text-status-green-text" : "bg-status-orange-bg text-status-orange-text"
+                            )}>
+                              {pkg.completed ? "Concluído" : "Em Andamento"}
+                            </span>
+                          </div>
+
+                          <div className="space-y-2 mb-4">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-clinic-text-faint font-bold uppercase tracking-wider text-[10px]">Período</span>
+                              <span className="text-clinic-text font-bold">
+                                {pkg.startDate ? safeFormatDate(pkg.startDate, 'dd/MM/yyyy') : '--'} — {pkg.endDate ? safeFormatDate(pkg.endDate, 'dd/MM/yyyy') : '--'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-clinic-text-faint font-bold uppercase tracking-wider text-[10px]">Sessões Realizadas</span>
+                              <span className="text-clinic-text font-bold">{pkg.count} / 10</span>
+                            </div>
+                          </div>
+
+                          <div className="w-full bg-clinic-bg h-2 rounded-full overflow-hidden">
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-all duration-500",
+                                isCurrent ? "bg-clinic-primary" : "bg-status-green-text"
+                              )}
+                              style={{ width: `${Math.min((pkg.count / 10) * 100, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="col-span-full py-10 text-center text-clinic-text-muted italic">
+                      Nenhum pacote anterior registrado.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeSubTab === 'financeiro' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center justify-between">
+                  <h5 className="font-serif text-lg font-bold text-clinic-text">Resumo Financeiro</h5>
+                  <div className="flex gap-2">
+                    <button onClick={handleRegisterPaymentClick} className="px-3 py-1.5 bg-status-green-bg text-status-green-text font-bold text-xs uppercase tracking-wide rounded-lg hover:bg-green-100 transition-colors border border-green-200 shadow-sm hover:shadow">
+                      + Registar Pagamento
+                    </button>
+                  </div>
+                </div>
+
+                {isLate && (
+                  <div className="bg-status-red-bg border-l-4 border-status-red-text p-4 rounded-r-xl shadow-sm text-status-red-text flex justify-between items-center">
+                    <div className="flex flex-col">
+                      <span className="font-black text-xs tracking-wider uppercase mb-1">Aviso de Inadimplência</span>
+                      <span className="font-medium text-sm">A 2ª parcela deste pacote está atrasada.</span>
+                    </div>
+                    <span className="bg-white px-3 py-1 rounded shadow-sm text-xs font-black uppercase">{daysLate} dias em atraso</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
+                   <div className="p-4 bg-status-green-bg text-status-green-text rounded-2xl border border-green-100 h-full">
+                      <span className="block text-[10px] font-bold uppercase">Total Pago</span>
+                      <span className="text-2xl font-serif font-bold">{formatCurrency(patientPayments.reduce((s, p) => s + p.amount, 0))}</span>
+                   </div>
+                   <div className="p-4 bg-status-orange-bg text-status-orange-text rounded-2xl border border-orange-100 h-full">
+                      <span className="block text-[10px] font-bold uppercase">Status Financeiro</span>
+                      <span className="text-2xl font-serif font-bold italic">{patient.paymentModal === PaymentModal.PIX_FULL ? 'Único' : 'Parcelado'}</span>
+                   </div>
+                </div>
+                <div className="space-y-3">
+                   {patientPayments.length > 0 ? (
+                     patientPayments.map(payment => (
+                       <div key={payment.id} className="p-4 rounded-xl border border-clinic-border flex items-center justify-between">
+                         <div className="flex items-center gap-4">
+                            <DollarSign size={18} className="text-status-green-text" />
+                            <div className="flex flex-col">
+                              <span className="font-bold text-sm">{formatCurrency(payment.amount)} — {payment.installment}</span>
+                              <span className="text-[10px] text-clinic-text-muted">{safeFormatDate(payment.date, 'dd/MM/yyyy')} via {payment.method}</span>
+                            </div>
+                         </div>
+                         <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Recebido</span>
+                       </div>
+                     ))
+                   ) : (
+                     <p className="text-center text-clinic-text-muted italic py-10">Nenhum pagamento registrado.</p>
+                   )}
+                </div>
+              </div>
+            )}
+
+            {activeSubTab === 'anotacoes' && (
+              <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                 <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Notas Clínicas Gerais</label>
+                 <textarea 
+                  defaultValue={patient.clinicalNotes}
+                  onBlur={(e) => {
+                    updateNotes(e.target.value);
+                    showToast('Anotações salvas.');
+                  }}
+                  className="w-full min-h-[350px] p-4 bg-clinic-bg rounded-2xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all shadow-inner"
+                  placeholder="Descreva aqui o histórico clínico, comportamentos observados e notas técnicas..."
+                 />
+                 <p className="text-[10px] text-clinic-text-muted italic">* As anotações são salvas automaticamente ao sair do campo (clicar fora).</p>
+              </div>
+            )}
+
+            {activeSubTab === 'evolucao' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
+                <div className="bg-clinic-bg/50 p-4 rounded-2xl border border-clinic-border space-y-3">
+                  <h6 className="text-[10px] font-bold text-clinic-text-faint uppercase tracking-widest">Nova Evolução Diária</h6>
+                  <div className="flex flex-col md:flex-row gap-3">
+                    <input 
+                      type="date" 
+                      value={newEvoDate} 
+                      onChange={e => setNewEvoDate(e.target.value)}
+                      className="px-4 py-2 bg-white rounded-xl border border-clinic-border text-sm outline-none w-full md:w-auto"
+                    />
+                    <input 
+                      type="text" 
+                      placeholder="Descreva a evolução da sessão..." 
+                      value={newEvoNotes}
+                      onChange={e => setNewEvoNotes(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleSaveEvolution()}
+                      className="flex-1 px-4 py-2 bg-white rounded-xl border border-clinic-border text-sm outline-none focus:ring-2 focus:ring-clinic-primary transition-all"
+                    />
+                    <button 
+                      onClick={handleSaveEvolution}
+                      disabled={!newEvoNotes.trim()}
+                      className="px-4 py-2 bg-clinic-primary text-white font-bold rounded-xl shadow-md disabled:opacity-50 hover:bg-clinic-primary-hover transition-all text-xs uppercase tracking-wider"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {patientEvolutions.length > 0 ? (
+                    patientEvolutions.map(evo => (
+                      <div key={evo.id} className="relative pl-6 pb-4 border-l-2 border-clinic-border/50 last:border-0 last:pb-0">
+                        <div className="absolute left-[-5px] top-0 w-2 h-2 rounded-full bg-clinic-primary"></div>
+                        <div className="bg-white p-4 rounded-xl border border-clinic-border shadow-sm flex flex-col gap-2 relative -top-3">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold text-clinic-text bg-clinic-bg px-2 py-1 rounded">
+                              {safeFormatDate(evo.date, 'dd/MM/yyyy')}
+                            </span>
+                            <button 
+                              onClick={() => {
+                                if (confirm('Excluir esta evolução?')) {
+                                  onUpdate({ evolutions: (state.evolutions || []).filter(e => e.id !== evo.id) });
+                                }
+                              }}
+                              className="text-status-red-text hover:bg-red-50 p-1.5 rounded transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                          <p className="text-sm text-clinic-text whitespace-pre-line leading-relaxed">{evo.notes}</p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-center text-clinic-text-muted italic py-10">Nenhuma evolução registrada.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+       </div>
+
+      {repositionModalSession && (
+        <Modal
+          isOpen={true}
+          onClose={() => setRepositionModalSession(null)}
+          title="Agendar Reposição"
+          width="max-w-md"
+        >
+          <div className="space-y-6">
+            <p className="text-clinic-text text-sm">
+              Agendando reposição para a falta do dia: <span className="font-bold">{safeFormatDate(repositionModalSession.date, 'dd/MM/yyyy')}</span>
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Data da Reposição</label>
+                <input 
+                  type="date" 
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={repoDate}
+                  onChange={e => setRepoDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Horário</label>
+                <select 
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={repoTime}
+                  onChange={e => setRepoTime(e.target.value)}
+                >
+                  {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setRepositionModalSession(null)}
+                className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleScheduleReposition}
+                className="px-4 py-2 bg-status-blue-bg text-status-blue-text font-bold rounded-lg hover:bg-blue-200 transition-all uppercase tracking-wide text-xs"
+              >
+                Confirmar Agendamento
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {paymentModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setPaymentModalOpen(false)}
+          title="Registrar Pagamento"
+          width="max-w-md"
+        >
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Data do Pagamento</label>
+                <input 
+                  type="date" 
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={paymentData.date}
+                  onChange={e => setPaymentData(prev => ({ ...prev, date: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Tipo / Parcela</label>
+                <select 
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={paymentData.installment}
+                  onChange={e => {
+                    const inst = e.target.value as any;
+                    let amt = 500;
+                    if (inst === 'Pagamento integral') amt = 1000;
+                    setPaymentData(prev => ({ ...prev, installment: inst, amount: amt }));
+                  }}
+                >
+                  <option value="Pagamento integral">Pagamento integral — R$ 1.000,00</option>
+                  <option value="1ª parcela">1ª parcela — R$ 500,00</option>
+                  <option value="2ª parcela">2ª parcela — R$ 500,00</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Valor</label>
+                <input 
+                  type="number" 
+                  step="0.01"
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={paymentData.amount}
+                  onChange={e => setPaymentData(prev => ({ ...prev, amount: parseFloat(e.target.value) || 0 }))}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Método de Pagamento</label>
+                <select 
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={paymentData.method}
+                  onChange={e => setPaymentData(prev => ({ ...prev, method: e.target.value as any }))}
+                >
+                  <option value="Pix">Pix</option>
+                  <option value="Dinheiro">Dinheiro</option>
+                  <option value="Transferência">Transferência</option>
+                  <option value="Outro">Outro</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setPaymentModalOpen(false)}
+                className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSavePayment}
+                className="px-4 py-2 bg-status-green-bg text-status-green-text font-bold rounded-lg hover:bg-green-200 transition-all uppercase tracking-wide text-xs"
+              >
+                Confirmar Recebimento
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal Desativar Paciente e Excluir Futuras */}
+      <Modal
+        isOpen={confirmInactivate}
+        onClose={() => setConfirmInactivate(false)}
+        title="Confirmar Desativação"
+        width="max-w-md"
+      >
+        <div className="space-y-6">
+          <p className="text-clinic-text font-medium">
+            Você está marcando este atendente como "Concluído".
+            Deseja também excluir todas as sessões e reposições futuras agendadas para ele?
+          </p>
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={() => executeSavePatientData(true)}
+              className="px-4 py-3 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all text-sm w-full text-center"
+            >
+              Sim, excluir agendamentos futuros
+            </button>
+            <button
+              onClick={() => executeSavePatientData(false)}
+              className="px-4 py-3 bg-clinic-bg border border-clinic-border text-clinic-text font-bold rounded-lg hover:bg-clinic-bg/80 transition-all text-sm w-full text-center"
+            >
+              Não, manter na agenda
+            </button>
+            <button
+              onClick={() => setConfirmInactivate(false)}
+              className="mt-2 text-xs text-clinic-text-muted hover:underline uppercase tracking-wide text-center"
+            >
+              Cancelar Edição
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal Confirmar Novo Pacote */}
+      <Modal
+        isOpen={confirmNewPackage}
+        onClose={() => setConfirmNewPackage(false)}
+        title="Gerar Novo Pacote"
+        width="max-w-md"
+      >
+        <div className="space-y-6">
+          <p className="text-clinic-text font-medium">
+            Deseja gerar 10 novas sessões automáticas para este paciente, seguindo o dia e horário fixo configurado ({patient?.fixedDay} às {patient?.fixedTime})?
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setConfirmNewPackage(false)}
+              className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={executeGenerateNewPackage}
+              className="px-4 py-2 bg-clinic-primary text-white font-bold rounded-lg shadow-md hover:bg-clinic-primary-hover transition-all uppercase tracking-wide text-xs"
+            >
+              Gerar Sessões
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </Modal>
+  );
+}
+
+

@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "ClinicSettings": {
+      "title": "Clinic Settings",
+      "description": "Settings for the user's clinic",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "specialty": { "type": "string" },
+        "title": { "type": "string" },
+        "email": { "type": "string" },
+        "whatsapp": { "type": "string" },
+        "address": { "type": "string" }
+      }
+    },
+    "Patient": {
+      "title": "Patient",
+      "description": "A patient record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "guardianName": { "type": "string" },
+        "whatsapp": { "type": "string" },
+        "fixedDay": { "type": "string" },
+        "fixedTime": { "type": "string" },
+        "paymentModal": { "type": "string" },
+        "startDate": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "Session": {
+      "title": "Session",
+      "description": "A psychotherapy session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "patientId": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" },
+        "type": { "type": "string" },
+        "status": { "type": "string" },
+        "packageNumber": { "type": "number" }
+      }
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A payment record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "patientId": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" }
+      }
+    },
+    "Reposition": {
+      "title": "Reposition",
+      "description": "Session reposition tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "patientId": { "type": "string" },
+        "originalSessionId": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{userId}/settings/{settingId}": {
+      "schema": "ClinicSettings",
+      "description": "Contains user clinic settings."
+    },
+    "users/{userId}/patients/{patientId}": {
+      "schema": "Patient",
+      "description": "Contains the patients for the logged-in user."
+    },
+    "users/{userId}/sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "Contains the sessions."
+    },
+    "users/{userId}/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Contains the payments."
+    },
+    "users/{userId}/repositions/{repositionId}": {
+      "schema": "Reposition",
+      "description": "Contains the repositions."
+    }
+  }
+}

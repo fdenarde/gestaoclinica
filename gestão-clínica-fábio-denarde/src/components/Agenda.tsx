@@ -1,0 +1,727 @@
+import React, { useState, useMemo } from 'react';
+import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
+import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
+import { ChevronLeft, ChevronRight, AlertCircle, Users, RefreshCw } from 'lucide-react';
+import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import Modal from './Common/Modal';
+import { showToast } from './Common/Toast';
+import { cn, getStatusColor, safeFormatDate } from '../lib/utils';
+
+// Normaliza string removendo acentos e convertendo para minúsculas
+const normalizeStr = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+// Helper: returns virtual session(s) for a patient on a given date if their fixedDay matches.
+// For doubleSession patients, returns entries for both the fixedTime AND the next hour.
+// Returns empty array for holiday dates.
+function getVirtualSessions(
+  patient: AppState['patients'][0],
+  dayStr: string,
+  dayKey: string,
+  holidays: { date: string }[]
+): Session[] {
+  if (patient.status !== 'Ativo') return [];
+  // Normalize both sides so 'Terça', 'TERCA', 'terça' all match 'terca'
+  if (normalizeStr(patient.fixedDay || '') !== normalizeStr(dayKey)) return [];
+  // Block virtual sessions on holidays
+  if (holidays.some(h => h.date === dayStr)) return [];
+  // fixedTime is required
+  if (!patient.fixedTime) return [];
+
+  const times = SCHEDULE_CONFIG[dayKey] || [];
+
+  const makeVirtual = (time: string): Session => ({
+    id: `virtual-${patient.id}-${dayStr}-${time}`,
+    patientId: patient.id,
+    date: dayStr,
+    time,
+    type: patient.doubleSession ? SessionType.DUPLA : SessionType.SIMPLES,
+    status: SessionStatus.AGENDADA,
+    packageNumber: 0,
+    notes: '',
+  });
+
+  const result: Session[] = [makeVirtual(patient.fixedTime)];
+
+  // If doubleSession, also occupy the next time slot
+  if (patient.doubleSession) {
+    const allTimes = [...new Set([...times, patient.fixedTime].sort())];
+    const idx = allTimes.indexOf(patient.fixedTime);
+    if (idx >= 0 && idx + 1 < allTimes.length) {
+      result.push(makeVirtual(allTimes[idx + 1]));
+    }
+  }
+  return result;
+}
+
+interface AgendaProps {
+  state: AppState;
+  onUpdate: (newState: Partial<AppState>) => void;
+}
+
+export default function Agenda({ state, onUpdate }: AgendaProps) {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
+  const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+
+  // Form State
+  const [patientId, setPatientId] = useState('');
+  const [sessionType, setSessionType] = useState<SessionType>(SessionType.SIMPLES);
+  const [notes, setNotes] = useState('');
+
+  // Reposition Modal State
+  const [repoModal, setRepoModal] = useState<{ reposition: Reposition; patient: AppState['patients'][0]; originalSession: Session | null } | null>(null);
+  const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [repoTime, setRepoTime] = useState('');
+
+  // Compute available times for selected repoDate
+  const repoAvailableTimes = useMemo(() => {
+    const dayIndex = getDay(new Date(repoDate + 'T12:00:00'));
+    const dayKeys: Record<number, string> = { 2: 'terça', 4: 'quinta', 5: 'sexta', 6: 'sábado' };
+    const key = dayKeys[dayIndex];
+    return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
+  }, [repoDate]);
+
+  const openRepoModal = (reposition: Reposition) => {
+    const patient = state.patients.find(p => p.id === reposition.patientId);
+    const originalSession = state.sessions.find(s => s.id === reposition.originalSessionId) ?? null;
+    if (!patient) return;
+    const nextDate = format(new Date(), 'yyyy-MM-dd');
+    setRepoDate(nextDate);
+    setRepoTime(patient.fixedTime || AVAILABLE_TIMES[0]);
+    setRepoModal({ reposition, patient, originalSession });
+  };
+
+  const handleConfirmReposition = () => {
+    if (!repoModal || !repoDate || !repoTime) {
+      showToast('Selecione a data e o horário para a reposição.', 'error');
+      return;
+    }
+    const { reposition, patient, originalSession } = repoModal;
+    const newSession: Session = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId: patient.id,
+      date: repoDate,
+      time: repoTime,
+      type: originalSession?.type || SessionType.SIMPLES,
+      status: SessionStatus.AGENDADA,
+      notes: `Reposição referente à falta do dia ${originalSession ? format(new Date(originalSession.date + 'T12:00:00'), 'dd/MM/yyyy') : '--'}`,
+      packageNumber: originalSession?.packageNumber || 0,
+    };
+    const updatedRepositions = state.repositions.map(r =>
+      r.id === reposition.id ? { ...r, status: 'Agendada' as const } : r
+    );
+    onUpdate({ sessions: [...state.sessions, newSession], repositions: updatedRepositions });
+    showToast(`Reposição de ${patient.name} agendada para ${format(new Date(repoDate + 'T12:00:00'), 'dd/MM')} às ${repoTime}!`, 'success');
+    setRepoModal(null);
+  };
+
+  const weekDays = useMemo(() => {
+    const start = startOfWeek(currentDate, { weekStartsOn: 0 }); // Sunday
+    return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
+  }, [currentDate]);
+
+  // Filter to active clinic days: terça (2), quinta (4), sexta (5), sábado (6)
+  const activeDays = weekDays.filter(d => [2, 4, 5, 6].includes(d.getDay()));
+
+  const handlePrevWeek = () => setCurrentDate(subWeeks(currentDate, 1));
+  const handleNextWeek = () => setCurrentDate(addWeeks(currentDate, 1));
+
+  const openNewSession = (d: Date, t: string) => {
+    setSelectedSlot({ date: format(d, 'yyyy-MM-dd'), time: t });
+    setIsModalOpen(true);
+  };
+
+  const handleSaveSession = () => {
+    if (!patientId || !selectedSlot) return;
+
+    const patient = state.patients.find(p => p.id === patientId);
+    if (!patient) return;
+
+    const patientSessions = state.sessions.filter(s => s.patientId === patientId);
+      // Determine the current package number and how many sessions are already in it
+      const maxPackage = patientSessions.reduce((max, s) => {
+        const pn = s.packageNumber || 0;
+        return pn > max ? pn : max;
+      }, 0);
+      let nextPackageNumber = 1;
+      if (maxPackage === 0) {
+        nextPackageNumber = 1;
+      } else {
+        const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+        nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+      }
+
+    const newSession: Session = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId,
+      date: selectedSlot.date,
+      time: selectedSlot.time,
+      type: sessionType,
+      status: SessionStatus.AGENDADA,
+      notes,
+      packageNumber: nextPackageNumber
+    };
+
+    onUpdate({ sessions: [...state.sessions, newSession] });
+    showToast('Sessão agendada com sucesso!');
+    setIsModalOpen(false);
+    resetForm();
+  };
+
+  const markAsRealized = (session: Session) => {
+    const updatedSessions = state.sessions.map(s => 
+      s.id === session.id ? { ...s, status: SessionStatus.REALIZADA } : s
+    );
+    // Remove qualquer reposição pendente ligada a esta sessão (sincronismo)
+    const updatedRepositions = state.repositions.filter(r => !(r.originalSessionId === session.id && r.status === 'Pendente'));
+    
+    onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+    showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
+  };
+
+  const markAsMissed = (session: Session) => {
+    // Evita duplicar reposição se já existir uma pendente
+    if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
+      showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
+      return;
+    }
+
+    const updatedSessions = state.sessions.map(s => 
+      s.id === session.id ? { ...s, status: SessionStatus.FALTA } : s
+    );
+    
+    const newReposition: Reposition = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId: session.patientId,
+      originalSessionId: session.id,
+      status: 'Pendente'
+    };
+
+    onUpdate({ 
+      sessions: updatedSessions,
+      repositions: [...state.repositions, newReposition]
+    });
+    showToast(`Falta registrada. Reposição pendente criada.`);
+  };
+
+  const markAsMissedProf = (session: Session) => {
+    if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
+      showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
+      return;
+    }
+
+    const updatedSessions = state.sessions.map(s => 
+      s.id === session.id ? { ...s, status: SessionStatus.FALTA_PROF } : s
+    );
+    
+    const newReposition: Reposition = {
+      id: Math.random().toString(36).substr(2, 9),
+      patientId: session.patientId,
+      originalSessionId: session.id,
+      status: 'Pendente'
+    };
+
+    onUpdate({ 
+      sessions: updatedSessions,
+      repositions: [...state.repositions, newReposition]
+    });
+    showToast(`Sua falta registrada. Reposição pendente criada.`);
+  };
+
+  const deleteSession = (id: string) => {
+    setSessionToDelete(id);
+  };
+
+  const confirmDeleteSession = () => {
+    if (sessionToDelete) {
+      const updatedSessions = state.sessions.filter(s => s.id !== sessionToDelete);
+      const updatedRepositions = state.repositions.filter(r => r.originalSessionId !== sessionToDelete);
+      onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      showToast('Sessão removida com sucesso');
+      setSessionToDelete(null);
+    }
+  };
+
+  const resetForm = () => {
+    setPatientId('');
+    setSessionType(SessionType.SIMPLES);
+    setNotes('');
+    setSelectedSlot(null);
+  };
+
+  const getDayNameKey = (day: number): string => {
+    const keys: Record<number, string> = {
+      2: 'terça',
+      4: 'quinta',
+      5: 'sexta',
+      6: 'sábado'
+    };
+    return keys[day] || '';
+  };
+
+  const getDayNameLabel = (day: number) => {
+    const labels: Record<number, string> = {
+      2: 'TERÇA',
+      4: 'QUINTA',
+      5: 'SEXTA',
+      6: 'SÁBADO'
+    };
+    return labels[day] || '';
+  };
+
+  const [filterPatientId, setFilterPatientId] = useState<string>('');
+
+  return (
+    <div className="flex flex-col gap-6 py-6 pb-24">
+      <div className="flex flex-col md:flex-row justify-between items-center bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-clinic gap-4">
+        <div className="flex flex-col">
+          <h2 className="font-serif text-2xl font-bold text-clinic-text tracking-tight">Agenda Semanal</h2>
+          <div className="flex items-center gap-2 mt-1">
+            <Users size={12} className="text-clinic-text-faint" />
+            <select 
+              value={filterPatientId} 
+              onChange={(e) => setFilterPatientId(e.target.value)}
+              className="text-[10px] font-bold uppercase bg-transparent border-none outline-none text-clinic-primary cursor-pointer"
+            >
+              <option value="">Todos os Atendentes</option>
+              {state.patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={handlePrevWeek} className="p-2.5 hover:bg-clinic-bg text-clinic-text-muted rounded-xl border border-clinic-border transition-all active:scale-90 bg-white shadow-sm">
+            <ChevronLeft size={20} />
+          </button>
+          <span className="font-bold min-w-[150px] text-center text-clinic-text uppercase tracking-widest text-sm">
+            {format(weekDays[0], "dd/MM")} — {format(weekDays[6], "dd/MM")}
+          </span>
+          <button onClick={handleNextWeek} className="p-2.5 hover:bg-clinic-bg text-clinic-text-muted rounded-xl border border-clinic-border transition-all active:scale-90 bg-white shadow-sm">
+            <ChevronRight size={20} />
+          </button>
+        </div>
+      </div>
+
+      {/* Agenda Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+        {activeDays.map(day => {
+          const dayKey = getDayNameKey(day.getDay());
+          const scheduledTimes = SCHEDULE_CONFIG[dayKey] || [];
+          const dayStr = format(day, 'yyyy-MM-dd');
+          const holiday = state.settings.holidays?.find(h => h.date === dayStr);
+          const holidays = state.settings.holidays || [];
+
+          // All virtual sessions for this day (includes non-standard times)
+          const allVirtualForDay = !holiday
+            ? state.patients.flatMap(p => getVirtualSessions(p, dayStr, dayKey, holidays))
+            : [];
+
+          // Merge standard times with any custom fixedTime values not in the schedule
+          const extraTimes = allVirtualForDay
+            .map(vs => vs.time)
+            .filter(t => !scheduledTimes.includes(t));
+          const times = [...scheduledTimes, ...extraTimes]
+            .filter((v, i, a) => a.indexOf(v) === i)
+            .sort();
+          
+          return (
+            <div key={day.toISOString()} className={cn("rounded-xl border shadow-sm flex flex-col h-full overflow-hidden", holiday ? "bg-status-red-bg/5 border-status-red-text/20" : "bg-clinic-surface border-clinic-border")}>
+              <div className={cn("px-2 py-1.5 text-center border-b", holiday ? "bg-status-red-text text-white border-status-red-text/30" : "bg-clinic-header text-white border-clinic-border")}>
+                <span className="block text-[10px] font-black opacity-80 tracking-[0.2em] mb-0.5">{getDayNameLabel(day.getDay())}</span>
+                <span className="block text-xl font-bold">{format(day, 'dd/MM')}</span>
+                {holiday && <span className="block text-[9px] font-black uppercase mt-1 opacity-90 truncate px-1" title={holiday.name}>{holiday.name}</span>}
+              </div>
+              <div className="p-1.5 space-y-1.5 flex-1">
+                {times.map(time => {
+                  // Real session takes priority; fall back to virtual if patient is scheduled at this slot
+                  const realSession = state.sessions.find(s => s.date === dayStr && s.time === time);
+                  const virtualSession = !realSession
+                    ? allVirtualForDay.find(vs => vs.time === time) ?? null
+                    : null;
+                  const session = realSession ?? virtualSession;
+                  const isVirtual = !realSession && !!virtualSession;
+                  // Flag: real session booked on a holiday
+                  const isOnHoliday = !!realSession && !!holiday;
+                  // Filter logic
+                  if (filterPatientId && session && session.patientId !== filterPatientId) {
+                    return (
+                      <div key={time} className="p-2 rounded-lg border border-dashed border-clinic-border/20 min-h-[60px] opacity-20 transition-opacity">
+                        <span className="text-xs font-bold text-clinic-text-faint">{time}</span>
+                      </div>
+                    );
+                  }
+
+                  if (holiday && !session) {
+                    return (
+                      <div key={time} className="p-2 rounded-lg border border-dashed border-status-red-text/20 min-h-[60px] opacity-40 bg-status-red-bg/20 flex flex-col items-center justify-center">
+                        <span className="text-[10px] font-bold text-status-red-text line-through opacity-50">{time}</span>
+                        <span className="text-[8px] font-black uppercase text-status-red-text mt-1 opacity-70">Fechado</span>
+                      </div>
+                    );
+                  }
+
+                  const patient = session ? state.patients.find(p => p.id === session.patientId) : null;
+                  
+                  // Compute package number for display (only for real sessions)
+                  const displayPackage = realSession?.packageNumber ?? null;
+                  
+                  return (
+                    <div key={time} className="group relative">
+                      <div className={cn(
+                        "p-2 rounded-lg border min-h-[60px] transition-all flex flex-col justify-between",
+                        isOnHoliday
+                          ? 'bg-orange-500/10 border-orange-400 border-dashed'
+                          : session
+                          ? (isVirtual
+                             ? 'bg-clinic-primary/5 border-clinic-primary/30 border-dashed'
+                             : session.status === SessionStatus.FALTA ? 'bg-red-500/10 border-red-500/20 shadow-[inset_0_-2px_0_0_rgba(239,68,68,0.2)]'
+                             : session.status === SessionStatus.FALTA_PROF ? 'bg-orange-500/10 border-orange-500/20 shadow-[inset_0_-2px_0_0_rgba(249,115,22,0.2)]'
+                             : session.status === SessionStatus.REALIZADA ? 'bg-blue-500/10 border-blue-400 border-dashed shadow-[inset_0_-2px_0_0_rgba(59,130,246,0.2)]'
+                             : 'bg-clinic-bg/40 border-clinic-border border-dashed shadow-inner')
+                          : 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30 border-dashed cursor-pointer pointer-events-auto'
+                      )}
+                      onClick={() => !session && openNewSession(day, time)}
+                      >
+                        <div className="flex justify-between items-start">
+                          <span className="text-xs font-bold text-clinic-text">{time}</span>
+                          {session && (
+                            <div className="flex items-center gap-1">
+                              {isOnHoliday && (
+                                <span className="text-[7px] font-black px-1 py-0.5 rounded uppercase bg-orange-500/20 text-orange-600" title={`Feriado: ${holiday?.name}`}>
+                                  ⚠ Feriado
+                                </span>
+                              )}
+                              {isVirtual && (
+                                <span className="text-[7px] font-black px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary" title="Sessão Recorrente Automática">
+                                  Recorrente
+                                </span>
+                              )}
+                              {!isVirtual && (
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
+                                  className="text-[8px] text-status-red-text font-black uppercase tracking-tighter opacity-0 group-hover:opacity-100 transition-opacity mr-1"
+                                >
+                                  Remover
+                               </button>
+                              )}
+                             {session.type === SessionType.DUPLA && (
+                               <span className="bg-clinic-primary/10 text-clinic-primary text-[7px] font-black px-1 py-0.5 rounded uppercase">2x</span>
+                             )}
+                             {!isVirtual && (
+                               <span className={cn("text-[7px] font-black px-1 py-0.5 rounded uppercase", getStatusColor(session.status))}>
+                                 {session.status.charAt(0)}
+                               </span>
+                             )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {session ? (
+                          <div className="flex flex-col">
+                            <span className="font-bold text-sm truncate leading-tight text-clinic-text">{patient?.name}</span>
+                            {displayPackage ? (
+                              <span className="text-[10px] text-clinic-text-muted opacity-80 leading-none mt-0.5">S.{displayPackage}</span>
+                            ) : (
+                              <span className="text-[10px] text-clinic-primary/60 opacity-80 leading-none mt-0.5 italic">Fixo</span>
+                            )}
+                            
+                            {/* Quick Actions Overlay */}
+                            {(isVirtual || session.status === SessionStatus.AGENDADA) && (
+                              <div className="absolute inset-0 bg-clinic-header/95 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 px-1">
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); 
+                                    // If virtual, create a real session first then mark realized
+                                    if (isVirtual) {
+                                      const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
+      const maxPackage = patientSessions.reduce((max, s) => {
+        const pn = s.packageNumber || 0;
+        return pn > max ? pn : max;
+      }, 0);
+      let nextPackageNumber = 1;
+      if (maxPackage === 0) {
+        nextPackageNumber = 1;
+      } else {
+        const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+        nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+      }
+                                      const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.REALIZADA, packageNumber: nextPackageNumber };
+                                      onUpdate({ sessions: [...state.sessions, newReal] });
+                                      showToast(`${patient?.name} - Presença registrada.`);
+                                    } else {
+                                      markAsRealized(session);
+                                    }
+                                  }}
+                                  className="bg-status-green-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                >
+                                  OK
+                                </button>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation();
+                                    if (isVirtual) {
+                                      const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
+      const maxPackage = patientSessions.reduce((max, s) => {
+        const pn = s.packageNumber || 0;
+        return pn > max ? pn : max;
+      }, 0);
+      let nextPackageNumber = 1;
+      if (maxPackage === 0) {
+        nextPackageNumber = 1;
+      } else {
+        const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+        nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+      }
+                                      const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.FALTA, packageNumber: nextPackageNumber };
+                                      const newRepo: Reposition = { id: Math.random().toString(36).substr(2, 9), patientId: session.patientId, originalSessionId: newReal.id, status: 'Pendente' };
+                                      onUpdate({ sessions: [...state.sessions, newReal], repositions: [...state.repositions, newRepo] });
+                                      showToast(`Falta registrada. Reposição pendente criada.`);
+                                    } else {
+                                      markAsMissed(session);
+                                    }
+                                  }}
+                                  className="bg-status-red-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                  title="Falta do Atendente"
+                                >
+                                  F
+                                </button>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation();
+                                    if (isVirtual) {
+                                      const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
+      const maxPackage = patientSessions.reduce((max, s) => {
+        const pn = s.packageNumber || 0;
+        return pn > max ? pn : max;
+      }, 0);
+      let nextPackageNumber = 1;
+      if (maxPackage === 0) {
+        nextPackageNumber = 1;
+      } else {
+        const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+        nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+      }
+                                      const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.FALTA_PROF, packageNumber: nextPackageNumber };
+                                      const newRepo: Reposition = { id: Math.random().toString(36).substr(2, 9), patientId: session.patientId, originalSessionId: newReal.id, status: 'Pendente' };
+                                      onUpdate({ sessions: [...state.sessions, newReal], repositions: [...state.repositions, newRepo] });
+                                      showToast(`Sua falta registrada. Reposição pendente criada.`);
+                                    } else {
+                                      markAsMissedProf(session);
+                                    }
+                                  }}
+                                  className="bg-status-orange-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                  title="Minha Falta"
+                                >
+                                  FP
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[9px] italic text-clinic-text-muted opacity-30 group-hover:opacity-80 transition-opacity">Disponível</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                  })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Faltas e Reposições Pendentes Section */}
+      <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">
+        <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/30">
+          <AlertCircle size={20} className="text-status-red-text" />
+          <h3 className="font-serif text-xl font-bold">Faltas e Reposições Pendentes</h3>
+        </div>
+        <div className="p-6">
+          {state.repositions.filter(r => r.status === 'Pendente').length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {state.repositions.filter(r => r.status === 'Pendente').map(reposition => {
+                const patient = state.patients.find(p => p.id === reposition.patientId);
+                const originalSession = state.sessions.find(s => s.id === reposition.originalSessionId);
+                return (
+                  <div key={reposition.id} className="p-4 rounded-xl border border-clinic-border flex flex-col gap-3 justify-between">
+                    <div>
+                      <h4 className="font-bold text-clinic-text">{patient?.name}</h4>
+                      <p className="text-xs text-clinic-text-muted">Faltou em {originalSession ? safeFormatDate(originalSession.date, 'dd/MM') : '--'}</p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        const reposition = state.repositions.find(r => r.patientId === patient?.id && r.status === 'Pendente');
+                        if (reposition) {
+                          openRepoModal(reposition);
+                        } else {
+                          setPatientId(patient?.id || '');
+                          setSessionType(SessionType.SIMPLES);
+                          setIsModalOpen(true);
+                        }
+                      }}
+                      className="w-full py-2 bg-clinic-primary/10 text-clinic-primary text-xs font-bold rounded-lg hover:bg-clinic-primary hover:text-white transition-all uppercase tracking-wide"
+                    >
+                      Agendar Reposição
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-clinic-text-muted text-center py-6 italic">Não há faltas pendentes de reposição.</p>
+          )}
+        </div>
+      </div>
+
+      {/* Modal Nova Sessão */}
+      <Modal 
+        isOpen={isModalOpen} 
+        onClose={() => setIsModalOpen(false)} 
+        title={selectedSlot ? `Agendar: ${safeFormatDate(selectedSlot.date, 'dd/MM')} — ${selectedSlot.time}` : 'Agendar Sessão'}
+      >
+        <div className="space-y-4">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-bold text-clinic-text-faint uppercase">Atendente</label>
+            <select 
+              value={patientId}
+              onChange={(e) => setPatientId(e.target.value)}
+              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
+            >
+              <option value="">Selecione um atendente...</option>
+              {state.patients.filter(p => p.status === 'Ativo').sort((a, b) => a.name.localeCompare(b.name)).map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-bold text-clinic-text-faint uppercase">Tipo de Sessão</label>
+            <select 
+              value={sessionType}
+              onChange={(e) => setSessionType(e.target.value as SessionType)}
+              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
+            >
+              <option value={SessionType.SIMPLES}>{SessionType.SIMPLES}</option>
+              <option value={SessionType.DUPLA}>{SessionType.DUPLA}</option>
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-bold text-clinic-text-faint uppercase">Observações</label>
+            <textarea 
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Digite alguma anotação técnica opcional..."
+              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all min-h-[100px]"
+            />
+          </div>
+
+          <button 
+            onClick={handleSaveSession}
+            disabled={!patientId}
+            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-lg hover:bg-clinic-primary-hover transition-all uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Confirmar Agendamento
+          </button>
+        </div>
+      </Modal>
+
+      {/* Modal Confirmar Exclusão de Sessão */}
+      <Modal
+        isOpen={!!sessionToDelete}
+        onClose={() => setSessionToDelete(null)}
+        title="Confirmar Exclusão"
+        width="max-w-md"
+      >
+        <div className="space-y-6">
+          <p className="text-clinic-text">
+            Tem certeza que deseja excluir esta sessão? Isso pode afetar o progresso do pacote deste atendente.
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => setSessionToDelete(null)}
+              className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={confirmDeleteSession}
+              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
+            >
+              Excluir Sessão
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal Agendar Reposição */}
+      {repoModal && (
+        <Modal
+          isOpen={true}
+          onClose={() => setRepoModal(null)}
+          title="Agendar Reposição"
+          width="max-w-md"
+        >
+          <div className="space-y-5">
+            <div className="p-3 bg-status-orange-bg rounded-xl border border-status-orange-text/20">
+              <p className="text-xs font-bold text-status-orange-text uppercase tracking-wide">Reposição para:</p>
+              <p className="text-sm font-bold text-clinic-text mt-0.5">{repoModal.patient.name}</p>
+              {repoModal.originalSession && (
+                <p className="text-xs text-clinic-text-muted mt-0.5">
+                  Falta em {format(new Date(repoModal.originalSession.date + 'T12:00:00'), 'dd/MM/yyyy')} às {repoModal.originalSession.time}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Data da Reposição</label>
+                <input
+                  type="date"
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-xl p-3 text-sm focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
+                  value={repoDate}
+                  min={format(new Date(), 'yyyy-MM-dd')}
+                  onChange={e => {
+                    setRepoDate(e.target.value);
+                    setRepoTime('');
+                  }}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">
+                  Horário
+                  {repoAvailableTimes.length === 0 && <span className="text-status-red-text ml-2 normal-case font-normal">(dia sem horários disponíveis)</span>}
+                </label>
+                <select
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-xl p-3 text-sm focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
+                  value={repoTime}
+                  onChange={e => setRepoTime(e.target.value)}
+                >
+                  <option value="">Selecione o horário...</option>
+                  {repoAvailableTimes.map(t => <option key={t} value={t}>{t}</option>)}
+                  {repoAvailableTimes.length === 0 && AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setRepoModal(null)}
+                className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmReposition}
+                disabled={!repoDate || !repoTime}
+                className="px-4 py-2 bg-clinic-primary text-white font-bold rounded-lg shadow hover:bg-clinic-primary-hover transition-all uppercase tracking-wide text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Confirmar Reposição
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+    </div>
+  );
+}

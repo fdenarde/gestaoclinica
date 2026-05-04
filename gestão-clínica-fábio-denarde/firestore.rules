@@ -1,0 +1,38 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // 1. Users Subcollections (Isolated Data Architecture)
+    match /users/{userId} {
+      match /settings/{settingId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /patients/{patientId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /sessions/{sessionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /payments/{paymentId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /repositions/{repositionId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+  }
+}
