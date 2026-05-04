@@ -616,10 +616,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     setNewEvoNotes('');
     showToast('Evolução salva com sucesso!');
   };
-  const realizedCount = patientSessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
-  const realizedInPackage = realizedCount % 10 || (realizedCount > 0 ? 10 : 0);
-  
-  const realizedSessionsChronological = patientSessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).slice().reverse();
+  // Realized sessions sorted chronologically (ascending)
+  const realizedSessionsChronological = patientSessions
+    .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  const realizedCount = realizedSessionsChronological.length;
+  const realizedInPackage = realizedCount === 0 ? 0 : (realizedCount % 10 === 0 ? 10 : realizedCount % 10);
+
   const isLate = patient.paymentModal === PaymentModal.PARCELADO && realizedCount >= 6 && !patientPayments.some(p => p.installment === '2ª parcela');
   let daysLate = 0;
   if (isLate && realizedSessionsChronological[5]) {
@@ -817,60 +821,43 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   };
 
   // --- Histórico de Pacotes ---
-  // Group ALL sessions by packageNumber, in chronological order
-  const allSessionsChronological = patientSessions.slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  const allSessionsMap: Record<number, typeof patientSessions> = {};
-  allSessionsChronological.forEach((s, i) => {
-    const pkgNum = s.packageNumber && s.packageNumber > 0 ? s.packageNumber : Math.floor(i / 10) + 1;
-    if (!allSessionsMap[pkgNum]) allSessionsMap[pkgNum] = [];
-    allSessionsMap[pkgNum].push(s);
-  });
-
-  // Also group realized sessions by packageNumber
-  const realizedAll = patientSessions
+  // Generate package history based on realized sessions only, grouping every 10 sessions chronologically
+  const realizedSessionsChronological = patientSessions
     .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
-    .slice()
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-  const realizedSessionsMap: Record<number, typeof realizedAll> = {};
-  realizedAll.forEach((s, i) => {
-    const pkgNum = s.packageNumber && s.packageNumber > 0 ? s.packageNumber : Math.floor(i / 10) + 1;
-    if (!realizedSessionsMap[pkgNum]) realizedSessionsMap[pkgNum] = [];
-    realizedSessionsMap[pkgNum].push(s);
-  });
-
-  // The current package is the one with the highest package number
-  const packageNumbers = Object.keys(allSessionsMap).map(Number);
-  const maxPackageNumber = packageNumbers.length > 0 ? Math.max(...packageNumbers) : 0;
-
-  const packageHistory = Object.entries(allSessionsMap)
-    .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([num, allSessionsInPkg]) => {
-      const pkgNum = Number(num);
-      const realizedSessions = realizedSessionsMap[pkgNum] || [];
-      // Sort realized sessions chronologically
-      const sortedRealized = realizedSessions.slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-      // Calculate start and end dates based on realized sessions only
-      const startDate = sortedRealized[0]?.date ?? '';
-      const endDate = sortedRealized.length >= 10
-        ? sortedRealized[9]?.date ?? ''
-        : sortedRealized[sortedRealized.length - 1]?.date ?? '';
-
-      return {
-        number: pkgNum,
-        sessions: realizedSessions,
-        startDate,
-        endDate,
-        count: realizedSessions.length,
-        completed: realizedSessions.length >= 10,
-        isCurrent: pkgNum === maxPackageNumber && realizedSessions.length < 10
+  // Group realized sessions into packages of up to 10 sessions
+  let packageHistory = realizedSessionsChronological.reduce((acc, session, index) => {
+    const pkgIndex = Math.floor(index / 10); // 0-based package index
+    if (!acc[pkgIndex]) {
+      acc[pkgIndex] = {
+        number: pkgIndex + 1,
+        sessions: [],
+        startDate: session.date,
+        endDate: session.date,
+        count: 0,
+        completed: false,
+        isCurrent: false,
       };
-    });
+    }
+    const pkg = acc[pkgIndex];
+    pkg.sessions.push(session);
+    pkg.count = pkg.sessions.length;
+    pkg.endDate = session.date; // update to latest session date in the package
+    // Mark completed if exactly 10 sessions
+    pkg.completed = pkg.count === 10;
+    return acc;
+  }, [] as any);
 
-  // Determine current package number for in-progress display
-  const currentPkgNumber = maxPackageNumber;
+  // Remove any empty packages (should not occur) and set isCurrent for the last incomplete package
+  packageHistory = packageHistory.filter(pkg => pkg.count > 0);
+  const lastPkg = packageHistory[packageHistory.length - 1];
+  if (lastPkg && !lastPkg.completed) {
+    lastPkg.isCurrent = true;
+  }
+
+  // Determine current package number for in-progress display (number of full packages + 1 if current exists)
+  const currentPkgNumber = packageHistory.length > 0 ? packageHistory[packageHistory.length - 1].number : 0;
   const currentPkgProgress = realizedInPackage;
 
   const confirmSessionMessage = `Olá ${patient.guardianName}! Confirmando a sessão de ${patient.name} em ${format(new Date(), 'dd/MM')} às ${patient.fixedTime}. Qualquer dúvida estou à disposição. Fábio Denarde.`;
