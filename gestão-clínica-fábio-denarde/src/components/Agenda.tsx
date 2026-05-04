@@ -374,6 +374,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                              ? 'bg-clinic-primary/5 border-clinic-primary/30 border-dashed'
                              : session.status === SessionStatus.FALTA ? 'bg-red-500/10 border-red-500/20 shadow-[inset_0_-2px_0_0_rgba(239,68,68,0.2)]'
                              : session.status === SessionStatus.FALTA_PROF ? 'bg-orange-500/10 border-orange-500/20 shadow-[inset_0_-2px_0_0_rgba(249,115,22,0.2)]'
+                             : session.status === SessionStatus.CANCELADA ? 'bg-rose-900/20 border-rose-900/30 shadow-[inset_0_-2px_0_0_rgba(159,18,57,0.2)]'
                              : session.status === SessionStatus.REALIZADA ? 'bg-blue-500/10 border-blue-400 border-dashed shadow-[inset_0_-2px_0_0_rgba(59,130,246,0.2)]'
                              : 'bg-clinic-bg/40 border-clinic-border border-dashed shadow-inner')
                           : 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30 border-dashed cursor-pointer pointer-events-auto'
@@ -508,6 +509,35 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                   title="Minha Falta"
                                 >
                                   FP
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation();
+                                    if (isVirtual) {
+                                      const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
+      const maxPackage = patientSessions.reduce((max, s) => {
+        const pn = s.packageNumber || 0;
+        return pn > max ? pn : max;
+      }, 0);
+      let nextPackageNumber = 1;
+      if (maxPackage === 0) {
+        nextPackageNumber = 1;
+      } else {
+        const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+        nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+      }
+                                      const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.CANCELADA, packageNumber: nextPackageNumber };
+                                      onUpdate({ sessions: [...state.sessions, newReal] });
+                                      showToast('Sessão cancelada.');
+                                    } else {
+                                      const updatedSessions = state.sessions.map(s => s.id === session.id ? { ...s, status: SessionStatus.CANCELADA } : s);
+                                      onUpdate({ sessions: updatedSessions });
+                                      showToast('Sessão cancelada.');
+                                    }
+                                  }}
+                                  className="bg-rose-700 text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                  title="Cancelar"
+                                >
+                                  C
                                 </button>
                               </div>
                             )}
