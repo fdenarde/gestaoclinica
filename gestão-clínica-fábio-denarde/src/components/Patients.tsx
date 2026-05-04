@@ -817,42 +817,60 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   };
 
   // --- Histórico de Pacotes ---
-  // Group ALL sessions (realized + reposition) by packageNumber, in chronological order
+  // Group ALL sessions by packageNumber, in chronological order
+  const allSessionsChronological = patientSessions.slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  const allSessionsMap: Record<number, typeof patientSessions> = {};
+  allSessionsChronological.forEach((s, i) => {
+    const pkgNum = s.packageNumber && s.packageNumber > 0 ? s.packageNumber : Math.floor(i / 10) + 1;
+    if (!allSessionsMap[pkgNum]) allSessionsMap[pkgNum] = [];
+    allSessionsMap[pkgNum].push(s);
+  });
+
+  // Also group realized sessions by packageNumber
   const realizedAll = patientSessions
     .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
     .slice()
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-  // Also group by packageNumber field when available; fall back to sequential chunks of 10
-  const packageMap: Record<number, typeof realizedAll> = {};
+  const realizedSessionsMap: Record<number, typeof realizedAll> = {};
   realizedAll.forEach((s, i) => {
     const pkgNum = s.packageNumber && s.packageNumber > 0 ? s.packageNumber : Math.floor(i / 10) + 1;
-    if (!packageMap[pkgNum]) packageMap[pkgNum] = [];
-    packageMap[pkgNum].push(s);
+    if (!realizedSessionsMap[pkgNum]) realizedSessionsMap[pkgNum] = [];
+    realizedSessionsMap[pkgNum].push(s);
   });
 
-  // Current in-progress sessions (AGENDADA or FALTA/FALTA_PROF not yet realized)
-  const inProgressSessions = patientSessions.filter(
-    s => s.status === SessionStatus.AGENDADA || s.status === SessionStatus.FALTA || s.status === SessionStatus.FALTA_PROF
-  );
+  // The current package is the one with the highest package number
+  const packageNumbers = Object.keys(allSessionsMap).map(Number);
+  const maxPackageNumber = packageNumbers.length > 0 ? Math.max(...packageNumbers) : 0;
 
-  const packageHistory = Object.entries(packageMap)
+  const packageHistory = Object.entries(allSessionsMap)
     .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([num, sessions]) => ({
-      number: Number(num),
-      sessions,
-      startDate: sessions[0]?.date ?? '',
-      endDate: sessions[sessions.length - 1]?.date ?? '',
-      count: sessions.length,
-      completed: sessions.length >= 10,
-    }));
+    .map(([num, allSessionsInPkg]) => {
+      const pkgNum = Number(num);
+      const realizedSessions = realizedSessionsMap[pkgNum] || [];
+      // Sort realized sessions chronologically
+      const sortedRealized = realizedSessions.slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      // Calculate start and end dates based on realized sessions only
+      const startDate = sortedRealized[0]?.date ?? '';
+      const endDate = sortedRealized.length >= 10
+        ? sortedRealized[9]?.date ?? ''
+        : sortedRealized[sortedRealized.length - 1]?.date ?? '';
+
+      return {
+        number: pkgNum,
+        sessions: realizedSessions,
+        startDate,
+        endDate,
+        count: realizedSessions.length,
+        completed: realizedSessions.length >= 10,
+        isCurrent: pkgNum === maxPackageNumber && realizedSessions.length < 10
+      };
+    });
 
   // Determine current package number for in-progress display
-  const currentPkgNumber = packageHistory.length > 0
-    ? (packageHistory[packageHistory.length - 1].completed
-      ? packageHistory[packageHistory.length - 1].number + 1
-      : packageHistory[packageHistory.length - 1].number)
-    : 1;
+  const currentPkgNumber = maxPackageNumber;
   const currentPkgProgress = realizedInPackage;
 
   const confirmSessionMessage = `Olá ${patient.guardianName}! Confirmando a sessão de ${patient.name} em ${format(new Date(), 'dd/MM')} às ${patient.fixedTime}. Qualquer dúvida estou à disposição. Fábio Denarde.`;
@@ -1292,7 +1310,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {packageHistory.length > 0 ? (
                     packageHistory.map(pkg => {
-                      const isCurrent = pkg.number === currentPkgNumber || !pkg.completed;
+                      const isCurrent = pkg.number === currentPkgNumber && !pkg.completed;
                       return (
                         <div
                           key={pkg.number}
