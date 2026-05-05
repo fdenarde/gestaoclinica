@@ -573,7 +573,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                       <h4 className="font-bold text-clinic-text">{patient?.name}</h4>
                       <p className="text-xs text-clinic-text-muted">Faltou em {originalSession ? safeFormatDate(originalSession.date, 'dd/MM') : '--'}</p>
                     </div>
-                    <button 
+                    <button
                       onClick={() => {
                         const reposition = state.repositions.find(r => r.patientId === patient?.id && r.status === 'Pendente');
                         if (reposition) {
@@ -587,6 +587,36 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                       className="w-full py-2 bg-clinic-primary/10 text-clinic-primary text-xs font-bold rounded-lg hover:bg-clinic-primary hover:text-white transition-all uppercase tracking-wide"
                     >
                       Agendar Reposição
+                    </button>
+                    <button
+                      onClick={() => {
+                        const reposition = state.repositions.find(r => r.patientId === patient?.id && r.status === 'Pendente');
+                        if (reposition) {
+                          const updatedRepositions = state.repositions.map(r =>
+                            r.id === reposition.id ? { ...r, status: 'Concluída' as const, contactDate: format(new Date(), 'yyyy-MM-dd'), result: 'aceitou' } : r
+                          );
+                          onUpdate({ repositions: updatedRepositions });
+                          showToast('Reposição marcada como aceita.');
+                        }
+                      }}
+                      className="w-full mt-1 py-2 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 transition-all uppercase tracking-wide"
+                    >
+                      Responsável Aceitou
+                    </button>
+                    <button
+                      onClick={() => {
+                        const reposition = state.repositions.find(r => r.patientId === patient?.id && r.status === 'Pendente');
+                        if (reposition) {
+                          const updatedRepositions = state.repositions.map(r =>
+                            r.id === reposition.id ? { ...r, status: 'Concluída' as const, contactDate: format(new Date(), 'yyyy-MM-dd'), result: 'recusou' } : r
+                          );
+                          onUpdate({ repositions: updatedRepositions });
+                          showToast('Reposição marcada como recusada.');
+                        }
+                      }}
+                      className="w-full mt-1 py-2 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 transition-all uppercase tracking-wide"
+                    >
+                      Responsável Recusou
                     </button>
                   </div>
                 );
