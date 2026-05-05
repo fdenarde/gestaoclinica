@@ -820,12 +820,6 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     setRepositionModalSession(null);
   };
 
-  // --- Histórico de Pacotes ---
-  // Generate package history based on realized sessions only, grouping every 10 sessions chronologically
-  const realizedSessionsChronological = patientSessions
-    .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
   // Group realized sessions into packages of up to 10 sessions
   let packageHistory = realizedSessionsChronological.reduce((acc, session, index) => {
     const pkgIndex = Math.floor(index / 10); // 0-based package index
