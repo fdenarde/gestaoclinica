@@ -1,4 +1,5 @@
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import fs from 'fs';
 import path from 'path';
 
@@ -15,98 +16,88 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-const db = admin.firestore();
+// Usando o mesmo banco de dados do server.js
+const db = getFirestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
 
 async function simularMensagens() {
     console.log("=========================================");
-    console.log("   MODO DE TESTE (Nenhuma mensagem será enviada)");
+    console.log("   RELATÓRIO DE SINCRONIZAÇÃO DO ROBÔ");
+    console.log("   Sexta-feira e Sábado (Fim de Semana)");
     console.log("=========================================\n");
 
     try {
-        const usersSnapshot = await db.collection('users').get();
-        
-        for (const userDoc of usersSnapshot.docs) {
-            const userId = userDoc.id;
+        // Buscar pacientes globalmente para o mapeamento
+        const patientsSnapshot = await db.collectionGroup('patients').get();
+        const patientsMap = {};
+        patientsSnapshot.forEach(p => patientsMap[p.id] = p.data());
+
+        // Buscar configurações globalmente para verificar feriados
+        const settingsSnapshot = await db.collectionGroup('settings').get();
+        const holidaysMap = {};
+        settingsSnapshot.forEach(s => {
+            const data = s.data();
+            const userId = s.ref.parent.parent.id;
+            holidaysMap[userId] = data.holidays || [];
+        });
+
+        // Datas de interesse
+        const dias = [
+            { label: 'SEXTA-FEIRA', date: '2026-05-08' },
+            { label: 'SÁBADO', date: '2026-05-09' }
+        ];
+
+        for (const dia of dias) {
+            console.log(`\n📅 VERIFICANDO: ${dia.label} (${dia.date})`);
             
-            const today = new Date();
-            const tomorrow = new Date(today);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            
-            const todayStr = today.toISOString().split('T')[0];
-            const tomorrowStr = tomorrow.toISOString().split('T')[0];
-
-            // Buscar configurações para verificar feriados
-            const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
-            const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
-            const holidays = settings.holidays || [];
-
-            // Buscar pacientes
-            const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
-            const patientsMap = {};
-            patientsSnapshot.forEach(p => patientsMap[p.id] = p.data());
-
-            // Buscar sessões de hoje
-            const sessionsToday = await db.collection(`users/${userId}/sessions`)
-                .where('date', '==', todayStr)
+            const sessionsSnapshot = await db.collectionGroup('sessions')
+                .where('date', '==', dia.date)
                 .where('status', '==', 'Agendada')
                 .get();
 
-            // Buscar sessões de amanhã
-            const sessionsTomorrow = await db.collection(`users/${userId}/sessions`)
-                .where('date', '==', tomorrowStr)
-                .where('status', '==', 'Agendada')
-                .get();
+            if (sessionsSnapshot.empty) {
+                console.log("   (Nenhuma sessão agendada)");
+                continue;
+            }
 
-            console.log(`📅 LENDO AGENDAMENTOS DE HOJE (${todayStr}):`);
-            const todayHoliday = holidays.find(h => h.date === todayStr);
-            if (todayHoliday) {
-                console.log(`  [BLOQUEADO] Hoje é feriado/recesso: ${todayHoliday.name}. Nenhuma mensagem será enviada.`);
-            } else if (sessionsToday.empty) {
-                console.log("   (Nenhuma sessão agendada para hoje)");
-            } else {
-                sessionsToday.forEach(doc => {
+            sessionsSnapshot.forEach(doc => {
                 const s = doc.data();
+                const userId = doc.ref.parent.parent.id;
                 const patient = patientsMap[s.patientId];
-                if (!patient) return;
                 
+                if (!patient) return;
+
                 const [hour] = s.time.split(':').map(Number);
-                const turno = hour < 12 ? 'Manhã (Alarme 06:30)' : 'Tarde (Alarme 12:30)';
-                const saudacao = hour < 12 ? 'Bom dia' : 'Boa tarde';
-                const msg = `${saudacao}! Aguardo vocês hoje às ${s.time}!\nAté logo! 🙏`;
-                
-                console.log(`\n  Turno: ${turno}`);
-                console.log(`  Para: ${patient.guardianName} (Responsável por ${patient.name})`);
-                console.log(`  Mensagem que será gerada:\n   "${msg.replace(/\n/g, ' ')}"`);
-            });
-            }
+                const holidays = holidaysMap[userId] || [];
+                const isHoliday = holidays.find(h => h.date === dia.date);
 
-            console.log(`\n📅 LENDO AGENDAMENTOS DE AMANHÃ (${tomorrowStr}):`);
-            const tomorrowHoliday = holidays.find(h => h.date === tomorrowStr);
-            if (tomorrowHoliday) {
-                console.log(`  [BLOQUEADO] Amanhã é feriado/recesso: ${tomorrowHoliday.name}. Nenhuma mensagem será enviada aos pacientes.`);
-                if (settings.whatsapp) {
-                    console.log(`  [AVISO] Uma mensagem de aviso de feriado será enviada para o administrador (${settings.whatsapp}).`);
+                if (isHoliday) {
+                    console.log(`\n   [BLOQUEADO] Feriado detectado: ${isHoliday.name}`);
+                    console.log(`   Paciente: ${patient.name}`);
+                    return;
                 }
-            } else if (sessionsTomorrow.empty) {
-                console.log("   (Nenhuma sessão agendada para amanhã)");
-            } else {
-                sessionsTomorrow.forEach(doc => {
-                const s = doc.data();
-                const patient = patientsMap[s.patientId];
-                if (!patient) return;
+
+                console.log(`\n   ✅ PACIENTE: ${patient.name}`);
+                console.log(`      Responsável: ${patient.guardianName}`);
+                console.log(`      Horário da Sessão: ${s.time}`);
                 
-                const saudacao = new Date().getHours() < 12 ? 'Bom dia' : 'Boa tarde';
-                const msg = `${saudacao}! Olá, ${patient.guardianName}, tudo bem?\nPassando para lembrá-la do atendimento do(a) ${patient.name} amanhã, às ${s.time}.\n\nAguardo sua confirmação,\nAté logo!`;
+                // Programação do Robô
+                console.log(`      --- Programação de Mensagens ---`);
                 
-                console.log(`\n  Alarme: 09:00 de hoje`);
-                console.log(`  Para: ${patient.guardianName} (Responsável por ${patient.name})`);
-                console.log(`  Mensagem que será gerada:\n   "${msg.replace(/\n/g, ' ')}"`);
+                // Regra de Amanhã (Alarme das 09:00 do dia anterior)
+                const diaLembreteVespera = new Date(dia.date);
+                diaLembreteVespera.setDate(diaLembreteVespera.getDate() - 1);
+                const diaVesperaStr = diaLembreteVespera.toISOString().split('T')[0];
+                console.log(`      1. Lembrete de Véspera: ${diaVesperaStr} às 09:00`);
+                
+                // Regra de Hoje (Alarme das 06:30 ou 12:30)
+                const alarmeHoje = hour < 12 ? '06:30' : '12:30';
+                console.log(`      2. Confirmação de Hoje: ${dia.date} às ${alarmeHoje}`);
             });
-            }
-            console.log("\n=========================================");
         }
+
+        console.log("\n=========================================");
     } catch (error) {
-        console.error("Erro no teste:", error);
+        console.error("Erro ao gerar relatório:", error);
     }
 }
 
