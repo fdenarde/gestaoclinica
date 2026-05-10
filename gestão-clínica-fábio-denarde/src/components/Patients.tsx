@@ -613,6 +613,21 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   const patientPayments = state.payments.filter(p => p.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const patientEvolutions = (state.evolutions || []).filter(e => e.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+  const getInferredPackageNumber = (paymentDate: string) => {
+    if (patientSessions.length === 0) return 1;
+    const targetTime = new Date(paymentDate).getTime();
+    let closestPackage = 1;
+    let minDiff = Infinity;
+    patientSessions.forEach(s => {
+       const diff = Math.abs(new Date(s.date).getTime() - targetTime);
+       if (diff < minDiff) {
+          minDiff = diff;
+          closestPackage = s.packageNumber || 1;
+       }
+    });
+    return closestPackage;
+  };
+
   const handleSaveEvolution = () => {
     if (!newEvoNotes.trim()) return;
     const newEvolution: Evolution = {
@@ -1430,7 +1445,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                    {patientPayments.length > 0 ? (
                      Object.entries(
                        patientPayments.reduce((acc, p) => {
-                         const pkg = p.packageNumber || 1;
+                         const pkg = p.packageNumber || getInferredPackageNumber(p.date);
                          if (!acc[pkg]) acc[pkg] = [];
                          acc[pkg].push(p);
                          return acc;
