@@ -16,22 +16,24 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-// Usando o mesmo banco de dados do server.js
 const db = getFirestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
 
-async function simularMensagens() {
+async function gerarRelatorioSemanal() {
     console.log("=========================================");
-    console.log("   RELATÓRIO DE SINCRONIZAÇÃO DO ROBÔ");
-    console.log("   Sexta-feira e Sábado (Fim de Semana)");
+    console.log("   RELATÓRIO SEMANAL (SINCRONIZADO)");
+    console.log("   Sessões Reais + Horários Fixos");
     console.log("=========================================\n");
 
     try {
-        // Buscar pacientes globalmente para o mapeamento
         const patientsSnapshot = await db.collectionGroup('patients').get();
+        const patients = [];
         const patientsMap = {};
-        patientsSnapshot.forEach(p => patientsMap[p.id] = p.data());
+        patientsSnapshot.forEach(p => {
+            const data = { id: p.id, ...p.data() };
+            patients.push(data);
+            patientsMap[p.id] = data;
+        });
 
-        // Buscar configurações globalmente para verificar feriados
         const settingsSnapshot = await db.collectionGroup('settings').get();
         const holidaysMap = {};
         settingsSnapshot.forEach(s => {
@@ -40,65 +42,85 @@ async function simularMensagens() {
             holidaysMap[userId] = data.holidays || [];
         });
 
-        // Datas de interesse
-        const dias = [
-            { label: 'SEXTA-FEIRA', date: '2026-05-08' },
-            { label: 'SÁBADO', date: '2026-05-09' }
-        ];
+        const hoje = new Date();
+        const dias = [];
+        for (let i = 0; i < 7; i++) {
+            const d = new Date(hoje);
+            d.setDate(hoje.getDate() + i);
+            const dateStr = d.toISOString().split('T')[0];
+            const dayNames = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+            dias.push({ 
+                label: dayNames[d.getDay()].toUpperCase(), 
+                date: dateStr,
+                dayKey: dayNames[d.getDay()],
+                dayIndex: d.getDay()
+            });
+        }
 
-        for (const dia of dias) {
-            console.log(`\n📅 VERIFICANDO: ${dia.label} (${dia.date})`);
+        const diasUteis = dias.filter(d => [2, 4, 5, 6].includes(d.dayIndex));
+
+        for (const dia of diasUteis) {
+            console.log(`\n📅 ${dia.label} (${dia.date})`);
             
+            // 1. Sessões Reais
             const sessionsSnapshot = await db.collectionGroup('sessions')
                 .where('date', '==', dia.date)
                 .where('status', '==', 'Agendada')
                 .get();
 
-            if (sessionsSnapshot.empty) {
-                console.log("   (Nenhuma sessão agendada)");
+            const sessionsReais = sessionsSnapshot.docs.map(doc => doc.data());
+            
+            // 2. Sessões Virtuais (Horários Fixos)
+            const sessionsVirtuais = [];
+            patients.forEach(p => {
+                if (p.status !== 'Ativo') return;
+                const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const targetDayNorm = dia.dayKey.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+                if (fixedDayNorm === targetDayNorm && p.fixedTime) {
+                    const jaTemSessaoReal = sessionsReais.some(s => s.patientId === p.id);
+                    if (!jaTemSessaoReal) {
+                        sessionsVirtuais.push({
+                            patientId: p.id,
+                            time: p.fixedTime,
+                            isVirtual: true
+                        });
+                    }
+                }
+            });
+
+            const todas = [...sessionsReais, ...sessionsVirtuais];
+
+            if (todas.length === 0) {
+                console.log("   (Sem agendamentos)");
                 continue;
             }
 
-            sessionsSnapshot.forEach(doc => {
-                const s = doc.data();
-                const userId = doc.ref.parent.parent.id;
+            todas.sort((a, b) => a.time.localeCompare(b.time));
+
+            todas.forEach(s => {
                 const patient = patientsMap[s.patientId];
-                
                 if (!patient) return;
 
-                const [hour] = s.time.split(':').map(Number);
-                const holidays = holidaysMap[userId] || [];
-                const isHoliday = holidays.find(h => h.date === dia.date);
-
+                const isHoliday = (holidaysMap[patient.userId] || []).find(h => h.date === dia.date);
                 if (isHoliday) {
-                    console.log(`\n   [BLOQUEADO] Feriado detectado: ${isHoliday.name}`);
-                    console.log(`   Paciente: ${patient.name}`);
+                    console.log(`   🚫 [FERIADO] - ${patient.name} (${s.time})`);
                     return;
                 }
 
-                console.log(`\n   ✅ PACIENTE: ${patient.name}`);
-                console.log(`      Responsável: ${patient.guardianName}`);
-                console.log(`      Horário da Sessão: ${s.time}`);
-                
-                // Programação do Robô
-                console.log(`      --- Programação de Mensagens ---`);
-                
-                // Regra de Amanhã (Alarme das 09:00 do dia anterior)
-                const diaLembreteVespera = new Date(dia.date);
-                diaLembreteVespera.setDate(diaLembreteVespera.getDate() - 1);
-                const diaVesperaStr = diaLembreteVespera.toISOString().split('T')[0];
-                console.log(`      1. Lembrete de Véspera: ${diaVesperaStr} às 09:00`);
-                
-                // Regra de Hoje (Alarme das 06:30 ou 12:30)
+                const [hour] = s.time.split(':').map(Number);
                 const alarmeHoje = hour < 12 ? '06:30' : '12:30';
-                console.log(`      2. Confirmação de Hoje: ${dia.date} às ${alarmeHoje}`);
+                const tag = s.isVirtual ? '[FIXO]' : '[MANUAL]';
+
+                console.log(`   ✅ ${tag} ${patient.name} (${patient.guardianName}) - ${s.time}`);
+                console.log(`      └─ Confirmação: ${alarmeHoje} do próprio dia`);
             });
         }
 
         console.log("\n=========================================");
     } catch (error) {
-        console.error("Erro ao gerar relatório:", error);
+        console.error("Erro no relatório:", error);
     }
 }
 
-simularMensagens();
+gerarRelatorioSemanal();

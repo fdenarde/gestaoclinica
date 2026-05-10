@@ -95,81 +95,140 @@ async function dispararLembretes(tipo) {
                 if (tipo === 'AMANHA' && settings.whatsapp) {
                     const clinicPhone = formatPhoneNumber(settings.whatsapp);
                     console.log(`Avisando administrador no WhatsApp ${clinicPhone}...`);
-                    await client.sendMessage(clinicPhone, `*Lembrete do Robô*\n\nOlá! Lembrando que amanhã é feriado/recesso de *${holidayObj.name}*.\n\nO envio de mensagens automáticas de lembrete para os pacientes está suspenso para amanhã.`);
+                    await client.sendMessage(clinicPhone, `*Lembrete do Robô*\n\nOlá! Lembrando que amanhã é feriado/recesso de *${holidayObj.name.trim()}*.\n\nO envio de mensagens automáticas de lembrete para os pacientes está suspenso para amanhã.`);
                 }
                 continue;
             }
 
+            // 1. Buscar Pacientes (para mapear nomes e horários fixos)
+            const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
+            const patients = [];
+            const patientsMap = {};
+            
+            patientsSnapshot.forEach(p => {
+                const data = { id: p.id, ...p.data() };
+                patients.push(data);
+                patientsMap[p.id] = data;
+            });
+
+            // 2. Buscar Sessões Reais (Agendamentos manuais ou reposições)
             const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
                 .where('date', '==', dateStr)
                 .where('status', '==', 'Agendada')
                 .get();
+            
+            const sessionsReais = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            if (sessionsSnapshot.empty) {
-                console.log(`Sem sessões agendadas para ${dateStr} (Filtro: ${tipo})`);
-                continue;
-            }
-
-            // Mapear pacientes para buscar os nomes
-            const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
-            const patientsMap = {};
-            patientsSnapshot.forEach(p => patientsMap[p.id] = p.data());
-
-            let sessoesParaAvisar = [];
-
-            sessionsSnapshot.forEach(doc => {
-                const s = doc.data();
-                const [hour] = s.time.split(':').map(Number);
+            // 3. Gerar Sessões Virtuais (Baseadas no Horário Fixo dos pacientes ativos)
+            const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+            const diaDaSemanaAlvo = diasSemana[new Date(dateStr + 'T12:00:00').getDay()];
+            
+            const sessionsVirtuais = [];
+            patients.forEach(p => {
+                if (p.status !== 'Ativo') return;
                 
-                // Filtro de Turno
-                if (tipo === 'HOJE_MANHA' && hour >= 12) return; // ignora tarde
-                if (tipo === 'HOJE_TARDE' && hour < 12) return; // ignora manhã
-                
-                sessoesParaAvisar.push(s);
+                const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+                if (fixedDayNorm === targetDayNorm && p.fixedTime) {
+                    const jaTemSessaoReal = sessionsReais.some(s => s.patientId === p.id);
+                    if (!jaTemSessaoReal) {
+                        sessionsVirtuais.push({
+                            patientId: p.id,
+                            date: dateStr,
+                            time: p.fixedTime,
+                            status: 'Agendada',
+                            isVirtual: true
+                        });
+                    }
+                }
             });
 
-            console.log(`Encontradas ${sessoesParaAvisar.length} sessões para avisar.`);
+            // 4. Unificar as sessões e aplicar Filtro de Turno
+            const todasAsSessoes = [...sessionsReais, ...sessionsVirtuais];
+            let sessoesFiltradas = [];
 
-            for (const s of sessoesParaAvisar) {
+            todasAsSessoes.forEach(s => {
+                const [hour] = s.time.split(':').map(Number);
+                if (tipo === 'HOJE_MANHA' && hour >= 12) return;
+                if (tipo === 'HOJE_TARDE' && hour < 12) return;
+                sessoesFiltradas.push(s);
+            });
+
+            // 5. Agrupar por paciente para evitar mensagens duplicadas (pegar o horário mais cedo)
+            const disparosUnicos = new Map();
+            for (const s of sessoesFiltradas) {
                 const patient = patientsMap[s.patientId];
                 if (!patient || !patient.whatsapp) continue;
-
+                
                 const phone = formatPhoneNumber(patient.whatsapp);
-                const saudacao = new Date().getHours() < 12 ? 'Bom dia' : 'Boa tarde';
+                if (!disparosUnicos.has(phone) || s.time < disparosUnicos.get(phone).s.time) {
+                    disparosUnicos.set(phone, { s, patient });
+                }
+            }
+
+            console.log(`[INFO] ${dateStr} (${tipo}): ${disparosUnicos.size} mensagens únicas para enviar.`);
+
+            for (const [phone, { s, patient }] of disparosUnicos) {
+                const [hour] = s.time.split(':').map(Number);
+                const saudacao = hour < 12 ? 'Bom dia' : 'Boa tarde';
+                
+                // Formata 14:00 -> 14h, 14:30 -> 14:30h
+                const horaFormatada = s.time.endsWith(':00') ? s.time.split(':')[0] + 'h' : s.time + 'h';
 
                 let message = '';
                 if (tipo === 'AMANHA') {
-                    message = `${saudacao}! Olá, ${patient.guardianName}, tudo bem?\nPassando para lembrar você da sessão de ${patient.name} amanhã, às ${s.time}.\n\nAguardo sua confirmação,\nAté logo!`;
+                    message = `${saudacao}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
                 } else {
-                    message = `${saudacao}! Aguardo vocês hoje às ${s.time}!\nAté logo! 🙏`;
+                    message = `${saudacao}!\nAguardo vocês hoje às *${horaFormatada}*!\nAté logo! 🙏🏼`;
                 }
 
-                console.log(`Enviando para ${patient.guardianName} (${phone})...`);
-                await client.sendMessage(phone, message);
-                await delay(5000); // 5 segundos de pausa entre cada envio para evitar SPAM
+                console.log(`[ENVIO] Enviando para ${patient.guardianName} (${phone})...`);
+                try {
+                    await client.sendMessage(phone, message);
+                } catch (sendError) {
+                    console.error(`❌ Erro ao enviar para ${phone}:`, sendError.message);
+                }
+                await delay(5000); 
             }
+
         }
     } catch (error) {
-        console.error("Erro ao disparar lembretes:", error);
+        console.error("Erro crítico na rotina de lembretes:", error);
     }
 }
 
 // 4. Configurar os Alarmes (Cron Jobs)
 // 06:30 da manhã - Lembretes para HOJE (sessões da manhã)
 cron.schedule('30 6 * * *', () => {
+    const today = new Date();
+    if (today.getDay() === 0 || today.getDay() === 1) return; // Pula Domingo e Segunda
     dispararLembretes('HOJE_MANHA');
 });
 
 // 09:00 da manhã - Lembretes para AMANHÃ (todas as sessões)
 cron.schedule('0 9 * * *', () => {
+    const today = new Date();
+    // Se hoje é Sexta (5), avisa Sábado (OK)
+    // Se hoje é Sábado (6), não avisa Domingo (Pula)
+    // Se hoje é Domingo (0), não avisa Segunda (Pula)
+    if (today.getDay() === 6 || today.getDay() === 0) {
+        console.log(`[PULO] Hoje é ${today.getDay() === 6 ? 'Sábado' : 'Domingo'}. Não há atendimentos amanhã.`);
+        return;
+    }
     dispararLembretes('AMANHA');
 });
 
 // 12:30 da tarde - Lembretes para HOJE (sessões da tarde)
 cron.schedule('30 12 * * *', () => {
+    const today = new Date();
+    if (today.getDay() === 0 || today.getDay() === 1) return; // Pula Domingo e Segunda
     dispararLembretes('HOJE_TARDE');
 });
 
 // 5. Iniciar o Robô
-client.initialize();
+client.initialize().catch(err => {
+    console.error("❌ ERRO AO INICIALIZAR O CLIENTE WHATSAPP:", err.message);
+    console.error("Dica: Verifique se não há outra instância do navegador aberta ou se a pasta .wwebjs_auth está travada.");
+});
 console.log("Robô iniciado! Aguardando o WhatsApp...");

@@ -6,3 +6,14 @@ coverage/
 *.log
 .env*
 !.env.example
+
+firebase-key*
+.wwebjs*
+*.json
+temp_*
+
+!package.json
+!package-lock.json
+!firebase-blueprint.json
+!firebase-applet-config.json
+!tsconfig.json

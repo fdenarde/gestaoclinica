@@ -43,6 +43,12 @@ export default function App() {
   
   const [activeTab, setActiveTab] = useState('dashboard');
   const [notifications, setNotifications] = useState<string[]>([]);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+
+  const navigateToPatient = (id: string) => {
+    setSelectedPatientId(id);
+    setActiveTab('atendentes');
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -375,9 +381,9 @@ export default function App() {
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.3 }}
           >
-            {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} />}
+            {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
             {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} />}
-            {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} />}
+            {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} />}
             {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
             {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
             {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} />}

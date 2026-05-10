@@ -10,13 +10,19 @@ import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
 interface PatientsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+  selectedPatientId?: string | null;
+  setSelectedPatientId?: (id: string | null) => void;
 }
 
-export default function Patients({ state, onUpdate }: PatientsProps) {
+export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId }: PatientsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showInactive, setShowInactive] = useState(false);
   const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
-  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  
+  const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
+  const selectedPatientId = propSelectedId !== undefined ? propSelectedId : internalSelectedId;
+  const setSelectedPatientId = propSetSelectedId || setInternalSelectedId;
+
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
   
   // Registration Form State
@@ -581,6 +587,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [paymentData, setPaymentData] = useState<{
+    id?: string;
     date: string;
     installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral';
     amount: number;
@@ -760,27 +767,55 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   };
 
   const handleRegisterPaymentClick = () => {
-    setPaymentData(prev => ({
-      ...prev,
+    setPaymentData({
+      date: format(new Date(), 'yyyy-MM-dd'),
       installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
       amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
-      date: format(new Date(), 'yyyy-MM-dd')
-    }));
+      method: 'Pix'
+    });
     setPaymentModalOpen(true);
   };
 
+  const handleEditPaymentClick = (payment: Payment) => {
+    setPaymentData({
+      id: payment.id,
+      date: payment.date,
+      installment: payment.installment as any,
+      amount: payment.amount,
+      method: payment.method as any
+    });
+    setPaymentModalOpen(true);
+  };
+
+  const handleDeletePaymentClick = (paymentId: string) => {
+    if (window.confirm("Tem certeza que deseja excluir este pagamento?")) {
+      onUpdate({ payments: state.payments.filter(p => p.id !== paymentId) });
+      showToast('Pagamento excluído com sucesso!');
+    }
+  };
+
   const handleSavePayment = () => {
-    const newPayment: Payment = {
-      id: Math.random().toString(36).substr(2, 9),
-      patientId: patient.id,
-      amount: paymentData.amount,
-      date: paymentData.date,
-      installment: paymentData.installment,
-      method: paymentData.method
-    };
-    
-    onUpdate({ payments: [...state.payments, newPayment] });
-    showToast('Pagamento registrado com sucesso!', 'success');
+    if (paymentData.id) {
+      const updatedPayments = state.payments.map(p => 
+        p.id === paymentData.id 
+          ? { ...p, amount: paymentData.amount, date: paymentData.date, installment: paymentData.installment, method: paymentData.method } 
+          : p
+      );
+      onUpdate({ payments: updatedPayments });
+      showToast('Pagamento atualizado com sucesso!', 'success');
+    } else {
+      const newPayment: Payment = {
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: patient.id,
+        amount: paymentData.amount,
+        date: paymentData.date,
+        installment: paymentData.installment,
+        method: paymentData.method
+      };
+      
+      onUpdate({ payments: [...state.payments, newPayment] });
+      showToast('Pagamento registrado com sucesso!', 'success');
+    }
     setPaymentModalOpen(false);
   };
 
@@ -1385,7 +1420,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                 <div className="space-y-3">
                    {patientPayments.length > 0 ? (
                      patientPayments.map(payment => (
-                       <div key={payment.id} className="p-4 rounded-xl border border-clinic-border flex items-center justify-between">
+                       <div key={payment.id} className="p-4 rounded-xl border border-clinic-border flex items-center justify-between group">
                          <div className="flex items-center gap-4">
                             <DollarSign size={18} className="text-status-green-text" />
                             <div className="flex flex-col">
@@ -1393,7 +1428,15 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                               <span className="text-[10px] text-clinic-text-muted">{safeFormatDate(payment.date, 'dd/MM/yyyy')} via {payment.method}</span>
                             </div>
                          </div>
-                         <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Recebido</span>
+                         <div className="flex items-center gap-2">
+                            <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Editar Pagamento">
+                               <Edit3 size={14} />
+                            </button>
+                            <button onClick={() => handleDeletePaymentClick(payment.id)} className="p-1.5 text-clinic-text-muted hover:text-status-red-text hover:bg-status-red-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Excluir Pagamento">
+                               <Trash2 size={14} />
+                            </button>
+                            <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Recebido</span>
+                         </div>
                        </div>
                      ))
                    ) : (

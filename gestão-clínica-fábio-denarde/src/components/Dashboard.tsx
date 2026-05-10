@@ -10,9 +10,10 @@ import { showToast } from './Common/Toast';
 interface DashboardProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+  onNavigateToPatient?: (patientId: string) => void;
 }
 
-export default function Dashboard({ state, onUpdate }: DashboardProps) {
+export default function Dashboard({ state, onUpdate, onNavigateToPatient }: DashboardProps) {
 
   const markAsRealized = (session: Session) => {
     const updatedSessions = state.sessions.map(s => 
@@ -119,10 +120,11 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
     return { activePatients, weeklySessions, monthlyPayments, pendingRepositions };
   }, [state]);
 
+  type AlertItem = { message: string; patientId?: string };
   const alerts = useMemo(() => {
-    const high: string[] = [];
-    const medium: string[] = [];
-    const low: string[] = [];
+    const high: AlertItem[] = [];
+    const medium: AlertItem[] = [];
+    const low: AlertItem[] = [];
 
     state.patients.forEach(patient => {
       const patientSessions = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO));
@@ -133,15 +135,15 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
       if (patient.paymentModal === PaymentModal.PARCELADO) {
         const hasSecondPayment = patientPayments.some(p => p.installment === '2ª parcela');
         if (count >= 6 && !hasSecondPayment) {
-          high.push(`Pagamento em atraso: ${patient.name} - 2ª parcela não paga após a 6ª sessão.`);
+          high.push({ message: `Pagamento em atraso: ${patient.name} - 2ª parcela não paga após a 6ª sessão.`, patientId: patient.id });
         } else if (count === 4 || count === 5) {
-          medium.push(`${patient.name} chegando à sessão ${count} - lembrar de cobrar 2ª parcela na sessão 5.`);
+          medium.push({ message: `${patient.name} chegando à sessão ${count} - lembrar de cobrar 2ª parcela na sessão 5.`, patientId: patient.id });
         }
       }
 
       // Rule: Package end suggestion
       if (count >= 8 && count <= 10) {
-        medium.push(`Pacote de ${patient.name} chegando ao fim (${count}/10) - sugerir renovação.`);
+        medium.push({ message: `Pacote de ${patient.name} chegando ao fim (${count}/10) - sugerir renovação.`, patientId: patient.id });
       }
 
       // Rule: Inactivity
@@ -150,7 +152,7 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
       
       if (lastSession && differenceInDays(new Date(), new Date(lastSession.date)) > 14) {
-        medium.push(`${patient.name} sem sessão agendada há mais de 14 dias.`);
+        medium.push({ message: `${patient.name} sem sessão agendada há mais de 14 dias.`, patientId: patient.id });
       }
 
       // Rule: Consecutive Absences
@@ -159,7 +161,7 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       
       if (sortedSessions.length >= 2 && sortedSessions[0].status === SessionStatus.FALTA && sortedSessions[1].status === SessionStatus.FALTA) {
-        high.push(`Atenção: ${patient.name} faltou às últimas 2 sessões consecutivas.`);
+        high.push({ message: `Atenção: ${patient.name} faltou às últimas 2 sessões consecutivas.`, patientId: patient.id });
       }
     });
 
@@ -167,7 +169,7 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
     const today = new Date();
     const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
     if (today.getDate() >= lastDayOfMonth - 3) {
-      low.push(`O mês está terminando. Não esqueça de gerar os relatórios financeiros e de agenda.`);
+      low.push({ message: `O mês está terminando. Não esqueça de gerar os relatórios financeiros e de agenda.` });
     }
 
     // Rule: Multiple pending repositions for one patient
@@ -178,7 +180,7 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
     Object.entries(pendingByPatient).forEach(([pId, count]) => {
       if (count >= 3) {
         const pName = state.patients.find(p => p.id === pId)?.name || 'Atendente';
-        high.push(`${pName} tem ${count} reposições pendentes. Sugerido agendar semana de reforço.`);
+        high.push({ message: `${pName} tem ${count} reposições pendentes. Sugerido agendar semana de reforço.`, patientId: pId });
       }
     });
 
@@ -186,7 +188,7 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
     state.repositions.filter(r => r.status === 'Pendente').forEach(r => {
       const originalSession = state.sessions.find(s => s.id === r.originalSessionId);
       if (originalSession && differenceInDays(new Date(), new Date(originalSession.date)) > 30) {
-        high.push(`Reposição pendente para ${state.patients.find(p => p.id === r.patientId)?.name} sem data há mais de 30 dias.`);
+        high.push({ message: `Reposição pendente para ${state.patients.find(p => p.id === r.patientId)?.name} sem data há mais de 30 dias.`, patientId: r.patientId });
       }
     });
 
@@ -253,27 +255,33 @@ export default function Dashboard({ state, onUpdate }: DashboardProps) {
             <div key={`h-${i}`} className="bg-status-red-bg border-l-4 border-status-red-text p-4 flex justify-between items-center rounded-r-lg shadow-sm">
               <div className="flex items-center gap-3">
                 <span className="text-status-red-text font-black text-[10px] tracking-tighter uppercase">Alerta Crítico</span>
-                <span className="text-clinic-text text-sm font-medium">{alert}</span>
+                <span className="text-clinic-text text-sm font-medium">{alert.message}</span>
               </div>
-              <button className="text-status-red-text font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Resolver</button>
+              {alert.patientId && onNavigateToPatient && (
+                <button onClick={() => onNavigateToPatient(alert.patientId!)} className="text-status-red-text font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Resolver</button>
+              )}
             </div>
           ))}
           {alerts.medium.map((alert, i) => (
             <div key={`m-${i}`} className="bg-status-orange-bg border-l-4 border-status-orange-text p-4 flex justify-between items-center rounded-r-lg shadow-sm">
               <div className="flex items-center gap-3">
                 <span className="text-status-orange-text font-black text-[10px] tracking-tighter uppercase">Atenção</span>
-                <span className="text-clinic-text text-sm font-medium">{alert}</span>
+                <span className="text-clinic-text text-sm font-medium">{alert.message}</span>
               </div>
-              <button className="text-status-orange-text font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Visualizar</button>
+              {alert.patientId && onNavigateToPatient && (
+                <button onClick={() => onNavigateToPatient(alert.patientId!)} className="text-status-orange-text font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Visualizar</button>
+              )}
             </div>
           ))}
           {alerts.low.map((alert, i) => (
             <div key={`l-${i}`} className="bg-clinic-bg/50 border-l-4 border-clinic-text-faint p-4 flex justify-between items-center rounded-r-lg shadow-sm">
               <div className="flex items-center gap-3">
                 <span className="text-clinic-text-faint font-black text-[10px] tracking-tighter uppercase">Aviso</span>
-                <span className="text-clinic-text text-sm font-medium">{alert}</span>
+                <span className="text-clinic-text text-sm font-medium">{alert.message}</span>
               </div>
-              <button className="text-clinic-text-muted font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Verificar</button>
+              {alert.patientId && onNavigateToPatient && (
+                <button onClick={() => onNavigateToPatient(alert.patientId!)} className="text-clinic-text-muted font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Verificar</button>
+              )}
             </div>
           ))}
         </section>

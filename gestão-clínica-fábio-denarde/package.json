@@ -5,14 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && node -e \"require('fs').writeFileSync('dist/.nojekyll', '')\" && node -e \"require('fs').copyFileSync('dist/index.html', 'dist/404.html')\"",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "server": "node server.js",
     "test-msg": "node test-messages.js",
     "test-wpp": "node send-test-whatsapp.js",
-    "deploy": "npm run build && gh-pages -d dist"
+    "deploy": "npm run build && gh-pages -d dist && git add . && git commit -m \"Auto-update system\" && git push origin main"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
