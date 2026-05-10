@@ -615,17 +615,18 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
 
   const getInferredPackageNumber = (paymentDate: string) => {
     if (patientSessions.length === 0) return 1;
+    const chronologicalSessions = [...patientSessions].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     const targetTime = new Date(paymentDate).getTime();
-    let closestPackage = 1;
+    let closestIndex = 0;
     let minDiff = Infinity;
-    patientSessions.forEach(s => {
+    chronologicalSessions.forEach((s, index) => {
        const diff = Math.abs(new Date(s.date).getTime() - targetTime);
        if (diff < minDiff) {
           minDiff = diff;
-          closestPackage = s.packageNumber || 1;
+          closestIndex = index;
        }
     });
-    return closestPackage;
+    return Math.floor(closestIndex / 10) + 1;
   };
 
   const handleSaveEvolution = () => {
@@ -717,9 +718,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     const DAYS_MAP: Record<string, number> = { 'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6 };
     const targetDay = DAYS_MAP[patient.fixedDay?.toLowerCase() || ''] ?? 1;
 
-    const newPackageNumber = patientSessions.length > 0 
-      ? Math.max(...patientSessions.map(s => s.packageNumber || 1)) + 1 
-      : 1;
+    const newPackageNumber = Math.floor(patientSessions.length / 10) + 1;
 
     const scheduledAndRealized = patientSessions;
     let startDate = new Date();
@@ -784,9 +783,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   };
 
   const handleRegisterPaymentClick = () => {
-    const currentPackageNumber = patientSessions.length > 0 
-      ? Math.max(...patientSessions.map(s => s.packageNumber || 1)) 
-      : 1;
+    const currentPackageNumber = Math.max(1, Math.ceil(patientSessions.length / 10));
       
     setPaymentData({
       date: format(new Date(), 'yyyy-MM-dd'),
@@ -1631,7 +1628,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                   value={paymentData.packageNumber}
                   onChange={e => setPaymentData(prev => ({ ...prev, packageNumber: parseInt(e.target.value) || 1 }))}
                 >
-                  {Array.from({ length: Math.max(1, ...(patientSessions.map(s => s.packageNumber || 1)), paymentData.packageNumber) }, (_, i) => i + 1).map(num => (
+                  {Array.from({ length: Math.max(1, Math.ceil(patientSessions.length / 10), paymentData.packageNumber) }, (_, i) => i + 1).map(num => (
                     <option key={num} value={num}>Pacote {num}</option>
                   ))}
                 </select>
