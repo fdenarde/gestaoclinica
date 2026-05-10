@@ -82,6 +82,7 @@ export interface Payment {
   date: string;
   installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral';
   method: 'Pix' | 'Dinheiro' | 'Transferência' | 'Outro';
+  packageNumber?: number;
 }
 
 export interface ClinicSettings {

@@ -592,11 +592,13 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral';
     amount: number;
     method: 'Pix' | 'Dinheiro' | 'Transferência' | 'Outro';
+    packageNumber: number;
   }>({
     date: format(new Date(), 'yyyy-MM-dd'),
     installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
     amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
-    method: 'Pix'
+    method: 'Pix',
+    packageNumber: 1
   });
 
   const [confirmInactivate, setConfirmInactivate] = useState(false);
@@ -767,11 +769,16 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   };
 
   const handleRegisterPaymentClick = () => {
+    const currentPackageNumber = patientSessions.length > 0 
+      ? Math.max(...patientSessions.map(s => s.packageNumber || 1)) 
+      : 1;
+      
     setPaymentData({
       date: format(new Date(), 'yyyy-MM-dd'),
       installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
       amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
-      method: 'Pix'
+      method: 'Pix',
+      packageNumber: currentPackageNumber
     });
     setPaymentModalOpen(true);
   };
@@ -782,7 +789,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
       date: payment.date,
       installment: payment.installment as any,
       amount: payment.amount,
-      method: payment.method as any
+      method: payment.method as any,
+      packageNumber: payment.packageNumber || 1
     });
     setPaymentModalOpen(true);
   };
@@ -798,7 +806,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     if (paymentData.id) {
       const updatedPayments = state.payments.map(p => 
         p.id === paymentData.id 
-          ? { ...p, amount: paymentData.amount, date: paymentData.date, installment: paymentData.installment, method: paymentData.method } 
+          ? { ...p, amount: paymentData.amount, date: paymentData.date, installment: paymentData.installment, method: paymentData.method, packageNumber: paymentData.packageNumber } 
           : p
       );
       onUpdate({ payments: updatedPayments });
@@ -810,7 +818,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
         amount: paymentData.amount,
         date: paymentData.date,
         installment: paymentData.installment,
-        method: paymentData.method
+        method: paymentData.method,
+        packageNumber: paymentData.packageNumber
       };
       
       onUpdate({ payments: [...state.payments, newPayment] });
@@ -1417,25 +1426,41 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                       <span className="text-2xl font-serif font-bold italic">{patient.paymentModal === PaymentModal.PIX_FULL ? 'Único' : 'Parcelado'}</span>
                    </div>
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-6">
                    {patientPayments.length > 0 ? (
-                     patientPayments.map(payment => (
-                       <div key={payment.id} className="p-4 rounded-xl border border-clinic-border flex items-center justify-between group">
-                         <div className="flex items-center gap-4">
-                            <DollarSign size={18} className="text-status-green-text" />
-                            <div className="flex flex-col">
-                              <span className="font-bold text-sm">{formatCurrency(payment.amount)} — {payment.installment}</span>
-                              <span className="text-[10px] text-clinic-text-muted">{safeFormatDate(payment.date, 'dd/MM/yyyy')} via {payment.method}</span>
-                            </div>
-                         </div>
-                         <div className="flex items-center gap-2">
-                            <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Editar Pagamento">
-                               <Edit3 size={14} />
-                            </button>
-                            <button onClick={() => handleDeletePaymentClick(payment.id)} className="p-1.5 text-clinic-text-muted hover:text-status-red-text hover:bg-status-red-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Excluir Pagamento">
-                               <Trash2 size={14} />
-                            </button>
-                            <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Recebido</span>
+                     Object.entries(
+                       patientPayments.reduce((acc, p) => {
+                         const pkg = p.packageNumber || 1;
+                         if (!acc[pkg]) acc[pkg] = [];
+                         acc[pkg].push(p);
+                         return acc;
+                       }, {} as Record<number, Payment[]>)
+                     ).sort(([a], [b]) => Number(b) - Number(a)).map(([pkgNum, payments]) => (
+                       <div key={pkgNum} className="space-y-3">
+                         <h6 className="text-[10px] font-bold text-clinic-text-faint uppercase bg-clinic-border/30 px-3 py-1 rounded-lg inline-block tracking-wider">
+                           Pacote {pkgNum}
+                         </h6>
+                         <div className="space-y-2">
+                           {payments.map(payment => (
+                             <div key={payment.id} className="p-4 rounded-xl border border-clinic-border flex items-center justify-between group">
+                               <div className="flex items-center gap-4">
+                                  <DollarSign size={18} className="text-status-green-text" />
+                                  <div className="flex flex-col">
+                                    <span className="font-bold text-sm">{formatCurrency(payment.amount)} — {payment.installment}</span>
+                                    <span className="text-[10px] text-clinic-text-muted">{safeFormatDate(payment.date, 'dd/MM/yyyy')} via {payment.method}</span>
+                                  </div>
+                               </div>
+                               <div className="flex items-center gap-2">
+                                  <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Editar Pagamento">
+                                     <Edit3 size={14} />
+                                  </button>
+                                  <button onClick={() => handleDeletePaymentClick(payment.id)} className="p-1.5 text-clinic-text-muted hover:text-status-red-text hover:bg-status-red-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Excluir Pagamento">
+                                     <Trash2 size={14} />
+                                  </button>
+                                  <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Recebido</span>
+                               </div>
+                             </div>
+                           ))}
                          </div>
                        </div>
                      ))
@@ -1584,6 +1609,18 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
         >
           <div className="space-y-6">
             <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Pacote Referente</label>
+                <select 
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
+                  value={paymentData.packageNumber}
+                  onChange={e => setPaymentData(prev => ({ ...prev, packageNumber: parseInt(e.target.value) || 1 }))}
+                >
+                  {Array.from({ length: Math.max(1, ...(patientSessions.map(s => s.packageNumber || 1)), paymentData.packageNumber) }, (_, i) => i + 1).map(num => (
+                    <option key={num} value={num}>Pacote {num}</option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Data do Pagamento</label>
                 <input 
