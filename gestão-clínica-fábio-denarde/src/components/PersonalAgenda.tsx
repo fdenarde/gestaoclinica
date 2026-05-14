@@ -119,9 +119,11 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   };
 
   const handleDelete = (id: string) => {
+    console.log('handleDelete called with id:', id, 'state.personalAppointments:', state.personalAppointments?.length);
     if (window.confirm('Tem certeza que deseja excluir este compromisso?')) {
       try {
         const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
+        console.log('Before onUpdate, filtered list length:', updatedList.length);
         onUpdate({ personalAppointments: updatedList });
         showToast('Compromisso excluído com sucesso!');
       } catch (error) {
