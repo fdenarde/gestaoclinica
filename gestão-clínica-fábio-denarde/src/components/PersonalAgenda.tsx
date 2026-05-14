@@ -312,15 +312,15 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                                  <span className={cn("text-xs font-bold truncate leading-tight", config.text)}>{app.type}</span>
                                </div>
                                {/* Hover Actions */}
-                               <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center border border-black/10">
-                                 <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className="p-1 hover:bg-green-50 text-green-600" title="Concluir/Desfazer">
-                                   <CheckCircle2 size={12} />
+                               <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5">
+                                 <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title="Concluir/Desfazer">
+                                   <CheckCircle2 size={14} />
                                  </button>
-                                 <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-1 hover:bg-blue-50 text-blue-600" title="Editar">
-                                   <Edit2 size={12} />
+                                 <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-1.5 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
+                                   <Edit2 size={14} />
                                  </button>
-                                 <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className="p-1 hover:bg-red-50 text-red-600" title="Excluir">
-                                   <Trash2 size={12} />
+                                 <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir">
+                                   <Trash2 size={14} />
                                  </button>
                                </div>
                             </div>
