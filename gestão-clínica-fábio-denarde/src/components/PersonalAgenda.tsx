@@ -467,6 +467,9 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                        <button onClick={() => openEdit(app)} className="p-2 bg-white hover:bg-blue-50 text-blue-600 rounded-lg shadow-sm" title="Editar">
                          <Edit2 size={16} />
                        </button>
+                       <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className="p-2 bg-white hover:bg-red-50 text-red-600 rounded-lg shadow-sm" title="Excluir">
+                         <Trash2 size={16} />
+                       </button>
                      </div>
                   </div>
                 );
