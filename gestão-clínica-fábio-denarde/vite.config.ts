@@ -19,7 +19,7 @@ export default defineConfig(({mode}) => {
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: {
-        ignored: ['**/.wwebjs_auth/**']
+        ignored: ['**/.wwebjs_auth/**', '**/.wwebjs_cache/**', '**/.wwebjs_auth_temp/**']
       }
     },
   };

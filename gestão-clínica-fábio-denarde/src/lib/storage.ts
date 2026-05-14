@@ -90,6 +90,9 @@ const INITIAL_STATE: AppState = {
   sessions: MOCK_SESSIONS,
   payments: MOCK_PAYMENTS,
   repositions: [],
+  expenses: [],
+  evolutions: [],
+  personalAppointments: [],
   settings: CLINIC_INFO
 };
 

@@ -57,7 +57,7 @@ async function gerarRelatorioSemanal() {
             });
         }
 
-        const diasUteis = dias.filter(d => [2, 4, 5, 6].includes(d.dayIndex));
+        const diasUteis = dias.filter(d => [1, 2, 3, 4, 5, 6].includes(d.dayIndex));
 
         for (const dia of diasUteis) {
             console.log(`\n📅 ${dia.label} (${dia.date})`);

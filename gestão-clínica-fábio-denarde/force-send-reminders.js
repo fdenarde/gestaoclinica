@@ -86,10 +86,10 @@ async function dispararLembretes(tipo) {
 
             const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
                 .where('date', '==', dateStr)
-                .where('status', '==', 'Agendada')
                 .get();
             
-            const sessionsReais = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const sessionsReais = todasSessoesHoje.filter(s => s.status === 'Agendada');
 
             const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
             const diaDaSemanaAlvo = diasSemana[new Date(dateStr + 'T12:00:00').getDay()];
@@ -102,8 +102,8 @@ async function dispararLembretes(tipo) {
                 const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
                 if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                    const jaTemSessaoReal = sessionsReais.some(s => s.patientId === p.id);
-                    if (!jaTemSessaoReal) {
+                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id);
+                    if (!jaTemSessaoManual) {
                         sessionsVirtuais.push({
                             patientId: p.id,
                             date: dateStr,
@@ -131,9 +131,9 @@ async function dispararLembretes(tipo) {
                 const patient = patientsMap[s.patientId];
                 if (!patient || !patient.whatsapp) continue;
 
-                const [hour] = s.time.split(':').map(Number);
+                const currentHour = new Date().getHours();
                 const phone = formatPhoneNumber(patient.whatsapp);
-                const saudacao = hour < 12 ? 'Bom dia' : 'Boa tarde';
+                const saudacao = currentHour < 12 ? 'Bom dia' : 'Boa tarde';
 
                 let message = '';
                 if (tipo === 'AMANHA') {

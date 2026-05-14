@@ -111,13 +111,15 @@ async function dispararLembretes(tipo) {
                 patientsMap[p.id] = data;
             });
 
-            // 2. Buscar Sessões Reais (Agendamentos manuais ou reposições)
+            // 2. Buscar Sessões Manuais da Data (Qualquer Status)
             const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
                 .where('date', '==', dateStr)
-                .where('status', '==', 'Agendada')
                 .get();
             
-            const sessionsReais = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            // Considerar apenas as "Agendada" para envio de lembrete real
+            const sessionsReais = todasSessoesHoje.filter(s => s.status === 'Agendada');
 
             // 3. Gerar Sessões Virtuais (Baseadas no Horário Fixo dos pacientes ativos)
             const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -131,8 +133,9 @@ async function dispararLembretes(tipo) {
                 const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
                 if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                    const jaTemSessaoReal = sessionsReais.some(s => s.patientId === p.id);
-                    if (!jaTemSessaoReal) {
+                    // Impede o envio de mensagem se o paciente tem QUALQUER registro hoje (ex: Falta, Desmarcada)
+                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id);
+                    if (!jaTemSessaoManual) {
                         sessionsVirtuais.push({
                             patientId: p.id,
                             date: dateStr,
@@ -170,8 +173,8 @@ async function dispararLembretes(tipo) {
             console.log(`[INFO] ${dateStr} (${tipo}): ${disparosUnicos.size} mensagens únicas para enviar.`);
 
             for (const [phone, { s, patient }] of disparosUnicos) {
-                const [hour] = s.time.split(':').map(Number);
-                const saudacao = hour < 12 ? 'Bom dia' : 'Boa tarde';
+                const currentHour = new Date().getHours();
+                const saudacao = currentHour < 12 ? 'Bom dia' : 'Boa tarde';
                 
                 // Formata 14:00 -> 14h, 14:30 -> 14:30h
                 const horaFormatada = s.time.endsWith(':00') ? s.time.split(':')[0] + 'h' : s.time + 'h';
@@ -202,18 +205,15 @@ async function dispararLembretes(tipo) {
 // 06:30 da manhã - Lembretes para HOJE (sessões da manhã)
 cron.schedule('30 6 * * *', () => {
     const today = new Date();
-    if (today.getDay() === 0 || today.getDay() === 1) return; // Pula Domingo e Segunda
+    if (today.getDay() === 0) return; // Pula Domingo
     dispararLembretes('HOJE_MANHA');
 });
 
 // 09:00 da manhã - Lembretes para AMANHÃ (todas as sessões)
 cron.schedule('0 9 * * *', () => {
     const today = new Date();
-    // Se hoje é Sexta (5), avisa Sábado (OK)
-    // Se hoje é Sábado (6), não avisa Domingo (Pula)
-    // Se hoje é Domingo (0), não avisa Segunda (Pula)
-    if (today.getDay() === 6 || today.getDay() === 0) {
-        console.log(`[PULO] Hoje é ${today.getDay() === 6 ? 'Sábado' : 'Domingo'}. Não há atendimentos amanhã.`);
+    if (today.getDay() === 6) {
+        console.log(`[PULO] Hoje é Sábado. Não há atendimentos amanhã (Domingo).`);
         return;
     }
     dispararLembretes('AMANHA');
@@ -222,7 +222,7 @@ cron.schedule('0 9 * * *', () => {
 // 12:30 da tarde - Lembretes para HOJE (sessões da tarde)
 cron.schedule('30 12 * * *', () => {
     const today = new Date();
-    if (today.getDay() === 0 || today.getDay() === 1) return; // Pula Domingo e Segunda
+    if (today.getDay() === 0) return; // Pula Domingo
     dispararLembretes('HOJE_TARDE');
 });
 

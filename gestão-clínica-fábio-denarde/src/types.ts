@@ -64,7 +64,9 @@ export interface Session {
   status: SessionStatus;
   notes?: string;
   packageNumber: number | null; // 1 to 10
-previousPackageNumber?: number; // Pacotes anteriores
+  previousPackageNumber?: number; // Pacotes anteriores
+  isBlocked?: boolean; // true when this slot is a personal block (not a patient session)
+  blockName?: string; // name of the personal commitment when isBlocked is true
 }
 
 export interface Reposition {
@@ -113,6 +115,42 @@ export interface Evolution {
   notes: string;
 }
 
+export type PersonalAppointmentType =
+  | 'Médico'
+  | 'Estudar'
+  | 'Cortar cabelo'
+  | 'Visitar família'
+  | 'Viajar'
+  | 'Passear'
+  | 'Compromisso com a esposa'
+  | 'Compromisso com Lara'
+  | 'Ir ao supermercado'
+  | 'Compromisso com cliente'
+  | 'Academia / Exercício'
+  | 'Farmácia'
+  | 'Banco / Financeiro'
+  | 'Manutenção / Conserto'
+  | 'Receber entrega'
+  | 'Restaurante / Jantar especial'
+  | 'Outro';
+
+export type AlarmAdvance = '5 min' | '10 min' | '15 min' | '30 min' | '1 hora' | 'Na hora';
+export type AlarmSound = 'Sino suave' | 'Notificação padrão' | 'Melodia relaxante' | 'Alerta urgente' | 'Silencioso';
+
+export interface PersonalAppointment {
+  id: string;
+  type: PersonalAppointmentType;
+  date: string; // YYYY-MM-DD (primeira ocorrência)
+  time: string; // HH:MM
+  durationMinutes: number; // default 60
+  recurrence: 'Não repetir' | 'Toda semana' | 'Todo mês';
+  notes: string;
+  alarmEnabled: boolean;
+  alarmAdvance?: AlarmAdvance;
+  alarmSound?: AlarmSound;
+  isDone: boolean; // para histórico
+}
+
 export interface AppState {
   patients: Patient[];
   sessions: Session[];
@@ -121,4 +159,5 @@ export interface AppState {
   expenses: Expense[];
   evolutions: Evolution[];
   settings: ClinicSettings;
+  personalAppointments: PersonalAppointment[];
 }

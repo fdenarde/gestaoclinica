@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { ChevronLeft, ChevronRight, AlertCircle, Users, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, AlertCircle, Users, RefreshCw, Lock } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
@@ -70,6 +70,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   const [patientId, setPatientId] = useState('');
   const [sessionType, setSessionType] = useState<SessionType>(SessionType.SIMPLES);
   const [notes, setNotes] = useState('');
+  const [isBlockMode, setIsBlockMode] = useState(false);
 
   // Reposition Modal State
   const [repoModal, setRepoModal] = useState<{ reposition: Reposition; patient: AppState['patients'][0]; originalSession: Session | null } | null>(null);
@@ -135,7 +136,34 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   };
 
   const handleSaveSession = () => {
-    if (!patientId || !selectedSlot) return;
+    if (!selectedSlot) return;
+
+    // Block mode: no patient needed, but blockName (stored in notes) is required
+    if (isBlockMode) {
+      if (!notes.trim()) {
+        showToast('Informe o nome do compromisso para bloquear o horário.', 'error');
+        return;
+      }
+      const blockedSession: Session = {
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: '__BLOCKED__',
+        date: selectedSlot.date,
+        time: selectedSlot.time,
+        type: SessionType.SIMPLES,
+        status: SessionStatus.AGENDADA,
+        notes: '',
+        packageNumber: null,
+        isBlocked: true,
+        blockName: notes.trim(),
+      };
+      onUpdate({ sessions: [...state.sessions, blockedSession] });
+      showToast('Horário bloqueado com sucesso!');
+      setIsModalOpen(false);
+      resetForm();
+      return;
+    }
+
+    if (!patientId) return;
 
     const patient = state.patients.find(p => p.id === patientId);
     if (!patient) return;
@@ -250,6 +278,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     setSessionType(SessionType.SIMPLES);
     setNotes('');
     setSelectedSlot(null);
+    setIsBlockMode(false);
   };
 
   const getDayNameKey = (day: number): string => {
@@ -359,6 +388,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                   }
 
                   const patient = session ? state.patients.find(p => p.id === session.patientId) : null;
+                  const isBlocked = !!session?.isBlocked;
                   
                   // Compute package number for display (only for real sessions)
                   const displayPackage = realSession?.packageNumber ?? null;
@@ -367,7 +397,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                     <div key={time} className="group relative">
                       <div className={cn(
                         "p-2 rounded-lg border min-h-[60px] transition-all flex flex-col justify-between",
-                        isOnHoliday
+                        isBlocked
+                          ? 'bg-[#5D4037]/15 border-[#5D4037]/40'
+                          : isOnHoliday
                           ? 'bg-orange-500/10 border-orange-400 border-dashed'
                           : session
                           ? (isVirtual
@@ -382,8 +414,20 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                       onClick={() => !session && openNewSession(day, time)}
                       >
                         <div className="flex justify-between items-start">
-                          <span className="text-xs font-bold text-clinic-text">{time}</span>
-                          {session && (
+                          <span className={cn("text-xs font-bold", isBlocked ? "text-[#5D4037]" : "text-clinic-text")}>{time}</span>
+                          {isBlocked ? (
+                            <div className="flex items-center gap-1">
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); deleteSession(session!.id); }}
+                                className="text-[8px] text-status-red-text font-black uppercase tracking-tighter opacity-0 group-hover:opacity-100 transition-opacity mr-1"
+                              >
+                                Remover
+                              </button>
+                              <span className="text-[7px] font-black px-1 py-0.5 rounded uppercase bg-[#5D4037]/20 text-[#5D4037]">
+                                🔒
+                              </span>
+                            </div>
+                          ) : session && (
                             <div className="flex items-center gap-1">
                               {isOnHoliday && (
                                 <span className="text-[7px] font-black px-1 py-0.5 rounded uppercase bg-orange-500/20 text-orange-600" title={`Feriado: ${holiday?.name}`}>
@@ -415,7 +459,15 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                           )}
                         </div>
                         
-                        {session ? (
+                        {isBlocked ? (
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-1.5">
+                              <Lock size={12} className="text-[#5D4037] flex-shrink-0" />
+                              <span className="font-bold text-sm truncate leading-tight text-[#5D4037]">{session!.blockName}</span>
+                            </div>
+                            <span className="text-[10px] text-[#5D4037]/60 opacity-80 leading-none mt-0.5 italic">Bloqueado</span>
+                          </div>
+                        ) : session ? (
                           <div className="flex flex-col">
                             <span className="font-bold text-sm truncate leading-tight text-clinic-text">{patient?.name}</span>
                             {displayPackage ? (
@@ -631,52 +683,73 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       {/* Modal Nova Sessão */}
       <Modal 
         isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        title={selectedSlot ? `Agendar: ${safeFormatDate(selectedSlot.date, 'dd/MM')} — ${selectedSlot.time}` : 'Agendar Sessão'}
+        onClose={() => { setIsModalOpen(false); resetForm(); }} 
+        title={selectedSlot ? (isBlockMode ? `Bloquear: ${safeFormatDate(selectedSlot.date, 'dd/MM')} — ${selectedSlot.time}` : `Agendar: ${safeFormatDate(selectedSlot.date, 'dd/MM')} — ${selectedSlot.time}`) : 'Agendar Sessão'}
       >
         <div className="space-y-4">
           <div className="flex flex-col gap-1">
             <label className="text-xs font-bold text-clinic-text-faint uppercase">Atendente</label>
             <select 
-              value={patientId}
-              onChange={(e) => setPatientId(e.target.value)}
+              value={isBlockMode ? '__BLOCK__' : patientId}
+              onChange={(e) => {
+                if (e.target.value === '__BLOCK__') {
+                  setIsBlockMode(true);
+                  setPatientId('');
+                } else {
+                  setIsBlockMode(false);
+                  setPatientId(e.target.value);
+                }
+              }}
               className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
             >
               <option value="">Selecione um atendente...</option>
+              <option value="__BLOCK__">🔒 Bloquear Horário</option>
               {state.patients.filter(p => p.status === 'Ativo').sort((a, b) => a.name.localeCompare(b.name)).map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">Tipo de Sessão</label>
-            <select 
-              value={sessionType}
-              onChange={(e) => setSessionType(e.target.value as SessionType)}
-              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
-            >
-              <option value={SessionType.SIMPLES}>{SessionType.SIMPLES}</option>
-              <option value={SessionType.DUPLA}>{SessionType.DUPLA}</option>
-            </select>
-          </div>
+          {!isBlockMode && (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-bold text-clinic-text-faint uppercase">Tipo de Sessão</label>
+              <select 
+                value={sessionType}
+                onChange={(e) => setSessionType(e.target.value as SessionType)}
+                className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
+              >
+                <option value={SessionType.SIMPLES}>{SessionType.SIMPLES}</option>
+                <option value={SessionType.DUPLA}>{SessionType.DUPLA}</option>
+              </select>
+            </div>
+          )}
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">Observações</label>
+            <label className="text-xs font-bold text-clinic-text-faint uppercase">
+              {isBlockMode ? 'Nome do Compromisso *' : 'Observações'}
+            </label>
             <textarea 
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Digite alguma anotação técnica opcional..."
-              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all min-h-[100px]"
+              placeholder={isBlockMode ? 'Ex: Reunião, Consulta médica, Compromisso pessoal...' : 'Digite alguma anotação técnica opcional...'}
+              className={cn(
+                "px-4 py-3 bg-clinic-bg rounded-xl border focus:ring-2 focus:ring-clinic-primary outline-none transition-all min-h-[100px]",
+                isBlockMode && !notes.trim() ? "border-red-300" : "border-clinic-border"
+              )}
             />
           </div>
 
           <button 
             onClick={handleSaveSession}
-            disabled={!patientId}
-            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-lg hover:bg-clinic-primary-hover transition-all uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isBlockMode ? !notes.trim() : !patientId}
+            className={cn(
+              "w-full py-4 text-white font-bold rounded-xl shadow-lg transition-all uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed",
+              isBlockMode
+                ? "bg-[#5D4037] hover:bg-[#4E342E]"
+                : "bg-clinic-primary hover:bg-clinic-primary-hover"
+            )}
           >
-            Confirmar Agendamento
+            {isBlockMode ? '🔒 Bloquear Horário' : 'Confirmar Agendamento'}
           </button>
         </div>
       </Modal>

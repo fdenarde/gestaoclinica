@@ -18,6 +18,8 @@ service cloud.firestore {
 
     // 1. Users Subcollections (Isolated Data Architecture)
     match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
       match /settings/{settingId} {
         allow read, write: if isOwner(userId);
       }
@@ -31,6 +33,15 @@ service cloud.firestore {
         allow read, write: if isOwner(userId);
       }
       match /repositions/{repositionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /expenses/{expenseId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /evolutions/{evolutionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /agenda_pessoal/{agendaId} {
         allow read, write: if isOwner(userId);
       }
     }

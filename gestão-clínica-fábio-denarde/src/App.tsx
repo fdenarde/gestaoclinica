@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
-import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution } from './types';
-import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, LogIn, Loader2 } from 'lucide-react';
+import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment } from './types';
+import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, LogIn, Loader2, BookOpen } from 'lucide-react';
 import Dashboard from './components/Dashboard';
 import Agenda from './components/Agenda';
+import PersonalAgenda from './components/PersonalAgenda';
 import Patients from './components/Patients';
 import Finance from './components/Finance';
 import Reports from './components/Reports';
@@ -33,6 +34,7 @@ const DEFAULT_STATE: AppState = {
   expenses: [],
   evolutions: [],
   settings: DEFAULT_SETTINGS,
+  personalAppointments: [],
 };
 
 export default function App() {
@@ -124,9 +126,32 @@ export default function App() {
       onSnapshot(collection(userDocRef, 'evolutions'), (snapshot) => {
         const evolutions = snapshot.docs.map(doc => doc.data() as Evolution);
         setState(prev => ({ ...prev, evolutions }));
+      }, (error) => handleFirestoreError(error, OperationType.GET, 'evolutions'))
+    );
+    
+    // agenda_pessoal
+    unsubscribers.push(
+      onSnapshot(collection(userDocRef, 'agenda_pessoal'), (snapshot) => {
+        const personalAppointments = snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: data.id,
+            date: data.data || '',
+            time: data.hora || '',
+            type: data.tipo_compromisso || 'Outro',
+            durationMinutes: 60,
+            notes: data.observacao || '',
+            recurrence: data.recorrencia || 'Não repetir',
+            alarmEnabled: data.alarme || false,
+            alarmSound: data.som_alarme,
+            alarmAdvance: data.antecedencia_alarme,
+            isDone: data.status === 'concluído'
+          } as PersonalAppointment;
+        });
+        setState(prev => ({ ...prev, personalAppointments }));
         setDataLoading(false);
       }, (error) => {
-        handleFirestoreError(error, OperationType.GET, 'evolutions');
+        handleFirestoreError(error, OperationType.GET, 'agenda_pessoal');
         setDataLoading(false);
       })
     );
@@ -249,6 +274,32 @@ export default function App() {
         }
       }
 
+      if (newState.personalAppointments) {
+        const currentIds = new Set<string>(state.personalAppointments.map(a => a.id));
+        const newIds = new Set<string>(newState.personalAppointments.map(a => a.id));
+        for (const id of currentIds) {
+          if (!newIds.has(id)) {
+            await addOp(b => b.delete(doc(collection(userDocRef, 'agenda_pessoal'), id)));
+          }
+        }
+        for (const a of newState.personalAppointments) {
+          const dbObj = {
+            id: a.id,
+            data: a.date,
+            hora: a.time,
+            tipo_compromisso: a.type,
+            observacao: a.notes,
+            recorrencia: a.recurrence,
+            alarme: a.alarmEnabled,
+            som_alarme: a.alarmSound || null,
+            antecedencia_alarme: a.alarmAdvance || null,
+            status: a.isDone ? 'concluído' : 'ativo',
+            criado_em: new Date().toISOString()
+          };
+          await addOp(b => b.set(doc(collection(userDocRef, 'agenda_pessoal'), a.id), dbObj));
+        }
+      }
+
       await commitBatch();
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'users/' + user.uid);
@@ -292,6 +343,7 @@ export default function App() {
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'agenda', label: 'Agenda', icon: Calendar },
+    { id: 'agenda-pessoal', label: 'Agenda Pessoal', icon: BookOpen },
     { id: 'atendentes', label: 'Atendentes', icon: Users },
     { id: 'pagamentos', label: 'Pagamentos', icon: DollarSign },
     { id: 'relatorios', label: 'Relatórios', icon: BarChart3 },
@@ -383,6 +435,7 @@ export default function App() {
           >
             {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
             {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} />}
+            {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} />}
             {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} />}
             {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
             {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
