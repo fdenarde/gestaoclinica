@@ -120,9 +120,14 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
 
   const handleDelete = (id: string) => {
     if (window.confirm('Tem certeza que deseja excluir este compromisso?')) {
-      const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
-      onUpdate({ personalAppointments: updatedList });
-      showToast('Compromisso excluído.');
+      try {
+        const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
+        onUpdate({ personalAppointments: updatedList });
+        showToast('Compromisso excluído com sucesso!');
+      } catch (error) {
+        console.error('Erro ao excluir compromisso:', error);
+        showToast('Erro ao excluir compromisso. Tente novamente.');
+      }
     }
   };
 
