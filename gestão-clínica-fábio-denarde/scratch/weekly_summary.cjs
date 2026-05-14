@@ -1,4 +1,5 @@
 const admin = require('firebase-admin');
+const { getFirestore } = require('firebase-admin/firestore');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,7 +12,7 @@ if (!admin.apps.length) {
     });
 }
 
-const db = admin.firestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
+const db = getFirestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
 
 async function getWeeklySummary() {
     console.log('--- Resumo de Mensagens WhatsApp (Semana 11/05 a 17/05) ---\n');
@@ -21,7 +22,8 @@ async function getWeeklySummary() {
         
         for (const configDoc of settingsConfigSnapshot.docs) {
             const userId = configDoc.ref.parent.parent.id;
-            console.log(`Clínica: ${configDoc.data().name || userId}\n`);
+            const settingsData = configDoc.data();
+            console.log(`Clínica: ${settingsData.name || userId}\n`);
 
             // 1. Buscar todos os pacientes
             const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
@@ -46,8 +48,7 @@ async function getWeeklySummary() {
             for (let i = 0; i < dates.length; i++) {
                 const dateStr = dates[i];
                 const diaNome = diasSemanaNomes[i];
-                console.log(`> ${diaNome.toUpperCase()} (${dateStr})`);
-
+                
                 // Buscar sessões manuais para este dia
                 const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
                     .where('date', '==', dateStr)
@@ -78,9 +79,8 @@ async function getWeeklySummary() {
 
                 const todasAsSessoes = [...sessionsReais, ...sessionsVirtuais].sort((a, b) => a.time.localeCompare(b.time));
 
-                if (todasAsSessoes.length === 0) {
-                    console.log('  (Nenhum atendimento agendado)\n');
-                    continue;
+                if (todasAsSessoes.length > 0) {
+                    console.log(`> ${diaNome.toUpperCase()} (${dateStr})`);
                 }
 
                 todasAsSessoes.forEach(s => {
@@ -99,8 +99,8 @@ async function getWeeklySummary() {
                     console.log(`    Atendimento: ${s.time}`);
                     console.log(`    Lembrete Véspera: ${vesperaStr} às 09:00`);
                     console.log(`    Lembrete do Dia: ${dateStr} às ${remDiaHora}`);
+                    console.log('');
                 });
-                console.log('');
             }
         }
     } catch (error) {
