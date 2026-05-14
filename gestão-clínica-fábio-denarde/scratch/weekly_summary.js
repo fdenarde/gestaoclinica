@@ -1,7 +1,6 @@
-import admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
-import fs from 'fs';
-import path from 'path';
+const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
 
 const serviceAccountPath = path.resolve('./firebase-key.json');
 const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
@@ -12,99 +11,101 @@ if (!admin.apps.length) {
     });
 }
 
-const db = getFirestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
+const db = admin.firestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
 
-async function generateSummary() {
-    // Current week: 2026-05-10 (Sun) to 2026-05-16 (Sat)
-    const startDateStr = '2026-05-10';
-    const endDateStr = '2026-05-16';
-    const daysOfWeek = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+async function getWeeklySummary() {
+    console.log('--- Resumo de Mensagens WhatsApp (Semana 11/05 a 17/05) ---\n');
+    
+    try {
+        const settingsConfigSnapshot = await db.collectionGroup('settings').get();
+        
+        for (const configDoc of settingsConfigSnapshot.docs) {
+            const userId = configDoc.ref.parent.parent.id;
+            console.log(`Clínica: ${configDoc.data().name || userId}\n`);
 
-    console.log(`Resumo de envios para a semana de ${startDateStr} a ${endDateStr}\n`);
-
-    // Fetch all patients for all users (assuming single user based on previous exploration but searching group)
-    const patientsSnapshot = await db.collectionGroup('patients').get();
-    const patientsMap = {};
-    patientsSnapshot.forEach(doc => {
-        patientsMap[doc.id] = { id: doc.id, ...doc.data(), userId: doc.ref.parent.parent.id };
-    });
-
-    // Fetch all sessions for this week
-    const sessionsSnapshot = await db.collectionGroup('sessions')
-        .where('date', '>=', startDateStr)
-        .where('date', '<=', endDateStr)
-        .get();
-
-    const manualSessionsByDate = {};
-    sessionsSnapshot.forEach(doc => {
-        const s = doc.data();
-        if (!manualSessionsByDate[s.date]) manualSessionsByDate[s.date] = [];
-        manualSessionsByDate[s.date].push(s);
-    });
-
-    const summary = [];
-
-    // Iterate through each day of the week
-    for (let i = 0; i <= 6; i++) {
-        const current = new Date(startDateStr + 'T12:00:00');
-        current.setDate(current.getDate() + i);
-        const dateStr = current.toISOString().split('T')[0];
-        const dayName = daysOfWeek[i];
-
-        if (dayName === 'domingo') continue; // No appointments on Sunday
-
-        // Manual sessions for this day
-        const manual = manualSessionsByDate[dateStr] || [];
-        const manualIds = new Set(manual.map(m => m.patientId));
-
-        // Virtual sessions for this day
-        const virtual = [];
-        Object.values(patientsMap).forEach(p => {
-            if (p.status !== 'Ativo') return;
-            const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-            const targetDayNorm = dayName.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            // 1. Buscar todos os pacientes
+            const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
+            const patientsMap = {};
+            const activePatients = [];
             
-            if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                if (!manualIds.has(p.id)) {
-                    virtual.push({ patientId: p.id, time: p.fixedTime, date: dateStr, status: 'Agendada (Fixo)' });
+            patientsSnapshot.forEach(p => {
+                const data = { id: p.id, ...p.data() };
+                patientsMap[p.id] = data;
+                if (data.status === 'Ativo') {
+                    activePatients.push(data);
                 }
-            }
-        });
-
-        const allDaySessions = [...manual, ...virtual].filter(s => s.status === 'Agendada' || s.status === 'Agendada (Fixo)');
-
-        if (allDaySessions.length > 0) {
-            allDaySessions.sort((a, b) => a.time.localeCompare(b.time));
-            allDaySessions.forEach(s => {
-                const p = patientsMap[s.patientId];
-                if (!p) return;
-
-                const [hour] = s.time.split(':').map(Number);
-                const diaEnvio = hour < 12 ? '06:30' : '12:30';
-                
-                summary.push({
-                    data: dateStr,
-                    diaSemana: dayName,
-                    paciente: p.name,
-                    responsavel: p.guardianName,
-                    horario: s.time,
-                    envioVespera: '09:00', // Sent at 09:00 on (date - 1)
-                    envioDia: diaEnvio
-                });
             });
-        }
-    }
 
-    // Format output
-    summary.forEach(item => {
-        console.log(`[${item.data} - ${item.diaSemana}]`);
-        console.log(`   Paciente: ${item.paciente}`);
-        console.log(`   Responsável: ${item.responsavel}`);
-        console.log(`   Horário Atendimento: ${item.horario}`);
-        console.log(`   Envio Véspera (dia anterior): ${item.envioVespera}`);
-        console.log(`   Envio no Dia: ${item.envioDia}`);
-        console.log('-----------------------------------');
-    });
+            // 2. Definir os dias da semana
+            const dates = [
+                '2026-05-11', '2026-05-12', '2026-05-13', '2026-05-14',
+                '2026-05-15', '2026-05-16', '2026-05-17'
+            ];
+            const diasSemanaNomes = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
+
+            for (let i = 0; i < dates.length; i++) {
+                const dateStr = dates[i];
+                const diaNome = diasSemanaNomes[i];
+                console.log(`> ${diaNome.toUpperCase()} (${dateStr})`);
+
+                // Buscar sessões manuais para este dia
+                const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
+                    .where('date', '==', dateStr)
+                    .get();
+                
+                const manualSessions = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                const sessionsReais = manualSessions.filter(s => s.status === 'Agendada');
+
+                // Calcular sessões virtuais (recorrência)
+                const sessionsVirtuais = [];
+                activePatients.forEach(p => {
+                    const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                    const targetDayNorm = diaNome.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+                    if (fixedDayNorm === targetDayNorm && p.fixedTime) {
+                        const jaTemSessaoManual = manualSessions.some(s => s.patientId === p.id);
+                        if (!jaTemSessaoManual) {
+                            sessionsVirtuais.push({
+                                patientId: p.id,
+                                date: dateStr,
+                                time: p.fixedTime,
+                                status: 'Agendada',
+                                isVirtual: true
+                            });
+                        }
+                    }
+                });
+
+                const todasAsSessoes = [...sessionsReais, ...sessionsVirtuais].sort((a, b) => a.time.localeCompare(b.time));
+
+                if (todasAsSessoes.length === 0) {
+                    console.log('  (Nenhum atendimento agendado)\n');
+                    continue;
+                }
+
+                todasAsSessoes.forEach(s => {
+                    const patient = patientsMap[s.patientId];
+                    if (!patient) return;
+
+                    const [hour] = s.time.split(':').map(Number);
+                    const remDiaHora = hour < 12 ? '06:30' : '12:30';
+                    
+                    // Cálculo da véspera
+                    const d = new Date(dateStr + 'T12:00:00');
+                    d.setDate(d.getDate() - 1);
+                    const vesperaStr = d.toISOString().split('T')[0];
+
+                    console.log(`  - ${patient.name} (Resp: ${patient.guardianName})`);
+                    console.log(`    Atendimento: ${s.time}`);
+                    console.log(`    Lembrete Véspera: ${vesperaStr} às 09:00`);
+                    console.log(`    Lembrete do Dia: ${dateStr} às ${remDiaHora}`);
+                });
+                console.log('');
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao gerar resumo:', error);
+    }
 }
 
-generateSummary().then(() => process.exit(0));
+getWeeklySummary();
