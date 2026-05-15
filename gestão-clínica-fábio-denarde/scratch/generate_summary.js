@@ -15,11 +15,9 @@ if (!admin.apps.length) {
 const db = getFirestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');
 
 async function generateSummary() {
-    const today = new Date('2026-05-15T12:00:00'); // Based on user context
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay() + 1); // Monday
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 5); // Saturday
+    const todayStr = '2026-05-15'; // Friday
+    const startOfWeek = new Date('2026-05-11T12:00:00'); // Monday
+    const endOfWeek = new Date('2026-05-16T12:00:00'); // Saturday
 
     const dates = [];
     for (let d = new Date(startOfWeek); d <= endOfWeek; d.setDate(d.getDate() + 1)) {
@@ -31,14 +29,12 @@ async function generateSummary() {
     for (const configDoc of settingsConfigSnapshot.docs) {
         const userId = configDoc.ref.parent.parent.id;
         
-        // Patients
         const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
         const patientsMap = {};
         patientsSnapshot.forEach(p => {
             patientsMap[p.id] = { id: p.id, ...p.data() };
         });
 
-        // Config for holidays
         const configSnapshot = await db.doc(`users/${userId}/settings/config`).get();
         const settings = configSnapshot.exists ? configSnapshot.data() : {};
         const holidays = settings.holidays || [];
@@ -48,6 +44,12 @@ async function generateSummary() {
         console.log(`| :--- | :--- | :--- | :--- | :--- | :--- |`);
 
         for (const dateStr of dates) {
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const dateObj = new Date(y, m - 1, d, 12, 0, 0); // Local date
+            const dayOfWeekIndex = dateObj.getDay();
+            const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+            const diaDaSemanaAlvo = diasSemana[dayOfWeekIndex];
+
             const holidayObj = holidays.find(h => h.date === dateStr);
             if (holidayObj) {
                 console.log(`| ${dateStr.split('-').reverse().join('/')} | --- FERIADO --- | ${holidayObj.name} | --- | --- | --- |`);
@@ -61,15 +63,11 @@ async function generateSummary() {
             const manualSessions = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             const sessionsReais = manualSessions.filter(s => s.status === 'Agendada');
 
-            const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
-            const dayOfWeekIndex = new Date(dateStr + 'T12:00:00').getDay();
-            const diaDaSemanaAlvo = diasSemana[dayOfWeekIndex];
-
             const sessionsVirtuais = [];
             Object.values(patientsMap).forEach(p => {
                 if (p.status !== 'Ativo') return;
                 
-                const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                const fixedDayNorm = (p.fixedDay || '').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
                 const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
                 if (fixedDayNorm === targetDayNorm && p.fixedTime) {
@@ -78,7 +76,7 @@ async function generateSummary() {
                         sessionsVirtuais.push({
                             patientId: p.id,
                             date: dateStr,
-                            time: p.fixedTime,
+                            time: p.fixedTime.trim(),
                             status: 'Agendada',
                             isVirtual: true
                         });
@@ -98,19 +96,10 @@ async function generateSummary() {
                 if (!patient) continue;
 
                 // Véspera logic
-                const vesperaDate = new Date(dateStr + 'T12:00:00');
+                const vesperaDate = new Date(dateObj);
                 vesperaDate.setDate(vesperaDate.getDate() - 1);
-                const vesperaDay = vesperaDate.getDay();
-                let vesperaTime = '09:00';
+                const vesperaDisplay = `${vesperaDate.getDate().toString().padStart(2, '0')}/${(vesperaDate.getMonth()+1).toString().padStart(2, '0')}/${vesperaDate.getFullYear()} 09:00`;
                 
-                // If session is on Monday (1), vespera is Sunday (0). server.js sends on Sunday.
-                // If session is on Sunday (0), vespera is Saturday (6). server.js skips if today is Saturday.
-                let vesperaDisplay = `${vesperaDate.toISOString().split('T')[0].split('-').reverse().join('/')} 09:00`;
-                
-                if (dayOfWeekIndex === 0) { // Sunday session (unlikely)
-                    vesperaDisplay = 'Não enviado (Sábado)';
-                }
-
                 // Dia logic
                 const [hour] = s.time.split(':').map(Number);
                 let diaTime = hour < 12 ? '06:30' : '12:30';
