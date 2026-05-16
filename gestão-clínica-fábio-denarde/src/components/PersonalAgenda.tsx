@@ -37,10 +37,12 @@ type ViewMode = 'semanal' | 'mensal' | 'lista' | 'proximos';
 interface PersonalAgendaProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+  activeAlarmId: string | null;
+  activeAlarmLabel: string;
+  stopAlarm: () => void;
 }
 
-export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps) {
-  const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
+export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeAlarmLabel, stopAlarm }: PersonalAgendaProps) {
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>('semanal');
