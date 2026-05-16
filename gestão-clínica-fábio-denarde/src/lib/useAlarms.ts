@@ -192,6 +192,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
         const notTooLate = advanceMins === 0 ? secToEvent <= 60 : secToEvent <= 0;
 
         if (inTriggerWindow && notTooLate) {
+          console.log(`[Alarme] ⏰ ${app.type}: trigger=${triggerTime.toLocaleTimeString('pt-BR')} evento=${todayOccurrence.toLocaleTimeString('pt-BR')} secToTrigger=${secToTrigger} secToEvent=${secToEvent} advance=${advanceMins}min`);
           const alarmKey = `${app.id}-${now.toDateString()}`;
           if (!triggeredAlarms.current.has(alarmKey)) {
             triggeredAlarms.current.add(alarmKey);
