@@ -54,9 +54,14 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   const [notes, setNotes] = useState('');
   const [alarmEnabled, setAlarmEnabled] = useState(false);
   const [alarmAdvance, setAlarmAdvance] = useState<AlarmAdvance>('Na hora');
-  const [alarmSound, setAlarmSound] = useState<AlarmSound>('Notificação padrão');
+  const [alarmSound, setAlarmSound] = useState<string>('nokia_classic');
   const [alarmVolume, setAlarmVolume] = useState(80);
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
+  const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>([]);
+
+  useEffect(() => {
+    loadAlarmSounds().then(setAlarmSoundsList);
+  }, []);
 
   const resetForm = () => {
     setFormDate('');
