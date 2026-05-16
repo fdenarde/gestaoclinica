@@ -6,7 +6,7 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
-import { useAlarms, previewSound } from '../lib/useAlarms';
+import { previewSound } from '../lib/useAlarms';
 import { loadAlarmSounds, AlarmSoundMeta, getDefaultSounds } from '../lib/alarmSounds';
 
 // Configuração visual por tipo
