@@ -7,6 +7,7 @@ import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
 import { useAlarms } from '../lib/useAlarms';
+import { playAlarmSound, previewSound } from '../lib/useAlarms';
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
