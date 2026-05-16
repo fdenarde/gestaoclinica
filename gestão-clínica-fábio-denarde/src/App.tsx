@@ -401,6 +401,27 @@ export default function App() {
         </div>
       </header>
 
+      {activeAlarmId && (
+        <div
+          onClick={stopAlarm}
+          className="bg-red-600 text-white px-6 py-5 flex items-center justify-between cursor-pointer animate-pulse hover:bg-red-700 transition-colors shadow-lg z-50"
+        >
+          <div className="flex items-center gap-3">
+            <Bell size={28} className="animate-bounce" />
+            <div>
+              <p className="font-bold text-lg">⏰ ALARME DISPARANDO — Clique para parar</p>
+              <p className="text-sm opacity-90">{activeAlarmLabel}</p>
+            </div>
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); stopAlarm(); }}
+            className="bg-white text-red-600 px-8 py-3 rounded-xl font-black hover:bg-red-50 transition-colors shadow-md text-sm uppercase tracking-widest"
+          >
+            Parar Alarme
+          </button>
+        </div>
+      )}
+
       {/* Navigation Menu */}
       <nav className="bg-clinic-nav-bg border-b border-clinic-border-dark flex justify-center sticky top-0 z-40 shrink-0">
         <div className="flex w-full max-w-5xl overflow-x-auto custom-scrollbar">
