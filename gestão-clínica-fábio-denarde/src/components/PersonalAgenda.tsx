@@ -179,6 +179,30 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
     return eachDayOfInterval({ start, end });
   }, [currentDate]);
 
+  const listDateRange = useMemo(() => {
+    if (listFilter === 'hoje') {
+      return { start: currentDate, end: currentDate };
+    } else if (listFilter === 'semana') {
+      const start = startOfWeek(currentDate, { weekStartsOn: 1 });
+      const end = endOfWeek(currentDate, { weekStartsOn: 1 });
+      return { start, end };
+    } else {
+      const start = startOfMonth(currentDate);
+      const end = endOfMonth(currentDate);
+      return { start, end };
+    }
+  }, [currentDate, listFilter]);
+
+  const listTitle = useMemo(() => {
+    if (listFilter === 'hoje') {
+      return `Compromissos de Hoje - ${format(currentDate, "dd 'de' MMMM", { locale: ptBR })}`;
+    } else if (listFilter === 'semana') {
+      return `Compromissos da Semana - ${format(listDateRange.start, 'dd/MM')} a ${format(listDateRange.end, 'dd/MM')}`;
+    } else {
+      return `Compromissos de ${format(currentDate, "MMMM 'de' yyyy", { locale: ptBR })}`;
+    }
+  }, [currentDate, listFilter, listDateRange]);
+
   function endOfWeek(date: Date, options: { weekStartsOn: number }) {
     const day = date.getDay();
     const diff = (day < options.weekStartsOn ? 7 : 0) + day - options.weekStartsOn;
