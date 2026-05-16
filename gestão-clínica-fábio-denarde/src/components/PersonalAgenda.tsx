@@ -43,6 +43,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>('semanal');
+  const [listFilter, setListFilter] = useState<'hoje' | 'semana' | 'mes'>('hoje');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
 
