@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance, AlarmSound } from '../types';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Clock, Bell, CheckCircle2, MoreVertical, Plus, Edit2, Trash2, CalendarClock, BookOpen } from 'lucide-react';
 import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, isBefore, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
