@@ -38,7 +38,7 @@ function configToMeta(cfg: SoundConfig, url: string): AlarmSoundMeta {
 }
 
 export function getDefaultSounds(): AlarmSoundMeta[] {
-  return SOUNDS_CONFIG.map(cfg => configToMeta(cfg, `/sounds/${cfg.filename}`));
+  return SOUNDS_CONFIG.map(cfg => configToMeta(cfg, `${import.meta.env.BASE_URL}sounds/${cfg.filename}`));
 }
 
 let cachedSounds: AlarmSoundMeta[] | null = null;
