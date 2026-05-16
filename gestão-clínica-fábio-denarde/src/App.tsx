@@ -48,6 +48,8 @@ export default function App() {
   const [notifications, setNotifications] = useState<string[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
 
+  const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
+
   const navigateToPatient = (id: string) => {
     setSelectedPatientId(id);
     setActiveTab('atendentes');
