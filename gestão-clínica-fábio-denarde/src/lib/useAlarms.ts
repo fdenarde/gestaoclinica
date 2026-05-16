@@ -184,10 +184,14 @@ export function useAlarms(appointments: PersonalAppointment[]) {
         const todayOccurrence = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
         const advanceMins = advanceToMinutes(app.alarmAdvance);
         const triggerTime = addMinutes(todayOccurrence, -advanceMins);
-        const diffToTrigger = differenceInMinutes(now, triggerTime);
-        const diffToEvent = differenceInMinutes(now, todayOccurrence);
+        const secToTrigger = differenceInSeconds(now, triggerTime);
+        const secToEvent = differenceInSeconds(now, todayOccurrence);
 
-        if (diffToTrigger >= 0 && diffToTrigger <= 2 && diffToEvent <= 0) {
+        // Janela de disparo: até 120s após o trigger, e não mais que 60s após o evento
+        const inTriggerWindow = secToTrigger >= 0 && secToTrigger <= 120;
+        const notTooLate = advanceMins === 0 ? secToEvent <= 60 : secToEvent <= 0;
+
+        if (inTriggerWindow && notTooLate) {
           const alarmKey = `${app.id}-${now.toDateString()}`;
           if (!triggeredAlarms.current.has(alarmKey)) {
             triggeredAlarms.current.add(alarmKey);
