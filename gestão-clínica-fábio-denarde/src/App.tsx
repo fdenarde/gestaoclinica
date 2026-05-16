@@ -296,6 +296,7 @@ export default function App() {
             som_alarme: a.alarmSound || null,
             antecedencia_alarme: a.alarmAdvance || null,
             volume_alarme: a.alarmVolume ?? 80,
+            fade_in: a.alarmFadeIn ?? false,
             status: a.isDone ? 'concluído' : 'ativo',
             criado_em: new Date().toISOString()
           };
