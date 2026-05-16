@@ -212,12 +212,16 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   const handlePrev = () => {
     if (viewMode === 'mensal') setCurrentDate(subMonths(currentDate, 1));
     else if (viewMode === 'semanal') setCurrentDate(subWeeks(currentDate, 1));
+    else if (viewMode === 'lista' && listFilter === 'mes') setCurrentDate(subMonths(currentDate, 1));
+    else if (viewMode === 'lista' && listFilter === 'semana') setCurrentDate(subWeeks(currentDate, 1));
     else setCurrentDate(subDays(currentDate, 1));
   };
 
   const handleNext = () => {
     if (viewMode === 'mensal') setCurrentDate(addMonths(currentDate, 1));
     else if (viewMode === 'semanal') setCurrentDate(addWeeks(currentDate, 1));
+    else if (viewMode === 'lista' && listFilter === 'mes') setCurrentDate(addMonths(currentDate, 1));
+    else if (viewMode === 'lista' && listFilter === 'semana') setCurrentDate(addWeeks(currentDate, 1));
     else setCurrentDate(addDays(currentDate, 1));
   };
 
@@ -274,6 +278,8 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
             <span className="font-bold min-w-[120px] text-center text-[#5D4037] uppercase tracking-widest text-xs">
               {viewMode === 'mensal' ? format(currentDate, "MMMM", { locale: ptBR }) :
                 viewMode === 'semanal' ? `${format(weekDays[0], 'dd/MM')} - ${format(weekDays[6], 'dd/MM')}` :
+                viewMode === 'lista' && listFilter === 'semana' ? `${format(listDateRange.start, 'dd/MM')} - ${format(listDateRange.end, 'dd/MM')}` :
+                viewMode === 'lista' && listFilter === 'mes' ? format(currentDate, "MMMM", { locale: ptBR }) :
                 format(currentDate, 'dd/MM/yyyy')}
             </span>
             <button onClick={handleNext} className="p-1 hover:bg-[#F5EBE6] text-[#5D4037] rounded-lg transition-colors"><ChevronRight size={18} /></button>
