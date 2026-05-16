@@ -33,7 +33,7 @@ function stopAllSounds() {
   globalAudioCtx = null;
 }
 
-function playSound(type: AlarmSound | string) {
+async function playSound(type: AlarmSound | string) {
   if (type === 'Silencioso' || type === 'Silent') return;
 
   const normalized = normalizeSound(type);
@@ -47,8 +47,10 @@ function playSound(type: AlarmSound | string) {
   }
 
   if (globalAudioCtx.state === 'suspended') {
-    globalAudioCtx.resume();
+    await globalAudioCtx.resume();
   }
+
+  const now = globalAudioCtx.currentTime;
 
   const playBeep = (freq: number, oscType: OscillatorType, duration: number, startTime: number) => {
     if (!globalAudioCtx) return;
@@ -56,16 +58,16 @@ function playSound(type: AlarmSound | string) {
     const gainNode = globalAudioCtx.createGain();
 
     osc.type = oscType;
-    osc.frequency.setValueAtTime(freq, globalAudioCtx.currentTime + startTime);
+    osc.frequency.setValueAtTime(freq, now + startTime);
 
-    gainNode.gain.setValueAtTime(0.5, globalAudioCtx.currentTime + startTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.001, globalAudioCtx.currentTime + startTime + duration);
+    gainNode.gain.setValueAtTime(0.5, now + startTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + startTime + duration);
 
     osc.connect(gainNode);
     gainNode.connect(globalAudioCtx.destination);
 
-    osc.start(globalAudioCtx.currentTime + startTime);
-    osc.stop(globalAudioCtx.currentTime + startTime + duration);
+    osc.start(now + startTime);
+    osc.stop(now + startTime + duration);
     globalOscillators.push(osc);
   };
 
