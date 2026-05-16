@@ -26,16 +26,15 @@ const advanceToMinutes = (advance?: string): number => {
 };
 
 let currentHowl: Howl | null = null;
+let previewHowl: Howl | null = null;
 let fadeInInterval: ReturnType<typeof setInterval> | null = null;
 let stereoInterval: ReturnType<typeof setInterval> | null = null;
 
 function stopAllSounds() {
   if (fadeInInterval) { clearInterval(fadeInInterval); fadeInInterval = null; }
   if (stereoInterval) { clearInterval(stereoInterval); stereoInterval = null; }
-  if (currentHowl) {
-    currentHowl.unload();
-    currentHowl = null;
-  }
+  if (previewHowl) { previewHowl.unload(); previewHowl = null; }
+  if (currentHowl) { currentHowl.unload(); currentHowl = null; }
   try { if (typeof navigator !== 'undefined' && 'vibrate' in navigator) (navigator as any).vibrate(0); } catch {}
 }
 
