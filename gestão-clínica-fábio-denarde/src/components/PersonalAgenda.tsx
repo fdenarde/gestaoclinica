@@ -604,53 +604,25 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
           </div>
           {alarmEnabled && (
              <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
-                    <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
-                      <option value="Na hora">No horário</option>
-                      <option value="5 min">5 min antes</option>
-                      <option value="10 min">10 min antes</option>
-                      <option value="15 min">15 min antes</option>
-                      <option value="20 min">20 min antes</option>
-                      <option value="25 min">25 min antes</option>
-                      <option value="30 min">30 min antes</option>
-                      <option value="35 min">35 min antes</option>
-                      <option value="40 min">40 min antes</option>
-                      <option value="45 min">45 min antes</option>
-                      <option value="50 min">50 min antes</option>
-                      <option value="55 min">55 min antes</option>
-                      <option value="1 hora">1 hora antes</option>
-                      <option value="1h30">1h30 antes</option>
-                      <option value="2 horas">2 horas antes</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
-                    <select value={alarmSound} onChange={e => setAlarmSound(e.target.value)} className="w-full p-2 border rounded-lg text-sm">
-                      {alarmSoundsList.length === 0 ? (
-                        <option value="">Carregando sons...</option>
-                      ) : (
-                        <>
-                          <optgroup label="🔔 Suaves">
-                            {alarmSoundsList.filter(s => s.category === 'suave').map(s => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
-                            ))}
-                          </optgroup>
-                          <optgroup label="📢 Médios">
-                            {alarmSoundsList.filter(s => s.category === 'medio').map(s => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
-                            ))}
-                          </optgroup>
-                          <optgroup label="🚨 Fortes">
-                            {alarmSoundsList.filter(s => s.category === 'forte').map(s => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
-                            ))}
-                          </optgroup>
-                        </>
-                      )}
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
+                  <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
+                    <option value="Na hora">No horário</option>
+                    <option value="5 min">5 min antes</option>
+                    <option value="10 min">10 min antes</option>
+                    <option value="15 min">15 min antes</option>
+                    <option value="20 min">20 min antes</option>
+                    <option value="25 min">25 min antes</option>
+                    <option value="30 min">30 min antes</option>
+                    <option value="35 min">35 min antes</option>
+                    <option value="40 min">40 min antes</option>
+                    <option value="45 min">45 min antes</option>
+                    <option value="50 min">50 min antes</option>
+                    <option value="55 min">55 min antes</option>
+                    <option value="1 hora">1 hora antes</option>
+                    <option value="1h30">1h30 antes</option>
+                    <option value="2 horas">2 horas antes</option>
+                  </select>
                 </div>
 
                 <div>
@@ -678,7 +650,12 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Pré-visualizar</label>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">
+                    Som selecionado:{' '}
+                    <span className="text-[#5D4037] font-black">
+                      {alarmSoundsList.find(s => s.id === alarmSound)?.name || 'Nokia Clássico'}
+                    </span>
+                  </label>
                   {alarmSoundsList.length === 0 ? (
                     <p className="text-[10px] text-gray-400 italic">Carregando sons...</p>
                   ) : (
@@ -691,12 +668,29 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                           <div key={cat}>
                             <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">{catLabel}</span>
                             <div className="grid grid-cols-4 gap-1.5 mt-1">
-                              {catSounds.map(s => (
-                                <button key={s.id} type="button" onClick={() => previewSound(s.id, alarmVolume)}
-                                  className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
-                                  <span className="text-xs">▶</span> {s.label}
-                                </button>
-                              ))}
+                              {catSounds.map(s => {
+                                const isSelected = alarmSound === s.id;
+                                return (
+                                  <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      setAlarmSound(s.id);
+                                      previewSound(s.id, alarmVolume);
+                                    }}
+                                    className={`
+                                      flex items-center justify-center gap-1 px-1.5 py-2 rounded-lg border text-[9px] font-bold uppercase tracking-wider cursor-pointer transition-all
+                                      ${isSelected
+                                        ? 'bg-[#5D4037] text-white shadow-sm border-[#5D4037]'
+                                        : 'border-gray-200 text-gray-600 hover:bg-[#F5EBE6] hover:text-[#5D4037] hover:border-[#DED4C8]'}
+                                    `}
+                                  >
+                                    <span className="text-xs">{isSelected ? '🔊' : '▶'}</span> {s.label}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         );
