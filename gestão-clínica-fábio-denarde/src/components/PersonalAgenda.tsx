@@ -628,21 +628,27 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                   <div>
                     <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
                     <select value={alarmSound} onChange={e => setAlarmSound(e.target.value)} className="w-full p-2 border rounded-lg text-sm">
-                      <optgroup label="🔔 Suaves">
-                        {alarmSoundsList.filter(s => s.category === 'suave').map(s => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="📢 Médios">
-                        {alarmSoundsList.filter(s => s.category === 'medio').map(s => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="🚨 Fortes">
-                        {alarmSoundsList.filter(s => s.category === 'forte').map(s => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                      </optgroup>
+                      {alarmSoundsList.length === 0 ? (
+                        <option value="">Carregando sons...</option>
+                      ) : (
+                        <>
+                          <optgroup label="🔔 Suaves">
+                            {alarmSoundsList.filter(s => s.category === 'suave').map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="📢 Médios">
+                            {alarmSoundsList.filter(s => s.category === 'medio').map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="🚨 Fortes">
+                            {alarmSoundsList.filter(s => s.category === 'forte').map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </optgroup>
+                        </>
+                      )}
                     </select>
                   </div>
                 </div>
