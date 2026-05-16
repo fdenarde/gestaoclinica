@@ -32,6 +32,16 @@ const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: st
 
 const TIMES = Array.from({ length: 13 }, (_, i) => `${String(i + 7).padStart(2, '0')}:00`);
 
+const TIME_OPTIONS = (() => {
+  const opts: string[] = [];
+  for (let h = 6; h <= 22; h++) {
+    for (let m = 0; m < 60; m += 5) {
+      opts.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    }
+  }
+  return opts;
+})();
+
 type ViewMode = 'semanal' | 'mensal' | 'lista' | 'proximos';
 
 interface PersonalAgendaProps {
@@ -553,7 +563,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
             <div>
               <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Horário</label>
               <select value={formTime} onChange={e => setFormTime(e.target.value)} className="w-full p-2 border rounded-lg">
-                {TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                {TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
           </div>
