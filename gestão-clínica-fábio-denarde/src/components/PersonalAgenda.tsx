@@ -679,26 +679,30 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
 
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Pré-visualizar</label>
-                  <div className="space-y-2">
-                    {(['suave', 'medio', 'forte'] as const).map(cat => {
-                      const catSounds = alarmSoundsList.filter(s => s.category === cat);
-                      if (catSounds.length === 0) return null;
-                      const catLabel = cat === 'suave' ? '🔔 Suaves' : cat === 'medio' ? '📢 Médios' : '🚨 Fortes';
-                      return (
-                        <div key={cat}>
-                          <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">{catLabel}</span>
-                          <div className="grid grid-cols-4 gap-1.5 mt-1">
-                            {catSounds.map(s => (
-                              <button key={s.id} type="button" onClick={() => previewSound(s.id, alarmVolume)}
-                                className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
-                                <span className="text-xs">▶</span> {s.label}
-                              </button>
-                            ))}
+                  {alarmSoundsList.length === 0 ? (
+                    <p className="text-[10px] text-gray-400 italic">Carregando sons...</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {(['suave', 'medio', 'forte'] as const).map(cat => {
+                        const catSounds = alarmSoundsList.filter(s => s.category === cat);
+                        if (catSounds.length === 0) return null;
+                        const catLabel = cat === 'suave' ? '🔔 Suaves' : cat === 'medio' ? '📢 Médios' : '🚨 Fortes';
+                        return (
+                          <div key={cat}>
+                            <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">{catLabel}</span>
+                            <div className="grid grid-cols-4 gap-1.5 mt-1">
+                              {catSounds.map(s => (
+                                <button key={s.id} type="button" onClick={() => previewSound(s.id, alarmVolume)}
+                                  className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
+                                  <span className="text-xs">▶</span> {s.label}
+                                </button>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
              </div>
           )}
