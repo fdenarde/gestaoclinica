@@ -282,9 +282,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                     return (
                       <div key={time} className="space-y-1">
                         {appts.map(app => {
-                          const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
-                          return (
-                            <div key={app.id} className={cn("p-2 rounded-lg border relative group", config.bg, "border-black/5", app.isDone ? "opacity-50 grayscale" : '')}
+                          const config = APPOINTMENT_CON                            <div key={app.id} className={cn("p-2 rounded-lg border relative group", config.bg, "border-black/5", app.isDone ? "opacity-50 grayscale" : '')}>
                               <div className="flex justify-between items-start mb-1">
                                 <span className={cn("text-[10px] font-bold", config.text)}>{time}</span>
                                 <div className="flex gap-1">
@@ -298,22 +296,26 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                               </div>
                               {/* Ações no Hover */}
                               <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5">
-                                <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); setFormDate(app.date); setFormTime(app.time); setRecurrence(app.recurrence); showToast('Compromisso marcado como concluído!'); }} className="p-2 hover:bg-green-50 text-green-600 rounded" title="Marcar como concluído">
+                                <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); showToast('Compromisso marcado como concluído!'); }} className="p-2 hover:bg-green-50 text-green-600 rounded" title="Marcar como concluído">
                                   <CheckCircle2 size={14} />
                                 </button>
-                                <button onClick={(e) => { e.stopPropagation(); openEdit(app); setFormDate(app.date); setFormTime(app.time); setRecurrence(app.recurrence); setNotes(app.notes); setAlarmEnabled(app.alarmEnabled); setAlarmAdvance(app.alarmAdvance); setAlarmSound(app.alarmSound); }} className="p-2 hover:bg-blue-50 text-blue-600 rounded" title="Editar" />
-                                <button className="p-2 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); handleDelete(app.id); }} />
+                                <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-2 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
+                                  <Edit2 size={14} />
+                                </button>
+                                <button className="p-2 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); handleDelete(app.id); }}>
+                                  <Trash2 size={14} />
+                                </button>
                               </div>
                             </div>
                           );
                         })}
                       </div>
-                    )}
-                  )}
+                    );
+                  })}
                 </div>
               </div>
-            })
-          </div>
+            );
+          })}
         </div>
       )}
 
@@ -326,7 +328,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
             ))}
           </div>
           <div className="grid grid-cols-7">
-            {monthDays.map((day, i) => {
+            {monthDays.map((day) => {
               const isCurrentMonth = isSameMonth(day, currentDate);
               const isToday = isSameDay(day, new Date());
               const appts = getOccurrences(day, day);
@@ -344,11 +346,11 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                       return (
                         <div key={app.id} className={cn("inline-block w-4 h-4 rounded-full", config.bg, "border border-black/10", app.isDone ? "opacity-30" : '')} />
                       );
-                    })
+                    })}
                   </div>
                 </div>
-              )
-            )}
+              );
+            })}
           </div>
         </div>
       )}
@@ -357,55 +359,56 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
       {viewMode === 'lista' && (
         <div className="bg-white rounded-2xl border border-[#DED4C8] shadow-sm p-6 min-h-[400px]">
           <h3 className="font-serif text-xl font-bold text-[#5D4037] mb-6 flex items-center gap-2">
-            <List size={20} /> Compromissos do Dia - {format(currentDate, 'dd 'de' MMMM', { locale: ptBR })}
+            <List size={20} /> Compromissos do Dia - {format(currentDate, "dd 'de' MMMM", { locale: ptBR })}
           </h3>
           <div className="space-y-3">
-            {getOccurrences(currentDate, [new Date()].slice(0, 1))
-              .sort((a, b) => a.time.localeCompare(b.time))
-              .filter(app => !app.isDone)
-              .map(app => {
-                const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
-                return (
-                  <div key={app.id} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
-                    <div className="flex items-center gap-4">
-                      <span className={cn('text-lg font-bold', config.text)}>{app.time}</span>
-                      <div className="w-px h-8 bg-black/10"></div>
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xl">{config.icon}</span>
-                          <span className={cn('text-sm font-bold', config.text)}>{app.type}</span>
-                          <div className="flex gap-1 ml-2">
-                            {app.alarmEnabled && <Bell size={12} className={config.text} />}
-                            {app.isDone && <CheckCircle2 size={12} className='text-green-500' />}
+            {getOccurrences(currentDate, currentDate).length > 0 ? (
+              getOccurrences(currentDate, currentDate)
+                .sort((a, b) => a.time.localeCompare(b.time))
+                .map(app => {
+                  const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
+                  return (
+                    <div key={app.id} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
+                      <div className="flex items-center gap-4">
+                        <span className={cn('text-lg font-bold', config.text)}>{app.time}</span>
+                        <div className="w-px h-8 bg-black/10"></div>
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xl">{config.icon}</span>
+                            <span className={cn('text-sm font-bold', config.text)}>{app.type}</span>
+                            <div className="flex gap-1 ml-2">
+                              {app.alarmEnabled && <Bell size={12} className={config.text} />}
+                              {app.isDone && <CheckCircle2 size={12} className='text-green-500' />}
+                            </div>
                           </div>
+                          {app.notes && <span className='text-xs text-gray-600 mt-0.5'>{app.notes}</span>}
                         </div>
-                        {app.notes && <span className='text-xs text-gray-600 mt-0.5'>{app.notes}</span>}
                       </div>
-                      <div className='absolute top-0 right-0 -mt-2 pl-4 md:block md:hidden group-hover:block'>
-                        <button onClick={() => toggleDone(app.id)} className='px-2 py-1 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
-                          <CheckCircle2 size={12} />
+                      <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
+                        <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                          <CheckCircle2 size={14} />
                         </button>
-                        <button onClick={() => openEdit(app)} className='px-2 py-1 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
-                          <Edit2 size={12} />
+                        <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
+                          <Edit2 size={14} />
                         </button>
-                        <button onClick={() => handleDelete(app.id)} className='px-2 py-1 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
-                          <Trash2 size={12} />
+                        <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                          <Trash2 size={14} />
                         </button>
                       </div>
                     </div>
-                  )}
-                ) : (
-                  <div className='text-center text-gray-500 py-12 font-bold bg-gray-50 rounded-xl border border-dashed border-gray-200'>
-                    Não há compromissos para este dia.
-                    <button onClick={() => openNew(currentDate, '08:00')} className='block mx-auto mt-4 px-4 py-2 bg-[#5D4037] text-white rounded-lg hover:bg-[#4E342E] transition-colors'>
-                      Adicionar Compromisso
-                    </button>
-                  </div>
-                )}
+                  );
+                })
+            ) : (
+              <div className='text-center text-gray-500 py-12 font-bold bg-gray-50 rounded-xl border border-dashed border-gray-200'>
+                Não há compromissos para este dia.
+                <button onClick={() => openNew(currentDate, '08:00')} className='block mx-auto mt-4 px-4 py-2 bg-[#5D4037] text-white rounded-lg hover:bg-[#4E342E] transition-colors'>
+                  Adicionar Compromisso
+                </button>
               </div>
-            </div>
+            )}
           </div>
-        )}
+        </div>
+      )}
 
       {/* View: Próximos */}
       {viewMode === 'proximos' && (
@@ -418,37 +421,111 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
               .filter(o => !o.isDone)
               .slice(0, 10)
               .map(app => {
-                              const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
+                const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                 return (
-                  <div key={`app-${app.id}`} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border border-black/5')}
+                  <div key={`app-${app.id}`} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5')}>
                     <div className='flex items-center gap-4'>
                       <div className='flex flex-col items-center justify-center bg-white/50 p-3 text-sm rounded-lg'>
-                        <span className={cn('text-xs font-bold uppercase tracking-widest', config.text)}>{format(app.occDate, 'MMM', {locale: ptBR})}</span>
+                        <span className={cn('text-xs font-bold uppercase tracking-widest', config.text)}>{format(app.occDate, 'MMM', { locale: ptBR })}</span>
                         <span className={cn('text-base font-bold', config.text)}>{format(app.occDate, 'dd')}</span>
                       </div>
                       <span className={cn('text-xl font-bold', config.text)}>{app.time}</span>
-                      <div className='w-6 h-6 bg-black/10 rounded-full absolute top-2 right-2 float-right' />
-                      <div className='flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute top-0 right-0 -mt-2 pl-4 md:block md:hidden' >
-                        <button onClick={() => toggleDone(app.id)} className='px-2 py-1 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
-                          <CheckCircle2 size={12} />
-                        </button>
-                        <button onClick={() => openEdit(app)} className='px-2 py-1 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
-                          <Edit2 size={12} />
-                        </button>
-                        <button className='px-2 py-1 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600' onClick={e => { e.stopPropagation(); handleDelete(app.id); }} />
+                      <div className='flex flex-col'>
+                        <div className='flex items-center gap-2'>
+                          <span className='text-xl'>{config.icon}</span>
+                          <span className={cn('text-sm font-bold', config.text)}>{app.type}</span>
+                        </div>
+                        {app.notes && <span className='text-xs text-gray-600 mt-0.5'>{app.notes}</span>}
                       </div>
                     </div>
-                  );
-                })
-              )}
-            </div>
+                    <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
+                      <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                        <CheckCircle2 size={14} />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
+                        <Edit2 size={14} />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}
 
       {/* Modal Nova/Editar Sessão Pessoal */}
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={selectedApptId ? 'Editar Compromisso' : 'Novo Compromisso'}
-  ></div>
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={selectedApptId ? 'Editar Compromisso' : 'Novo Compromisso'}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Data</label>
+              <input type="date" value={formDate} onChange={e => setFormDate(e.target.value)} className="w-full p-2 border rounded-lg" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Horário</label>
+              <select value={formTime} onChange={e => setFormTime(e.target.value)} className="w-full p-2 border rounded-lg">
+                {TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Tipo de Atividade</label>
+            <select value={type} onChange={e => setType(e.target.value as PersonalAppointmentType)} className="w-full p-2 border rounded-lg">
+              {Object.keys(APPOINTMENT_CONFIG).map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Recorrência</label>
+            <select value={recurrence} onChange={e => setRecurrence(e.target.value as any)} className="w-full p-2 border rounded-lg">
+              <option value="Não repetir">Não repetir</option>
+              <option value="Toda semana">Toda semana</option>
+              <option value="Todo mês">Todo mês</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Observações</label>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full p-2 border rounded-lg h-20" placeholder="Detalhes opcionais..." />
+          </div>
+          <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
+            <input type="checkbox" checked={alarmEnabled} onChange={e => setAlarmEnabled(e.target.checked)} className="w-4 h-4 rounded text-[#5D4037]" />
+            <div className="flex-1">
+              <span className="text-sm font-bold text-gray-700">Ativar Alarme Sonoro</span>
+              <p className="text-[10px] text-gray-500">O sistema emitirá um alerta no horário configurado</p>
+            </div>
+          </div>
+          {alarmEnabled && (
+             <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
+                  <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
+                    <option value="No horário">No horário</option>
+                    <option value="5 minutos antes">5 min antes</option>
+                    <option value="15 minutos antes">15 min antes</option>
+                    <option value="30 minutos antes">30 min antes</option>
+                    <option value="1 hora antes">1 hora antes</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
+                  <select value={alarmSound} onChange={e => setAlarmSound(e.target.value as AlarmSound)} className="w-full p-2 border rounded-lg text-sm">
+                    <option value="Ding">Ding</option>
+                    <option value="Bell">Sino</option>
+                    <option value="Chime">Chime</option>
+                    <option value="Digital">Digital</option>
+                  </select>
+                </div>
+             </div>
+          )}
+          <div className="pt-2">
+            <button onClick={handleSave} className="w-full py-3 bg-[#5D4037] text-white font-bold rounded-xl hover:bg-[#4E342E] transition-all shadow-md active:scale-[0.98]">
+              {selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
