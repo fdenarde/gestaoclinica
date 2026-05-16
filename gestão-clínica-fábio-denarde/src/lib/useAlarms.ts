@@ -109,6 +109,7 @@ export async function previewSound(soundId: string, volume: number = 80) {
 }
 
 export function useAlarms(appointments: PersonalAppointment[]) {
+  console.log('[Alarme] Hook useAlarms chamado com', appointments.length, 'compromissos');
   const triggeredAlarms = useRef<Set<string>>(new Set());
   const [permission, setPermission] = useState<NotificationPermission>(() => {
     if (typeof Notification !== 'undefined') return Notification.permission;
