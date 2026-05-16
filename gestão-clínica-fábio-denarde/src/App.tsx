@@ -146,6 +146,7 @@ export default function App() {
             alarmSound: data.som_alarme,
             alarmAdvance: data.antecedencia_alarme,
             alarmVolume: data.volume_alarme ?? 80,
+            alarmFadeIn: data.fade_in ?? false,
             isDone: data.status === 'concluído'
           } as PersonalAppointment;
         });
