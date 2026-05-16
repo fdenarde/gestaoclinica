@@ -12,6 +12,7 @@ import Reports from './components/Reports';
 import Settings from './components/Settings';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { useAlarms } from './lib/useAlarms';
 
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
