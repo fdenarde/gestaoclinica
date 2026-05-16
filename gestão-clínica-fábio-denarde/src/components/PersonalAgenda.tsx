@@ -1,13 +1,13 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance, AlarmSound } from '../types';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Clock, Bell, CheckCircle2, MoreVertical, Plus, Edit2, Trash2, CalendarClock, BookOpen } from 'lucide-react';
-import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, isBefore, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Bell, CheckCircle2, Edit2, Trash2, BookOpen } from 'lucide-react';
+import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
-import { useAlarms } from '../lib/useAlarms';
-import { previewSound } from '../lib/useAlarms';
+import { useAlarms, previewSound } from '../lib/useAlarms';
+import { loadAlarmSounds, AlarmSoundMeta } from '../lib/alarmSounds';
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
