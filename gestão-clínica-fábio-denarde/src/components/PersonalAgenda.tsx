@@ -588,20 +588,21 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
                   <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
-                    <option value="No horário">No horário</option>
-                    <option value="5 minutos antes">5 min antes</option>
-                    <option value="15 minutos antes">15 min antes</option>
-                    <option value="30 minutos antes">30 min antes</option>
-                    <option value="1 hora antes">1 hora antes</option>
+                    <option value="Na hora">No horário</option>
+                    <option value="5 min">5 min antes</option>
+                    <option value="10 min">10 min antes</option>
+                    <option value="15 min">15 min antes</option>
+                    <option value="30 min">30 min antes</option>
+                    <option value="1 hora">1 hora antes</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
                   <select value={alarmSound} onChange={e => setAlarmSound(e.target.value as AlarmSound)} className="w-full p-2 border rounded-lg text-sm">
-                    <option value="Ding">Ding</option>
-                    <option value="Bell">Sino</option>
-                    <option value="Chime">Chime</option>
-                    <option value="Digital">Digital</option>
+                    <option value="Notificação padrão">Ding</option>
+                    <option value="Sino suave">Sino</option>
+                    <option value="Melodia relaxante">Chime</option>
+                    <option value="Alerta urgente">Digital</option>
                   </select>
                 </div>
              </div>
