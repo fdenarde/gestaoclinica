@@ -18,9 +18,11 @@ const advanceToMinutes = (advance?: string): number => {
 
 let currentHowl: Howl | null = null;
 let fadeInInterval: ReturnType<typeof setInterval> | null = null;
+let stereoInterval: ReturnType<typeof setInterval> | null = null;
 
 function stopAllSounds() {
   if (fadeInInterval) { clearInterval(fadeInInterval); fadeInInterval = null; }
+  if (stereoInterval) { clearInterval(stereoInterval); stereoInterval = null; }
   if (currentHowl) {
     currentHowl.unload();
     currentHowl = null;
