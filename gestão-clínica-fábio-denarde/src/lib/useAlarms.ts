@@ -10,8 +10,17 @@ const advanceToMinutes = (advance?: string): number => {
     case '5 min': case '5 minutos antes': return 5;
     case '10 min': return 10;
     case '15 min': case '15 minutos antes': return 15;
+    case '20 min': return 20;
+    case '25 min': return 25;
     case '30 min': case '30 minutos antes': return 30;
+    case '35 min': return 35;
+    case '40 min': return 40;
+    case '45 min': return 45;
+    case '50 min': return 50;
+    case '55 min': return 55;
     case '1 hora': case '1 hora antes': return 60;
+    case '1h30': return 90;
+    case '2 horas': return 120;
     default: return 0;
   }
 };
