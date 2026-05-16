@@ -103,6 +103,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
       alarmEnabled,
       alarmAdvance: alarmEnabled ? alarmAdvance : undefined,
       alarmSound: alarmEnabled ? alarmSound : undefined,
+      alarmVolume: alarmEnabled ? alarmVolume : undefined,
       isDone: false,
     };
 
