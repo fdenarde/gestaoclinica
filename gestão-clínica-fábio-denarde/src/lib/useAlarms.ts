@@ -251,6 +251,10 @@ export function useAlarms(appointments: PersonalAppointment[]) {
 
       // Agenda o próximo check preciso, ou fallback 30s
       scheduleNextCheck(nextTriggerMs ?? 30000);
+      } catch (e) {
+        console.error('[Alarme] ERRO no checkAlarms:', e);
+        scheduleNextCheck(30000);
+      }
     };
 
     const interval = setInterval(checkAlarms, 60000);
