@@ -612,8 +612,17 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                       <option value="5 min">5 min antes</option>
                       <option value="10 min">10 min antes</option>
                       <option value="15 min">15 min antes</option>
+                      <option value="20 min">20 min antes</option>
+                      <option value="25 min">25 min antes</option>
                       <option value="30 min">30 min antes</option>
+                      <option value="35 min">35 min antes</option>
+                      <option value="40 min">40 min antes</option>
+                      <option value="45 min">45 min antes</option>
+                      <option value="50 min">50 min antes</option>
+                      <option value="55 min">55 min antes</option>
                       <option value="1 hora">1 hora antes</option>
+                      <option value="1h30">1h30 antes</option>
+                      <option value="2 horas">2 horas antes</option>
                     </select>
                   </div>
                   <div>
