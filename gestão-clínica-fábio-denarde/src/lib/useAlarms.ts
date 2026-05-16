@@ -64,20 +64,12 @@ function playAlarmSound(url: string, volume: number = 80, fadeIn: boolean = fals
   currentHowl.play();
   currentHowl.stereo(-0.5);
 
-  // Alterna stereo
   let stereoLeft = true;
-  const stereoInterval = setInterval(() => {
-    if (!currentHowl) { clearInterval(stereoInterval); return; }
+  stereoInterval = setInterval(() => {
+    if (!currentHowl) { clearInterval(stereoInterval); stereoInterval = null; return; }
     stereoLeft = !stereoLeft;
     currentHowl.stereo(stereoLeft ? -0.5 : 0.5);
   }, 800);
-
-  // Guarda para limpar
-  const origUnload = currentHowl.unload.bind(currentHowl);
-  currentHowl.unload = () => {
-    clearInterval(stereoInterval);
-    origUnload();
-  };
 
   // Vibração
   try {
