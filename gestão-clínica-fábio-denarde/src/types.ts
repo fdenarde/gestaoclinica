@@ -148,6 +148,7 @@ export interface PersonalAppointment {
   alarmEnabled: boolean;
   alarmAdvance?: AlarmAdvance;
   alarmSound?: AlarmSound;
+  alarmVolume?: number;
   isDone: boolean; // para histórico
 }
 
