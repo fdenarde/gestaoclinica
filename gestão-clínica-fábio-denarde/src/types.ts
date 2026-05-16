@@ -135,7 +135,7 @@ export type PersonalAppointmentType =
   | 'Outro';
 
 export type AlarmAdvance = '5 min' | '10 min' | '15 min' | '30 min' | '1 hora' | 'Na hora';
-export type AlarmSound = 'Sino suave' | 'Notificação padrão' | 'Melodia relaxante' | 'Alerta urgente' | 'Bipe curto' | 'Sirene' | 'Alarme pulsante' | 'Toque de telefone' | 'Silencioso';
+export type AlarmSound = 'Sino suave' | 'Notificação padrão' | 'Melodia relaxante' | 'Alerta urgente' | 'Bipe curto' | 'Sirene' | 'Alarme pulsante' | 'Toque de telefone' | 'Clássico Nokia' | 'Digital repetitivo' | 'Toque duplo' | 'Urgência crescente' | 'Marimba' | 'Pulse forte' | 'Campainha escola' | 'Alerta militar' | 'Silencioso';
 
 export interface PersonalAppointment {
   id: string;
