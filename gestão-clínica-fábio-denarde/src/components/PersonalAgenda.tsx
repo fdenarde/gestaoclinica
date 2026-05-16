@@ -616,28 +616,21 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
-                    <select value={alarmSound} onChange={e => setAlarmSound(e.target.value as AlarmSound)} className="w-full p-2 border rounded-lg text-sm">
+                    <select value={alarmSound} onChange={e => setAlarmSound(e.target.value)} className="w-full p-2 border rounded-lg text-sm">
                       <optgroup label="🔔 Suaves">
-                        <option value="Notificação padrão">Ding</option>
-                        <option value="Sino suave">Sino suave</option>
-                        <option value="Melodia relaxante">Melodia relaxante</option>
-                        <option value="Marimba">Marimba</option>
+                        {alarmSoundsList.filter(s => s.category === 'suave').map(s => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
                       </optgroup>
                       <optgroup label="📢 Médios">
-                        <option value="Bipe curto">Bipe curto</option>
-                        <option value="Toque duplo">Toque duplo</option>
-                        <option value="Digital repetitivo">Digital repetitivo</option>
-                        <option value="Toque de telefone">Toque de telefone</option>
+                        {alarmSoundsList.filter(s => s.category === 'medio').map(s => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
                       </optgroup>
                       <optgroup label="🚨 Fortes">
-                        <option value="Alerta urgente">Alerta urgente</option>
-                        <option value="Sirene">Sirene</option>
-                        <option value="Alarme pulsante">Alarme pulsante</option>
-                        <option value="Pulse forte">Pulse forte</option>
-                        <option value="Urgência crescente">Urgência crescente</option>
-                        <option value="Campainha escola">Campainha escola</option>
-                        <option value="Alerta militar">Alerta militar</option>
-                        <option value="Clássico Nokia">Clássico Nokia</option>
+                        {alarmSoundsList.filter(s => s.category === 'forte').map(s => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
                       </optgroup>
                     </select>
                   </div>
@@ -670,39 +663,24 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Pré-visualizar</label>
                   <div className="space-y-2">
-                    <div>
-                      <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">🔔 Suaves</span>
-                      <div className="grid grid-cols-4 gap-1.5 mt-1">
-                        {(['Notificação padrão', 'Sino suave', 'Melodia relaxante', 'Marimba'] as AlarmSound[]).map(snd => (
-                          <button key={snd} type="button" onClick={() => previewSound(snd, alarmVolume)}
-                            className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
-                            <span className="text-xs">▶</span> {snd === 'Notificação padrão' ? 'Ding' : snd === 'Marimba' ? 'Marimba' : snd === 'Sino suave' ? 'Sino' : 'Melodia'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">📢 Médios</span>
-                      <div className="grid grid-cols-4 gap-1.5 mt-1">
-                        {(['Bipe curto', 'Toque duplo', 'Digital repetitivo', 'Toque de telefone'] as AlarmSound[]).map(snd => (
-                          <button key={snd} type="button" onClick={() => previewSound(snd, alarmVolume)}
-                            className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
-                            <span className="text-xs">▶</span> {snd === 'Toque duplo' ? 'T. Duplo' : snd === 'Digital repetitivo' ? 'Digital' : snd === 'Toque de telefone' ? 'Telefone' : 'Bipe'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">🚨 Fortes</span>
-                      <div className="grid grid-cols-4 gap-1.5 mt-1">
-                        {(['Alerta urgente', 'Sirene', 'Alarme pulsante', 'Pulse forte', 'Urgência crescente', 'Campainha escola', 'Alerta militar', 'Clássico Nokia'] as AlarmSound[]).map(snd => (
-                          <button key={snd} type="button" onClick={() => previewSound(snd, alarmVolume)}
-                            className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
-                            <span className="text-xs">▶</span> {snd === 'Alerta urgente' ? 'Urgente' : snd === 'Alarme pulsante' ? 'Pulsante' : snd === 'Pulse forte' ? 'P. Forte' : snd === 'Urgência crescente' ? 'Urg.Cresc' : snd === 'Campainha escola' ? 'Campainha' : snd === 'Alerta militar' ? 'Militar' : snd === 'Clássico Nokia' ? 'Nokia' : 'Sirene'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    {(['suave', 'medio', 'forte'] as const).map(cat => {
+                      const catSounds = alarmSoundsList.filter(s => s.category === cat);
+                      if (catSounds.length === 0) return null;
+                      const catLabel = cat === 'suave' ? '🔔 Suaves' : cat === 'medio' ? '📢 Médios' : '🚨 Fortes';
+                      return (
+                        <div key={cat}>
+                          <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">{catLabel}</span>
+                          <div className="grid grid-cols-4 gap-1.5 mt-1">
+                            {catSounds.map(s => (
+                              <button key={s.id} type="button" onClick={() => previewSound(s.id, alarmVolume)}
+                                className="flex items-center justify-center gap-1 px-1.5 py-1.5 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[9px] font-bold uppercase tracking-wider">
+                                <span className="text-xs">▶</span> {s.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
              </div>
