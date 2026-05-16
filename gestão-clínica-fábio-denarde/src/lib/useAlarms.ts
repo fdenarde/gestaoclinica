@@ -143,20 +143,24 @@ export function useAlarms(appointments: PersonalAppointment[]) {
   }, []);
 
   useEffect(() => {
-    let soundsCache: AlarmSoundMeta[] = [];
+    const soundsRef = { current: [] as AlarmSoundMeta[] };
 
     const initSounds = async () => {
-      soundsCache = await loadAlarmSounds();
+      soundsRef.current = await loadAlarmSounds();
+      console.log('[Alarme] Sons carregados:', soundsRef.current.length);
     };
     initSounds();
 
     const checkAlarms = () => {
-      if (soundsCache.length === 0) {
-        loadAlarmSounds(true).then(s => { soundsCache = s; }).catch(() => {});
+      if (soundsRef.current.length === 0) {
+        console.log('[Alarme] Sons ainda não carregados, tentando novamente...');
+        loadAlarmSounds(true).then(s => { soundsRef.current = s; }).catch(() => {});
         return;
       }
       const now = new Date();
+      console.log(`[Alarme] Verificando ${appointments.length} compromissos às ${now.toLocaleTimeString()}`);
 
+      let triggeredCount = 0;
       appointments.forEach(app => {
         if (!app.alarmEnabled || app.isDone) return;
         const dateParts = app.date.split('-').map(Number);
@@ -187,9 +191,11 @@ export function useAlarms(appointments: PersonalAppointment[]) {
           const alarmKey = `${app.id}-${now.toDateString()}`;
           if (!triggeredAlarms.current.has(alarmKey)) {
             triggeredAlarms.current.add(alarmKey);
+            triggeredCount++;
 
             const soundId = app.alarmSound || 'nokia_classic';
-            const meta = soundsCache.find(s => s.id === soundId);
+            const meta = soundsRef.current.find(s => s.id === soundId);
+            console.log(`[Alarme] DISPARANDO: ${app.type} (som: ${soundId}, volume: ${app.alarmVolume}, fadeIn: ${app.alarmFadeIn})`);
             if (meta) {
               playAlarmSound(meta.url, app.alarmVolume ?? 80, app.alarmFadeIn ?? false);
             }
@@ -210,18 +216,15 @@ export function useAlarms(appointments: PersonalAppointment[]) {
           }
         }
       });
+      if (triggeredCount === 0) {
+        console.log('[Alarme] Nenhum alarme para disparar neste momento');
+      }
     };
 
     const interval = setInterval(checkAlarms, 30000);
+    checkAlarms();
 
-    const delayedCheck = setTimeout(() => {
-      checkAlarms();
-    }, 2000);
-
-    return () => {
-      clearInterval(interval);
-      clearTimeout(delayedCheck);
-    };
+    return () => clearInterval(interval);
   }, [appointments, permission, stopAlarm]);
 
   return { requestPermission, permission, activeAlarmId, activeAlarmLabel, stopAlarm };
