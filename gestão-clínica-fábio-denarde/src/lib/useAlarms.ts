@@ -229,7 +229,18 @@ export function useAlarms(appointments: PersonalAppointment[]) {
     const interval = setInterval(checkAlarms, 30000);
     checkAlarms();
 
-    return () => clearInterval(interval);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[Alarme] Aba visível novamente, re-verificando...');
+        checkAlarms();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [appointments, permission, stopAlarm]);
 
   return { requestPermission, permission, activeAlarmId, activeAlarmLabel, stopAlarm };
