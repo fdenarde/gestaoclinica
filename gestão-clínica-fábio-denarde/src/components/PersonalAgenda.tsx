@@ -52,8 +52,8 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   const [recurrence, setRecurrence] = useState<string>('Não repetir');
   const [notes, setNotes] = useState('');
   const [alarmEnabled, setAlarmEnabled] = useState(false);
-  const [alarmAdvance, setAlarmAdvance] = useState<AlarmAdvance>('No horário');
-  const [alarmSound, setAlarmSound] = useState<AlarmSound>('Ding');
+  const [alarmAdvance, setAlarmAdvance] = useState<AlarmAdvance>('Na hora');
+  const [alarmSound, setAlarmSound] = useState<AlarmSound>('Notificação padrão');
 
   const resetForm = () => {
     setFormDate('');
