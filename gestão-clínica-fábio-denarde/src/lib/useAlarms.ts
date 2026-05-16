@@ -152,7 +152,10 @@ export function useAlarms(appointments: PersonalAppointment[]) {
     initSounds();
 
     const checkAlarms = () => {
-      if (soundsCache.length === 0) return;
+      if (soundsCache.length === 0) {
+        loadAlarmSounds(true).then(s => { soundsCache = s; }).catch(() => {});
+        return;
+      }
       const now = new Date();
 
       appointments.forEach(app => {
