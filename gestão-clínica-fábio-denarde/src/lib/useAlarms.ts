@@ -164,6 +164,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
     };
 
     const checkAlarms = () => {
+      try {
       if (soundsRef.current.length === 0) {
         console.log('[Alarme] Sons ainda não carregados, tentando novamente...');
         loadAlarmSounds(true).then(s => { soundsRef.current = s; }).catch(() => {});
