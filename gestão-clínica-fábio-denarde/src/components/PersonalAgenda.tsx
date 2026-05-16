@@ -282,7 +282,9 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                     return (
                       <div key={time} className="space-y-1">
                         {appts.map(app => {
-                          const config = APPOINTMENT_CON                            <div key={app.id} className={cn("p-2 rounded-lg border relative group", config.bg, "border-black/5", app.isDone ? "opacity-50 grayscale" : '')}>
+                          const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
+                          return (
+                            <div key={app.id} className={cn("p-2 rounded-lg border relative group", config.bg, "border-black/5", app.isDone ? "opacity-50 grayscale" : '')}>
                               <div className="flex justify-between items-start mb-1">
                                 <span className={cn("text-[10px] font-bold", config.text)}>{time}</span>
                                 <div className="flex gap-1">
