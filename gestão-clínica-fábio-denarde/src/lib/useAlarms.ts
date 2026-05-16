@@ -1,48 +1,75 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { PersonalAppointment, AlarmSound, AlarmAdvance } from '../types';
-import { differenceInMinutes, parseISO, isBefore, addMinutes, format } from 'date-fns';
+import { differenceInMinutes, addMinutes } from 'date-fns';
 
-// Tabela de mapeamento para avanço em minutos
-const advanceToMinutes = (advance?: AlarmAdvance): number => {
+const advanceToMinutes = (advance?: string): number => {
   switch (advance) {
-    case 'Na hora': return 0;
-    case '5 min': return 5;
+    case 'Na hora':
+    case 'No horário': return 0;
+    case '5 min':
+    case '5 minutos antes': return 5;
     case '10 min': return 10;
-    case '15 min': return 15;
-    case '30 min': return 30;
-    case '1 hora': return 60;
+    case '15 min':
+    case '15 minutos antes': return 15;
+    case '30 min':
+    case '30 minutos antes': return 30;
+    case '1 hora':
+    case '1 hora antes': return 60;
     default: return 0;
   }
 };
 
-// Gerador de sons simples usando Web Audio API
-const playSound = (type: AlarmSound) => {
-  if (type === 'Silencioso') return;
+let globalAudioCtx: AudioContext | null = null;
+let globalOscillators: OscillatorNode[] = [];
 
-  const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
+function stopAllSounds() {
+  globalOscillators.forEach(osc => {
+    try { osc.stop(); } catch {}
+  });
+  globalOscillators = [];
+  if (globalAudioCtx && globalAudioCtx.state !== 'closed') {
+    try { globalAudioCtx.close(); } catch {}
+  }
+  globalAudioCtx = null;
+}
+
+function playSound(type: AlarmSound | string) {
+  if (type === 'Silencioso' || type === 'Silent') return;
+
+  const normalized = normalizeSound(type);
+
+  stopAllSounds();
+
+  try {
+    globalAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  } catch {
+    return;
   }
 
-  const playBeep = (freq: number, type: OscillatorType, duration: number, startTime: number) => {
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-    
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime + startTime);
-    
-    gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime + startTime); // Volume
-    gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + startTime + duration);
-    
+  if (globalAudioCtx.state === 'suspended') {
+    globalAudioCtx.resume();
+  }
+
+  const playBeep = (freq: number, oscType: OscillatorType, duration: number, startTime: number) => {
+    if (!globalAudioCtx) return;
+    const osc = globalAudioCtx.createOscillator();
+    const gainNode = globalAudioCtx.createGain();
+
+    osc.type = oscType;
+    osc.frequency.setValueAtTime(freq, globalAudioCtx.currentTime + startTime);
+
+    gainNode.gain.setValueAtTime(0.5, globalAudioCtx.currentTime + startTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, globalAudioCtx.currentTime + startTime + duration);
+
     osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    
-    osc.start(audioCtx.currentTime + startTime);
-    osc.stop(audioCtx.currentTime + startTime + duration);
+    gainNode.connect(globalAudioCtx.destination);
+
+    osc.start(globalAudioCtx.currentTime + startTime);
+    osc.stop(globalAudioCtx.currentTime + startTime + duration);
+    globalOscillators.push(osc);
   };
 
-  switch (type) {
+  switch (normalized) {
     case 'Sino suave':
       playBeep(880, 'sine', 1, 0);
       playBeep(1100, 'sine', 1.5, 0.2);
@@ -57,52 +84,88 @@ const playSound = (type: AlarmSound) => {
       playBeep(659, 'sine', 1, 0.6);
       break;
     case 'Alerta urgente':
-      for (let i = 0; i < 5; i++) {
-        playBeep(1000, 'square', 0.1, i * 0.2);
+      for (let i = 0; i < 8; i++) {
+        playBeep(1000, 'square', 0.2, i * 0.25);
+        playBeep(1200, 'square', 0.2, i * 0.25 + 0.1);
       }
       break;
   }
-};
+}
+
+function normalizeSound(type: string): string {
+  switch (type) {
+    case 'Ding': return 'Notificação padrão';
+    case 'Bell': return 'Sino suave';
+    case 'Chime': return 'Melodia relaxante';
+    case 'Digital': return 'Alerta urgente';
+    default: return type;
+  }
+}
 
 export function useAlarms(appointments: PersonalAppointment[]) {
-  // Guarda IDs dos compromissos já alertados hoje para não repetir infinitamente
   const triggeredAlarms = useRef<Set<string>>(new Set());
-  const [permission, setPermission] = useState<NotificationPermission>(Notification.permission);
+  const [permission, setPermission] = useState<NotificationPermission>(() => {
+    if (typeof Notification !== 'undefined') return Notification.permission;
+    return 'denied' as NotificationPermission;
+  });
+  const [activeAlarmId, setActiveAlarmId] = useState<string | null>(null);
+  const [activeAlarmLabel, setActiveAlarmLabel] = useState('');
 
   const requestPermission = useCallback(async () => {
     if (!('Notification' in window)) return;
-    if (Notification.permission !== 'granted') {
+    if (Notification.permission === 'granted') {
+      setPermission('granted');
+      return;
+    }
+    if (Notification.permission === 'denied') return;
+    try {
       const perm = await Notification.requestPermission();
       setPermission(perm);
+    } catch {
+      // user dismissed or browser blocked
     }
   }, []);
 
+  const stopAlarm = useCallback(() => {
+    stopAllSounds();
+    setActiveAlarmId(null);
+    setActiveAlarmLabel('');
+  }, []);
+
   useEffect(() => {
-    requestPermission();
-  }, [requestPermission]);
+    const init = async () => {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'default') {
+        try {
+          const perm = await Notification.requestPermission();
+          setPermission(perm);
+        } catch {}
+      } else {
+        setPermission(Notification.permission);
+      }
+    };
+    init();
+  }, []);
 
   useEffect(() => {
     const checkAlarms = () => {
       const now = new Date();
-      
+
       appointments.forEach(app => {
         if (!app.alarmEnabled || app.isDone) return;
-        
-        // Assume date is YYYY-MM-DD and time is HH:MM
-        // If recurrence is weekly or monthly, we should ideally check against the next occurrence.
-        // For simplicity, we check if the time matches today if it falls on the recurrent day.
-        
-        // This simple check assumes the appointment happens today.
-        // A more robust implementation would compute the exact Date object for the current/next occurrence.
-        // We will build a basic occurrence checker here.
-        
-        const [year, month, day] = app.date.split('-').map(Number);
-        const [hour, minute] = app.time.split(':').map(Number);
-        
+
+        const dateParts = app.date.split('-').map(Number);
+        if (dateParts.length !== 3) return;
+        const timeParts = app.time.split(':').map(Number);
+        if (timeParts.length < 2) return;
+
+        const [year, month, day] = dateParts;
+        const [hour, minute] = timeParts;
+
         const firstOccurrence = new Date(year, month - 1, day, hour, minute);
-        
+
         let shouldCheckToday = false;
-        
+
         if (app.recurrence === 'Não repetir') {
           shouldCheckToday = firstOccurrence.toDateString() === now.toDateString();
         } else if (app.recurrence === 'Toda semana') {
@@ -113,46 +176,48 @@ export function useAlarms(appointments: PersonalAppointment[]) {
 
         if (!shouldCheckToday) return;
 
-        // Build today's occurrence time
         const todayOccurrence = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
-        
+
         const advanceMins = advanceToMinutes(app.alarmAdvance);
         const triggerTime = addMinutes(todayOccurrence, -advanceMins);
-        
-        // Se já passou o tempo de disparar, mas não passou de 5 minutos do horário do compromisso em si
-        // Disparamos o alarme (margem de tolerância)
+
         const diffToTrigger = differenceInMinutes(now, triggerTime);
         const diffToEvent = differenceInMinutes(now, todayOccurrence);
 
-        // Se está na hora do alarme (ou passou até 2 minutos do alarme) e ainda não passou o evento
         if (diffToTrigger >= 0 && diffToTrigger <= 2 && diffToEvent <= 0) {
           const alarmKey = `${app.id}-${now.toDateString()}`;
-          
+
           if (!triggeredAlarms.current.has(alarmKey)) {
             triggeredAlarms.current.add(alarmKey);
-            
-            // Tocar som
-            if (app.alarmSound) {
-              playSound(app.alarmSound);
-            }
-            
-            // Disparar Notificação
+
+            playSound(app.alarmSound || 'Notificação padrão');
+
+            setActiveAlarmId(app.id);
+            setActiveAlarmLabel(app.type);
+
             if (permission === 'granted') {
-              new Notification(`Lembrete: ${app.type}`, {
-                body: app.notes ? app.notes : `Começa em ${app.alarmAdvance || 'breve'}`,
-                icon: '/vite.svg' // placeholder icon
-              });
+              try {
+                const notif = new Notification(`Lembrete: ${app.type}`, {
+                  body: app.notes || `Começa em ${app.alarmAdvance || 'breve'}`,
+                  icon: '/vite.svg',
+                  tag: alarmKey,
+                });
+                notif.onclick = () => {
+                  stopAlarm();
+                  notif.close();
+                };
+              } catch {}
             }
           }
         }
       });
     };
 
-    const interval = setInterval(checkAlarms, 30000); // Check every 30 seconds
-    checkAlarms(); // Check immediately on mount
-    
-    return () => clearInterval(interval);
-  }, [appointments, permission]);
+    const interval = setInterval(checkAlarms, 30000);
+    checkAlarms();
 
-  return { requestPermission, permission };
+    return () => clearInterval(interval);
+  }, [appointments, permission, stopAlarm]);
+
+  return { requestPermission, permission, activeAlarmId, activeAlarmLabel, stopAlarm };
 }
