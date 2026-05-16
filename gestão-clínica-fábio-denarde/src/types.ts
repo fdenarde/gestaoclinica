@@ -134,7 +134,7 @@ export type PersonalAppointmentType =
   | 'Restaurante / Jantar especial'
   | 'Outro';
 
-export type AlarmAdvance = '5 min' | '10 min' | '15 min' | '30 min' | '1 hora' | 'Na hora';
+export type AlarmAdvance = 'Na hora' | '5 min' | '10 min' | '15 min' | '20 min' | '25 min' | '30 min' | '35 min' | '40 min' | '45 min' | '50 min' | '55 min' | '1 hora' | '1h30' | '2 horas';
 export type AlarmSound = string;
 
 export interface PersonalAppointment {
