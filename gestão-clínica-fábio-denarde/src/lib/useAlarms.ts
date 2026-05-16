@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { PersonalAppointment } from '../types';
-import { differenceInMinutes, addMinutes } from 'date-fns';
+import { differenceInSeconds, addMinutes } from 'date-fns';
 import { Howl } from 'howler';
 import { loadAlarmSounds, AlarmSoundMeta } from './alarmSounds';
 
