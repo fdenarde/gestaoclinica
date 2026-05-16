@@ -55,6 +55,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   const [alarmEnabled, setAlarmEnabled] = useState(false);
   const [alarmAdvance, setAlarmAdvance] = useState<AlarmAdvance>('Na hora');
   const [alarmSound, setAlarmSound] = useState<AlarmSound>('Notificação padrão');
+  const [alarmVolume, setAlarmVolume] = useState(80);
 
   const resetForm = () => {
     setFormDate('');
@@ -63,6 +64,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
     setRecurrence('Não repetir');
     setNotes('');
     setAlarmEnabled(false);
+    setAlarmVolume(80);
     setSelectedApptId(null);
   };
 
