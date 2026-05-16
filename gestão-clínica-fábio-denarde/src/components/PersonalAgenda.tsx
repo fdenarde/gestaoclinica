@@ -589,26 +589,64 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
             </div>
           </div>
           {alarmEnabled && (
-             <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2">
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
-                  <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
-                    <option value="Na hora">No horário</option>
-                    <option value="5 min">5 min antes</option>
-                    <option value="10 min">10 min antes</option>
-                    <option value="15 min">15 min antes</option>
-                    <option value="30 min">30 min antes</option>
-                    <option value="1 hora">1 hora antes</option>
-                  </select>
+             <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
+                    <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
+                      <option value="Na hora">No horário</option>
+                      <option value="5 min">5 min antes</option>
+                      <option value="10 min">10 min antes</option>
+                      <option value="15 min">15 min antes</option>
+                      <option value="30 min">30 min antes</option>
+                      <option value="1 hora">1 hora antes</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
+                    <select value={alarmSound} onChange={e => setAlarmSound(e.target.value as AlarmSound)} className="w-full p-2 border rounded-lg text-sm">
+                      <option value="Notificação padrão">Ding</option>
+                      <option value="Sino suave">Sino suave</option>
+                      <option value="Melodia relaxante">Melodia relaxante</option>
+                      <option value="Alerta urgente">Alerta urgente</option>
+                      <option value="Bipe curto">Bipe curto</option>
+                      <option value="Sirene">Sirene</option>
+                      <option value="Alarme pulsante">Alarme pulsante</option>
+                      <option value="Toque de telefone">Toque de telefone</option>
+                    </select>
+                  </div>
                 </div>
+
                 <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Som</label>
-                  <select value={alarmSound} onChange={e => setAlarmSound(e.target.value as AlarmSound)} className="w-full p-2 border rounded-lg text-sm">
-                    <option value="Notificação padrão">Ding</option>
-                    <option value="Sino suave">Sino</option>
-                    <option value="Melodia relaxante">Chime</option>
-                    <option value="Alerta urgente">Digital</option>
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase">Volume</label>
+                    <span className="text-[10px] font-bold text-gray-500">{alarmVolume}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="5"
+                    value={alarmVolume}
+                    onChange={e => setAlarmVolume(Number(e.target.value))}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#5D4037]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Pré-visualizar</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {(['Notificação padrão', 'Sino suave', 'Melodia relaxante', 'Alerta urgente', 'Bipe curto', 'Sirene', 'Alarme pulsante', 'Toque de telefone'] as AlarmSound[]).map(snd => (
+                      <button
+                        key={snd}
+                        type="button"
+                        onClick={() => previewSound(snd, alarmVolume)}
+                        className="flex items-center justify-center gap-1 px-2 py-2 rounded-lg border border-gray-200 hover:bg-[#5D4037] hover:text-white hover:border-[#5D4037] transition-all text-[10px] font-bold uppercase tracking-wider"
+                      >
+                        <span className="text-base">▶</span> {snd === 'Notificação padrão' ? 'Ding' : snd === 'Sino suave' ? 'Sino' : snd === 'Melodia relaxante' ? 'Melodia' : snd === 'Alerta urgente' ? 'Urgente' : snd === 'Bipe curto' ? 'Bipe' : snd === 'Sirene' ? 'Sirene' : snd === 'Alarme pulsante' ? 'Pulsante' : 'Telefone'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
              </div>
           )}
