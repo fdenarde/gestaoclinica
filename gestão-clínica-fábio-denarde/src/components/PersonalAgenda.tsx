@@ -258,26 +258,6 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
   return (
     <div className="flex flex-col gap-6 py-6 pb-24">
-      {activeAlarmId && (
-        <div
-          onClick={stopAlarm}
-          className="bg-red-600 text-white px-6 py-5 rounded-2xl shadow-lg flex items-center justify-between cursor-pointer animate-pulse hover:bg-red-700 transition-colors"
-        >
-          <div className="flex items-center gap-3">
-            <Bell size={28} className="animate-bounce" />
-            <div>
-              <p className="font-bold text-lg">⏰ ALARME DISPARANDO — Clique para parar</p>
-              <p className="text-sm opacity-90">{activeAlarmLabel}</p>
-            </div>
-          </div>
-          <button
-            onClick={(e) => { e.stopPropagation(); stopAlarm(); }}
-            className="bg-white text-red-600 px-8 py-3 rounded-xl font-black hover:bg-red-50 transition-colors shadow-md text-sm uppercase tracking-widest"
-          >
-            Parar Alarme
-          </button>
-        </div>
-      )}
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-center bg-[#FDFBF7] p-6 rounded-2xl border border-[#DED4C8] shadow-sm gap-4">
         <div className="flex items-center gap-3">
