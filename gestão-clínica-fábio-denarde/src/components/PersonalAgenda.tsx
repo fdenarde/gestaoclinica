@@ -388,22 +388,50 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
         </div>
       )}
 
-      {/* View: Lista do Dia */}
+      {/* View: Lista */}
       {viewMode === 'lista' && (
         <div className="bg-white rounded-2xl border border-[#DED4C8] shadow-sm p-6 min-h-[400px]">
-          <h3 className="font-serif text-xl font-bold text-[#5D4037] mb-6 flex items-center gap-2">
-            <List size={20} /> Compromissos do Dia - {format(currentDate, "dd 'de' MMMM", { locale: ptBR })}
+          <h3 className="font-serif text-xl font-bold text-[#5D4037] mb-4 flex items-center gap-2">
+            <List size={20} /> {listTitle}
           </h3>
+
+          <div className="flex bg-white rounded-xl p-1 border border-[#DED4C8] shadow-sm mb-6 w-fit">
+            {[
+              { id: 'hoje' as const, label: 'Hoje' },
+              { id: 'semana' as const, label: 'Esta Semana' },
+              { id: 'mes' as const, label: 'Este Mês' },
+            ].map(filter => (
+              <button
+                key={filter.id}
+                onClick={() => setListFilter(filter.id)}
+                className={cn(
+                  "px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
+                  listFilter === filter.id ? "bg-[#5D4037] text-white shadow-sm" : "text-[#8D6E63] hover:bg-[#F5EBE6]"
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+
           <div className="space-y-3">
-            {getOccurrences(currentDate, currentDate).length > 0 ? (
-              getOccurrences(currentDate, currentDate)
-                .sort((a, b) => a.time.localeCompare(b.time))
-                .map(app => {
+            {(() => {
+              const listOccurrences = getOccurrences(listDateRange.start, listDateRange.end)
+                .sort((a, b) => {
+                  const dateDiff = a.occDate.getTime() - b.occDate.getTime();
+                  if (dateDiff !== 0) return dateDiff;
+                  return a.time.localeCompare(b.time);
+                });
+              return listOccurrences.length > 0 ? (
+                listOccurrences.map(app => {
                   const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                   return (
                     <div key={app.id} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
                       <div className="flex items-center gap-4">
-                        <span className={cn('text-lg font-bold', config.text)}>{app.time}</span>
+                        <div className="flex flex-col items-center min-w-[50px]">
+                          <span className="text-[10px] font-bold uppercase text-gray-500">{format(app.occDate, 'dd/MM')}</span>
+                          <span className={cn('text-lg font-bold', config.text)}>{app.time}</span>
+                        </div>
                         <div className="w-px h-8 bg-black/10"></div>
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2">
@@ -431,14 +459,15 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
                     </div>
                   );
                 })
-            ) : (
-              <div className='text-center text-gray-500 py-12 font-bold bg-gray-50 rounded-xl border border-dashed border-gray-200'>
-                Não há compromissos para este dia.
-                <button onClick={() => openNew(currentDate, '08:00')} className='block mx-auto mt-4 px-4 py-2 bg-[#5D4037] text-white rounded-lg hover:bg-[#4E342E] transition-colors'>
-                  Adicionar Compromisso
-                </button>
-              </div>
-            )}
+              ) : (
+                <div className='text-center text-gray-500 py-12 font-bold bg-gray-50 rounded-xl border border-dashed border-gray-200'>
+                  Nenhum compromisso para este período.
+                  <button onClick={() => openNew(currentDate, '08:00')} className='block mx-auto mt-4 px-4 py-2 bg-[#5D4037] text-white rounded-lg hover:bg-[#4E342E] transition-colors'>
+                    Adicionar Compromisso
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
