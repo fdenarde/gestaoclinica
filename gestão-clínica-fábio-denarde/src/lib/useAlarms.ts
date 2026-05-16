@@ -144,6 +144,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
 
   useEffect(() => {
     const soundsRef = { current: [] as AlarmSoundMeta[] };
+    let nextTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const initSounds = async () => {
       soundsRef.current = await loadAlarmSounds();
@@ -151,16 +152,28 @@ export function useAlarms(appointments: PersonalAppointment[]) {
     };
     initSounds();
 
+    const scheduleNextCheck = (nextTriggerMs: number | null) => {
+      if (nextTimeout) clearTimeout(nextTimeout);
+      if (nextTriggerMs === null || nextTriggerMs <= 0) return;
+      // Agenda o próximo check para 5 segundos antes do trigger (margem de segurança)
+      const delay = Math.max(1000, nextTriggerMs - 5000);
+      console.log(`[Alarme] Próximo check agendado para daqui ${Math.round(delay / 1000)}s (trigger em ${Math.round(nextTriggerMs / 1000)}s)`);
+      nextTimeout = setTimeout(checkAlarms, delay);
+    };
+
     const checkAlarms = () => {
       if (soundsRef.current.length === 0) {
         console.log('[Alarme] Sons ainda não carregados, tentando novamente...');
         loadAlarmSounds(true).then(s => { soundsRef.current = s; }).catch(() => {});
+        scheduleNextCheck(30000);
         return;
       }
       const now = new Date();
-      console.log(`[Alarme] Verificando ${appointments.length} compromissos às ${now.toLocaleTimeString()}`);
+      console.log(`[Alarme] Verificando ${appointments.length} compromissos às ${now.toLocaleTimeString('pt-BR')}`);
 
       let triggeredCount = 0;
+      let nextTriggerMs: number | null = null;
+
       appointments.forEach(app => {
         if (!app.alarmEnabled || app.isDone) return;
         const dateParts = app.date.split('-').map(Number);
@@ -187,7 +200,14 @@ export function useAlarms(appointments: PersonalAppointment[]) {
         const secToTrigger = differenceInSeconds(now, triggerTime);
         const secToEvent = differenceInSeconds(now, todayOccurrence);
 
-        // Janela de disparo: até 120s após o trigger, e não mais que 60s após o evento
+        // Coleta o próximo trigger futuro
+        if (secToTrigger < 0) {
+          const msToTrigger = Math.abs(secToTrigger) * 1000;
+          if (nextTriggerMs === null || msToTrigger < nextTriggerMs) {
+            nextTriggerMs = msToTrigger;
+          }
+        }
+
         const inTriggerWindow = secToTrigger >= 0 && secToTrigger <= 120;
         const notTooLate = advanceMins === 0 ? secToEvent <= 60 : secToEvent <= 0;
 
@@ -221,12 +241,16 @@ export function useAlarms(appointments: PersonalAppointment[]) {
           }
         }
       });
-      if (triggeredCount === 0) {
-        console.log('[Alarme] Nenhum alarme para disparar neste momento');
+
+      if (triggeredCount === 0 && nextTriggerMs === null) {
+        console.log('[Alarme] Nenhum alarme pendente para hoje');
       }
+
+      // Agenda o próximo check preciso, ou fallback 30s
+      scheduleNextCheck(nextTriggerMs ?? 30000);
     };
 
-    const interval = setInterval(checkAlarms, 30000);
+    const interval = setInterval(checkAlarms, 60000);
     checkAlarms();
 
     const handleVisibility = () => {
@@ -239,6 +263,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
 
     return () => {
       clearInterval(interval);
+      if (nextTimeout) clearTimeout(nextTimeout);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [appointments, permission, stopAlarm]);
