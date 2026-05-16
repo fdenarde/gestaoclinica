@@ -46,6 +46,14 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   const [listFilter, setListFilter] = useState<'hoje' | 'semana' | 'mes'>('hoje');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
+  const [formDate, setFormDate] = useState('');
+  const [formTime, setFormTime] = useState('');
+  const [type, setType] = useState<PersonalAppointmentType>('Outro');
+  const [recurrence, setRecurrence] = useState<string>('Não repetir');
+  const [notes, setNotes] = useState('');
+  const [alarmEnabled, setAlarmEnabled] = useState(false);
+  const [alarmAdvance, setAlarmAdvance] = useState<AlarmAdvance>('No horário');
+  const [alarmSound, setAlarmSound] = useState<AlarmSound>('Ding');
 
   const resetForm = () => {
     setFormDate('');
