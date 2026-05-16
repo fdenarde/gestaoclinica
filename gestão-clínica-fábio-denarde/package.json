@@ -18,6 +18,7 @@
   "dependencies": {
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/howler": "^2.2.12",
     "@types/papaparse": "^5.5.2",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
@@ -26,6 +27,7 @@
     "express": "^4.21.2",
     "firebase": "^12.12.1",
     "firebase-admin": "^13.8.0",
+    "howler": "^2.2.4",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.546.0",
