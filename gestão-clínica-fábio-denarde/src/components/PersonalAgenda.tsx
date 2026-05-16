@@ -85,6 +85,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
     setAlarmEnabled(app.alarmEnabled);
     if (app.alarmAdvance) setAlarmAdvance(app.alarmAdvance);
     if (app.alarmSound) setAlarmSound(app.alarmSound);
+    if (app.alarmVolume !== undefined) setAlarmVolume(app.alarmVolume);
     setIsModalOpen(true);
   };
 
