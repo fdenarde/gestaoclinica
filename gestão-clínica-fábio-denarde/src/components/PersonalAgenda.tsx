@@ -531,4 +531,3 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
     </div>
   );
 }
-```
