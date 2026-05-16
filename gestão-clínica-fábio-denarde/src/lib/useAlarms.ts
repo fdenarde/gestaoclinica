@@ -144,6 +144,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
   }, []);
 
   useEffect(() => {
+    console.log('[Alarme] useEffect iniciado com', appointments.length, 'compromissos');
     const soundsRef = { current: [] as AlarmSoundMeta[] };
     let nextTimeout: ReturnType<typeof setTimeout> | null = null;
 
