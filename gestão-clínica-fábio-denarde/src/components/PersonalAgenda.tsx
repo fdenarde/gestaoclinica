@@ -60,7 +60,9 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>([]);
 
   useEffect(() => {
-    loadAlarmSounds().then(setAlarmSoundsList);
+    loadAlarmSounds().then(setAlarmSoundsList).catch(() => {
+      setAlarmSoundsList(getDefaultSounds());
+    });
   }, []);
 
   const resetForm = () => {
