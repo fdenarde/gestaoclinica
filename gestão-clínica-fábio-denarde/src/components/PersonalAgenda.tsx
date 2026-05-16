@@ -88,6 +88,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
     if (app.alarmAdvance) setAlarmAdvance(app.alarmAdvance);
     if (app.alarmSound) setAlarmSound(app.alarmSound);
     if (app.alarmVolume !== undefined) setAlarmVolume(app.alarmVolume);
+    setAlarmFadeIn(app.alarmFadeIn ?? false);
     setIsModalOpen(true);
   };
 
@@ -106,6 +107,7 @@ export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps)
       alarmAdvance: alarmEnabled ? alarmAdvance : undefined,
       alarmSound: alarmEnabled ? alarmSound : undefined,
       alarmVolume: alarmEnabled ? alarmVolume : undefined,
+      alarmFadeIn: alarmEnabled ? alarmFadeIn : undefined,
       isDone: false,
     };
 
