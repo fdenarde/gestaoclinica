@@ -78,10 +78,10 @@ export async function loadAlarmSounds(force = false): Promise<AlarmSoundMeta[]> 
 
   for (const cfg of SOUNDS_CONFIG) {
     try {
-      const response = await fetch(`/sounds/${cfg.filename}`);
+      const response = await fetch(`${import.meta.env.BASE_URL}sounds/${cfg.filename}`);
       if (!response.ok) {
         console.warn(`Arquivo local não encontrado: ${cfg.filename}, usando fallback`);
-        list.push(configToMeta(cfg, `/sounds/${cfg.filename}`));
+        list.push(configToMeta(cfg, `${import.meta.env.BASE_URL}sounds/${cfg.filename}`));
         continue;
       }
 
@@ -95,7 +95,7 @@ export async function loadAlarmSounds(force = false): Promise<AlarmSoundMeta[]> 
         anyUploadSucceeded = true;
       } catch (storageErr) {
         console.warn(`Upload para Storage falhou (${cfg.filename}), usando URL local:`, storageErr);
-        url = `/sounds/${cfg.filename}`;
+        url = `${import.meta.env.BASE_URL}sounds/${cfg.filename}`;
       }
 
       const meta = configToMeta(cfg, url);
@@ -111,7 +111,7 @@ export async function loadAlarmSounds(force = false): Promise<AlarmSoundMeta[]> 
       }
     } catch (err) {
       console.warn(`Erro ao processar ${cfg.filename}, usando fallback local:`, err);
-      list.push(configToMeta(cfg, `/sounds/${cfg.filename}`));
+      list.push(configToMeta(cfg, `${import.meta.env.BASE_URL}sounds/${cfg.filename}`));
     }
   }
 
