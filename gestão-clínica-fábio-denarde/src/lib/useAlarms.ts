@@ -88,23 +88,23 @@ function playAlarmSound(url: string, volume: number = 80, fadeIn: boolean = fals
 }
 
 export async function previewSound(soundId: string, volume: number = 80) {
-  stopAllSounds();
+  if (previewHowl) { previewHowl.unload(); previewHowl = null; }
 
   const sounds = await loadAlarmSounds();
   const meta = sounds.find(s => s.id === soundId);
   if (!meta) return;
 
-  const howl = new Howl({
+  previewHowl = new Howl({
     src: [meta.url],
     loop: false,
     volume: volume / 100,
     html5: true,
   });
 
-  howl.play();
+  previewHowl.play();
 
   setTimeout(() => {
-    howl.unload();
+    if (previewHowl) { previewHowl.unload(); previewHowl = null; }
   }, 3500);
 }
 
