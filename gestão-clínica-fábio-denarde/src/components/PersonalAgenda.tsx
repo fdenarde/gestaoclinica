@@ -39,7 +39,7 @@ interface PersonalAgendaProps {
 }
 
 export default function PersonalAgenda({ state, onUpdate }: PersonalAgendaProps) {
-  useAlarms(state.personalAppointments || []);
+  const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>('semanal');
