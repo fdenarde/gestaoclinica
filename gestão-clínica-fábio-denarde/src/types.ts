@@ -104,7 +104,9 @@ export interface Expense {
   description: string;
   amount: number;
   date: string;
-  category: 'Aluguel' | 'Energia' | 'Internet' | 'Materiais' | 'Impostos' | 'Outro';
+  category: 'Aluguel' | 'Energia' | 'Internet' | 'Materiais' | 'Impostos' | 'Repasse Sócia' | 'Outro';
+  auto_gerado?: boolean;
+  pagamento_origem_id?: string;
 }
 
 export interface Evolution {
