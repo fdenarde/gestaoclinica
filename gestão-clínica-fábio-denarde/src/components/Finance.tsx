@@ -56,11 +56,9 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     let totalToReceive = 0;
     state.patients.filter(p => p.status === 'Ativo').forEach(patient => {
       const paid = state.payments.filter(p => p.patientId === patient.id).reduce((s, p) => s + p.amount, 0);
-      // Pacote atual baseado em sessões realizadas
-      const sessionCount = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
-      const pacoteAtualPorSessoes = Math.floor(sessionCount / 10) + 1;
-      const pagoNoPacoteAtual = Math.min(Math.max(paid - ((pacoteAtualPorSessoes - 1) * 1000), 0), 1000);
-      const faltaNoPacoteAtual = 1000 - pagoNoPacoteAtual;
+      // Quanto falta no pacote atual (se múltiplo exato de 1000, pacote quitado = falta 0)
+      const pagoNoPacoteAtual = paid % 1000;
+      const faltaNoPacoteAtual = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
       totalToReceive += faltaNoPacoteAtual;
     });
 
@@ -138,29 +136,24 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         const patientPayments = state.payments.filter(p => p.patientId === patient.id && !state.expenses.some(e => e.auto_gerado && e.pagamento_origem_id === p.id));
         const totalPaid = patientPayments.reduce((sum, p) => sum + p.amount, 0);
 
-        // Sessões realizadas determinam em qual pacote o paciente está
-        const sessionCount = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
-        
-        // Pacote atual baseado em sessões (cada pacote = 10 sessões)
-        // Ex: 0-9 sessões = pacote 1, 10-19 = pacote 2, etc.
-        const pacoteAtualPorSessoes = Math.floor(sessionCount / 10) + 1;
-        const pacotesJaPagos = Math.floor(totalPaid / 1000);
-        
-        // Valor pago referente ao pacote atual (baseado em sessões)
-        const totalEsperadoAtePacoteAtual = pacoteAtualPorSessoes * 1000;
-        const pagoNoPacoteAtual = totalPaid - ((pacoteAtualPorSessoes - 1) * 1000);
-        const pagoNoPacoteAtualNormalizado = Math.min(Math.max(pagoNoPacoteAtual, 0), 1000);
-        const remaining = 1000 - pagoNoPacoteAtualNormalizado;
-        const pacotesCompletos = pacoteAtualPorSessoes - 1;
+        // Quantos pacotes completos de R$1.000 foram pagos
+        const pacotesCompletos = Math.floor(totalPaid / 1000);
+        // Quanto foi pago no pacote atual (o que sobra após os pacotes completos)
+        const pagoNoPacoteAtual = totalPaid % 1000;
+        // Quanto falta para quitar o pacote atual
+        const remaining = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
 
+        // Status baseado apenas no pagamento do pacote atual
         let status: 'Quitado' | 'Parcial' | 'Pendente' = 'Pendente';
-        if (pagoNoPacoteAtualNormalizado >= 1000) status = 'Quitado';
-        else if (pagoNoPacoteAtualNormalizado > 0) status = 'Parcial';
+        if (pagoNoPacoteAtual === 0) status = 'Quitado'; // pacote atual quitado (múltiplo exato de 1000)
+        else if (pagoNoPacoteAtual >= 500) status = 'Parcial';
+        else status = 'Pendente';
 
-        // Verifica atraso no pacote atual (ciclo de 10 sessões)
+        // Sessões para verificar atraso
+        const sessionCount = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
         const sessionsInCurrentPackage = sessionCount % 10 === 0 && sessionCount > 0 ? 10 : sessionCount % 10;
-        const isLate = patient.paymentModal === PaymentModal.PARCELADO && sessionsInCurrentPackage >= 6 && pagoNoPacoteAtualNormalizado < 500;
-        return { ...patient, totalPaid, remaining, status, isLate, pacotesCompletos, pagoNoPacoteAtual: pagoNoPacoteAtualNormalizado };
+        const isLate = patient.paymentModal === PaymentModal.PARCELADO && sessionsInCurrentPackage >= 6 && pagoNoPacoteAtual < 500;
+        return { ...patient, totalPaid, remaining, status, isLate, pacotesCompletos, pagoNoPacoteAtual };
       })
       .filter(p => {
         const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
