@@ -27,8 +27,37 @@ const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: st
   'Manutenção / Conserto': { icon: '🔧', bg: 'bg-amber-100', text: 'text-amber-800' },
   'Receber entrega': { icon: '📦', bg: 'bg-yellow-100', text: 'text-yellow-800' },
   'Restaurante / Jantar especial': { icon: '🍽️', bg: 'bg-purple-100', text: 'text-purple-800' },
+  'Aniversário': { icon: '🎂', bg: 'bg-pink-200', text: 'text-pink-900' },
+  'Compromisso Familiar': { icon: '👨‍👩‍👧', bg: 'bg-rose-200', text: 'text-rose-900' },
+  'Compromisso com Amigos': { icon: '👫', bg: 'bg-violet-100', text: 'text-violet-800' },
   'Outro': { icon: '📝', bg: 'bg-gray-100', text: 'text-gray-800' },
 };
+
+// Helper: build tooltip text for a PersonalAppointment
+function buildTooltip(app: PersonalAppointment): string {
+  const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
+  const lines: string[] = [
+    `${config.icon} ${app.type}`,
+    `⏰ Horário: ${app.time}`,
+  ];
+  if (app.alarmEnabled && app.alarmAdvance) {
+    lines.push(`🔔 Alarme: ${app.alarmAdvance === 'Na hora' ? 'No horário' : app.alarmAdvance + ' antes'}`);
+  }
+  if (app.recurrence && app.recurrence !== 'Não repetir') {
+    lines.push(`🔄 Recorrência: ${app.recurrence}`);
+  }
+  if (app.notes) {
+    lines.push(`📝 ${app.notes}`);
+  }
+  lines.push(app.isDone ? '✅ Concluído' : '🟢 Ativo');
+  return lines.join('\n');
+}
+
+// Helper: get hour from time string for slot matching
+function getHourSlot(time: string): string {
+  const [h] = time.split(':');
+  return `${h}:00`;
+}
 
 const TIMES = Array.from({ length: 13 }, (_, i) => `${String(i + 7).padStart(2, '0')}:00`);
 
@@ -332,13 +361,14 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                   <span className="block text-[10px] font-bold opacity-80 tracking-[0.2em] mb-0.5">{getDayNameLabel(day.getDay())}</span>
                   <span className="block text-xl font-bold">{format(day, 'dd')}</span>
                 </div>
-                <div className="p-1.5 space-y-1.5 flex-1 min-h-[400px]">
+                <div className="p-1.5 space-y-1 flex-1 min-h-[400px]">
                   {TIMES.map(time => {
-                    const appts = currentWeekOccurrences.filter(o => isSameDay(o.occDate, day) && o.time === time);
+                    // Match appointments whose hour falls within this slot
+                    const appts = currentWeekOccurrences.filter(o => isSameDay(o.occDate, day) && getHourSlot(o.time) === time);
 
                     if (appts.length === 0) {
                       return (
-                        <div key={time} onClick={() => openNew(day, time)} className="p-2 rounded-lg border border-dashed border-[#DED4C8]/50 min-h-[50px] bg-green-500/5 hover:bg-green-500/10 cursor-pointer flex items-start group">
+                        <div key={time} onClick={() => openNew(day, time)} className="p-1.5 rounded-lg border border-dashed border-[#DED4C8]/50 min-h-[44px] bg-green-500/5 hover:bg-green-500/10 cursor-pointer flex items-start group transition-colors">
                           <span className="text-[10px] font-bold text-gray-400 group-hover:text-green-600 transition-colors">{time}</span>
                         </div>
                       );
@@ -348,29 +378,58 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                       <div key={time} className="space-y-1">
                         {appts.map(app => {
                           const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
+                          const tooltipText = buildTooltip(app);
                           return (
-                            <div key={app.id} className={cn("p-2 rounded-lg border relative group", config.bg, "border-black/5", app.isDone ? "opacity-50 grayscale" : '')}>
-                              <div className="flex justify-between items-start mb-1">
-                                <span className={cn("text-[10px] font-bold", config.text)}>{time}</span>
-                                <div className="flex gap-1">
-                                  {app.alarmEnabled && <Bell size={10} className={config.text} />}
-                                  {app.isDone && <CheckCircle2 size={12} className="text-green-500" />}
+                            <div
+                              key={app.id}
+                              title={tooltipText}
+                              className={cn(
+                                "p-2 rounded-lg border relative group cursor-default transition-all",
+                                config.bg, "border-black/5",
+                                app.isDone ? "opacity-50 grayscale" : "hover:shadow-md"
+                              )}
+                            >
+                              {/* Row 1: Time + status badges */}
+                              <div className="flex justify-between items-center mb-1">
+                                <span className={cn("text-[10px] font-black tracking-wide", config.text)}>{app.time}</span>
+                                <div className="flex items-center gap-0.5">
+                                  {app.alarmEnabled && (
+                                    <span className="inline-flex items-center gap-0.5 bg-white/60 px-1 py-0.5 rounded text-[8px] font-bold" title={`Alarme: ${app.alarmAdvance || 'Na hora'}`}>
+                                      🔔 <span className={config.text}>{app.alarmAdvance === 'Na hora' ? '⏰' : app.alarmAdvance}</span>
+                                    </span>
+                                  )}
+                                  {app.isDone && <span className="text-green-600 text-xs" title="Concluído">✅</span>}
                                 </div>
                               </div>
-                              <div className="flex items-center gap-1.5" title={app.notes}>
-                                <span className="text-sm">{config.icon}</span>
-                                <span className={cn("text-xs font-bold truncate leading-tight", config.text)}>{app.type}</span>
+                              {/* Row 2: Icon + name */}
+                              <div className="flex items-center gap-1 mb-0.5">
+                                <span className="text-sm leading-none">{config.icon}</span>
+                                <span className={cn("text-[11px] font-bold truncate leading-tight", config.text)}>{app.type}</span>
                               </div>
+                              {/* Row 3: Recurrence badge */}
+                              {app.recurrence && app.recurrence !== 'Não repetir' && (
+                                <div className="flex items-center gap-0.5 mb-0.5">
+                                  <span className="inline-flex items-center gap-0.5 bg-white/50 px-1 py-0.5 rounded text-[8px] font-bold text-gray-600">
+                                    🔄 {app.recurrence}
+                                  </span>
+                                </div>
+                              )}
+                              {/* Row 4: Notes preview */}
+                              {app.notes && (
+                                <p className="text-[9px] text-gray-600 truncate leading-tight mt-0.5 italic">
+                                  {app.notes}
+                                </p>
+                              )}
                               {/* Ações no Hover */}
-                              <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5">
-                                <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); showToast('Compromisso marcado como concluído!'); }} className="p-2 hover:bg-green-50 text-green-600 rounded" title="Marcar como concluído">
-                                  <CheckCircle2 size={14} />
+                              <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5 z-10">
+                                <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); showToast(app.isDone ? 'Compromisso reativado!' : 'Compromisso concluído!'); }} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
+                                  <CheckCircle2 size={13} />
                                 </button>
-                                <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-2 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
-                                  <Edit2 size={14} />
+                                <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-1.5 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
+                                  <Edit2 size={13} />
                                 </button>
-                                <button className="p-2 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); handleDelete(app.id); }}>
-                                  <Trash2 size={14} />
+                                <button className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); handleDelete(app.id); }}>
+                                  <Trash2 size={13} />
                                 </button>
                               </div>
                             </div>
