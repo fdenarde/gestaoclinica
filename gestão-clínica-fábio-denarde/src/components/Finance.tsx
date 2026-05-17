@@ -56,8 +56,10 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     let totalToReceive = 0;
     state.patients.filter(p => p.status === 'Ativo').forEach(patient => {
       const paid = state.payments.filter(p => p.patientId === patient.id).reduce((s, p) => s + p.amount, 0);
-      const totalExpected = 1000;
-      if (paid < totalExpected) totalToReceive += (totalExpected - paid);
+      // Quanto falta no pacote atual (ignora pacotes já quitados anteriores)
+      const pagoNoPacoteAtual = paid % 1000;
+      const faltaNoPacoteAtual = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
+      totalToReceive += faltaNoPacoteAtual;
     });
 
     // Desconta 20% do saldo a receber (repasse futuro da sócia)
@@ -131,16 +133,26 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     return state.patients
       .filter(p => p.status === 'Ativo')
       .map(patient => {
-        const patientPayments = state.payments.filter(p => p.patientId === patient.id);
+        const patientPayments = state.payments.filter(p => p.patientId === patient.id && !state.expenses.some(e => e.auto_gerado && e.pagamento_origem_id === p.id));
         const totalPaid = patientPayments.reduce((sum, p) => sum + p.amount, 0);
-        const totalExpected = 1000;
-        const remaining = totalExpected - totalPaid;
+
+        // Calcula quantos pacotes completos (R$1.000 cada) já foram pagos
+        // e quanto ainda falta no pacote atual
+        const pacotesCompletos = Math.floor(totalPaid / 1000);
+        const pagoNoPacoteAtual = totalPaid % 1000;
+        const totalExpected = (pacotesCompletos + 1) * 1000; // próximo marco de R$1.000
+        const remaining = 1000 - pagoNoPacoteAtual; // quanto falta no pacote atual
+
         let status: 'Quitado' | 'Parcial' | 'Pendente' = 'Pendente';
-        if (totalPaid >= totalExpected) status = 'Quitado';
-        else if (totalPaid > 0) status = 'Parcial';
+        if (pagoNoPacoteAtual >= 1000 || pagoNoPacoteAtual === 0 && pacotesCompletos > 0) status = 'Quitado';
+        else if (pagoNoPacoteAtual > 0) status = 'Parcial';
+        if (pagoNoPacoteAtual === 0) status = 'Quitado'; // pacote atual quitado
+
         const sessionCount = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
-        const isLate = patient.paymentModal === PaymentModal.PARCELADO && sessionCount >= 6 && !patientPayments.some(p => p.installment === '2ª parcela');
-        return { ...patient, totalPaid, remaining, status, isLate };
+        // Verifica atraso no pacote atual (ciclo de 10 sessões)
+        const sessionsInCurrentPackage = sessionCount % 10 === 0 && sessionCount > 0 ? 10 : sessionCount % 10;
+        const isLate = patient.paymentModal === PaymentModal.PARCELADO && sessionsInCurrentPackage >= 6 && pagoNoPacoteAtual < 500;
+        return { ...patient, totalPaid, remaining, status, isLate, pacotesCompletos, pagoNoPacoteAtual };
       })
       .filter(p => {
         const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -241,11 +253,15 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                       <span className="text-[10px] text-clinic-text-faint font-bold uppercase px-2 py-0.5 bg-clinic-bg rounded">{item.paymentModal.split(': ')[0]}</span>
                       {item.isLate && <span className="text-[10px] font-black uppercase text-status-red-text animate-pulse">⚠️ Pagamento em Atraso</span>}
                     </div>
-                    <div className="text-xs text-clinic-text-muted mt-1">Saldo Restante: <span className="font-bold text-clinic-text">{formatCurrency(item.remaining)}</span></div>
+                    <div className="text-xs text-clinic-text-muted mt-1">
+                      Pacote atual: <span className="font-bold text-clinic-text">{formatCurrency(item.pagoNoPacoteAtual)} / R$ 1.000</span>
+                      {item.pacotesCompletos > 0 && <span className="ml-2 px-1.5 py-0.5 bg-clinic-bg rounded text-[10px] text-clinic-text-faint">{item.pacotesCompletos}º pacote concluído</span>}
+                    </div>
+                    <div className="text-xs text-clinic-text-muted mt-0.5">Falta no pacote atual: <span className="font-bold text-clinic-text">{formatCurrency(item.remaining)}</span></div>
                   </div>
                   <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
                     <div className="flex flex-col items-end">
-                       <span className="text-xs font-bold text-clinic-text-faint uppercase">Pago</span>
+                       <span className="text-xs font-bold text-clinic-text-faint uppercase">Total Histórico</span>
                        <span className="text-base font-bold text-clinic-text">{formatCurrency(item.totalPaid)}</span>
                     </div>
                     <div className={cn("px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest", getStatusColor(item.status))}>{item.status}</div>
