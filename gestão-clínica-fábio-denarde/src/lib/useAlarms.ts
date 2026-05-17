@@ -200,22 +200,25 @@ export function useAlarms(appointments: PersonalAppointment[]) {
         const todayOccurrence = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
         const advanceMins = advanceToMinutes(app.alarmAdvance);
         const triggerTime = addMinutes(todayOccurrence, -advanceMins);
-        const secToTrigger = differenceInSeconds(now, triggerTime);
-        const secToEvent = differenceInSeconds(now, todayOccurrence);
 
-        // Coleta o próximo trigger futuro
-        if (secToTrigger < 0) {
-          const msToTrigger = Math.abs(secToTrigger) * 1000;
-          if (nextTriggerMs === null || msToTrigger < nextTriggerMs) {
-            nextTriggerMs = msToTrigger;
+        // secondsSinceTrigger > 0 means trigger time has PASSED (alarm should fire)
+        // secondsSinceTrigger < 0 means trigger time is in the FUTURE (wait)
+        const secondsSinceTrigger = differenceInSeconds(now, triggerTime);
+
+        console.log(`[Alarme] ${app.type}: trigger=${triggerTime.toLocaleTimeString('pt-BR')} evento=${todayOccurrence.toLocaleTimeString('pt-BR')} secSinceTrigger=${secondsSinceTrigger} advance=${advanceMins}min`);
+
+        // If trigger is in the future, track it for precise scheduling
+        if (secondsSinceTrigger < 0) {
+          const msUntilTrigger = Math.abs(secondsSinceTrigger) * 1000;
+          if (nextTriggerMs === null || msUntilTrigger < nextTriggerMs) {
+            nextTriggerMs = msUntilTrigger;
           }
+          return; // Not time yet
         }
 
-        const inTriggerWindow = secToTrigger >= 0 && secToTrigger <= 120;
-        const notTooLate = advanceMins === 0 ? secToEvent <= 60 : secToEvent <= 0;
-
-        if (inTriggerWindow && notTooLate) {
-          console.log(`[Alarme] ⏰ ${app.type}: trigger=${triggerTime.toLocaleTimeString('pt-BR')} evento=${todayOccurrence.toLocaleTimeString('pt-BR')} secToTrigger=${secToTrigger} secToEvent=${secToEvent} advance=${advanceMins}min`);
+        // Trigger window: fire if trigger time passed within the last 90 seconds
+        // This gives enough margin for timer imprecision and tab switching
+        if (secondsSinceTrigger <= 90) {
           const alarmKey = `${app.id}-${now.toDateString()}`;
           if (!triggeredAlarms.current.has(alarmKey)) {
             triggeredAlarms.current.add(alarmKey);
@@ -223,7 +226,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
 
             const soundId = app.alarmSound || 'nokia_classic';
             const meta = soundsRef.current.find(s => s.id === soundId);
-            console.log(`[Alarme] DISPARANDO: ${app.type} (som: ${soundId}, volume: ${app.alarmVolume}, fadeIn: ${app.alarmFadeIn})`);
+            console.log(`[Alarme] 🔔 DISPARANDO: ${app.type} (som: ${soundId}, volume: ${app.alarmVolume}, fadeIn: ${app.alarmFadeIn})`);
             if (meta) {
               playAlarmSound(meta.url, app.alarmVolume ?? 80, app.alarmFadeIn ?? false);
             }
@@ -243,13 +246,14 @@ export function useAlarms(appointments: PersonalAppointment[]) {
             }
           }
         }
+        // If more than 90s past trigger, it's too late — skip silently
       });
 
       if (triggeredCount === 0 && nextTriggerMs === null) {
         console.log('[Alarme] Nenhum alarme pendente para hoje');
       }
 
-      // Agenda o próximo check preciso, ou fallback 30s
+      // Schedule next check: precise timing if we know the next trigger, otherwise every 30s
       scheduleNextCheck(nextTriggerMs ?? 30000);
       } catch (e) {
         console.error('[Alarme] ERRO no checkAlarms:', e);
