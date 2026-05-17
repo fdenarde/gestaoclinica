@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { AppState, Payment, PaymentModal, SessionStatus, Expense } from '../types';
-import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet } from 'lucide-react';
+import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet, Link } from 'lucide-react';
 import { formatCurrency, cn, getStatusColor, safeFormatDate } from '../lib/utils';
 import { format } from 'date-fns';
 import Modal from './Common/Modal';
@@ -60,6 +60,9 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       if (paid < totalExpected) totalToReceive += (totalExpected - paid);
     });
 
+    // Desconta 20% do saldo a receber (repasse futuro da sócia)
+    totalToReceive = totalToReceive * 0.8;
+
     return { monthlyReceived, monthlyExpenses, netProfit, totalToReceive, activePackages };
   }, [state]);
 
@@ -68,12 +71,31 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       showToast('Preencha os dados corretamente.', 'error');
       return;
     }
+
     const newPayment: Payment = {
       id: Math.random().toString(36).substr(2, 9),
       patientId, amount, date, installment, method
     };
-    onUpdate({ payments: [...state.payments, newPayment] });
-    showToast('Pagamento registrado com sucesso!');
+
+    // Repasse automático de 20% para a sócia
+    const patientName = state.patients.find(p => p.id === patientId)?.name || 'Atendente';
+    const repasseAmount = amount * 0.2;
+    const novaDepesa: Expense = {
+      id: Math.random().toString(36).substr(2, 9),
+      description: `Repasse Sócia - ${patientName}`,
+      amount: repasseAmount,
+      date: date,
+      category: 'Repasse Sócia',
+      auto_gerado: true,
+      pagamento_origem_id: newPayment.id,
+    };
+
+    onUpdate({
+      payments: [...state.payments, newPayment],
+      expenses: [...(state.expenses || []), novaDepesa],
+    });
+
+    showToast(`Pagamento registrado! Repasse de ${formatCurrency(repasseAmount)} gerado automaticamente.`);
     setIsPaymentModalOpen(false);
     resetPaymentForm();
   };
@@ -162,6 +184,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
             <p className="text-[10px] uppercase font-bold tracking-widest">Saldo a Receber</p>
           </div>
           <p className="text-xl font-bold text-clinic-text">{formatCurrency(metrics.totalToReceive)}</p>
+          <p className="text-[10px] text-clinic-text-faint mt-1">Já descontado repasse da sócia</p>
         </div>
       </div>
 
@@ -289,11 +312,22 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                 {(state.expenses || []).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(e => (
                   <tr key={e.id} className="hover:bg-clinic-bg/30 transition-colors group">
                     <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(e.date, 'dd/MM/yyyy')}</td>
-                    <td className="px-6 py-4 text-sm font-bold text-clinic-text">{e.description}</td>
+                    <td className="px-6 py-4 text-sm font-bold text-clinic-text">
+                      <div className="flex items-center gap-2">
+                        {e.description}
+                        {e.auto_gerado && (
+                          <span title="Gerado automaticamente pelo sistema" className="inline-flex items-center gap-1 px-2 py-0.5 bg-clinic-bg border border-clinic-border rounded text-[10px] text-clinic-text-faint font-bold">
+                            <Link size={10} /> Auto
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{e.category}</span></td>
                     <td className="px-6 py-4 text-right text-sm font-bold text-status-red-text flex items-center justify-end gap-3">
                       - {formatCurrency(e.amount)}
-                      <button onClick={() => setExpenseToDelete(e.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                      {!e.auto_gerado && (
+                        <button onClick={() => setExpenseToDelete(e.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -307,10 +341,24 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       {/* Modals para Pagamentos */}
       <Modal isOpen={!!paymentToDelete} onClose={() => setPaymentToDelete(null)} title="Confirmar Exclusão" width="max-w-md">
         <div className="space-y-6">
-          <p className="text-clinic-text">Deseja realmente excluir esta receita?</p>
+          <p className="text-clinic-text">Deseja realmente excluir esta receita? O repasse automático da sócia vinculado também será removido.</p>
           <div className="flex justify-end gap-3">
             <button onClick={() => setPaymentToDelete(null)} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs">Cancelar</button>
-            <button onClick={() => { if (paymentToDelete) { onUpdate({ payments: state.payments.filter(pm => pm.id !== paymentToDelete) }); showToast('Receita excluída'); setPaymentToDelete(null); } }} className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs">Excluir</button>
+            <button
+              onClick={() => {
+                if (paymentToDelete) {
+                  onUpdate({
+                    payments: state.payments.filter(pm => pm.id !== paymentToDelete),
+                    expenses: (state.expenses || []).filter(e => e.pagamento_origem_id !== paymentToDelete),
+                  });
+                  showToast('Receita e repasse excluídos');
+                  setPaymentToDelete(null);
+                }
+              }}
+              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
+            >
+              Excluir
+            </button>
           </div>
         </div>
       </Modal>
@@ -348,6 +396,11 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
               </select>
             </div>
           </div>
+          {amount > 0 && (
+            <div className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border text-xs text-clinic-text-muted">
+              Repasse automático para sócia: <span className="font-bold text-clinic-text">{formatCurrency(amount * 0.2)}</span>
+            </div>
+          )}
           <button onClick={handleSavePayment} disabled={!patientId || amount <= 0} className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest disabled:opacity-50">Confirmar Recebimento</button>
         </div>
       </Modal>
@@ -382,7 +435,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
           <div className="flex flex-col gap-1">
             <label className="text-xs font-bold text-clinic-text-faint uppercase">Categoria</label>
             <select value={expenseCategory} onChange={e => setExpenseCategory(e.target.value as any)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none">
-              <option value="Aluguel">Aluguel</option><option value="Energia">Energia</option><option value="Internet">Internet</option><option value="Materiais">Materiais</option><option value="Impostos">Impostos</option><option value="Outro">Outro</option>
+              <option value="Aluguel">Aluguel</option><option value="Energia">Energia</option><option value="Internet">Internet</option><option value="Materiais">Materiais</option><option value="Impostos">Impostos</option><option value="Repasse Sócia">Repasse Sócia</option><option value="Outro">Outro</option>
             </select>
           </div>
           <button onClick={handleSaveExpense} disabled={!expenseDesc || expenseAmount <= 0} className="w-full py-4 bg-status-red-text text-white font-bold rounded-xl shadow-xl hover:bg-red-700 transition-all uppercase tracking-widest disabled:opacity-50">Confirmar Despesa</button>
