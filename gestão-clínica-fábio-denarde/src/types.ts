@@ -132,6 +132,9 @@ export type PersonalAppointmentType =
   | 'Manutenção / Conserto'
   | 'Receber entrega'
   | 'Restaurante / Jantar especial'
+  | 'Aniversário'
+  | 'Compromisso Familiar'
+  | 'Compromisso com Amigos'
   | 'Outro';
 
 export type AlarmAdvance = 'Na hora' | '5 min' | '10 min' | '15 min' | '20 min' | '25 min' | '30 min' | '35 min' | '40 min' | '45 min' | '50 min' | '55 min' | '1 hora' | '1h30' | '2 horas';
