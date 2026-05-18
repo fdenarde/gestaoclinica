@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
 import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X } from 'lucide-react';
-import { formatCurrency, getStatusColor, cn } from '../lib/utils';
+import { formatCurrency, getStatusColor, cn, calculateAge } from '../lib/utils';
 import { format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
@@ -88,8 +88,13 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
     const now = new Date();
     const currentMonth = now.getMonth();
     return state.patients.filter(p => {
-      const bDay = parseISO(p.birthDate);
-      return bDay.getMonth() === currentMonth;
+      if (!p.birthDate) return false;
+      const m = parseInt(p.birthDate.split('-')[1], 10) - 1;
+      return m === currentMonth;
+    }).sort((a, b) => {
+      const dayA = parseInt(a.birthDate.split('-')[2], 10);
+      const dayB = parseInt(b.birthDate.split('-')[2], 10);
+      return dayA - dayB;
     });
   }, [state.patients]);
 
@@ -211,21 +216,51 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
     <div className="flex flex-col gap-6 py-6">
       {/* Birthdays Alert */}
       {birthdays.length > 0 && (
-        <div className="bg-status-blue-bg border-l-4 border-status-blue-text p-4 flex items-center justify-between rounded-r-lg shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="bg-white p-2 rounded-full shadow-sm">
+        <div className="bg-status-blue-bg border-l-4 border-status-blue-text p-4 flex flex-col gap-3 rounded-r-lg shadow-sm">
+          <div className="flex items-center gap-3 mb-1">
+            <div className="bg-white p-2 rounded-full shadow-sm flex items-center justify-center">
               <span className="text-xl">🎂</span>
             </div>
             <div>
               <p className="text-[10px] font-black uppercase text-status-blue-text tracking-[0.2em]">Aniversariantes do Mês</p>
-              <p className="text-sm font-bold text-clinic-text">
-                {birthdays.map(p => p.name).join(', ')}
-              </p>
             </div>
           </div>
-          <button className="text-status-blue-text font-black text-[10px] uppercase tracking-widest hover:opacity-70 transition-opacity">
-            Enviar Parabéns
-          </button>
+          
+          <div className="flex flex-col gap-2 pl-12 md:pl-[52px]">
+            {birthdays.map(p => {
+              const parts = p.birthDate.split('-');
+              const day = parts[2];
+              const month = parts[1];
+              const currentAge = calculateAge(p.birthDate);
+              const phone = p.whatsapp ? p.whatsapp.replace(/\D/g, '') : '';
+              
+              // Se o aniversário ainda não passou este mês, a idade a completar é idade atual + 1, senão é a idade atual (já fez aniversário)
+              const ageToComplete = new Date().getDate() <= parseInt(day, 10) && typeof currentAge === 'number' 
+                ? currentAge + 1 
+                : currentAge;
+
+              const message = `Olá, ${p.guardianName.trim()}! Gostaríamos de desejar um feliz aniversário para ${p.name.trim()} que está completando ${ageToComplete} anos! 🎉🎂 Um grande abraço de toda a equipe!`;
+              const whatsappLink = `https://wa.me/55${phone}?text=${encodeURIComponent(message)}`;
+
+              return (
+                <div key={p.id} className="flex items-center justify-between bg-white/60 p-3 rounded-lg border border-status-blue-text/10 hover:shadow-sm transition-all">
+                  <p className="text-sm font-bold text-clinic-text flex flex-col md:flex-row md:items-center gap-1 md:gap-2">
+                    {p.name} 
+                    <span className="text-xs font-medium text-clinic-text-muted">
+                      — {day}/{month} (completando {ageToComplete} anos)
+                    </span>
+                  </p>
+                  {phone ? (
+                    <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-white text-status-blue-text font-black text-[10px] uppercase tracking-widest rounded shadow-sm hover:bg-status-blue-text hover:text-white transition-all text-center">
+                      Enviar Parabéns
+                    </a>
+                  ) : (
+                    <span className="text-[10px] text-clinic-text-faint uppercase font-bold">Sem número</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
