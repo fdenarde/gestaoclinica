@@ -15,13 +15,20 @@ export function formatCurrency(value: number) {
 
 export function calculateAge(birthDate: string | undefined | null): number | string {
   if (!birthDate) return '--';
-  const birth = new Date(birthDate);
-  if (isNaN(birth.getTime())) return '--';
+  // Use split to avoid UTC timezone offsets shifting the date backwards
+  const parts = birthDate.split('-');
+  if (parts.length !== 3) return '--';
+  
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const d = parseInt(parts[2], 10);
   
   const now = new Date();
-  let age = now.getFullYear() - birth.getFullYear();
-  const m = now.getMonth() - birth.getMonth();
-  if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) {
+  let age = now.getFullYear() - y;
+  const currentMonth = now.getMonth() + 1;
+  const currentDay = now.getDate();
+  
+  if (currentMonth < m || (currentMonth === m && currentDay < d)) {
     age--;
   }
   return age;
