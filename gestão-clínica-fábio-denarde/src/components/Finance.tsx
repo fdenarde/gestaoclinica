@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, Payment, PaymentModal, SessionStatus, Expense } from '../types';
 import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet, Link } from 'lucide-react';
 import { formatCurrency, cn, getStatusColor, safeFormatDate } from '../lib/utils';
@@ -34,35 +34,32 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [expenseCategory, setExpenseCategory] = useState<Expense['category']>('Outro');
 
-  // Sincronização e Limpeza Automática (Corrige Duplicatas e Órfãos)
+  const syncLock = useRef(false);
+
+  // Sincronização e Limpeza Automática com Bloqueio (useRef)
   useEffect(() => {
     if (!state.payments || !state.expenses) return;
+    if (syncLock.current) return;
 
     const currentExpenses = state.expenses;
     const expensesToDelete: string[] = [];
     const missingExpenses: Expense[] = [];
 
-    // Mapeia todos os IDs de pagamentos reais que existem agora
     const validPaymentIds = new Set(state.payments.map(p => p.id));
     const repasseByPaymentId = new Map();
 
-    // 1. Identifica órfãos e duplicatas
     currentExpenses.forEach(e => {
       if (e.auto_gerado && e.pagamento_origem_id) {
         if (!validPaymentIds.has(e.pagamento_origem_id)) {
-          // ÓRFÃO: O pagamento original foi apagado ou alterado
           expensesToDelete.push(e.id);
         } else if (repasseByPaymentId.has(e.pagamento_origem_id)) {
-          // DUPLICADO: Já existe um repasse mapeado para este pagamento
           expensesToDelete.push(e.id);
         } else {
-          // VÁLIDO: Guarda o repasse
           repasseByPaymentId.set(e.pagamento_origem_id, e);
         }
       }
     });
 
-    // 2. Verifica se falta algum repasse para os pagamentos válidos
     state.payments.forEach(payment => {
       if (!repasseByPaymentId.has(payment.id)) {
         const patientName = state.patients?.find(p => p.id === payment.patientId)?.name || 'Atendente';
@@ -78,14 +75,18 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       }
     });
 
-    // 3. Atualiza o banco removendo o lixo e inserindo os corretos
     if (expensesToDelete.length > 0 || missingExpenses.length > 0) {
+      syncLock.current = true;
       const updatedExpenses = currentExpenses.filter(e => !expensesToDelete.includes(e.id));
       onUpdate({ expenses: [...updatedExpenses, ...missingExpenses] });
       
       if (expensesToDelete.length > 0) {
         showToast(`${expensesToDelete.length} repasses órfãos/duplicados removidos.`, 'success');
       }
+
+      setTimeout(() => {
+        syncLock.current = false;
+      }, 2000);
     }
   }, [state.payments, state.expenses, state.patients, onUpdate]);
 
@@ -149,7 +150,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       expenses: [...(state.expenses || []), novaDepesa],
     });
 
-    showToast(`Pagamento registrado! Repasse de ${formatCurrency(repasseAmount)} gerado automaticamente.`);
+    showToast(`Pagamento registado! Repasse de ${formatCurrency(repasseAmount)} gerado automaticamente.`);
     setIsPaymentModalOpen(false);
     resetPaymentForm();
   };
@@ -167,32 +168,10 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       category: expenseCategory
     };
     onUpdate({ expenses: [...(state.expenses || []), newExpense] });
-    showToast('Despesa registrada com sucesso!');
+    showToast('Despesa registada com sucesso!');
     setIsExpenseModalOpen(false);
     resetExpenseForm();
   };
 
   const resetPaymentForm = () => {
-    setPatientId(''); setAmount(0); setDate(format(new Date(), 'yyyy-MM-dd'));
-    setInstallment('Pagamento integral'); setMethod('Pix');
-  };
-
-  const resetExpenseForm = () => {
-    setExpenseDesc(''); setExpenseAmount(0); setExpenseDate(format(new Date(), 'yyyy-MM-dd')); setExpenseCategory('Outro');
-  };
-
-  const filteredPatientsFinance = useMemo(() => {
-    return state.patients
-      .filter(p => p.status === 'Ativo')
-      .map(patient => {
-        const patientPayments = state.payments.filter(p => p.patientId === patient.id);
-        const totalPaid = patientPayments.reduce((sum, p) => sum + p.amount, 0);
-
-        const pacotesCompletos = Math.floor(totalPaid / 1000);
-        const pagoNoPacoteAtual = totalPaid % 1000;
-        const remaining = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
-
-        let status: 'Quitado' | 'Parcial' | 'Pendente' = 'Pendente';
-        if (pagoNoPacoteAtual === 0) status = 'Quitado'; 
-        else if (pagoNoPacoteAtual >= 500) status = 'Parcial';
-        else status = 'Pendente';
+    setPatientId
