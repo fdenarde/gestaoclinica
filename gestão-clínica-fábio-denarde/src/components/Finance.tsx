@@ -34,39 +34,53 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [expenseCategory, setExpenseCategory] = useState<Expense['category']>('Outro');
 
-  // Sincronização Retroativa Automática de Repasses da Sócia
+  // Sincronização e Limpeza Automática (Corrige Duplicatas)
   useEffect(() => {
-    // Apenas aborta se NÃO houver pagamentos registrados
-    if (!state.payments || state.payments.length === 0) return;
+    if (!state.payments || !state.expenses) return;
 
-    const currentExpenses = state.expenses || [];
+    const currentExpenses = state.expenses;
+    const expensesToDelete: string[] = [];
+    const validExpensesMap = new Map();
     const missingExpenses: Expense[] = [];
 
-    state.payments.forEach(payment => {
-      // Verifica se já existe uma despesa de repasse atrelada a este pagamento específico
-      const alreadyHasRepasse = currentExpenses.some(
-        e => e.pagamento_origem_id === payment.id && e.category === 'Repasse Sócia'
-      );
+    // 1. Identifica duplicatas e separa apenas um repasse válido por pagamento
+    currentExpenses.forEach(e => {
+      if (e.auto_gerado && e.pagamento_origem_id) {
+        if (validExpensesMap.has(e.pagamento_origem_id)) {
+          // Se já tem um repasse mapeado para este pagamento, marca este para ser deletado
+          expensesToDelete.push(e.id);
+        } else {
+          // Guarda o primeiro que encontrar
+          validExpensesMap.set(e.pagamento_origem_id, e);
+        }
+      }
+    });
 
-      if (!alreadyHasRepasse) {
-        const patientName = state.patients?.find(p => p.id === payment.patientId)?.name || 'Atendente Desconhecido';
+    // 2. Verifica se falta algum repasse
+    state.payments.forEach(payment => {
+      if (!validExpensesMap.has(payment.id)) {
+        const patientName = state.patients?.find(p => p.id === payment.patientId)?.name || 'Atendente';
         missingExpenses.push({
           id: Math.random().toString(36).substr(2, 9) + Date.now().toString(36),
           description: `Repasse Sócia - ${patientName}`,
-          amount: payment.amount * 0.2, // Calcula 20% do pagamento
-          date: payment.date, // Registra EXATAMENTE no mesmo período/mês do pagamento original
+          amount: payment.amount * 0.2, 
+          date: payment.date, 
           category: 'Repasse Sócia',
           auto_gerado: true,
           pagamento_origem_id: payment.id,
         });
+        validExpensesMap.set(payment.id, true); // Evita loop infinito
       }
     });
 
-    // Se encontrou pagamentos antigos sem o repasse, salva no banco automaticamente
-    if (missingExpenses.length > 0) {
-      onUpdate({ expenses: [...currentExpenses, ...missingExpenses] });
-      // Exibe um aviso visual para você saber que rodou
-      showToast(`${missingExpenses.length} repasses retroativos foram sincronizados automaticamente.`, 'success');
+    // 3. Atualiza o Firebase se houver lixo para deletar ou novos para criar
+    if (expensesToDelete.length > 0 || missingExpenses.length > 0) {
+      const updatedExpenses = currentExpenses.filter(e => !expensesToDelete.includes(e.id));
+      onUpdate({ expenses: [...updatedExpenses, ...missingExpenses] });
+      
+      if (expensesToDelete.length > 0) {
+        showToast(`${expensesToDelete.length} repasses duplicados foram corrigidos.`, 'success');
+      }
     }
   }, [state.payments, state.expenses, state.patients, onUpdate]);
 
@@ -92,13 +106,11 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     let totalToReceive = 0;
     state.patients.filter(p => p.status === 'Ativo').forEach(patient => {
       const paid = state.payments.filter(p => p.patientId === patient.id).reduce((s, p) => s + p.amount, 0);
-      // Quanto falta no pacote atual (se múltiplo exato de 1000, pacote quitado = falta 0)
       const pagoNoPacoteAtual = paid % 1000;
       const faltaNoPacoteAtual = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
       totalToReceive += faltaNoPacoteAtual;
     });
 
-    // Desconta 20% do saldo a receber (repasse futuro da sócia)
     totalToReceive = totalToReceive * 0.8;
 
     return { monthlyReceived, monthlyExpenses, netProfit, totalToReceive, activePackages };
@@ -115,7 +127,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       patientId, amount, date, installment, method
     };
 
-    // Repasse automático de 20% para a sócia
     const patientName = state.patients.find(p => p.id === patientId)?.name || 'Atendente';
     const repasseAmount = amount * 0.2;
     const novaDepesa: Expense = {
@@ -169,26 +180,23 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     return state.patients
       .filter(p => p.status === 'Ativo')
       .map(patient => {
-        const patientPayments = state.payments.filter(p => p.patientId === patient.id && !state.expenses?.some(e => e.auto_gerado && e.pagamento_origem_id === p.id));
+        // Correção crítica: removido o filtro que zerava os pagamentos
+        const patientPayments = state.payments.filter(p => p.patientId === patient.id);
         const totalPaid = patientPayments.reduce((sum, p) => sum + p.amount, 0);
 
-        // Quantos pacotes completos de R$1.000 foram pagos
         const pacotesCompletos = Math.floor(totalPaid / 1000);
-        // Quanto foi pago no pacote atual (o que sobra após os pacotes completos)
         const pagoNoPacoteAtual = totalPaid % 1000;
-        // Quanto falta para quitar o pacote atual
         const remaining = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
 
-        // Status baseado apenas no pagamento do pacote atual
         let status: 'Quitado' | 'Parcial' | 'Pendente' = 'Pendente';
-        if (pagoNoPacoteAtual === 0) status = 'Quitado'; // pacote atual quitado (múltiplo exato de 1000)
+        if (pagoNoPacoteAtual === 0) status = 'Quitado'; 
         else if (pagoNoPacoteAtual >= 500) status = 'Parcial';
         else status = 'Pendente';
 
-        // Sessões para verificar atraso
         const sessionCount = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
         const sessionsInCurrentPackage = sessionCount % 10 === 0 && sessionCount > 0 ? 10 : sessionCount % 10;
         const isLate = patient.paymentModal === PaymentModal.PARCELADO && sessionsInCurrentPackage >= 6 && pagoNoPacoteAtual < 500;
+        
         return { ...patient, totalPaid, remaining, status, isLate, pacotesCompletos, pagoNoPacoteAtual };
       })
       .filter(p => {
@@ -200,7 +208,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
 
   return (
     <div className="flex flex-col gap-6 py-6">
-      {/* Metrics Row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
           <div className="flex items-center gap-2 mb-1 text-status-green-text">
@@ -237,7 +244,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         </div>
       </div>
 
-      {/* Tabs & Actions */}
       <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm">
         <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
           <button 
@@ -391,7 +397,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         </div>
       )}
 
-      {/* Modals para Pagamentos */}
       <Modal isOpen={!!paymentToDelete} onClose={() => setPaymentToDelete(null)} title="Confirmar Exclusão" width="max-w-md">
         <div className="space-y-6">
           <p className="text-clinic-text">Deseja realmente excluir esta receita? O repasse automático da sócia vinculado também será removido.</p>
@@ -458,7 +463,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         </div>
       </Modal>
 
-      {/* Modals para Despesas */}
       <Modal isOpen={!!expenseToDelete} onClose={() => setExpenseToDelete(null)} title="Confirmar Exclusão" width="max-w-md">
         <div className="space-y-6">
           <p className="text-clinic-text">Deseja realmente excluir esta despesa?</p>
