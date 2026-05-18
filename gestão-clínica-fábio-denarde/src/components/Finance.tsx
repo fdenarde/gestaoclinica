@@ -36,7 +36,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
 
   // Sincronização Retroativa Automática de Repasses da Sócia
   useEffect(() => {
-    if (!state.payments || !state.expenses) return;
+    // Apenas aborta se NÃO houver pagamentos registrados
+    if (!state.payments || state.payments.length === 0) return;
 
     const currentExpenses = state.expenses || [];
     const missingExpenses: Expense[] = [];
@@ -48,7 +49,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       );
 
       if (!alreadyHasRepasse) {
-        const patientName = state.patients.find(p => p.id === payment.patientId)?.name || 'Atendente Desconhecido';
+        const patientName = state.patients?.find(p => p.id === payment.patientId)?.name || 'Atendente Desconhecido';
         missingExpenses.push({
           id: Math.random().toString(36).substr(2, 9) + Date.now().toString(36),
           description: `Repasse Sócia - ${patientName}`,
@@ -64,6 +65,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     // Se encontrou pagamentos antigos sem o repasse, salva no banco automaticamente
     if (missingExpenses.length > 0) {
       onUpdate({ expenses: [...currentExpenses, ...missingExpenses] });
+      // Exibe um aviso visual para você saber que rodou
+      showToast(`${missingExpenses.length} repasses retroativos foram sincronizados automaticamente.`, 'success');
     }
   }, [state.payments, state.expenses, state.patients, onUpdate]);
 
@@ -166,7 +169,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     return state.patients
       .filter(p => p.status === 'Ativo')
       .map(patient => {
-        const patientPayments = state.payments.filter(p => p.patientId === patient.id && !state.expenses.some(e => e.auto_gerado && e.pagamento_origem_id === p.id));
+        const patientPayments = state.payments.filter(p => p.patientId === patient.id && !state.expenses?.some(e => e.auto_gerado && e.pagamento_origem_id === p.id));
         const totalPaid = patientPayments.reduce((sum, p) => sum + p.amount, 0);
 
         // Quantos pacotes completos de R$1.000 foram pagos
