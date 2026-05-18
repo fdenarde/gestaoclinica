@@ -102,7 +102,8 @@ async function dispararLembretes(tipo) {
                 const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
                 if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id);
+                    // Impede o envio de mensagem se o paciente tem registro manual hoje EXATAMENTE no mesmo horário (ex: Falta, Desmarcada no horário fixo)
+                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id && s.time === p.fixedTime);
                     if (!jaTemSessaoManual) {
                         sessionsVirtuais.push({
                             patientId: p.id,
@@ -125,21 +126,29 @@ async function dispararLembretes(tipo) {
                 sessoesParaAvisar.push(s);
             });
 
-            console.log(`[INFO] ${dateStr} (${tipo}): Encontradas ${sessoesParaAvisar.length} sessões.`);
-
+            // Agrupar por paciente para enviar apenas 1 mensagem mesmo em sessão dupla (pegar o horário mais cedo)
+            const disparosUnicos = new Map();
             for (const s of sessoesParaAvisar) {
                 const patient = patientsMap[s.patientId];
                 if (!patient || !patient.whatsapp) continue;
-
-                const currentHour = new Date().getHours();
+                
                 const phone = formatPhoneNumber(patient.whatsapp);
+                if (!disparosUnicos.has(patient.id) || s.time < disparosUnicos.get(patient.id).s.time) {
+                    disparosUnicos.set(patient.id, { s, patient, phone });
+                }
+            }
+
+            console.log(`[INFO] ${dateStr} (${tipo}): Encontradas ${disparosUnicos.size} mensagens únicas para enviar.`);
+
+            for (const { s, patient, phone } of disparosUnicos.values()) {
+                const currentHour = new Date().getHours();
                 const saudacao = currentHour < 12 ? 'Bom dia' : 'Boa tarde';
 
                 let message = '';
                 if (tipo === 'AMANHA') {
-                    message = `${saudacao}! Olá, ${patient.guardianName}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name}* amanhã, às *${s.time}*.\n\nAguardo sua confirmação,\nAté logo!`;
+                    message = `${saudacao}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
                 } else {
-                    message = `${saudacao}! Passando para confirmar nosso atendimento de hoje às *${s.time}*!\n\nAguardo vocês! 🙏`;
+                    message = `${saudacao}! Passando para confirmar nosso atendimento de hoje às *${s.time.trim()}*!\n\nAguardo vocês! 🙏`;
                 }
 
                 console.log(`[ENVIO] Enviando para ${patient.guardianName} (${phone})...`);
