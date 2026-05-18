@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, Payment, PaymentModal, SessionStatus, Expense } from '../types';
 import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet, Link } from 'lucide-react';
 import { formatCurrency, cn, getStatusColor, safeFormatDate } from '../lib/utils';
@@ -33,6 +33,39 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [expenseAmount, setExpenseAmount] = useState<number>(0);
   const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [expenseCategory, setExpenseCategory] = useState<Expense['category']>('Outro');
+
+  // Sincronização Retroativa Automática de Repasses da Sócia
+  useEffect(() => {
+    if (!state.payments || !state.expenses) return;
+
+    const currentExpenses = state.expenses || [];
+    const missingExpenses: Expense[] = [];
+
+    state.payments.forEach(payment => {
+      // Verifica se já existe uma despesa de repasse atrelada a este pagamento específico
+      const alreadyHasRepasse = currentExpenses.some(
+        e => e.pagamento_origem_id === payment.id && e.category === 'Repasse Sócia'
+      );
+
+      if (!alreadyHasRepasse) {
+        const patientName = state.patients.find(p => p.id === payment.patientId)?.name || 'Atendente Desconhecido';
+        missingExpenses.push({
+          id: Math.random().toString(36).substr(2, 9) + Date.now().toString(36),
+          description: `Repasse Sócia - ${patientName}`,
+          amount: payment.amount * 0.2, // Calcula 20% do pagamento
+          date: payment.date, // Registra EXATAMENTE no mesmo período/mês do pagamento original
+          category: 'Repasse Sócia',
+          auto_gerado: true,
+          pagamento_origem_id: payment.id,
+        });
+      }
+    });
+
+    // Se encontrou pagamentos antigos sem o repasse, salva no banco automaticamente
+    if (missingExpenses.length > 0) {
+      onUpdate({ expenses: [...currentExpenses, ...missingExpenses] });
+    }
+  }, [state.payments, state.expenses, state.patients, onUpdate]);
 
   const metrics = useMemo(() => {
     const now = new Date();
