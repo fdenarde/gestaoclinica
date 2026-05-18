@@ -158,21 +158,24 @@ async function dispararLembretes(tipo) {
                 sessoesFiltradas.push(s);
             });
 
-            // 5. Agrupar por paciente para evitar mensagens duplicadas (pegar o horário mais cedo)
+            // 5. Agrupar por paciente para enviar apenas 1 mensagem mesmo em sessão dupla (pegar o horário mais cedo)
             const disparosUnicos = new Map();
             for (const s of sessoesFiltradas) {
                 const patient = patientsMap[s.patientId];
                 if (!patient || !patient.whatsapp) continue;
                 
                 const phone = formatPhoneNumber(patient.whatsapp);
-                if (!disparosUnicos.has(phone) || s.time < disparosUnicos.get(phone).s.time) {
-                    disparosUnicos.set(phone, { s, patient });
+                // Agrupa pelo ID do paciente, não apenas pelo telefone.
+                // Assim, sessões duplas/consecutivas do MESMO paciente geram 1 só mensagem.
+                // Mas dois irmãos (pacientes diferentes) com o MESMO telefone recebem 2 mensagens.
+                if (!disparosUnicos.has(patient.id) || s.time < disparosUnicos.get(patient.id).s.time) {
+                    disparosUnicos.set(patient.id, { s, patient, phone });
                 }
             }
 
             console.log(`[INFO] ${dateStr} (${tipo}): ${disparosUnicos.size} mensagens únicas para enviar.`);
 
-            for (const [phone, { s, patient }] of disparosUnicos) {
+            for (const { s, patient, phone } of disparosUnicos.values()) {
                 const currentHour = new Date().getHours();
                 const saudacao = currentHour < 12 ? 'Bom dia' : 'Boa tarde';
                 
