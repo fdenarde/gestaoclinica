@@ -50,7 +50,7 @@ async function generateReport() {
                 const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
                 const targetDayNorm = diaSemanaNome.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
                 if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id);
+                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id && s.time === p.fixedTime);
                     if (!jaTemSessaoManual) {
                         sessionsVirtuais.push({ patientId: p.id, date: dateStr, time: p.fixedTime, status: 'Agendada', isVirtual: true });
                     }

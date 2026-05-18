@@ -133,8 +133,8 @@ async function dispararLembretes(tipo) {
                 const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
                 if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                    // Impede o envio de mensagem se o paciente tem QUALQUER registro hoje (ex: Falta, Desmarcada)
-                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id);
+                    // Impede o envio de mensagem se o paciente tem registro manual hoje EXATAMENTE no mesmo horário (ex: Falta, Desmarcada no horário fixo)
+                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id && s.time === p.fixedTime);
                     if (!jaTemSessaoManual) {
                         sessionsVirtuais.push({
                             patientId: p.id,
