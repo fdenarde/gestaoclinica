@@ -1,14 +1,24 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { AppState, Payment, PaymentModal, SessionStatus, Expense } from '../types';
-import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet, Link } from 'lucide-react';
-import { formatCurrency, cn, getStatusColor, safeFormatDate } from '../lib/utils';
-import { format } from 'date-fns';
+import { AppState, Payment, PaymentModal, SessionStatus, Expense, Session, Patient } from '../types';
+import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet, Link, Calendar as CalendarIcon } from 'lucide-react';
+import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
+import { format, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, startOfDay, parseISO } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 
 interface FinanceProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+}
+
+interface ExpectedPayment {
+  id: string;
+  amount: number;
+  date: Date;
+  status: 'PENDENTE' | 'PARCIAL' | 'QUITADO' | 'ATRASADO';
+  paidAmount: number;
+  pendingAmount: number;
 }
 
 export default function Finance({ state, onUpdate }: FinanceProps) {
@@ -20,6 +30,11 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [paymentToDelete, setPaymentToDelete] = useState<string | null>(null);
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
+
+  // Period Filter State
+  const [periodFilter, setPeriodFilter] = useState<'Semanal' | 'Mensal' | 'Anual' | 'Personalizado'>('Mensal');
+  const [customStartDate, setCustomStartDate] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [customEndDate, setCustomEndDate] = useState(format(endOfMonth(new Date()), 'yyyy-MM-dd'));
 
   // Payment Form State
   const [patientId, setPatientId] = useState('');
@@ -45,7 +60,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     const expensesToDelete: string[] = [];
     const missingExpenses: Expense[] = [];
 
-    // Mapeia os pagamentos reais para checar dados profundos (data e valor)
     const validPaymentsMap = new Map(state.payments.map(p => [p.id, p]));
     const repasseByPaymentId = new Map();
 
@@ -54,16 +68,12 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         const parentPayment = validPaymentsMap.get(e.pagamento_origem_id);
         
         if (!parentPayment) {
-          // ÓRFÃO: Pagamento foi excluído
           expensesToDelete.push(e.id);
         } else if (repasseByPaymentId.has(e.pagamento_origem_id)) {
-          // DUPLICADO puro
           expensesToDelete.push(e.id);
         } else if (e.date !== parentPayment.date || e.amount !== (parentPayment.amount * 0.2)) {
-          // DESATUALIZADO: Você alterou a data ou o valor da receita. O repasse precisa reciclar.
           expensesToDelete.push(e.id);
         } else {
-          // 100% VÁLIDO E SINCRONIZADO
           repasseByPaymentId.set(e.pagamento_origem_id, e);
         }
       }
@@ -71,7 +81,6 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
 
     state.payments.forEach(payment => {
       if (!repasseByPaymentId.has(payment.id)) {
-        // Gera o repasse para os que faltam (ou para os que foram apagados no bloco acima para atualizar data)
         const patientName = state.patients?.find(p => p.id === payment.patientId)?.name || 'Atendente';
         missingExpenses.push({
           id: Math.random().toString(36).substr(2, 9) + Date.now().toString(36),
@@ -100,37 +109,182 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     }
   }, [state.payments, state.expenses, state.patients, onUpdate]);
 
-  const metrics = useMemo(() => {
+  const interval = useMemo(() => {
     const now = new Date();
-    const monthlyReceived = state.payments
-      .filter(p => {
-        const d = new Date(p.date);
-        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-      })
-      .reduce((sum, p) => sum + p.amount, 0);
-
-    const monthlyExpenses = (state.expenses || [])
-      .filter(e => {
-        const d = new Date(e.date);
-        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-      })
-      .reduce((sum, e) => sum + e.amount, 0);
-
-    const netProfit = monthlyReceived - monthlyExpenses;
-    const activePackages = state.patients.filter(p => p.status === 'Ativo').length;
+    if (periodFilter === 'Semanal') return { start: startOfWeek(now, { weekStartsOn: 1 }), end: endOfWeek(now, { weekStartsOn: 1 }) };
+    if (periodFilter === 'Mensal') return { start: startOfMonth(now), end: endOfMonth(now) };
+    if (periodFilter === 'Anual') return { start: startOfYear(now), end: endOfYear(now) };
     
-    let totalToReceive = 0;
-    state.patients.filter(p => p.status === 'Ativo').forEach(patient => {
-      const paid = state.payments.filter(p => p.patientId === patient.id).reduce((s, p) => s + p.amount, 0);
-      const pagoNoPacoteAtual = paid % 1000;
-      const faltaNoPacoteAtual = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
-      totalToReceive += faltaNoPacoteAtual;
+    const start = new Date(customStartDate + 'T00:00:00');
+    const end = new Date(customEndDate + 'T23:59:59');
+    return { start, end };
+  }, [periodFilter, customStartDate, customEndDate]);
+
+  const patientFinancials = useMemo(() => {
+    const today = startOfDay(new Date());
+    
+    return state.patients.filter(p => p.status === 'Ativo' || state.payments.some(pm => pm.patientId === p.id)).map(patient => {
+      const allPatientSessions = state.sessions
+        .filter(s => s.patientId === patient.id && s.status !== SessionStatus.CANCELADA && !s.isBlocked)
+        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        
+      const patientPayments = state.payments
+        .filter(p => p.patientId === patient.id)
+        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        
+      let remainingPaid = patientPayments.reduce((s, p) => s + p.amount, 0);
+      const expectedPayments: ExpectedPayment[] = [];
+      const packagesCount = Math.max(1, Math.ceil(allPatientSessions.length / 10));
+  
+      for (let k = 0; k < packagesCount; k++) {
+        const firstSession = allPatientSessions[k * 10];
+        const sixthSession = allPatientSessions[k * 10 + 5];
+        
+        const firstDate = firstSession ? parseISO(firstSession.date) : parseISO(patient.startDate || format(new Date(), 'yyyy-MM-dd'));
+        
+        if (patient.paymentModal === PaymentModal.PIX_FULL) {
+           expectedPayments.push({
+             id: `pkg_${k}_full`, amount: 1000, date: firstDate,
+             status: 'PENDENTE', paidAmount: 0, pendingAmount: 1000
+           });
+        } else {
+           expectedPayments.push({
+             id: `pkg_${k}_p1`, amount: 500, date: firstDate,
+             status: 'PENDENTE', paidAmount: 0, pendingAmount: 500
+           });
+           if (sixthSession) {
+              expectedPayments.push({
+                id: `pkg_${k}_p2`, amount: 500, date: parseISO(sixthSession.date),
+                status: 'PENDENTE', paidAmount: 0, pendingAmount: 500
+              });
+           }
+        }
+      }
+      
+      expectedPayments.forEach(exp => {
+        const expDateStart = startOfDay(exp.date);
+        if (remainingPaid >= exp.amount) {
+           exp.status = 'QUITADO'; exp.paidAmount = exp.amount; exp.pendingAmount = 0;
+           remainingPaid -= exp.amount;
+        } else if (remainingPaid > 0) {
+           exp.paidAmount = remainingPaid; exp.pendingAmount = exp.amount - remainingPaid;
+           exp.status = expDateStart < today ? 'ATRASADO' : 'PARCIAL';
+           remainingPaid = 0;
+        } else {
+           exp.paidAmount = 0; exp.pendingAmount = exp.amount;
+           exp.status = expDateStart < today ? 'ATRASADO' : 'PENDENTE';
+        }
+      });
+      
+      return { patient, expectedPayments, patientPayments };
     });
+  }, [state.patients, state.sessions, state.payments]);
 
-    totalToReceive = totalToReceive * 0.8;
+  const metrics = useMemo(() => {
+    let recebidoNoPeriodo = 0;
+    let previstoNoPeriodo = 0;
+    let saldoEmAberto = 0;
+    let saldoAtrasado = 0;
+    let despesasNoPeriodo = 0;
+  
+    state.payments.forEach(p => {
+      if (isWithinInterval(parseISO(p.date), interval)) recebidoNoPeriodo += p.amount;
+    });
+    
+    (state.expenses || []).forEach(e => {
+      if (isWithinInterval(parseISO(e.date), interval)) despesasNoPeriodo += e.amount;
+    });
+  
+    patientFinancials.forEach(pf => {
+      pf.expectedPayments.forEach(exp => {
+        if (isWithinInterval(exp.date, interval) && exp.pendingAmount > 0) {
+          previstoNoPeriodo += exp.pendingAmount;
+        }
+        if (exp.status === 'ATRASADO') saldoAtrasado += exp.pendingAmount;
+        else if (exp.status === 'PENDENTE' || exp.status === 'PARCIAL') saldoEmAberto += exp.pendingAmount;
+      });
+    });
+  
+    return { 
+      recebidoNoPeriodo, 
+      previstoNoPeriodo, 
+      totalReceitas: recebidoNoPeriodo + previstoNoPeriodo,
+      saldoEmAberto, 
+      saldoAtrasado,
+      despesasNoPeriodo,
+      lucroLiquido: recebidoNoPeriodo - despesasNoPeriodo
+    };
+  }, [patientFinancials, state.payments, state.expenses, interval]);
 
-    return { monthlyReceived, monthlyExpenses, netProfit, totalToReceive, activePackages };
-  }, [state]);
+  const patientList = useMemo(() => {
+    return patientFinancials.map(pf => {
+      const paymentsInPeriod = pf.patientPayments.filter(p => isWithinInterval(parseISO(p.date), interval));
+      const valorJaPago = paymentsInPeriod.reduce((s, p) => s + p.amount, 0);
+      
+      const expectedInPeriod = pf.expectedPayments.filter(exp => isWithinInterval(exp.date, interval) && exp.pendingAmount > 0);
+      const valorPendente = expectedInPeriod.reduce((s, exp) => s + exp.pendingAmount, 0);
+      
+      const hasOverdue = expectedInPeriod.some(exp => exp.status === 'ATRASADO');
+      
+      let indicator = 'QUITADO';
+      if (valorPendente > 0) {
+        if (hasOverdue) indicator = 'ATRASADO';
+        else if (valorJaPago > 0) indicator = 'PARCIAL';
+        else indicator = 'PENDENTE';
+      } else if (valorJaPago === 0 && valorPendente === 0) {
+        indicator = 'N/A';
+      }
+
+      return {
+        ...pf.patient,
+        valorJaPago,
+        valorPendente,
+        indicator,
+        hasActivity: valorJaPago > 0 || valorPendente > 0
+      };
+    }).filter(p => p.hasActivity)
+      .filter(p => {
+        const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        return normalize(p.name).includes(normalize(searchTerm));
+      })
+      .sort((a,b) => {
+        if (a.indicator === 'ATRASADO' && b.indicator !== 'ATRASADO') return -1;
+        if (b.indicator === 'ATRASADO' && a.indicator !== 'ATRASADO') return 1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [patientFinancials, interval, searchTerm]);
+
+  const groupedTransactions = useMemo(() => {
+    const inPeriod = state.payments.filter(p => isWithinInterval(parseISO(p.date), interval))
+      .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      
+    const groups: Record<string, { total: number, count: number, items: Payment[] }> = {};
+    inPeriod.forEach(p => {
+      const monthStr = format(parseISO(p.date), "MMMM yyyy", { locale: ptBR });
+      const key = monthStr.charAt(0).toUpperCase() + monthStr.slice(1);
+      if (!groups[key]) groups[key] = { total: 0, count: 0, items: [] };
+      groups[key].total += p.amount;
+      groups[key].count += 1;
+      groups[key].items.push(p);
+    });
+    return groups;
+  }, [state.payments, interval]);
+
+  const groupedExpenses = useMemo(() => {
+    const inPeriod = (state.expenses || []).filter(e => isWithinInterval(parseISO(e.date), interval))
+      .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      
+    const groups: Record<string, { total: number, count: number, items: Expense[] }> = {};
+    inPeriod.forEach(e => {
+      const monthStr = format(parseISO(e.date), "MMMM yyyy", { locale: ptBR });
+      const key = monthStr.charAt(0).toUpperCase() + monthStr.slice(1);
+      if (!groups[key]) groups[key] = { total: 0, count: 0, items: [] };
+      groups[key].total += e.amount;
+      groups[key].count += 1;
+      groups[key].items.push(e);
+    });
+    return groups;
+  }, [state.expenses, interval]);
 
   const handleSavePayment = () => {
     if (!patientId || amount <= 0) {
@@ -192,70 +346,75 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     setExpenseDesc(''); setExpenseAmount(0); setExpenseDate(format(new Date(), 'yyyy-MM-dd')); setExpenseCategory('Outro');
   };
 
-  const filteredPatientsFinance = useMemo(() => {
-    return state.patients
-      .filter(p => p.status === 'Ativo')
-      .map(patient => {
-        const patientPayments = state.payments.filter(p => p.patientId === patient.id);
-        const totalPaid = patientPayments.reduce((sum, p) => sum + p.amount, 0);
-
-        const pacotesCompletos = Math.floor(totalPaid / 1000);
-        const pagoNoPacoteAtual = totalPaid % 1000;
-        const remaining = pagoNoPacoteAtual === 0 ? 0 : 1000 - pagoNoPacoteAtual;
-
-        let status: 'Quitado' | 'Parcial' | 'Pendente' = 'Pendente';
-        if (pagoNoPacoteAtual === 0) status = 'Quitado'; 
-        else if (pagoNoPacoteAtual >= 500) status = 'Parcial';
-        else status = 'Pendente';
-
-        const sessionCount = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
-        const sessionsInCurrentPackage = sessionCount % 10 === 0 && sessionCount > 0 ? 10 : sessionCount % 10;
-        const isLate = patient.paymentModal === PaymentModal.PARCELADO && sessionsInCurrentPackage >= 6 && pagoNoPacoteAtual < 500;
-        
-        return { ...patient, totalPaid, remaining, status, isLate, pacotesCompletos, pagoNoPacoteAtual };
-      })
-      .filter(p => {
-        const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-        return normalize(p.name).includes(normalize(searchTerm));
-      })
-      .sort((a,b) => b.isLate ? 1 : -1);
-  }, [state, searchTerm]);
-
   return (
     <div className="flex flex-col gap-6 py-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
-          <div className="flex items-center gap-2 mb-1 text-status-green-text">
-            <TrendingUp size={16} />
-            <p className="text-[10px] uppercase font-bold tracking-widest">Receitas (Mês)</p>
-          </div>
-          <p className="text-xl font-bold text-clinic-text">{formatCurrency(metrics.monthlyReceived)}</p>
+      
+      {/* Top Filter */}
+      <div className="bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm flex flex-col md:flex-row items-center gap-4 justify-between">
+        <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
+          {['Semanal', 'Mensal', 'Anual', 'Personalizado'].map(f => (
+            <button 
+              key={f}
+              onClick={() => setPeriodFilter(f as any)}
+              className={cn(
+                "flex-1 md:flex-none px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-all", 
+                periodFilter === f ? 'bg-clinic-text text-white shadow-md' : 'text-clinic-text-muted hover:text-clinic-text'
+              )}
+            >
+              {f}
+            </button>
+          ))}
         </div>
-        
-        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
-          <div className="flex items-center gap-2 mb-1 text-status-red-text">
-            <TrendingDown size={16} />
-            <p className="text-[10px] uppercase font-bold tracking-widest">Despesas (Mês)</p>
+        {periodFilter === 'Personalizado' && (
+          <div className="flex items-center gap-2 w-full md:w-auto">
+            <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
+            <span className="text-clinic-text-faint text-xs font-bold">até</span>
+            <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
           </div>
-          <p className="text-xl font-bold text-clinic-text">{formatCurrency(metrics.monthlyExpenses)}</p>
+        )}
+      </div>
+
+      {/* Cards de Resumo */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Receitas */}
+        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
+          <div className="flex justify-between items-start mb-3">
+            <div className="flex items-center gap-2 text-clinic-text">
+              <TrendingUp size={16} />
+              <p className="text-[10px] uppercase font-bold tracking-widest">Receitas ({periodFilter})</p>
+            </div>
+            <p className="text-lg font-black text-clinic-text">{formatCurrency(metrics.totalReceitas)}</p>
+          </div>
+          <div className="flex justify-between items-center text-xs mt-auto pt-3 border-t border-clinic-border">
+             <div className="flex flex-col"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">✅ Recebido</span><span className="font-bold text-status-green-text">{formatCurrency(metrics.recebidoNoPeriodo)}</span></div>
+             <div className="flex flex-col items-end"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">⏳ Previsto</span><span className="font-bold text-status-orange-text">{formatCurrency(metrics.previstoNoPeriodo)}</span></div>
+          </div>
         </div>
 
+        {/* Saldo a Receber */}
+        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
+          <div className="flex items-center gap-2 mb-3 text-clinic-text">
+            <DollarSign size={16} />
+            <p className="text-[10px] uppercase font-bold tracking-widest">Saldo a Receber</p>
+          </div>
+          <div className="flex justify-between items-center text-xs mt-auto pt-3 border-t border-clinic-border">
+             <div className="flex flex-col"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">⏳ Em aberto</span><span className="font-bold text-status-orange-text">{formatCurrency(metrics.saldoEmAberto)}</span></div>
+             <div className="flex flex-col items-end"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">⚠️ Atrasado</span><span className="font-bold text-status-red-text">{formatCurrency(metrics.saldoAtrasado)}</span></div>
+          </div>
+        </div>
+
+        {/* Lucro Liquido */}
         <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col relative overflow-hidden">
           <div className="absolute inset-0 bg-clinic-primary/5 pointer-events-none"></div>
           <div className="flex items-center gap-2 mb-1 text-clinic-primary">
             <Wallet size={16} />
             <p className="text-[10px] uppercase font-bold tracking-widest">Lucro Líquido</p>
           </div>
-          <p className="text-xl font-bold text-clinic-text relative z-10">{formatCurrency(metrics.netProfit)}</p>
-        </div>
-
-        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
-          <div className="flex items-center gap-2 mb-1 text-clinic-text-faint">
-            <DollarSign size={16} />
-            <p className="text-[10px] uppercase font-bold tracking-widest">Saldo a Receber</p>
+          <p className="text-2xl font-black text-clinic-text relative z-10">{formatCurrency(metrics.lucroLiquido)}</p>
+          <div className="flex justify-between items-center text-[10px] mt-auto pt-3 border-t border-clinic-border opacity-70">
+             <span className="font-bold">Receitas recebidas</span>
+             <span className="font-bold">- Despesas do período</span>
           </div>
-          <p className="text-xl font-bold text-clinic-text">{formatCurrency(metrics.totalToReceive)}</p>
-          <p className="text-[10px] text-clinic-text-faint mt-1">Já descontado repasse da sócia</p>
         </div>
       </div>
 
@@ -300,36 +459,39 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
           <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
             <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2">
               <DollarSign size={20} />
-              <h2 className="font-serif text-xl font-bold">Situação por Atendente</h2>
+              <h2 className="font-serif text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
             </div>
             <div className="p-6 space-y-4">
-              {filteredPatientsFinance.map(item => (
-                <div key={item.id} className={cn("p-4 rounded-xl border transition-all flex flex-col md:flex-row items-center gap-4", item.isLate ? "bg-status-red-bg border-red-200" : "bg-white border-clinic-border hover:bg-clinic-bg/40")}>
+              {patientList.map(item => {
+                let colorClass = "bg-white border-clinic-border";
+                let textClass = "text-clinic-text-muted";
+                
+                if (item.indicator === 'ATRASADO') { colorClass = "bg-status-red-bg border-red-200"; textClass = "text-status-red-text"; }
+                else if (item.indicator === 'QUITADO') { textClass = "text-status-green-text"; }
+                else if (item.indicator === 'PARCIAL') { textClass = "text-status-orange-text"; }
+
+                return (
+                <div key={item.id} className={cn("p-4 rounded-xl border transition-all flex flex-col md:flex-row items-center gap-4 hover:shadow-sm", colorClass)}>
                   <div className="flex-1 w-full text-center md:text-left">
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
                       <h4 className="font-bold text-clinic-text">{item.name}</h4>
-                      <span className="text-[10px] text-clinic-text-faint font-bold uppercase px-2 py-0.5 bg-clinic-bg rounded">{item.paymentModal.split(': ')[0]}</span>
-                      {item.isLate && <span className="text-[10px] font-black uppercase text-status-red-text animate-pulse">⚠️ Pagamento em Atraso</span>}
+                      <span className="text-[10px] text-clinic-text-faint font-bold uppercase px-2 py-0.5 bg-clinic-bg/50 rounded">{item.paymentModal.split(': ')[0]}</span>
                     </div>
-                    <div className="text-xs text-clinic-text-muted mt-1">
-                      Pacote atual: <span className="font-bold text-clinic-text">{formatCurrency(item.pagoNoPacoteAtual)} / R$ 1.000</span>
-                      {item.pacotesCompletos > 0 && <span className="ml-2 px-1.5 py-0.5 bg-clinic-bg rounded text-[10px] text-clinic-text-faint">{item.pacotesCompletos}º pacote concluído</span>}
+                    <div className="flex flex-col md:flex-row items-center gap-4 mt-2">
+                       <div className="text-xs text-clinic-text-muted">Valor já pago: <span className="font-bold text-clinic-text">{formatCurrency(item.valorJaPago)}</span></div>
+                       <div className="text-xs text-clinic-text-muted">Valor pendente: <span className="font-bold text-clinic-text">{formatCurrency(item.valorPendente)}</span></div>
                     </div>
-                    <div className="text-xs text-clinic-text-muted mt-0.5">Falta no pacote atual: <span className="font-bold text-clinic-text">{formatCurrency(item.remaining)}</span></div>
                   </div>
                   <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
-                    <div className="flex flex-col items-end">
-                       <span className="text-xs font-bold text-clinic-text-faint uppercase">Total Histórico</span>
-                       <span className="text-base font-bold text-clinic-text">{formatCurrency(item.totalPaid)}</span>
-                    </div>
-                    <div className={cn("px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest", getStatusColor(item.status))}>{item.status}</div>
+                    <div className={cn("px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-white shadow-sm border border-clinic-border", textClass)}>{item.indicator}</div>
                   </div>
                 </div>
-              ))}
+              )})}
+              {patientList.length === 0 && <p className="text-center text-sm text-clinic-text-muted italic py-4">Nenhum dado financeiro de receitas para o período selecionado.</p>}
             </div>
           </div>
 
-          <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
+          <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
              <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/10">
               <History size={20} className="text-clinic-text-faint" />
               <h2 className="font-serif text-xl font-bold">Histórico de Transações</h2>
@@ -346,28 +508,43 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-clinic-border">
-                  {state.payments.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(p => (
-                    <tr key={p.id} className="hover:bg-clinic-bg/30 transition-colors group">
-                      <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(p.date, 'dd/MM/yyyy')}</td>
-                      <td className="px-6 py-4 text-sm font-bold text-clinic-text">{state.patients.find(pt => pt.id === p.patientId)?.name}</td>
-                      <td className="px-6 py-4 text-xs">{p.installment}</td>
-                      <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{p.method}</span></td>
-                      <td className="px-6 py-4 text-right text-sm font-bold text-status-green-text flex items-center justify-end gap-3">
-                        {formatCurrency(p.amount)}
-                        <button onClick={() => setPaymentToDelete(p.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
-                      </td>
-                    </tr>
+                  {Object.entries(groupedTransactions).map(([monthYear, group]) => (
+                    <React.Fragment key={monthYear}>
+                      <tr className="bg-clinic-bg/20 border-y border-clinic-border">
+                        <td colSpan={5} className="px-6 py-3">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-clinic-text text-sm uppercase tracking-wide">{monthYear}</span>
+                            <div className="flex items-center gap-3">
+                              <span className="text-[10px] uppercase font-bold text-clinic-text-faint bg-white px-2 py-1 rounded shadow-sm">{group.count} transaç{group.count > 1 ? 'ões' : 'ão'}</span>
+                              <span className="font-black text-status-green-text ml-2">{formatCurrency(group.total)}</span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                      {group.items.map(p => (
+                        <tr key={p.id} className="hover:bg-clinic-bg/30 transition-colors group">
+                          <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(p.date, 'dd/MM/yyyy')}</td>
+                          <td className="px-6 py-4 text-sm font-bold text-clinic-text">{state.patients.find(pt => pt.id === p.patientId)?.name || 'Desconhecido'}</td>
+                          <td className="px-6 py-4 text-xs">{p.installment}</td>
+                          <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{p.method}</span></td>
+                          <td className="px-6 py-4 text-right text-sm font-bold text-status-green-text flex items-center justify-end gap-3">
+                            {formatCurrency(p.amount)}
+                            <button onClick={() => setPaymentToDelete(p.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
                   ))}
                 </tbody>
               </table>
-              {state.payments.length === 0 && <p className="py-10 text-center text-clinic-text-muted italic text-sm">Nenhum pagamento registado.</p>}
+              {Object.keys(groupedTransactions).length === 0 && <p className="py-10 text-center text-clinic-text-muted italic text-sm">Nenhum pagamento registado neste período.</p>}
             </div>
           </div>
         </div>
       )}
 
       {viewMode === 'Despesas' && (
-        <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
+        <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
            <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/10">
             <History size={20} className="text-clinic-text-faint" />
             <h2 className="font-serif text-xl font-bold">Histórico de Despesas</h2>
@@ -383,35 +560,51 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-clinic-border">
-                {(state.expenses || []).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(e => (
-                  <tr key={e.id} className="hover:bg-clinic-bg/30 transition-colors group">
-                    <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(e.date, 'dd/MM/yyyy')}</td>
-                    <td className="px-6 py-4 text-sm font-bold text-clinic-text">
-                      <div className="flex items-center gap-2">
-                        {e.description}
-                        {e.auto_gerado && (
-                          <span title="Gerado automaticamente pelo sistema" className="inline-flex items-center gap-1 px-2 py-0.5 bg-clinic-bg border border-clinic-border rounded text-[10px] text-clinic-text-faint font-bold">
-                            <Link size={10} /> Auto
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{e.category}</span></td>
-                    <td className="px-6 py-4 text-right text-sm font-bold text-status-red-text flex items-center justify-end gap-3">
-                      - {formatCurrency(e.amount)}
-                      {!e.auto_gerado && (
-                        <button onClick={() => setExpenseToDelete(e.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
-                      )}
-                    </td>
-                  </tr>
+                {Object.entries(groupedExpenses).map(([monthYear, group]) => (
+                  <React.Fragment key={monthYear}>
+                    <tr className="bg-clinic-bg/20 border-y border-clinic-border">
+                      <td colSpan={4} className="px-6 py-3">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-clinic-text text-sm uppercase tracking-wide">{monthYear}</span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] uppercase font-bold text-clinic-text-faint bg-white px-2 py-1 rounded shadow-sm">{group.count} transaç{group.count > 1 ? 'ões' : 'ão'}</span>
+                            <span className="font-black text-status-red-text ml-2">- {formatCurrency(group.total)}</span>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                    {group.items.map(e => (
+                      <tr key={e.id} className="hover:bg-clinic-bg/30 transition-colors group">
+                        <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(e.date, 'dd/MM/yyyy')}</td>
+                        <td className="px-6 py-4 text-sm font-bold text-clinic-text">
+                          <div className="flex items-center gap-2">
+                            {e.description}
+                            {e.auto_gerado && (
+                              <span title="Gerado automaticamente pelo sistema" className="inline-flex items-center gap-1 px-2 py-0.5 bg-clinic-bg border border-clinic-border rounded text-[10px] text-clinic-text-faint font-bold">
+                                <Link size={10} /> Auto
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{e.category}</span></td>
+                        <td className="px-6 py-4 text-right text-sm font-bold text-status-red-text flex items-center justify-end gap-3">
+                          - {formatCurrency(e.amount)}
+                          {!e.auto_gerado && (
+                            <button onClick={() => setExpenseToDelete(e.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
-            {(!state.expenses || state.expenses.length === 0) && <p className="py-10 text-center text-clinic-text-muted italic text-sm">Nenhuma despesa registada.</p>}
+            {Object.keys(groupedExpenses).length === 0 && <p className="py-10 text-center text-clinic-text-muted italic text-sm">Nenhuma despesa registada neste período.</p>}
           </div>
         </div>
       )}
 
+      {/* Modais de Exclusão e Inclusão mantidos idênticos... */}
       <Modal isOpen={!!paymentToDelete} onClose={() => setPaymentToDelete(null)} title="Confirmar Exclusão" width="max-w-md">
         <div className="space-y-6">
           <p className="text-clinic-text">Deseja realmente excluir esta receita? O repasse automático da sócia vinculado também será removido.</p>
