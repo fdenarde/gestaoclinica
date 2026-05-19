@@ -120,6 +120,20 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     return { start, end };
   }, [periodFilter, customStartDate, customEndDate]);
 
+  const intervalDisplay = useMemo(() => {
+    if (periodFilter === 'Semanal') {
+      return `${format(interval.start, 'dd/MM/yyyy')} a ${format(interval.end, 'dd/MM/yyyy')}`;
+    }
+    if (periodFilter === 'Mensal') {
+      const mStr = format(interval.start, "MMMM yyyy", { locale: ptBR });
+      return mStr.charAt(0).toUpperCase() + mStr.slice(1);
+    }
+    if (periodFilter === 'Anual') {
+      return `Janeiro a Dezembro ${format(interval.start, 'yyyy')}`;
+    }
+    return `${format(interval.start, 'dd/MM/yyyy')} a ${format(interval.end, 'dd/MM/yyyy')}`;
+  }, [interval, periodFilter]);
+
   const patientFinancials = useMemo(() => {
     const today = startOfDay(new Date());
     
@@ -134,11 +148,14 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         
       let remainingPaid = patientPayments.reduce((s, p) => s + p.amount, 0);
       const expectedPayments: ExpectedPayment[] = [];
-      const packagesCount = Math.max(1, Math.ceil(allPatientSessions.length / 10));
+      const packagesCount = Math.ceil(allPatientSessions.length / 10);
+      const safePackagesCount = packagesCount === 0 && patient.status === 'Ativo' ? 1 : packagesCount;
   
-      for (let k = 0; k < packagesCount; k++) {
+      for (let k = 0; k < safePackagesCount; k++) {
         const firstSession = allPatientSessions[k * 10];
         const sixthSession = allPatientSessions[k * 10 + 5];
+        
+        if (!firstSession && k > 0) continue;
         
         const firstDate = firstSession ? parseISO(firstSession.date) : parseISO(patient.startDate || format(new Date(), 'yyyy-MM-dd'));
         
@@ -152,6 +169,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
              id: `pkg_${k}_p1`, amount: 500, date: firstDate,
              status: 'PENDENTE', paidAmount: 0, pendingAmount: 500
            });
+           
            if (sixthSession) {
               expectedPayments.push({
                 id: `pkg_${k}_p2`, amount: 500, date: parseISO(sixthSession.date),
@@ -204,11 +222,14 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         else if (exp.status === 'PENDENTE' || exp.status === 'PARCIAL') saldoEmAberto += exp.pendingAmount;
       });
     });
+
+    saldoEmAberto = saldoEmAberto * 0.8;
+    saldoAtrasado = saldoAtrasado * 0.8;
   
     return { 
       recebidoNoPeriodo, 
       previstoNoPeriodo, 
-      totalReceitas: recebidoNoPeriodo + previstoNoPeriodo,
+      totalReceitas: recebidoNoPeriodo,
       saldoEmAberto, 
       saldoAtrasado,
       despesasNoPeriodo,
@@ -350,26 +371,33 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     <div className="flex flex-col gap-6 py-6">
       
       {/* Top Filter */}
-      <div className="bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm flex flex-col md:flex-row items-center gap-4 justify-between">
-        <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
-          {['Semanal', 'Mensal', 'Anual', 'Personalizado'].map(f => (
-            <button 
-              key={f}
-              onClick={() => setPeriodFilter(f as any)}
-              className={cn(
-                "flex-1 md:flex-none px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-all", 
-                periodFilter === f ? 'bg-clinic-text text-white shadow-md' : 'text-clinic-text-muted hover:text-clinic-text'
-              )}
-            >
-              {f}
-            </button>
-          ))}
+      <div className="bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm flex flex-col gap-3">
+        <div className="flex flex-col md:flex-row items-center gap-4 justify-between">
+          <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
+            {['Semanal', 'Mensal', 'Anual', 'Personalizado'].map(f => (
+              <button 
+                key={f}
+                onClick={() => setPeriodFilter(f as any)}
+                className={cn(
+                  "flex-1 md:flex-none px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-all", 
+                  periodFilter === f ? 'bg-clinic-text text-white shadow-md' : 'text-clinic-text-muted hover:text-clinic-text'
+                )}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+          {periodFilter === 'Personalizado' && (
+            <div className="flex items-center gap-2 w-full md:w-auto">
+              <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
+              <span className="text-clinic-text-faint text-xs font-bold">até</span>
+              <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
+            </div>
+          )}
         </div>
-        {periodFilter === 'Personalizado' && (
-          <div className="flex items-center gap-2 w-full md:w-auto">
-            <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
-            <span className="text-clinic-text-faint text-xs font-bold">até</span>
-            <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
+        {periodFilter !== 'Personalizado' && (
+          <div className="text-center md:text-left text-xs font-bold text-clinic-text-muted uppercase tracking-widest px-2">
+            Período: {intervalDisplay}
           </div>
         )}
       </div>
