@@ -138,63 +138,37 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     const today = startOfDay(new Date());
     
     return state.patients.filter(p => p.status === 'Ativo' || state.payments.some(pm => pm.patientId === p.id)).map(patient => {
-      const allPatientSessions = state.sessions
-        .filter(s => s.patientId === patient.id && s.status !== SessionStatus.CANCELADA && !s.isBlocked)
-        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-        
       const patientPayments = state.payments
         .filter(p => p.patientId === patient.id)
         .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         
-      let remainingPaid = patientPayments.reduce((s, p) => s + p.amount, 0);
+      const totalPaid = patientPayments.reduce((s, p) => s + p.amount, 0);
+      const pagoNoPacoteAtual = totalPaid % 1000;
+      
       const expectedPayments: ExpectedPayment[] = [];
-      const packagesCount = Math.ceil(allPatientSessions.length / 10);
-      const safePackagesCount = packagesCount === 0 && patient.status === 'Ativo' ? 1 : packagesCount;
-  
-      for (let k = 0; k < safePackagesCount; k++) {
-        const firstSession = allPatientSessions[k * 10];
-        const sixthSession = allPatientSessions[k * 10 + 5];
+      
+      if (pagoNoPacoteAtual > 0) {
+        const currentPackageIndex = Math.floor(totalPaid / 1000);
+        const allPatientSessions = state.sessions
+          .filter(s => s.patientId === patient.id && s.status !== SessionStatus.CANCELADA && !s.isBlocked)
+          .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          
+        const sixthSession = allPatientSessions[currentPackageIndex * 10 + 5];
+        const dueDate = sixthSession ? parseISO(sixthSession.date) : today;
         
-        if (!firstSession && k > 0) continue;
+        const isAtrasado = dueDate < today;
         
-        const firstDate = firstSession ? parseISO(firstSession.date) : parseISO(patient.startDate || format(new Date(), 'yyyy-MM-dd'));
-        
-        if (patient.paymentModal === PaymentModal.PIX_FULL) {
-           expectedPayments.push({
-             id: `pkg_${k}_full`, amount: 1000, date: firstDate,
-             status: 'PENDENTE', paidAmount: 0, pendingAmount: 1000
-           });
-        } else {
-           expectedPayments.push({
-             id: `pkg_${k}_p1`, amount: 500, date: firstDate,
-             status: 'PENDENTE', paidAmount: 0, pendingAmount: 500
-           });
-           
-           if (sixthSession) {
-              expectedPayments.push({
-                id: `pkg_${k}_p2`, amount: 500, date: parseISO(sixthSession.date),
-                status: 'PENDENTE', paidAmount: 0, pendingAmount: 500
-              });
-           }
-        }
+        expectedPayments.push({
+          id: `pkg_${currentPackageIndex}_rem`,
+          amount: 1000 - pagoNoPacoteAtual,
+          date: dueDate,
+          status: isAtrasado ? 'ATRASADO' : 'PENDENTE',
+          paidAmount: 0,
+          pendingAmount: 1000 - pagoNoPacoteAtual
+        });
       }
       
-      expectedPayments.forEach(exp => {
-        const expDateStart = startOfDay(exp.date);
-        if (remainingPaid >= exp.amount) {
-           exp.status = 'QUITADO'; exp.paidAmount = exp.amount; exp.pendingAmount = 0;
-           remainingPaid -= exp.amount;
-        } else if (remainingPaid > 0) {
-           exp.paidAmount = remainingPaid; exp.pendingAmount = exp.amount - remainingPaid;
-           exp.status = expDateStart < today ? 'ATRASADO' : 'PARCIAL';
-           remainingPaid = 0;
-        } else {
-           exp.paidAmount = 0; exp.pendingAmount = exp.amount;
-           exp.status = expDateStart < today ? 'ATRASADO' : 'PENDENTE';
-        }
-      });
-      
-      return { patient, expectedPayments, patientPayments };
+      return { patient, expectedPayments, patientPayments, totalPaid, pagoNoPacoteAtual };
     });
   }, [state.patients, state.sessions, state.payments]);
 
@@ -238,7 +212,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   }, [patientFinancials, state.payments, state.expenses, interval]);
 
   const patientList = useMemo(() => {
-    return patientFinancials.map(pf => {
+    return patientFinancials.filter(pf => pf.patient.status === 'Ativo').map(pf => {
       const paymentsInPeriod = pf.patientPayments.filter(p => isWithinInterval(parseISO(p.date), interval));
       const valorJaPago = paymentsInPeriod.reduce((s, p) => s + p.amount, 0);
       
@@ -250,10 +224,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       let indicator = 'QUITADO';
       if (valorPendente > 0) {
         if (hasOverdue) indicator = 'ATRASADO';
-        else if (valorJaPago > 0) indicator = 'PARCIAL';
         else indicator = 'PENDENTE';
-      } else if (valorJaPago === 0 && valorPendente === 0) {
-        indicator = 'N/A';
       }
 
       return {
@@ -261,10 +232,10 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         valorJaPago,
         valorPendente,
         indicator,
-        hasActivity: valorJaPago > 0 || valorPendente > 0
+        pagoNoPacoteAtual: pf.pagoNoPacoteAtual,
+        pacotesCompletos: Math.floor(pf.totalPaid / 1000)
       };
-    }).filter(p => p.hasActivity)
-      .filter(p => {
+    }).filter(p => {
         const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
         return normalize(p.name).includes(normalize(searchTerm));
       })
@@ -506,8 +477,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                       <span className="text-[10px] text-clinic-text-faint font-bold uppercase px-2 py-0.5 bg-clinic-bg/50 rounded">{item.paymentModal.split(': ')[0]}</span>
                     </div>
                     <div className="flex flex-col md:flex-row items-center gap-4 mt-2">
-                       <div className="text-xs text-clinic-text-muted">Valor já pago: <span className="font-bold text-clinic-text">{formatCurrency(item.valorJaPago)}</span></div>
-                       <div className="text-xs text-clinic-text-muted">Valor pendente: <span className="font-bold text-clinic-text">{formatCurrency(item.valorPendente)}</span></div>
+                       <div className="text-xs text-clinic-text-muted">Pago no período: <span className="font-bold text-clinic-text">{formatCurrency(item.valorJaPago)}</span></div>
+                       <div className="text-xs text-clinic-text-muted">Pendente no período: <span className="font-bold text-clinic-text">{formatCurrency(item.valorPendente)}</span></div>
                     </div>
                   </div>
                   <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
