@@ -267,6 +267,7 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
   };
 
   const copyAllSessionsSummary = () => {
+    const formattedCurrentDate = format(new Date(), 'dd/MM/yyyy');
     const allSummaries = state.patients
       .filter(p => p.status === 'Ativo')
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -284,22 +285,22 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
         const remaining = Math.max(0, 10 - count);
 
         const lines = [
-          `Atendente: ${patient.name}`,
-          `Responsável: ${patient.guardianName}`,
-          'Sessões realizadas:'
+          `👦 Paciente: ${patient.name}`,
+          `👤 Responsável: ${patient.guardianName}`,
+          `✅ Sessões realizadas (${count}/10):`
         ];
         patientSessions.slice(-10).forEach((s, index) => {
           const isReposicao = s.status === SessionStatus.REPOSICAO;
-          const tipoLabel = isReposicao ? 'reposição' : 'sessão normal';
+          const tipoLabel = isReposicao ? 'reposição' : 'OK';
           lines.push(`${index + 1}. ${safeFormatDate(s.date, 'dd/MM')} - ${tipoLabel}`);
         });
-        lines.push(`Sessões restantes no pacote atual: ${remaining}`);
-        lines.push('---');
+        lines.push(`⏳ Restantes: ${remaining} sessões`);
         return lines.join('\n');
       })
-      .join('\n');
+      .join('\n━━━━━━━━━━━━━━━━\n');
 
-    navigator.clipboard.writeText(allSummaries);
+    const finalReport = `📋 Relatório de Sessões — ${formattedCurrentDate}\n\n${allSummaries}`;
+    navigator.clipboard.writeText(finalReport);
     showToast('Resumo de todos os atendentes copiado!');
   };
 
@@ -338,16 +339,17 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
 
                // Copy summary to clipboard
                const summaryLines = [
-                 `Atendente: ${patient.name}`,
-                 `Responsável: ${patient.guardianName}`,
-                 'Sessões realizadas:'
+                 `📋 Relatório de Sessões — ${format(new Date(), 'dd/MM/yyyy')}\n`,
+                 `👦 Paciente: ${patient.name}`,
+                 `👤 Responsável: ${patient.guardianName}`,
+                 `✅ Sessões realizadas (${count}/10):`
                ];
                patientSessions.slice(-10).forEach((s, index) => {
                  const isReposicao = s.status === SessionStatus.REPOSICAO;
-                 const tipoLabel = isReposicao ? 'reposição' : 'sessão normal';
+                 const tipoLabel = isReposicao ? 'reposição' : 'OK';
                  summaryLines.push(`${index + 1}. ${safeFormatDate(s.date, 'dd/MM')} - ${tipoLabel}`);
                });
-               summaryLines.push(`Sessões restantes no pacote atual: ${remaining}`);
+               summaryLines.push(`⏳ Restantes: ${remaining} sessões`);
                const summaryText = summaryLines.join('\n');
 
                return (
