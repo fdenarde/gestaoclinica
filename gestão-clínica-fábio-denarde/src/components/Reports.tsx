@@ -271,11 +271,17 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
       .filter(p => p.status === 'Ativo')
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(patient => {
-        const patientSessions = state.sessions
-          .filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
+        const patientAllSessions = state.sessions.filter(s => s.patientId === patient.id);
+        const maxPackageNumber = patientAllSessions.reduce((max, s) => {
+          const num = s.packageNumber || 1;
+          return num > max ? num : max;
+        }, 1);
+
+        const patientSessions = patientAllSessions
+          .filter(s => (s.packageNumber || 1) === maxPackageNumber && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-        const count = patientSessions.length % 10 || (patientSessions.length > 0 ? 10 : 0);
-        const remaining = 10 - count;
+        const count = patientSessions.length;
+        const remaining = Math.max(0, 10 - count);
 
         const lines = [
           `Atendente: ${patient.name}`,
@@ -318,9 +324,17 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
            </div>
            <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
              {state.patients.filter(p => p.status === 'Ativo').sort((a,b) => a.name.localeCompare(b.name)).map(patient => {
-               const patientSessions = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-               const count = patientSessions.length % 10 || (patientSessions.length > 0 ? 10 : 0);
-               const remaining = 10 - count;
+               const patientAllSessions = state.sessions.filter(s => s.patientId === patient.id);
+               const maxPackageNumber = patientAllSessions.reduce((max, s) => {
+                 const num = s.packageNumber || 1;
+                 return num > max ? num : max;
+               }, 1);
+
+               const patientSessions = patientAllSessions
+                 .filter(s => (s.packageNumber || 1) === maxPackageNumber && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
+                 .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+               const count = patientSessions.length;
+               const remaining = Math.max(0, 10 - count);
 
                // Copy summary to clipboard
                const summaryLines = [
