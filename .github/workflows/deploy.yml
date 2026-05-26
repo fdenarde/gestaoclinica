@@ -2,7 +2,7 @@ name: Deploy static content to Pages
 
 on:
   push:
-    branches: ['main']
+    branches: ['main', 'gh-pages']
   workflow_dispatch:
 
 permissions:
@@ -21,27 +21,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout gh-pages branch
         uses: actions/checkout@v4
         with:
-          ref: main
-          fetch-depth: 0
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install dependencies
-        working-directory: ./gestão-clínica-fábio-denarde
-        run: npm ci
-      - name: Build
-        working-directory: ./gestão-clínica-fábio-denarde
-        run: npm run build
+          ref: gh-pages
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './gestão-clínica-fábio-denarde/dist'
+          path: '.'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
