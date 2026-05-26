@@ -271,15 +271,15 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
       .filter(p => p.status === 'Ativo')
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(patient => {
-        const patientAllSessions = state.sessions.filter(s => s.patientId === patient.id);
-        const maxPackageNumber = patientAllSessions.reduce((max, s) => {
-          const num = s.packageNumber || 1;
-          return num > max ? num : max;
-        }, 1);
-
-        const patientSessions = patientAllSessions
-          .filter(s => (s.packageNumber || 1) === maxPackageNumber && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
+        const realizedSessions = state.sessions
+          .filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        const totalRealized = realizedSessions.length;
+        const currentPackageIndex = totalRealized > 0 ? Math.floor((totalRealized - 1) / 10) * 10 : 0;
+        const packageStartDate = realizedSessions[currentPackageIndex] ? realizedSessions[currentPackageIndex].date : (patient.startDate || '');
+
+        const patientSessions = realizedSessions.filter(s => s.date >= packageStartDate);
         const count = patientSessions.length;
         const remaining = Math.max(0, 10 - count);
 
@@ -324,15 +324,15 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
            </div>
            <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
              {state.patients.filter(p => p.status === 'Ativo').sort((a,b) => a.name.localeCompare(b.name)).map(patient => {
-               const patientAllSessions = state.sessions.filter(s => s.patientId === patient.id);
-               const maxPackageNumber = patientAllSessions.reduce((max, s) => {
-                 const num = s.packageNumber || 1;
-                 return num > max ? num : max;
-               }, 1);
+               const realizedSessions = state.sessions
+                 .filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
+                 .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-               const patientSessions = patientAllSessions
-                 .filter(s => (s.packageNumber || 1) === maxPackageNumber && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
-                 .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+               const totalRealized = realizedSessions.length;
+               const currentPackageIndex = totalRealized > 0 ? Math.floor((totalRealized - 1) / 10) * 10 : 0;
+               const packageStartDate = realizedSessions[currentPackageIndex] ? realizedSessions[currentPackageIndex].date : (patient.startDate || '');
+
+               const patientSessions = realizedSessions.filter(s => s.date >= packageStartDate);
                const count = patientSessions.length;
                const remaining = Math.max(0, 10 - count);
 
