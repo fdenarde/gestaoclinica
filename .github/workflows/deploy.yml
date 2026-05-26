@@ -20,9 +20,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gestão-clínica-fábio-denarde
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,8 +31,10 @@ jobs:
         with:
           node-version: 20
       - name: Install dependencies
+        working-directory: ./gestão-clínica-fábio-denarde
         run: npm ci
       - name: Build
+        working-directory: ./gestão-clínica-fábio-denarde
         run: npm run build
       - name: Setup Pages
         uses: actions/configure-pages@v4
