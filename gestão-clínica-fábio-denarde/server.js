@@ -6,6 +6,20 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 
+// 0. Capturar rejeições não tratadas de promessas (como erros do Puppeteer/Chromium)
+process.on('unhandledRejection', (reason) => {
+    console.error('⚠️ Rejeição de Promessa Não Tratada detectada:', reason);
+    const msg = reason && reason.message ? reason.message : '';
+    if (msg.includes('detached') || 
+        msg.includes('Protocol error') || 
+        msg.includes('closed') || 
+        msg.includes('session') ||
+        msg.includes('frame')) {
+        console.error('ERRO CRÍTICO DO BROWSER (UNHANDLED REJECTION). Reiniciando o robô para auto-recuperação...');
+        process.exit(1);
+    }
+});
+
 // 1. Inicializar Firebase Admin
 const serviceAccountPath = path.resolve('./firebase-key.json');
 
@@ -55,6 +69,12 @@ client.on('authenticated', () => {
 
 client.on('auth_failure', msg => {
     console.error('❌ Falha na autenticação', msg);
+});
+
+client.on('disconnected', reason => {
+    console.error('❌ Cliente do WhatsApp desconectado:', reason);
+    console.error('ERRO CRÍTICO DE CONEXÃO. Reiniciando o processo do robô para auto-recuperação...');
+    process.exit(1);
 });
 
 // Funções Auxiliares
@@ -194,6 +214,14 @@ async function dispararLembretes(tipo) {
                     await client.sendMessage(phone, message);
                 } catch (sendError) {
                     console.error(`❌ Erro ao enviar para ${phone}:`, sendError.message);
+                    if (sendError.message.includes('detached') || 
+                        sendError.message.includes('Protocol error') || 
+                        sendError.message.includes('closed') || 
+                        sendError.message.includes('session') ||
+                        sendError.message.includes('frame')) {
+                        console.error('ERRO CRÍTICO DE NAVEGADOR DETECTADO. Reiniciando o processo do robô...');
+                        process.exit(1);
+                    }
                 }
                 await delay(5000); 
             }
