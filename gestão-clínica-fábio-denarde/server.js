@@ -88,6 +88,31 @@ const formatPhoneNumber = (phoneStr) => {
     return `${clean}@c.us`;
 };
 
+const normalizeStr = (s) => {
+    if (!s) return '';
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+};
+
+const normalizeTime = (timeStr) => {
+    if (!timeStr) return '';
+    const parts = timeStr.trim().split(':');
+    if (parts.length < 2) return timeStr;
+    return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
+};
+
+const addOneHour = (timeStr) => {
+    if (!timeStr) return '';
+    const [hour, min] = timeStr.split(':').map(Number);
+    const newHour = (hour + 1) % 24;
+    return `${String(newHour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+};
+
+const getDayOfWeekName = (dateStr) => {
+    const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+    const dayIndex = new Date(dateStr + 'T12:00:00').getDay();
+    return diasSemana[dayIndex];
+};
+
 // 3. Lógica Principal de Lembretes
 async function dispararLembretes(tipo) {
     console.log(`[${new Date().toISOString()}] Iniciando rotina de Lembretes: ${tipo}`);
@@ -139,7 +164,38 @@ async function dispararLembretes(tipo) {
             const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             
             // Considerar apenas as "Agendada" para envio de lembrete real
-            const sessionsReais = todasSessoesHoje.filter(s => s.status === 'Agendada');
+            // Mas ignorar sessões obsoletas que não correspondem à configuração cadastral atual do paciente, a menos que sejam exceções manuais (reposição/extra)
+            const sessionsReais = todasSessoesHoje.filter(s => {
+                if (s.status !== 'Agendada') return false;
+                
+                const patient = patientsMap[s.patientId];
+                if (!patient) return true; // manter se não achar o paciente para ser seguro
+                
+                if (patient.status !== 'Ativo') return false;
+
+                // Verificar se bate com o dia/horário fixo atual
+                const sessionDayOfWeek = getDayOfWeekName(s.date);
+                const isMatchingDay = normalizeStr(sessionDayOfWeek) === normalizeStr(patient.fixedDay || '');
+                const isMatchingTime = normalizeTime(s.time) === normalizeTime(patient.fixedTime) ||
+                                       (patient.doubleSession && normalizeTime(s.time) === normalizeTime(addOneHour(patient.fixedTime)));
+                
+                if (isMatchingDay && isMatchingTime) {
+                    return true;
+                }
+
+                // Se não bater com o fixo atual, verificar se é exceção manual (reposição ou extra)
+                const isReposition = s.packageNumber === 0;
+                const notesLower = (s.notes || '').toLowerCase();
+                const isManualNotes = notesLower.includes('reposição') || notesLower.includes('reposicao') || notesLower.includes('extra') || notesLower.includes('manual');
+                
+                if (isReposition || isManualNotes) {
+                    return true; // mantém exceções manuais!
+                }
+
+                // Caso contrário, é obsoleta! Ignorar.
+                console.log(`[ROBO] Desprezando sessão obsoleta detectada para ${patient.name} em ${s.date} ${s.time} (Fixo atual: ${patient.fixedDay} ${patient.fixedTime})`);
+                return false;
+            });
 
             // 3. Gerar Sessões Virtuais (Baseadas no Horário Fixo dos pacientes ativos)
             const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
