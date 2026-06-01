@@ -8,6 +8,12 @@ import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, ProcessedSession } from '../lib/utils';
 
+const getHourBase = (timeStr: string): string => {
+  if (!timeStr) return '';
+  const [hour] = timeStr.split(':');
+  return `${hour}:00`;
+};
+
 interface AgendaProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
@@ -331,13 +337,6 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
               </div>
               <div className="p-1.5 space-y-1.5 flex-1">
                 {times.map(time => {
-                  // Helper local para renderização da base horária
-                  const getHourBase = (timeStr: string): string => {
-                    if (!timeStr) return '';
-                    const [hour] = timeStr.split(':');
-                    return `${hour}:00`;
-                  };
-
                   // Find all sessions belonging to this hour base
                   const mergedSessions = daySessions.filter(s => getHourBase(s.time) === time);
 
