@@ -113,6 +113,124 @@ const getDayOfWeekName = (dateStr) => {
     return diasSemana[dayIndex];
 };
 
+function getSessionsForDate({ dateStr, patients, sessions, settings }) {
+    const processed = [];
+    
+    // Parse target day of week in Portuguese
+    const dateObj = new Date(dateStr + 'T12:00:00');
+    const dayIndex = dateObj.getDay();
+    const dayNames = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+    const dayKey = dayNames[dayIndex];
+    
+    // Check if holiday
+    const holiday = (settings.holidays || []).find(h => h.date === dateStr);
+    
+    // 1. Process Real Sessions
+    const dbSessions = sessions.filter(s => s.date === dateStr);
+    for (const s of dbSessions) {
+        if (s.isBlocked) {
+            processed.push({
+                ...s,
+                isVirtual: false,
+                isValid: false,
+                blockedReason: 'sessão manual bloqueadora'
+            });
+            continue;
+        }
+        
+        const patient = patients.find(p => p.id === s.patientId);
+        if (!patient) {
+            processed.push({
+                ...s,
+                isVirtual: false,
+                isValid: false,
+                blockedReason: 'paciente inativo'
+            });
+            continue;
+        }
+        
+        let blockedReason = null;
+        if (holiday) {
+            blockedReason = 'feriado/recesso';
+        } else if (patient.status !== 'Ativo') {
+            blockedReason = 'paciente inativo';
+        } else if (s.status === 'Cancelada') {
+            blockedReason = 'sessão cancelada';
+        } else if (!patient.whatsapp || !patient.whatsapp.trim()) {
+            blockedReason = 'paciente sem WhatsApp';
+        } else if (s.status !== 'Agendada') {
+            blockedReason = 'status inválido';
+        }
+        
+        processed.push({
+            ...s,
+            isVirtual: false,
+            isValid: !blockedReason,
+            blockedReason: blockedReason || undefined
+        });
+    }
+    
+    // 2. Process Virtual Sessions
+    if (!holiday) {
+        for (const p of patients) {
+            if (p.status !== 'Ativo') continue;
+            
+            const fixedDayNorm = normalizeStr(p.fixedDay).replace('-feira', '');
+            const targetDayNorm = normalizeStr(dayKey).replace('-feira', '');
+            
+            if (fixedDayNorm === targetDayNorm && p.fixedTime) {
+                const time1 = p.fixedTime;
+                // Check if a real manual session exists for this patient, date, and time
+                const hasManual1 = dbSessions.some(
+                  s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time1)
+                );
+                if (!hasManual1) {
+                    const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : null;
+                    processed.push({
+                        id: `virtual-${p.id}-${dateStr}-${time1}`,
+                        patientId: p.id,
+                        date: dateStr,
+                        time: time1,
+                        type: p.doubleSession ? 'Sessão dupla (2 × 50 min)' : 'Sessão simples (50 min)',
+                        status: 'Agendada',
+                        notes: '',
+                        packageNumber: 0,
+                        isVirtual: true,
+                        isValid: !blockedReason,
+                        blockedReason: blockedReason || undefined
+                    });
+                }
+                
+                if (p.doubleSession) {
+                    const time2 = addOneHour(p.fixedTime);
+                    const hasManual2 = dbSessions.some(
+                      s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time2)
+                    );
+                    if (!hasManual2) {
+                        const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : null;
+                        processed.push({
+                            id: `virtual-${p.id}-${dateStr}-${time2}`,
+                            patientId: p.id,
+                            date: dateStr,
+                            time: time2,
+                            type: 'Sessão dupla (2 × 50 min)',
+                            status: 'Agendada',
+                            notes: '',
+                            packageNumber: 0,
+                            isVirtual: true,
+                            isValid: !blockedReason,
+                            blockedReason: blockedReason || undefined
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    processed.sort((a, b) => a.time.localeCompare(b.time));
+    return processed;
+}
+
 // 3. Lógica Principal de Lembretes
 async function dispararLembretes(tipo) {
     console.log(`[${new Date().toISOString()}] Iniciando rotina de Lembretes: ${tipo}`);
@@ -163,68 +281,15 @@ async function dispararLembretes(tipo) {
             
             const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             
-            // Considerar apenas as "Agendada" para envio de lembrete real
-            // Mas ignorar sessões obsoletas que não correspondem à configuração cadastral atual do paciente, a menos que sejam exceções manuais (reposição/extra)
-            const sessionsReais = todasSessoesHoje.filter(s => {
-                if (s.status !== 'Agendada') return false;
-                
-                const patient = patientsMap[s.patientId];
-                if (!patient) return true; // manter se não achar o paciente para ser seguro
-                
-                if (patient.status !== 'Ativo') return false;
-
-                // Verificar se bate com o dia/horário fixo atual
-                const sessionDayOfWeek = getDayOfWeekName(s.date);
-                const isMatchingDay = normalizeStr(sessionDayOfWeek) === normalizeStr(patient.fixedDay || '');
-                const isMatchingTime = normalizeTime(s.time) === normalizeTime(patient.fixedTime) ||
-                                       (patient.doubleSession && normalizeTime(s.time) === normalizeTime(addOneHour(patient.fixedTime)));
-                
-                if (isMatchingDay && isMatchingTime) {
-                    return true;
-                }
-
-                // Se não bater com o fixo atual, verificar se é exceção manual (reposição ou extra)
-                const isReposition = s.packageNumber === 0;
-                const notesLower = (s.notes || '').toLowerCase();
-                const isManualNotes = notesLower.includes('reposição') || notesLower.includes('reposicao') || notesLower.includes('extra') || notesLower.includes('manual');
-                
-                if (isReposition || isManualNotes) {
-                    return true; // mantém exceções manuais!
-                }
-
-                // Caso contrário, é obsoleta! Ignorar.
-                console.log(`[ROBO] Desprezando sessão obsoleta detectada para ${patient.name} em ${s.date} ${s.time} (Fixo atual: ${patient.fixedDay} ${patient.fixedTime})`);
-                return false;
-            });
-
-            // 3. Gerar Sessões Virtuais (Baseadas no Horário Fixo dos pacientes ativos)
-            const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
-            const diaDaSemanaAlvo = diasSemana[new Date(dateStr + 'T12:00:00').getDay()];
-            
-            const sessionsVirtuais = [];
-            patients.forEach(p => {
-                if (p.status !== 'Ativo') return;
-                
-                const fixedDayNorm = (p.fixedDay || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-                const targetDayNorm = diaDaSemanaAlvo.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-                if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-                    // Impede o envio de mensagem se o paciente tem registro manual hoje EXATAMENTE no mesmo horário (ex: Falta, Desmarcada no horário fixo)
-                    const jaTemSessaoManual = todasSessoesHoje.some(s => s.patientId === p.id && s.time === p.fixedTime);
-                    if (!jaTemSessaoManual) {
-                        sessionsVirtuais.push({
-                            patientId: p.id,
-                            date: dateStr,
-                            time: p.fixedTime,
-                            status: 'Agendada',
-                            isVirtual: true
-                        });
-                    }
-                }
+            const daySessions = getSessionsForDate({
+                dateStr,
+                patients,
+                sessions: todasSessoesHoje,
+                settings
             });
 
             // 4. Unificar as sessões e aplicar Filtro de Turno
-            const todasAsSessoes = [...sessionsReais, ...sessionsVirtuais];
+            const todasAsSessoes = daySessions.filter(s => s.isValid);
             let sessoesFiltradas = [];
 
             todasAsSessoes.forEach(s => {
