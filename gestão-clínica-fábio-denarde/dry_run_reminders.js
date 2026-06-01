@@ -23,6 +23,17 @@ async function dryRun() {
     const settingsConfigSnapshot = await db.collectionGroup('settings').get();
     for (const configDoc of settingsConfigSnapshot.docs) {
         const userId = configDoc.ref.parent.parent.id;
+        const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+        const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+        const holidays = settings.holidays || [];
+
+        const holidayObj = holidays.find(h => h.date === dateStr);
+        if (holidayObj) {
+            console.log(`\n--- PENDENTES PARA AMANHÃ (${dateStr}) ---`);
+            console.log(`🚫 [FERIADO/RECESSO] ${holidayObj.name.trim()} - Mensagens automáticas suspensas.`);
+            continue;
+        }
+
         const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
         const patientsMap = {};
         patientsSnapshot.forEach(p => patientsMap[p.id] = p.data());
