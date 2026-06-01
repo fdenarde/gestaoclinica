@@ -67,6 +67,8 @@ export interface Session {
   previousPackageNumber?: number; // Pacotes anteriores
   isBlocked?: boolean; // true when this slot is a personal block (not a patient session)
   blockName?: string; // name of the personal commitment when isBlocked is true
+  isFixedSchedule?: boolean; // true if this is an automatic/fixed session
+  source?: 'fixed' | 'manual' | 'reposition' | 'blocked';
 }
 
 export interface Reposition {
