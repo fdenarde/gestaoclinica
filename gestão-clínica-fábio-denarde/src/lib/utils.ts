@@ -1,6 +1,7 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format, addDays, parseISO, getDay } from 'date-fns';
+import { Session, Patient, ClinicSettings } from '../types';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -216,3 +217,138 @@ export function getNextValidDates(
   }
   return dates;
 }
+
+export interface ProcessedSession extends Session {
+  isVirtual: boolean;
+  isValid: boolean;
+  blockedReason?: string;
+}
+
+export function getSessionsForDate({
+  dateStr,
+  patients,
+  sessions,
+  settings
+}: {
+  dateStr: string;
+  patients: Patient[];
+  sessions: Session[];
+  settings: ClinicSettings;
+}): ProcessedSession[] {
+  const processed: ProcessedSession[] = [];
+  
+  // Parse target day of week in Portuguese
+  const dateObj = new Date(dateStr + 'T12:00:00');
+  const dayIndex = dateObj.getDay();
+  const dayNames = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+  const dayKey = dayNames[dayIndex];
+  
+  // Check if holiday
+  const holiday = settings.holidays?.find(h => h.date === dateStr);
+  
+  // 1. Process Real Sessions
+  const dbSessions = sessions.filter(s => s.date === dateStr);
+  for (const s of dbSessions) {
+    if (s.isBlocked) {
+      processed.push({
+        ...s,
+        isVirtual: false,
+        isValid: false,
+        blockedReason: 'sessão manual bloqueadora'
+      });
+      continue;
+    }
+    
+    const patient = patients.find(p => p.id === s.patientId);
+    if (!patient) {
+      processed.push({
+        ...s,
+        isVirtual: false,
+        isValid: false,
+        blockedReason: 'paciente inativo'
+      });
+      continue;
+    }
+    
+    let blockedReason: string | undefined;
+    if (holiday) {
+      blockedReason = 'feriado/recesso';
+    } else if (patient.status !== 'Ativo') {
+      blockedReason = 'paciente inativo';
+    } else if (s.status === 'Cancelada') {
+      blockedReason = 'sessão cancelada';
+    } else if (!patient.whatsapp || !patient.whatsapp.trim()) {
+      blockedReason = 'paciente sem WhatsApp';
+    } else if (s.status !== 'Agendada') {
+      blockedReason = 'status inválido';
+    }
+    
+    processed.push({
+      ...s,
+      isVirtual: false,
+      isValid: !blockedReason,
+      blockedReason
+    });
+  }
+  
+  // 2. Process Virtual Sessions
+  if (!holiday) {
+    for (const p of patients) {
+      if (p.status !== 'Ativo') continue;
+      
+      const fixedDayNorm = normalizeStr(p.fixedDay).replace('-feira', '');
+      const targetDayNorm = normalizeStr(dayKey).replace('-feira', '');
+      
+      if (fixedDayNorm === targetDayNorm && p.fixedTime) {
+        const time1 = p.fixedTime;
+        // Check if a real manual session exists for this patient, date, and time
+        const hasManual1 = dbSessions.some(
+          s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time1)
+        );
+        if (!hasManual1) {
+          const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : undefined;
+          processed.push({
+            id: `virtual-${p.id}-${dateStr}-${time1}`,
+            patientId: p.id,
+            date: dateStr,
+            time: time1,
+            type: p.doubleSession ? 'Sessão dupla (2 × 50 min)' as any : 'Sessão simples (50 min)' as any,
+            status: 'Agendada' as any,
+            notes: '',
+            packageNumber: 0,
+            isVirtual: true,
+            isValid: !blockedReason,
+            blockedReason
+          });
+        }
+        
+        if (p.doubleSession) {
+          const time2 = addOneHour(p.fixedTime);
+          const hasManual2 = dbSessions.some(
+            s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time2)
+          );
+          if (!hasManual2) {
+            const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : undefined;
+            processed.push({
+              id: `virtual-${p.id}-${dateStr}-${time2}`,
+              patientId: p.id,
+              date: dateStr,
+              time: time2,
+              type: 'Sessão dupla (2 × 50 min)' as any,
+              status: 'Agendada' as any,
+              notes: '',
+              packageNumber: 0,
+              isVirtual: true,
+              isValid: !blockedReason,
+              blockedReason
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  processed.sort((a, b) => a.time.localeCompare(b.time));
+  return processed;
+}
+
