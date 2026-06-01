@@ -294,61 +294,130 @@ function getWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, setting
     };
 }
 
-async function dryRun() {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const runDateStr = today.toISOString().split('T')[0];
+const translateReason = (reason) => {
+    if (!reason) return 'outro motivo';
+    const norm = reason.toLowerCase();
+    if (norm.includes('feriado') || norm.includes('recesso')) return 'feriado/recesso';
+    if (norm.includes('inativo')) return 'paciente inativo';
+    if (norm.includes('sem whatsapp')) return 'sem WhatsApp';
+    if (norm.includes('cancelada')) return 'sessão cancelada';
+    if (norm.includes('deduplicação') || norm.includes('dupla')) return 'duplicado/sessão dupla agrupada';
+    if (norm.includes('fora do turno')) return 'fora do turno';
+    if (norm.includes('bloqueadora')) return 'conflito';
+    return `outro motivo (${reason})`;
+};
 
-    const settingsConfigSnapshot = await db.collectionGroup('settings').get();
-    for (const configDoc of settingsConfigSnapshot.docs) {
-        const userId = configDoc.ref.parent.parent.id;
-        const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
-        const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+async function runDryRun() {
+    const args = process.argv.slice(2);
+    let runDateStr = null;
+    let tipo = 'AMANHA';
 
-        const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
-        const patients = [];
-        patientsSnapshot.forEach(p => {
-            patients.push({ id: p.id, ...p.data() });
-        });
-
-        // 1. Calculate target date using plan
-        let dateStr = tomorrow.toISOString().split('T')[0];
-        
-        console.log(`\n--- PENDENTES PARA AMANHÃ (${dateStr}) ---`);
-
-        const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
-            .where('date', '==', dateStr)
-            .get();
-
-        const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-        const plan = getWhatsappReminderPlan({
-            runDateStr,
-            tipo: 'AMANHA',
-            patients,
-            sessions: todasSessoesHoje,
-            settings
-        });
-
-        if (plan.isHoliday) {
-            console.log(`🚫 [FERIADO/RECESSO] ${plan.holidayName.trim()} - Lembretes automáticos suspensos.`);
-            continue;
-        }
-
-        if (plan.reminders.length === 0 && plan.diagnostics.length === 0) {
-            console.log("Nenhuma mensagem pendente (sem agendamentos).");
-        } else {
-            plan.reminders.forEach(r => {
-                const label = r.isVirtual ? '[FIXO]' : '[MANUAL]';
-                console.log(`MENSAGEM: Olá, ${r.guardianName}! Lembrando da sessão de ${r.patientName} amanhã às ${r.time}.`);
-            });
-            plan.diagnostics.forEach(d => {
-                const label = d.isVirtual ? '[FIXO]' : '[MANUAL]';
-                console.log(`🚫 ${label} ${d.time} | ${d.patientName} - Bloqueado: ${d.blockedReason}`);
-            });
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--date' && args[i + 1]) {
+            runDateStr = args[i + 1];
+            i++;
+        } else if (args[i] === '--tipo' && args[i + 1]) {
+            tipo = args[i + 1].toUpperCase();
+            i++;
         }
     }
+
+    if (!runDateStr) {
+        const d = new Date();
+        const offset = d.getTimezoneOffset();
+        const localDate = new Date(d.getTime() - (offset * 60 * 1000));
+        runDateStr = localDate.toISOString().split('T')[0];
+    }
+
+    const validTipos = ['AMANHA', 'HOJE_MANHA', 'HOJE_TARDE'];
+    if (!validTipos.includes(tipo)) {
+        console.error(`❌ Erro: Tipo inválido "${tipo}". Escolha entre: AMANHA, HOJE_MANHA, HOJE_TARDE.`);
+        process.exit(1);
+    }
+
+    const settingsConfigSnapshot = await db.collectionGroup('settings').get();
+    if (settingsConfigSnapshot.empty) {
+        console.error("❌ Erro: Nenhuma configuração de usuário encontrada no banco.");
+        process.exit(1);
+    }
+
+    // Usaremos as configurações da primeira conta encontrada
+    const configDoc = settingsConfigSnapshot.docs[0];
+    const userId = configDoc.ref.parent.parent.id;
+
+    const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+    const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+
+    const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
+    const patients = [];
+    patientsSnapshot.forEach(p => {
+        patients.push({ id: p.id, ...p.data() });
+    });
+
+    let targetDateStr = runDateStr;
+    if (tipo === 'AMANHA') {
+        const d = new Date(runDateStr + 'T12:00:00');
+        d.setDate(d.getDate() + 1);
+        targetDateStr = d.toISOString().split('T')[0];
+    }
+
+    const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
+        .where('date', '==', targetDateStr)
+        .get();
+    
+    const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    const plan = getWhatsappReminderPlan({
+        runDateStr,
+        tipo,
+        patients,
+        sessions: todasSessoesHoje,
+        settings
+    });
+
+    console.log("\n==================================================");
+    console.log("  SIMULAÇÃO DE DISPARO DE LEMBRETES (DRY-RUN)");
+    console.log("==================================================");
+    console.log(`📅 Data de Execução Simulada: ${runDateStr}`);
+    console.log(`⚙️ Tipo/Turno Simulado: ${tipo}`);
+    console.log(`🎯 Data Alvo de Atendimentos: ${plan.dateStr}`);
+    console.log("🔒 Status de Envio Real: [DESATIVADO - APENAS SIMULAÇÃO]");
+    console.log("--------------------------------------------------");
+
+    if (plan.isHoliday) {
+        console.log(`\n🚫 MENSAGENS SUSPENSAS POR FERIADO/RECESSO: ${plan.holidayName.trim()}`);
+        console.log("--------------------------------------------------\n");
+        return;
+    }
+
+    console.log(`\n💬 LEMBRETES QUE SERIAM ENVIADOS (${plan.reminders.length}):`);
+    if (plan.reminders.length === 0) {
+        console.log("   (Nenhum lembrete gerado para envio)");
+    } else {
+        plan.reminders.forEach((r, idx) => {
+            console.log(`\n👉 Lembrete #${idx + 1}:`);
+            console.log(`   👤 Responsável : ${r.guardianName}`);
+            console.log(`   👦 Paciente    : ${r.patientName}`);
+            console.log(`   📱 Telefone    : ${r.whatsapp}`);
+            console.log(`   ⏰ Horário Real: ${r.time}`);
+            console.log(`   💬 Mensagem    :\n"""\n${r.message}\n"""`);
+        });
+    }
+
+    console.log("\n--------------------------------------------------");
+    console.log(`\n🚫 ATENDIMENTOS E SESSÕES BLOQUEADAS (${plan.diagnostics.length}):`);
+    if (plan.diagnostics.length === 0) {
+        console.log("   (Nenhum atendimento bloqueado/excluído)");
+    } else {
+        plan.diagnostics.forEach((d, idx) => {
+            const translated = translateReason(d.blockedReason);
+            console.log(`   [${idx + 1}] ⏰ ${d.time} | ${d.patientName} -> 🚫 Motivo: ${translated}`);
+        });
+    }
+    console.log("\n==================================================\n");
 }
 
-dryRun().then(() => process.exit(0));
+runDryRun().then(() => process.exit(0)).catch(err => {
+    console.error("❌ Erro crítico no dry-run:", err);
+    process.exit(1);
+});
