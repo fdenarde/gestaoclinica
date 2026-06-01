@@ -43,9 +43,20 @@ async function getFullWeeklySummary() {
             ];
             const diasSemanaNomes = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
 
+            const configSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+            const settings = configSnapshot.exists ? configSnapshot.data() : {};
+            const holidays = settings.holidays || [];
+
             for (let i = 0; i < dates.length; i++) {
                 const dateStr = dates[i];
                 const diaNome = diasSemanaNomes[i];
+                
+                const holidayObj = holidays.find(h => h.date === dateStr);
+                if (holidayObj) {
+                    console.log(`> ${diaNome.toUpperCase()} (${dateStr})`);
+                    console.log(`  🚫 [FERIADO/RECESSO] ${holidayObj.name.trim()} - Mensagens automáticas suspensas.\n`);
+                    continue;
+                }
 
                 const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
                     .where('date', '==', dateStr)
