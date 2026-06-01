@@ -7,10 +7,12 @@ export const CLINIC_INFO = {
   address: "Rua das Flores, 123, Centro, Vitória - ES"
 };
 
-export const AVAILABLE_DAYS = ['terça', 'quinta', 'sexta', 'sábado'] as const;
+export const AVAILABLE_DAYS = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'] as const;
 
 export const SCHEDULE_CONFIG: Record<string, string[]> = {
+  'segunda': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
   'terça': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
+  'quarta': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
   'quinta': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
   'sexta': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
   'sábado': ['07:00', '08:00', '09:00', '10:00', '11:00', '14:00'],
