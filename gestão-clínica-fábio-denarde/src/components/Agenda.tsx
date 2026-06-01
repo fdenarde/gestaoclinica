@@ -80,7 +80,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   // Compute available times for selected repoDate
   const repoAvailableTimes = useMemo(() => {
     const dayIndex = getDay(new Date(repoDate + 'T12:00:00'));
-    const dayKeys: Record<number, string> = { 2: 'terça', 4: 'quinta', 5: 'sexta', 6: 'sábado' };
+    const dayKeys: Record<number, string> = { 1: 'segunda', 2: 'terça', 3: 'quarta', 4: 'quinta', 5: 'sexta', 6: 'sábado' };
     const key = dayKeys[dayIndex];
     return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
   }, [repoDate]);
@@ -124,8 +124,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
   }, [currentDate]);
 
-  // Filter to active clinic days: terça (2), quinta (4), sexta (5), sábado (6)
-  const activeDays = weekDays.filter(d => [2, 4, 5, 6].includes(d.getDay()));
+  // Filter to active clinic days: segunda (1), terça (2), quarta (3), quinta (4), sexta (5), sábado (6)
+  const activeDays = weekDays.filter(d => [1, 2, 3, 4, 5, 6].includes(d.getDay()));
 
   const handlePrevWeek = () => setCurrentDate(subWeeks(currentDate, 1));
   const handleNextWeek = () => setCurrentDate(addWeeks(currentDate, 1));
@@ -283,7 +283,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
   const getDayNameKey = (day: number): string => {
     const keys: Record<number, string> = {
+      1: 'segunda',
       2: 'terça',
+      3: 'quarta',
       4: 'quinta',
       5: 'sexta',
       6: 'sábado'
@@ -293,7 +295,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
   const getDayNameLabel = (day: number) => {
     const labels: Record<number, string> = {
+      1: 'SEGUNDA',
       2: 'TERÇA',
+      3: 'QUARTA',
       4: 'QUINTA',
       5: 'SEXTA',
       6: 'SÁBADO'
@@ -334,7 +338,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       </div>
 
       {/* Agenda Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
         {activeDays.map(day => {
           const dayKey = getDayNameKey(day.getDay());
           const scheduledTimes = SCHEDULE_CONFIG[dayKey] || [];
