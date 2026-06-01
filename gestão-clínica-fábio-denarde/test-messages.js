@@ -154,6 +154,152 @@ function getSessionsForDate({ dateStr, patients, sessions, settings }) {
     return processed;
 }
 
+function getWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, settings }) {
+    let dateStr = runDateStr;
+    if (tipo === 'AMANHA') {
+        const d = new Date(runDateStr + 'T12:00:00');
+        d.setDate(d.getDate() + 1);
+        dateStr = d.toISOString().split('T')[0];
+    }
+    
+    const holiday = (settings.holidays || []).find(h => h.date === dateStr);
+    if (holiday) {
+        return {
+            dateStr,
+            isHoliday: true,
+            holidayName: holiday.name,
+            reminders: [],
+            diagnostics: [
+                {
+                    id: `holiday-${dateStr}`,
+                    time: '00:00',
+                    patientName: 'Feriado/Recesso',
+                    type: 'Bloqueio',
+                    isVirtual: false,
+                    isValid: false,
+                    blockedReason: `feriado/recesso (${holiday.name.trim()})`
+                }
+            ]
+        };
+    }
+    
+    const daySessions = getSessionsForDate({ dateStr, patients, sessions, settings });
+    const reminders = [];
+    const diagnostics = [];
+    
+    const formatPhoneNumber = (phoneStr) => {
+        let clean = phoneStr.replace(/\D/g, '');
+        if (!clean.startsWith('55')) {
+            clean = '55' + clean;
+        }
+        return `${clean}@c.us`;
+    };
+    
+    const candidates = [];
+    
+    for (const s of daySessions) {
+        const patient = patients.find(p => p.id === s.patientId);
+        
+        if (!s.isValid) {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient ? patient.name : (s.blockName || 'Compromisso'),
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: s.blockedReason || 'desconhecido'
+            });
+            continue;
+        }
+        
+        const [hour] = s.time.split(':').map(Number);
+        if (tipo === 'HOJE_MANHA' && hour >= 12) {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient.name,
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: 'fora do turno (Sessão da tarde)'
+            });
+            continue;
+        }
+        
+        if (tipo === 'HOJE_TARDE' && hour < 12) {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient.name,
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: 'fora do turno (Sessão da manhã)'
+            });
+            continue;
+        }
+        
+        candidates.push(s);
+    }
+    
+    const selectedMap = new Map();
+    for (const s of candidates) {
+        if (!selectedMap.has(s.patientId) || s.time < selectedMap.get(s.patientId).time) {
+            selectedMap.set(s.patientId, s);
+        }
+    }
+    
+    for (const s of candidates) {
+        const patient = patients.find(p => p.id === s.patientId);
+        const isSent = selectedMap.get(s.patientId).id === s.id;
+        
+        if (isSent) {
+            const phone = formatPhoneNumber(patient.whatsapp);
+            const greeting = tipo === 'HOJE_TARDE' ? 'Boa tarde' : 'Bom dia';
+            const timeFormatted = s.time.endsWith(':00') ? s.time.split(':')[0] + 'h' : s.time + 'h';
+            
+            let message = '';
+            if (tipo === 'AMANHA') {
+                message = `${greeting}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
+            } else {
+                message = `${greeting}!\nAguardo vocês hoje às *${timeFormatted}*!\nAté logo! 🙏🏼`;
+            }
+            
+            reminders.push({
+                id: s.id,
+                patientId: s.patientId,
+                patientName: patient.name,
+                guardianName: patient.guardianName,
+                whatsapp: patient.whatsapp,
+                phone,
+                time: s.time,
+                timeFormatted,
+                message,
+                isVirtual: s.isVirtual,
+                type: s.type
+            });
+        } else {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient.name,
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: 'conflito/deduplicação (Dupla)'
+            });
+        }
+    }
+    
+    return {
+        dateStr,
+        isHoliday: false,
+        reminders,
+        diagnostics
+    };
+}
+
 async function gerarRelatorioSemanal() {
     console.log("=========================================");
     console.log("   RELATÓRIO SEMANAL (SINCRONIZADO)");
@@ -210,51 +356,31 @@ async function gerarRelatorioSemanal() {
 
             console.log(`\n📅 ${dia.label} (${dia.date})`);
             
-            // Buscar todas as sessões manuais para esta data
             const sessionsSnapshot = await db.collectionGroup('sessions')
                 .where('date', '==', dia.date)
                 .get();
 
             const todasSessoesHoje = sessionsSnapshot.docs.map(doc => doc.data());
             
-            const daySessions = getSessionsForDate({
-                dateStr: dia.date,
+            const plan = getWhatsappReminderPlan({
+                runDateStr: dia.date,
+                tipo: 'AMANHA',
                 patients,
                 sessions: todasSessoesHoje,
                 settings
             });
 
-            // Group identically to server.js
-            const disparosUnicos = new Map();
-            for (const s of daySessions) {
-                if (!s.isValid) continue;
-                const patient = patientsMap[s.patientId];
-                if (!patient || !patient.whatsapp) continue;
-                if (!disparosUnicos.has(patient.id) || s.time < disparosUnicos.get(patient.id).s.time) {
-                    disparosUnicos.set(patient.id, { s, patient });
-                }
-            }
-
-            if (daySessions.length === 0) {
+            if (plan.reminders.length === 0 && plan.diagnostics.length === 0) {
                 console.log("   (Sem agendamentos)");
             } else {
-                daySessions.forEach(s => {
-                    const patient = patientsMap[s.patientId];
-                    const label = s.isVirtual ? '[FIXO]' : '[MANUAL]';
-                    if (s.isValid) {
-                        const isSent = disparosUnicos.get(s.patientId)?.s.id === s.id;
-                        const [hour] = s.time.split(':').map(Number);
-                        const alarmeHoje = hour < 12 ? '06:30' : '12:30';
-                        if (isSent) {
-                            console.log(`   ✅ ${label} ${patient.name} (${patient.guardianName}) - ${s.time}`);
-                            console.log(`      └─ Confirmação: ${alarmeHoje} do próprio dia`);
-                        } else {
-                            console.log(`   🚫 ${label} ${patient.name} (${s.time}) - Bloqueado: conflito/deduplicação (Dupla)`);
-                        }
-                    } else {
-                        const name = patient ? patient.name : (s.blockName || 'Compromisso');
-                        console.log(`   🚫 ${label} ${name} (${s.time}) - Bloqueado: ${s.blockedReason}`);
-                    }
+                plan.reminders.forEach(r => {
+                    const label = r.isVirtual ? '[FIXO]' : '[MANUAL]';
+                    console.log(`   ✅ ${label} ${r.patientName} (${r.guardianName}) - ${r.time}`);
+                    console.log(`      └─ Confirmação: 09:00 do dia anterior`);
+                });
+                plan.diagnostics.forEach(d => {
+                    const label = d.isVirtual ? '[FIXO]' : '[MANUAL]';
+                    console.log(`   🚫 ${label} ${d.patientName} (${d.time}) - Bloqueado: ${d.blockedReason}`);
                 });
             }
         }
