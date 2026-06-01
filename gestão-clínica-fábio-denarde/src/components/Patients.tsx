@@ -703,6 +703,36 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
       return;
     }
 
+    const isFixedDayChanged = editForm.fixedDay !== patient.fixedDay;
+    const isFixedTimeChanged = editForm.fixedTime !== patient.fixedTime;
+    const isDoubleSessionChanged = !!editForm.doubleSession !== !!patient.doubleSession;
+
+    if (isFixedDayChanged || isFixedTimeChanged || isDoubleSessionChanged) {
+      const conflicts = state.patients.filter(p => 
+        p.id !== patient.id &&
+        p.status === 'Ativo' &&
+        schedulesOverlap(
+          p.fixedDay || '',
+          p.fixedTime || '',
+          !!p.doubleSession,
+          editForm.fixedDay || '',
+          editForm.fixedTime || '',
+          !!editForm.doubleSession
+        )
+      );
+      
+      setConfirmScheduleChange({
+        oldDay: patient.fixedDay || '',
+        oldTime: patient.fixedTime || '',
+        oldDouble: !!patient.doubleSession,
+        newDay: editForm.fixedDay || '',
+        newTime: editForm.fixedTime || '',
+        newDouble: !!editForm.doubleSession,
+        conflictingNames: conflicts.map(c => c.name)
+      });
+      return;
+    }
+
     executeSavePatientData(false);
   };
 
@@ -737,6 +767,92 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     setIsEditingData(false);
     showToast('Dados atualizados com sucesso!', 'success');
     setConfirmInactivate(false);
+  };
+
+  const executeSavePatientDataWithRealignment = (realign: boolean) => {
+    if (!confirmScheduleChange) return;
+    
+    let updatedSessions = [...state.sessions];
+    
+    if (realign) {
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+      const holidays = state.settings.holidays || [];
+      
+      const oldSessionsToRealign = state.sessions.filter(s => {
+        if (s.patientId !== patient.id) return false;
+        if (s.status !== SessionStatus.AGENDADA) return false;
+        if (s.date < todayStr) return false;
+        if (s.isBlocked) return false;
+        
+        const dayOfWeekIndex = getDayOfWeekIndex(confirmScheduleChange.oldDay);
+        const sessionDayOfWeek = getDay(parseISO(s.date));
+        if (sessionDayOfWeek !== dayOfWeekIndex) return false;
+        
+        const isOldTime = s.time === confirmScheduleChange.oldTime;
+        const isOldSecondSlot = confirmScheduleChange.oldDouble && s.time === addOneHour(confirmScheduleChange.oldTime);
+        if (!isOldTime && !isOldSecondSlot) return false;
+        
+        if (s.packageNumber === 0) return false;
+        const notesLower = (s.notes || '').toLowerCase();
+        if (notesLower.includes('reposição') || notesLower.includes('reposicao') || notesLower.includes('extra') || notesLower.includes('manual')) return false;
+        
+        return true;
+      });
+
+      if (oldSessionsToRealign.length > 0) {
+        const uniqueDates = Array.from(new Set(oldSessionsToRealign.map(s => s.date))).sort();
+        const numWeeks = uniqueDates.length;
+        const newDates = getNextValidDates(confirmScheduleChange.newDay, todayStr, numWeeks, holidays);
+        
+        const oldSessionsSorted = [...oldSessionsToRealign].sort((a, b) => {
+          const dateDiff = a.date.localeCompare(b.date);
+          if (dateDiff !== 0) return dateDiff;
+          return a.time.localeCompare(b.time);
+        });
+        
+        const newSessionsToCreate: Session[] = [];
+        let infoIndex = 0;
+        
+        for (const newDate of newDates) {
+          const times = [confirmScheduleChange.newTime];
+          if (confirmScheduleChange.newDouble) {
+            times.push(addOneHour(confirmScheduleChange.newTime));
+          }
+          
+          for (const time of times) {
+            const info = oldSessionsSorted[infoIndex] || oldSessionsSorted[oldSessionsSorted.length - 1] || { packageNumber: 1, notes: '' };
+            infoIndex++;
+            
+            newSessionsToCreate.push({
+              id: Math.random().toString(36).substr(2, 9),
+              patientId: patient.id,
+              date: newDate,
+              time,
+              type: confirmScheduleChange.newDouble ? SessionType.DUPLA : SessionType.SIMPLES,
+              status: SessionStatus.AGENDADA,
+              packageNumber: info.packageNumber,
+              notes: info.notes || '',
+              isFixedSchedule: true
+            });
+          }
+        }
+        
+        const oldIds = new Set(oldSessionsToRealign.map(s => s.id));
+        updatedSessions = state.sessions.filter(s => !oldIds.has(s.id));
+        updatedSessions.push(...newSessionsToCreate);
+      }
+    }
+    
+    const updatedPatients = state.patients.map(p => p.id === patient.id ? { ...p, ...editForm } as Patient : p);
+    
+    onUpdate({ 
+      patients: updatedPatients,
+      sessions: updatedSessions
+    });
+    
+    setIsEditingData(false);
+    setConfirmScheduleChange(null);
+    showToast(realign ? 'Dados salvos e agenda futura realinhada com sucesso!' : 'Dados salvos com sucesso!', 'success');
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'photoUrl' | 'reportPdfUrl' | 'opinionPdfUrl') => {
@@ -1823,6 +1939,85 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
           </div>
         </div>
       </Modal>
+
+      {/* Modal Confirmação de Alteração de Cronograma Fixo */}
+      {confirmScheduleChange && (
+        <Modal
+          isOpen={true}
+          onClose={() => setConfirmScheduleChange(null)}
+          title="Alteração de Dia/Horário Fixo"
+          width="max-w-lg"
+        >
+          <div className="space-y-6">
+            <div className="p-4 bg-clinic-bg rounded-xl border border-clinic-border text-sm text-clinic-text space-y-3">
+              <p>
+                Você alterou o dia/horário fixo de <strong>{patient.name}</strong>:
+              </p>
+              <div className="flex items-center gap-4 justify-center bg-white p-3 rounded-lg border border-clinic-border font-serif text-sm">
+                <div className="text-center">
+                  <span className="block text-[10px] uppercase font-bold text-clinic-text-faint">Anterior</span>
+                  <span className="font-bold text-status-red-text">
+                    {confirmScheduleChange.oldDay} às {confirmScheduleChange.oldTime}
+                    {confirmScheduleChange.oldDouble && " (Dupla)"}
+                  </span>
+                </div>
+                <ChevronRight className="text-clinic-text-faint" size={20} />
+                <div className="text-center">
+                  <span className="block text-[10px] uppercase font-bold text-clinic-text-faint">Novo</span>
+                  <span className="font-bold text-status-green-text">
+                    {confirmScheduleChange.newDay} às {confirmScheduleChange.newTime}
+                    {confirmScheduleChange.newDouble && " (Dupla)"}
+                  </span>
+                </div>
+              </div>
+              
+              {confirmScheduleChange.conflictingNames.length > 0 && (
+                <div className="p-3 bg-status-orange-bg/25 border border-status-orange-text/20 rounded-lg text-xs text-status-orange-text font-medium space-y-1">
+                  <p className="font-bold uppercase tracking-wider flex items-center gap-1">
+                    ⚠️ Conflito de Horário
+                  </p>
+                  <p>
+                    O novo dia/horário já está ocupado por outro(s) paciente(s) ativo(s):
+                  </p>
+                  <ul className="list-disc pl-4 font-bold">
+                    {confirmScheduleChange.conflictingNames.map((name, idx) => (
+                      <li key={idx}>{name}</li>
+                    ))}
+                  </ul>
+                  <p className="text-[10px] italic">
+                    (O sistema permite múltiplos atendimentos no mesmo horário se desejar prosseguir)
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <p className="text-sm text-clinic-text">
+              Deseja realinhar automaticamente as sessões futuras agendadas para o novo dia/horário fixo?
+            </p>
+
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => executeSavePatientDataWithRealignment(true)}
+                className="px-4 py-3 bg-clinic-primary text-white font-bold rounded-lg shadow-md hover:bg-clinic-primary-hover transition-all text-sm w-full text-center uppercase tracking-wider"
+              >
+                Sim, realinhar agenda futura (Recomendado)
+              </button>
+              <button
+                onClick={() => executeSavePatientDataWithRealignment(false)}
+                className="px-4 py-3 bg-clinic-bg border border-clinic-border text-clinic-text font-bold rounded-lg hover:bg-clinic-bg/80 transition-all text-sm w-full text-center uppercase tracking-wider"
+              >
+                Não, salvar apenas o cadastro
+              </button>
+              <button
+                onClick={() => setConfirmScheduleChange(null)}
+                className="mt-2 text-xs text-clinic-text-muted hover:underline uppercase tracking-wide text-center"
+              >
+                Cancelar Edição
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </Modal>
   );
 }
