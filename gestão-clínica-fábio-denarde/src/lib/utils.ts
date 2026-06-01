@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { format } from 'date-fns';
+import { format, addDays, parseISO, getDay } from 'date-fns';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -137,4 +137,82 @@ export function generateHolidaysForYear(year: number): { date: string, name: str
   }));
 
   return [...fixedFormatted, ...movableHolidays].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+// Unified schedule and time helpers
+export function normalizeStr(s: string): string {
+  if (!s) return '';
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+export function isValidTime(timeStr: string): boolean {
+  if (!timeStr) return false;
+  return /^([0-1]?[0-9]|2[0-3]):(00|30)$/.test(timeStr.trim());
+}
+
+export function normalizeTime(timeStr: string): string {
+  if (!isValidTime(timeStr)) return timeStr;
+  const [hour, min] = timeStr.trim().split(':').map(Number);
+  return `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+export function addOneHour(timeStr: string): string {
+  if (!timeStr) return '';
+  const [hour, min] = timeStr.split(':').map(Number);
+  const newHour = (hour + 1) % 24;
+  return `${String(newHour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+const DAYS_MAP: Record<string, number> = {
+  'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6,
+  'terca': 2, 'quarta-feira': 3, 'quinta-feira': 4, 'sexta-feira': 5, 'sabado': 6
+};
+
+export function getDayOfWeekIndex(dayName: string): number {
+  const norm = normalizeStr(dayName);
+  return DAYS_MAP[norm] ?? 1;
+}
+
+export function schedulesOverlap(
+  day1: string, time1: string, double1: boolean,
+  day2: string, time2: string, double2: boolean
+): boolean {
+  if (normalizeStr(day1) !== normalizeStr(day2)) return false;
+  
+  const t1_1 = normalizeTime(time1);
+  const t1_2 = double1 ? addOneHour(t1_1) : null;
+  
+  const t2_1 = normalizeTime(time2);
+  const t2_2 = double2 ? addOneHour(t2_1) : null;
+  
+  const slots1 = [t1_1, t1_2].filter(Boolean);
+  const slots2 = [t2_1, t2_2].filter(Boolean);
+  
+  return slots1.some(s => slots2.includes(s));
+}
+
+export function getNextValidDates(
+  dayName: string,
+  startDateStr: string,
+  count: number,
+  holidays: { date: string }[]
+): string[] {
+  const targetDay = getDayOfWeekIndex(dayName);
+  const dates: string[] = [];
+  let current = parseISO(startDateStr);
+  
+  // Align current to the targetDay
+  const currentDay = getDay(current);
+  const diff = (targetDay - currentDay + 7) % 7;
+  current = addDays(current, diff);
+
+  while (dates.length < count) {
+    const dateStr = format(current, 'yyyy-MM-dd');
+    const isHoliday = holidays.some(h => h.date === dateStr);
+    if (!isHoliday) {
+      dates.push(dateStr);
+    }
+    current = addDays(current, 7);
+  }
+  return dates;
 }
