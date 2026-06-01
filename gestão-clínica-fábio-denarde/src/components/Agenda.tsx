@@ -678,9 +678,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                         })}
                       </div>
                     </div>
-                  );         </div>
                   );
-                  })}
+                })}
               </div>
             </div>
           );
