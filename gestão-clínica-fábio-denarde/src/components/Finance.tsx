@@ -507,7 +507,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-clinic-border">
-                  {Object.entries(groupedTransactions).map(([monthYear, group]) => (
+                  {(Object.entries(groupedTransactions) as [string, { total: number, count: number, items: Payment[] }][]).map(([monthYear, group]) => (
                     <React.Fragment key={monthYear}>
                       <tr className="bg-clinic-bg/20 border-y border-clinic-border">
                         <td colSpan={5} className="px-6 py-3">
@@ -559,7 +559,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-clinic-border">
-                {Object.entries(groupedExpenses).map(([monthYear, group]) => (
+                {(Object.entries(groupedExpenses) as [string, { total: number, count: number, items: Expense[] }][]).map(([monthYear, group]) => (
                   <React.Fragment key={monthYear}>
                     <tr className="bg-clinic-bg/20 border-y border-clinic-border">
                       <td colSpan={4} className="px-6 py-3">
