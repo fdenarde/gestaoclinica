@@ -394,7 +394,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                 <span className="block text-xl font-bold">{format(day, 'dd/MM')}</span>
                 {holiday && <span className="block text-[9px] font-black uppercase mt-1 opacity-90 truncate px-1" title={holiday.name}>{holiday.name}</span>}
               </div>
-                             {times.map(time => {
+              <div className="p-1.5 space-y-1.5 flex-1">
+                {times.map(time => {
                   // Find all real sessions belonging to this hour base
                   const realSessions = state.sessions
                     .filter(s => s.date === dayStr && getHourBase(s.time) === time)
