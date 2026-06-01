@@ -626,6 +626,15 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
 
   const [confirmInactivate, setConfirmInactivate] = useState(false);
   const [confirmNewPackage, setConfirmNewPackage] = useState(false);
+  const [confirmScheduleChange, setConfirmScheduleChange] = useState<{
+    oldDay: string;
+    oldTime: string;
+    oldDouble: boolean;
+    newDay: string;
+    newTime: string;
+    newDouble: boolean;
+    conflictingNames: string[];
+  } | null>(null);
   
   const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [newEvoNotes, setNewEvoNotes] = useState('');
