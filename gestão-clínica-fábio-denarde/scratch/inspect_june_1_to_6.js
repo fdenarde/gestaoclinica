@@ -300,13 +300,16 @@ async function run() {
     patients.push({ id: p.id, ...p.data() });
   });
 
-  // Dates to analyze (01/06/2026 to 06/06/2026)
-  const weekDates = [
+  const configSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+  const settings = configSnapshot.exists ? configSnapshot.data() : {};
+
+  // Target dates to audit (01/06/2026 to 06/06/2026)
+  const targetDates = [
     '2026-06-01', // Segunda
     '2026-06-02', // Terça
     '2026-06-03', // Quarta
-    '2026-06-04', // Quinta (Feriado)
-    '2026-06-05', // Sexta (Emenda)
+    '2026-06-04', // Quinta
+    '2026-06-05', // Sexta
     '2026-06-06'  // Sábado
   ];
 
@@ -314,59 +317,110 @@ async function run() {
   const diasSemanaBonitos = ['Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
 
   console.log(`==================================================`);
-  console.log(` RESUMO DIAGNÓSTICO DO ROBÔ E AGENDA CLÍNICA`);
-  console.log(` Período: 01/06/2026 a 06/06/2026 (Hoje: 01/06/2026)`);
+  console.log(` AUDITORIA COMPLETA DE SESSÕES E PLANOS DE REMESSA`);
+  console.log(` Semana Alvo: 01/06/2026 a 06/06/2026`);
   console.log(`==================================================\n`);
 
-  for (let i = 0; i < weekDates.length; i++) {
-    const dateStr = weekDates[i];
+  for (let i = 0; i < targetDates.length; i++) {
+    const targetDate = targetDates[i];
     const diaNomeBonito = diasSemanaBonitos[i];
-
-    const configSnapshot = await db.doc(`users/${userId}/settings/config`).get();
-    const settings = configSnapshot.exists ? configSnapshot.data() : {};
     
-    console.log(`📅 ${diaNomeBonito} (${dateStr.split('-').reverse().join('/')})`);
+    // Calculate the véspera date
+    const targetDateObj = new Date(targetDate + 'T12:00:00');
+    const vesperaDateObj = new Date(targetDateObj);
+    vesperaDateObj.setDate(vesperaDateObj.getDate() - 1);
+    const vesperaDateStr = vesperaDateObj.toISOString().split('T')[0];
 
+    console.log(`📅 DATA ALVO: ${diaNomeBonito} (${targetDate.split('-').reverse().join('/')})`);
+
+    // Fetch sessions for this target date
     const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
-      .where('date', '==', dateStr)
+      .where('date', '==', targetDate)
       .get();
-    
     const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    const plan = getWhatsappReminderPlan({
-        runDateStr: dateStr,
+    // 1. Agenda Clínica Visual Sessions Listing
+    console.log(`   [AGENDA CLÍNICA] Atendimentos exibidos na tela:`);
+    const daySessions = getSessionsForDate({
+        dateStr: targetDate,
+        patients,
+        sessions: todasSessoesHoje,
+        settings
+    });
+
+    if (daySessions.length === 0) {
+        console.log(`      └─ (Sem atendimentos marcados ou fixos)`);
+    } else {
+        daySessions.forEach(s => {
+            const patient = patients.find(p => p.id === s.patientId);
+            const name = patient ? patient.name : (s.blockName || 'Compromisso');
+            const label = s.isVirtual ? 'FIXO' : 'MANUAL';
+            const statusLabel = s.status + (s.blockedReason ? ` - Bloqueado por: ${s.blockedReason}` : '');
+            console.log(`      └─ ⏰ ${s.time} - [${label}] ${name} (${statusLabel})`);
+        });
+    }
+
+    // 2. Véspera Message Plan (tipo: AMANHA, rodando na véspera)
+    console.log(`   [VÉSPERA CRON] Simulação executada em ${vesperaDateStr.split('-').reverse().join('/')} às 09:00:`);
+    const planVespera = getWhatsappReminderPlan({
+        runDateStr: vesperaDateStr,
         tipo: 'AMANHA',
         patients,
         sessions: todasSessoesHoje,
         settings
     });
 
-    if (plan.isHoliday) {
-      console.log(`  🚫 [FERIADO/RECESSO] ${plan.holidayName.trim()} - Mensagens automáticas suspensas.`);
-      console.log(`--------------------------------------------------`);
-      continue;
-    }
-
-    if (plan.reminders.length === 0 && plan.diagnostics.length === 0) {
-      console.log(`  [Nenhum atendimento agendado ou fixo para este dia]`);
+    if (planVespera.isHoliday) {
+        console.log(`      └─ 🚫 MENSAGENS SUSPENSAS POR FERIADO/RECESSO: ${planVespera.holidayName}`);
+    } else if (planVespera.reminders.length === 0) {
+        console.log(`      └─ (Nenhum lembrete de véspera ativo)`);
     } else {
-      plan.reminders.forEach(r => {
-        const label = r.isVirtual ? 'FIXO' : 'MANUAL';
-        console.log(`  ⏰ ${r.time} - [${label}] Paciente: ${r.patientName} | Responsável: ${r.guardianName} (${r.whatsapp})`);
-        
-        console.log(`     💬 Mensagem de Véspera (Enviada no dia anterior às 09:00):`);
-        console.log(`        "Bom dia/Boa tarde! Olá, ${r.guardianName.trim()}, tudo bem?\n        Passando para lembrar você da sessão de *${r.patientName.trim()}* amanhã, às *${r.time.trim()}*.\n        Aguardo sua confirmação,\n        Até logo!"`);
-        
-        console.log(`     💬 Mensagem do Dia (Enviada no dia da sessão):`);
-        console.log(`        "Bom dia/Boa tarde!\n        Aguardo vocês hoje às *${r.timeFormatted}*!\n        Até logo! 🙏🏼"`);
-        console.log();
-      });
-
-      plan.diagnostics.forEach(d => {
-        const label = d.isVirtual ? 'FIXO' : 'MANUAL';
-        console.log(`  ⏰ ${d.time} - [${label}] Paciente: ${d.patientName} | 🚫 Bloqueado: ${d.blockedReason}`);
-      });
+        planVespera.reminders.forEach(r => {
+            console.log(`      └─ ✅ ENVIAR PARA: ${r.guardianName} (${r.whatsapp}) - Lembrete Véspera às ${r.time}`);
+            console.log(`         💬 Texto: "${r.message.replace(/\n/g, ' ')}"`);
+        });
+        planVespera.diagnostics.filter(d => !d.isValid).forEach(d => {
+            console.log(`      └─ 🚫 BLOQUEADO: ${d.patientName} às ${d.time} - Motivo: ${d.blockedReason}`);
+        });
     }
+
+    // 3. Dia cron jobs (tipo: HOJE_MANHA, HOJE_TARDE, rodando no próprio dia)
+    console.log(`   [DIA CRON] Simulação executada no próprio dia às 06:30 e 12:30:`);
+    const planManha = getWhatsappReminderPlan({
+        runDateStr: targetDate,
+        tipo: 'HOJE_MANHA',
+        patients,
+        sessions: todasSessoesHoje,
+        settings
+    });
+    const planTarde = getWhatsappReminderPlan({
+        runDateStr: targetDate,
+        tipo: 'HOJE_TARDE',
+        patients,
+        sessions: todasSessoesHoje,
+        settings
+    });
+
+    if (planManha.isHoliday) {
+        console.log(`      └─ 🚫 MENSAGENS SUSPENSAS POR FERIADO/RECESSO: ${planManha.holidayName}`);
+    } else {
+        const allReminders = [...planManha.reminders, ...planTarde.reminders];
+        const allDiagnostics = [...planManha.diagnostics.filter(d => !d.isValid && !d.blockedReason.includes('fora do turno')), ...planTarde.diagnostics.filter(d => !d.isValid && !d.blockedReason.includes('fora do turno'))];
+
+        if (allReminders.length === 0 && allDiagnostics.length === 0) {
+            console.log(`      └─ (Nenhum lembrete do dia ativo)`);
+        } else {
+            allReminders.forEach(r => {
+                const alarme = r.time.split(':')[0] < 12 ? '06:30' : '12:30';
+                console.log(`      └─ ✅ ENVIAR às ${alarme}: ${r.guardianName} (${r.whatsapp}) - Lembrete do Dia às ${r.timeFormatted}`);
+                console.log(`         💬 Texto: "${r.message.replace(/\n/g, ' ')}"`);
+            });
+            allDiagnostics.forEach(d => {
+                console.log(`      └─ 🚫 BLOQUEADO: ${d.patientName} às ${d.time} - Motivo: ${d.blockedReason}`);
+            });
+        }
+    }
+
     console.log(`--------------------------------------------------`);
   }
 }
