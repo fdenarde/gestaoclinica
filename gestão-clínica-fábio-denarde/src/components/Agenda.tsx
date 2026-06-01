@@ -6,53 +6,7 @@ import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-f
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
-import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour } from '../lib/utils';
-
-// Helper local para renderização da base horária
-const getHourBase = (timeStr: string): string => {
-  if (!timeStr) return '';
-  const [hour] = timeStr.split(':');
-  return `${hour}:00`;
-};
-
-// Helper: returns virtual session(s) for a patient on a given date if their fixedDay matches.
-// For doubleSession patients, returns entries for both the fixedTime AND the next hour.
-// Returns empty array for holiday dates.
-function getVirtualSessions(
-  patient: AppState['patients'][0],
-  dayStr: string,
-  dayKey: string,
-  holidays: { date: string }[]
-): Session[] {
-  if (patient.status !== 'Ativo') return [];
-  // Normalize both sides so 'Terça', 'TERCA', 'terça' all match 'terca'
-  if (normalizeStr(patient.fixedDay || '') !== normalizeStr(dayKey)) return [];
-  // Block virtual sessions on holidays
-  if (holidays.some(h => h.date === dayStr)) return [];
-  // fixedTime is required
-  if (!patient.fixedTime) return [];
-
-  const times = SCHEDULE_CONFIG[dayKey] || [];
-
-  const makeVirtual = (time: string): Session => ({
-    id: `virtual-${patient.id}-${dayStr}-${time}`,
-    patientId: patient.id,
-    date: dayStr,
-    time,
-    type: patient.doubleSession ? SessionType.DUPLA : SessionType.SIMPLES,
-    status: SessionStatus.AGENDADA,
-    packageNumber: 0,
-    notes: '',
-  });
-
-  const result: Session[] = [makeVirtual(patient.fixedTime)];
-
-  // If doubleSession, also occupy the next time slot
-  if (patient.doubleSession) {
-    result.push(makeVirtual(addOneHour(patient.fixedTime)));
-  }
-  return result;
-}
+import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, ProcessedSession } from '../lib/utils';
 
 interface AgendaProps {
   state: AppState;
@@ -356,10 +310,13 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
           const holiday = state.settings.holidays?.find(h => h.date === dayStr);
           const holidays = state.settings.holidays || [];
 
-          // All virtual sessions for this day (includes non-standard times)
-          const allVirtualForDay = !holiday
-            ? state.patients.flatMap(p => getVirtualSessions(p, dayStr, dayKey, holidays))
-            : [];
+          // Retrieve processed sessions for the day
+          const daySessions = getSessionsForDate({
+            dateStr: dayStr,
+            patients: state.patients,
+            sessions: state.sessions,
+            settings: state.settings
+          });
 
           // Use only the scheduled times; ignore virtual times not in the schedule config
           const times = scheduledTimes;
@@ -374,22 +331,15 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
               </div>
               <div className="p-1.5 space-y-1.5 flex-1">
                 {times.map(time => {
-                  // Find all real sessions belonging to this hour base
-                  const realSessions = state.sessions
-                    .filter(s => s.date === dayStr && getHourBase(s.time) === time)
-                    .sort((a, b) => a.time.localeCompare(b.time));
+                  // Helper local para renderização da base horária
+                  const getHourBase = (timeStr: string): string => {
+                    if (!timeStr) return '';
+                    const [hour] = timeStr.split(':');
+                    return `${hour}:00`;
+                  };
 
-                  // Find all virtual sessions belonging to this hour base
-                  const virtualSessions = allVirtualForDay
-                    .filter(vs => {
-                      if (getHourBase(vs.time) !== time) return false;
-                      const hasManualAtSameTime = state.sessions.some(s => s.date === dayStr && s.patientId === vs.patientId && s.time === vs.time);
-                      return !hasManualAtSameTime;
-                    })
-                    .sort((a, b) => a.time.localeCompare(b.time));
-
-                  // Combine them
-                  const mergedSessions = [...realSessions, ...virtualSessions].sort((a, b) => a.time.localeCompare(b.time));
+                  // Find all sessions belonging to this hour base
+                  const mergedSessions = daySessions.filter(s => getHourBase(s.time) === time);
 
                   // Filter logic: if patient filter is active, only show if patientId matches
                   const filteredSessions = filterPatientId
@@ -449,7 +399,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                         {filteredSessions.map(session => {
                           const patient = session ? state.patients.find(p => p.id === session.patientId) : null;
                           const isBlocked = !!session?.isBlocked;
-                          const isVirtual = !state.sessions.some(s => s.id === session.id);
+                          const isVirtual = session.isVirtual;
                           const isOnHoliday = !!holiday;
                           const displayPackage = isVirtual ? null : session.packageNumber;
                           
