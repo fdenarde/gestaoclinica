@@ -31,6 +31,10 @@ async function generateReport() {
             patientsMap[p.id] = data;
         });
         
+        const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+        const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+        const holidays = settings.holidays || [];
+
         for (let i = 0; i < 6; i++) {
             const loopDate = new Date(startDate);
             loopDate.setDate(loopDate.getDate() + i);
@@ -38,6 +42,13 @@ async function generateReport() {
             
             const diasSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
             const diaSemanaNome = diasSemana[loopDate.getDay()];
+
+            const holidayObj = holidays.find(h => h.date === dateStr);
+            if (holidayObj) {
+                console.log(`\n📅 ${diaSemanaNome.toUpperCase()} (${dateStr}):`);
+                console.log(`  🚫 [FERIADO/RECESSO] ${holidayObj.name.trim()} - Mensagens automáticas suspensas.`);
+                continue;
+            }
             
             const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
                 .where('date', '==', dateStr).get();
