@@ -60,6 +60,15 @@ async function gerarRelatorioSemanal() {
         const diasUteis = dias.filter(d => [1, 2, 3, 4, 5, 6].includes(d.dayIndex));
 
         for (const dia of diasUteis) {
+            const firstUserId = Object.keys(holidaysMap)[0];
+            const isHoliday = firstUserId ? (holidaysMap[firstUserId] || []).find(h => h.date === dia.date) : null;
+            
+            if (isHoliday) {
+                console.log(`\n📅 ${dia.label} (${dia.date})`);
+                console.log(`   🚫 [FERIADO/RECESSO] ${isHoliday.name.trim()} - Mensagens automáticas suspensas.`);
+                continue;
+            }
+
             console.log(`\n📅 ${dia.label} (${dia.date})`);
             
             // 1. Sessões Reais
