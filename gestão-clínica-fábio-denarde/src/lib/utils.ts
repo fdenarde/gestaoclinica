@@ -352,3 +352,202 @@ export function getSessionsForDate({
   return processed;
 }
 
+export interface WhatsappReminder {
+  id: string;
+  patientId: string;
+  patientName: string;
+  guardianName: string;
+  whatsapp: string;
+  phone: string;
+  time: string;
+  timeFormatted: string;
+  message: string;
+  isVirtual: boolean;
+  type: string;
+}
+
+export interface DiagnosticItem {
+  id: string;
+  time: string;
+  patientName: string;
+  type: string;
+  isVirtual: boolean;
+  isValid: boolean;
+  blockedReason: string;
+}
+
+export interface WhatsappReminderPlan {
+  dateStr: string;
+  isHoliday: boolean;
+  holidayName?: string;
+  reminders: WhatsappReminder[];
+  diagnostics: DiagnosticItem[];
+}
+
+export function getWhatsappReminderPlan({
+  runDateStr,
+  tipo,
+  patients,
+  sessions,
+  settings
+}: {
+  runDateStr: string;
+  tipo: 'AMANHA' | 'HOJE_MANHA' | 'HOJE_TARDE';
+  patients: Patient[];
+  sessions: Session[];
+  settings: ClinicSettings;
+}): WhatsappReminderPlan {
+  // 1. Calculate target date
+  let dateStr = runDateStr;
+  if (tipo === 'AMANHA') {
+    const d = new Date(runDateStr + 'T12:00:00');
+    d.setDate(d.getDate() + 1);
+    dateStr = format(d, 'yyyy-MM-dd');
+  }
+  
+  const holiday = settings.holidays?.find(h => h.date === dateStr);
+  if (holiday) {
+    return {
+      dateStr,
+      isHoliday: true,
+      holidayName: holiday.name,
+      reminders: [],
+      diagnostics: [
+        {
+          id: `holiday-${dateStr}`,
+          time: '00:00',
+          patientName: 'Feriado/Recesso',
+          type: 'Bloqueio',
+          isVirtual: false,
+          isValid: false,
+          blockedReason: `feriado/recesso (${holiday.name.trim()})`
+        }
+      ]
+    };
+  }
+  
+  // 2. Retrieve all sessions using getSessionsForDate
+  const daySessions = getSessionsForDate({ dateStr, patients, sessions, settings });
+  
+  const reminders: WhatsappReminder[] = [];
+  const diagnostics: DiagnosticItem[] = [];
+  
+  // Standard phone format helper
+  const formatPhoneNumber = (phoneStr: string) => {
+    let clean = phoneStr.replace(/\D/g, '');
+    if (!clean.startsWith('55')) {
+      clean = '55' + clean;
+    }
+    return `${clean}@c.us`;
+  };
+  
+  // Candidate sessions after shift/turn filtering
+  const candidates: typeof daySessions = [];
+  
+  for (const s of daySessions) {
+    const patient = patients.find(p => p.id === s.patientId);
+    
+    if (!s.isValid) {
+      diagnostics.push({
+        id: s.id,
+        time: s.time,
+        patientName: patient ? patient.name : (s.blockName || 'Compromisso'),
+        type: s.type,
+        isVirtual: s.isVirtual,
+        isValid: false,
+        blockedReason: s.blockedReason || 'desconhecido'
+      });
+      continue;
+    }
+    
+    // Validate shift/turn filter
+    const [hour] = s.time.split(':').map(Number);
+    if (tipo === 'HOJE_MANHA' && hour >= 12) {
+      diagnostics.push({
+        id: s.id,
+        time: s.time,
+        patientName: patient!.name,
+        type: s.type,
+        isVirtual: s.isVirtual,
+        isValid: false,
+        blockedReason: 'fora do turno (Sessão da tarde)'
+      });
+      continue;
+    }
+    
+    if (tipo === 'HOJE_TARDE' && hour < 12) {
+      diagnostics.push({
+        id: s.id,
+        time: s.time,
+        patientName: patient!.name,
+        type: s.type,
+        isVirtual: s.isVirtual,
+        isValid: false,
+        blockedReason: 'fora do turno (Sessão da manhã)'
+      });
+      continue;
+    }
+    
+    candidates.push(s);
+  }
+  
+  // 3. Group by patientId to pick the earliest time
+  const selectedMap = new Map<string, typeof daySessions[0]>();
+  for (const s of candidates) {
+    if (!selectedMap.has(s.patientId) || s.time < selectedMap.get(s.patientId)!.time) {
+      selectedMap.set(s.patientId, s);
+    }
+  }
+  
+  // 4. Construct reminders and diagnostics for candidate sessions
+  for (const s of candidates) {
+    const patient = patients.find(p => p.id === s.patientId)!;
+    const isSent = selectedMap.get(s.patientId)!.id === s.id;
+    
+    if (isSent) {
+      const phone = formatPhoneNumber(patient.whatsapp);
+      const greeting = tipo === 'HOJE_TARDE' ? 'Boa tarde' : 'Bom dia';
+      const timeFormatted = s.time.endsWith(':00') ? s.time.split(':')[0] + 'h' : s.time + 'h';
+      
+      let message = '';
+      if (tipo === 'AMANHA') {
+        message = `${greeting}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
+      } else {
+        message = `${greeting}!\nAguardo vocês hoje às *${timeFormatted}*!\nAté logo! 🙏🏼`;
+      }
+      
+      reminders.push({
+        id: s.id,
+        patientId: s.patientId,
+        patientName: patient.name,
+        guardianName: patient.guardianName,
+        whatsapp: patient.whatsapp,
+        phone,
+        time: s.time,
+        timeFormatted,
+        message,
+        isVirtual: s.isVirtual,
+        type: s.type
+      });
+    } else {
+      diagnostics.push({
+        id: s.id,
+        time: s.time,
+        patientName: patient.name,
+        type: s.type,
+        isVirtual: s.isVirtual,
+        isValid: false,
+        blockedReason: 'conflito/deduplicação (Dupla)'
+      });
+    }
+  }
+  
+  return {
+    dateStr,
+    isHoliday: false,
+    reminders,
+    diagnostics
+  };
+}
+
+
