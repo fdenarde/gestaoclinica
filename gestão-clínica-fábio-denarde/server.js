@@ -231,6 +231,160 @@ function getSessionsForDate({ dateStr, patients, sessions, settings }) {
     return processed;
 }
 
+function getWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, settings }) {
+    // 1. Calculate target date
+    let dateStr = runDateStr;
+    if (tipo === 'AMANHA') {
+        const d = new Date(runDateStr + 'T12:00:00');
+        d.setDate(d.getDate() + 1);
+        dateStr = d.toISOString().split('T')[0];
+    }
+    
+    const holiday = (settings.holidays || []).find(h => h.date === dateStr);
+    if (holiday) {
+        return {
+            dateStr,
+            isHoliday: true,
+            holidayName: holiday.name,
+            reminders: [],
+            diagnostics: [
+                {
+                    id: `holiday-${dateStr}`,
+                    time: '00:00',
+                    patientName: 'Feriado/Recesso',
+                    type: 'Bloqueio',
+                    isVirtual: false,
+                    isValid: false,
+                    blockedReason: `feriado/recesso (${holiday.name.trim()})`
+                }
+            ]
+        };
+    }
+    
+    // 2. Retrieve all sessions using getSessionsForDate
+    const daySessions = getSessionsForDate({ dateStr, patients, sessions, settings });
+    
+    const reminders = [];
+    const diagnostics = [];
+    
+    // Standard phone format helper
+    const formatPhoneNumber = (phoneStr) => {
+        let clean = phoneStr.replace(/\D/g, '');
+        if (!clean.startsWith('55')) {
+            clean = '55' + clean;
+        }
+        return `${clean}@c.us`;
+    };
+    
+    // Candidate sessions after shift/turn filtering
+    const candidates = [];
+    
+    for (const s of daySessions) {
+        const patient = patients.find(p => p.id === s.patientId);
+        
+        if (!s.isValid) {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient ? patient.name : (s.blockName || 'Compromisso'),
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: s.blockedReason || 'desconhecido'
+            });
+            continue;
+        }
+        
+        // Validate shift/turn filter
+        const [hour] = s.time.split(':').map(Number);
+        if (tipo === 'HOJE_MANHA' && hour >= 12) {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient.name,
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: 'fora do turno (Sessão da tarde)'
+            });
+            continue;
+        }
+        
+        if (tipo === 'HOJE_TARDE' && hour < 12) {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient.name,
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: 'fora do turno (Sessão da manhã)'
+            });
+            continue;
+        }
+        
+        candidates.push(s);
+    }
+    
+    // 3. Group by patientId to pick the earliest time
+    const selectedMap = new Map();
+    for (const s of candidates) {
+        if (!selectedMap.has(s.patientId) || s.time < selectedMap.get(s.patientId).time) {
+            selectedMap.set(s.patientId, s);
+        }
+    }
+    
+    // 4. Construct reminders and diagnostics for candidate sessions
+    for (const s of candidates) {
+        const patient = patients.find(p => p.id === s.patientId);
+        const isSent = selectedMap.get(s.patientId).id === s.id;
+        
+        if (isSent) {
+            const phone = formatPhoneNumber(patient.whatsapp);
+            const greeting = tipo === 'HOJE_TARDE' ? 'Boa tarde' : 'Bom dia';
+            const timeFormatted = s.time.endsWith(':00') ? s.time.split(':')[0] + 'h' : s.time + 'h';
+            
+            let message = '';
+            if (tipo === 'AMANHA') {
+                message = `${greeting}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
+            } else {
+                message = `${greeting}!\nAguardo vocês hoje às *${timeFormatted}*!\nAté logo! 🙏🏼`;
+            }
+            
+            reminders.push({
+                id: s.id,
+                patientId: s.patientId,
+                patientName: patient.name,
+                guardianName: patient.guardianName,
+                whatsapp: patient.whatsapp,
+                phone,
+                time: s.time,
+                timeFormatted,
+                message,
+                isVirtual: s.isVirtual,
+                type: s.type
+            });
+        } else {
+            diagnostics.push({
+                id: s.id,
+                time: s.time,
+                patientName: patient.name,
+                type: s.type,
+                isVirtual: s.isVirtual,
+                isValid: false,
+                blockedReason: 'conflito/deduplicação (Dupla)'
+            });
+        }
+    }
+    
+    return {
+        dateStr,
+        isHoliday: false,
+        reminders,
+        diagnostics
+    };
+}
+
 // 3. Lógica Principal de Lembretes
 async function dispararLembretes(tipo) {
     console.log(`[${new Date().toISOString()}] Iniciando rotina de Lembretes: ${tipo}`);
@@ -242,36 +396,22 @@ async function dispararLembretes(tipo) {
             
             // Buscar dados de amanhã/hoje
             const today = new Date();
-            const tomorrow = new Date(today);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            
-            const dateStr = tipo === 'AMANHA' ? tomorrow.toISOString().split('T')[0] : today.toISOString().split('T')[0];
+            let dateStr = today.toISOString().split('T')[0];
+            if (tipo === 'AMANHA') {
+                const tomorrow = new Date(today);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                dateStr = tomorrow.toISOString().split('T')[0];
+            }
             
             // Buscar configurações para ler feriados e telefone do admin
             const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
             const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
             
-            const holidayObj = (settings.holidays || []).find(h => h.date === dateStr);
-            if (holidayObj) {
-                console.log(`[BLOQUEIO] Data ${dateStr} é feriado (${holidayObj.name}). Disparos cancelados para ${tipo}.`);
-                
-                if (tipo === 'AMANHA' && settings.whatsapp) {
-                    const clinicPhone = formatPhoneNumber(settings.whatsapp);
-                    console.log(`Avisando administrador no WhatsApp ${clinicPhone}...`);
-                    await client.sendMessage(clinicPhone, `*Lembrete do Robô*\n\nOlá! Lembrando que amanhã é feriado/recesso de *${holidayObj.name.trim()}*.\n\nO envio de mensagens automáticas de lembrete para os pacientes está suspenso para amanhã.`);
-                }
-                continue;
-            }
-
             // 1. Buscar Pacientes (para mapear nomes e horários fixos)
             const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
             const patients = [];
-            const patientsMap = {};
-            
             patientsSnapshot.forEach(p => {
-                const data = { id: p.id, ...p.data() };
-                patients.push(data);
-                patientsMap[p.id] = data;
+                patients.push({ id: p.id, ...p.data() });
             });
 
             // 2. Buscar Sessões Manuais da Data (Qualquer Status)
@@ -281,60 +421,34 @@ async function dispararLembretes(tipo) {
             
             const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             
-            const daySessions = getSessionsForDate({
-                dateStr,
+            // 3. Executar o plano de remessa centralizado
+            const plan = getWhatsappReminderPlan({
+                runDateStr: today.toISOString().split('T')[0],
+                tipo,
                 patients,
                 sessions: todasSessoesHoje,
                 settings
             });
 
-            // 4. Unificar as sessões e aplicar Filtro de Turno
-            const todasAsSessoes = daySessions.filter(s => s.isValid);
-            let sessoesFiltradas = [];
-
-            todasAsSessoes.forEach(s => {
-                const [hour] = s.time.split(':').map(Number);
-                if (tipo === 'HOJE_MANHA' && hour >= 12) return;
-                if (tipo === 'HOJE_TARDE' && hour < 12) return;
-                sessoesFiltradas.push(s);
-            });
-
-            // 5. Agrupar por paciente para enviar apenas 1 mensagem mesmo em sessão dupla (pegar o horário mais cedo)
-            const disparosUnicos = new Map();
-            for (const s of sessoesFiltradas) {
-                const patient = patientsMap[s.patientId];
-                if (!patient || !patient.whatsapp) continue;
+            if (plan.isHoliday) {
+                console.log(`[BLOQUEIO] Data ${plan.dateStr} é feriado (${plan.holidayName}). Disparos cancelados para ${tipo}.`);
                 
-                const phone = formatPhoneNumber(patient.whatsapp);
-                // Agrupa pelo ID do paciente, não apenas pelo telefone.
-                // Assim, sessões duplas/consecutivas do MESMO paciente geram 1 só mensagem.
-                // Mas dois irmãos (pacientes diferentes) com o MESMO telefone recebem 2 mensagens.
-                if (!disparosUnicos.has(patient.id) || s.time < disparosUnicos.get(patient.id).s.time) {
-                    disparosUnicos.set(patient.id, { s, patient, phone });
+                if (tipo === 'AMANHA' && settings.whatsapp) {
+                    const clinicPhone = formatPhoneNumber(settings.whatsapp);
+                    console.log(`Avisando administrador no WhatsApp ${clinicPhone}...`);
+                    await client.sendMessage(clinicPhone, `*Lembrete do Robô*\n\nOlá! Lembrando que amanhã é feriado/recesso de *${plan.holidayName.trim()}*.\n\nO envio de mensagens automáticas de lembrete para os pacientes está suspenso para amanhã.`);
                 }
+                continue;
             }
 
-            console.log(`[INFO] ${dateStr} (${tipo}): ${disparosUnicos.size} mensagens únicas para enviar.`);
+            console.log(`[INFO] ${plan.dateStr} (${tipo}): ${plan.reminders.length} mensagens únicas para enviar.`);
 
-            for (const { s, patient, phone } of disparosUnicos.values()) {
-                const currentHour = new Date().getHours();
-                const saudacao = currentHour < 12 ? 'Bom dia' : 'Boa tarde';
-                
-                // Formata 14:00 -> 14h, 14:30 -> 14:30h
-                const horaFormatada = s.time.endsWith(':00') ? s.time.split(':')[0] + 'h' : s.time + 'h';
-
-                let message = '';
-                if (tipo === 'AMANHA') {
-                    message = `${saudacao}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
-                } else {
-                    message = `${saudacao}!\nAguardo vocês hoje às *${horaFormatada}*!\nAté logo! 🙏🏼`;
-                }
-
-                console.log(`[ENVIO] Enviando para ${patient.guardianName} (${phone})...`);
+            for (const r of plan.reminders) {
+                console.log(`[ENVIO] Enviando para ${r.guardianName} (${r.phone})...`);
                 try {
-                    await client.sendMessage(phone, message);
+                    await client.sendMessage(r.phone, r.message);
                 } catch (sendError) {
-                    console.error(`❌ Erro ao enviar para ${phone}:`, sendError.message);
+                    console.error(`❌ Erro ao enviar para ${r.phone}:`, sendError.message);
                     if (sendError.message.includes('detached') || 
                         sendError.message.includes('Protocol error') || 
                         sendError.message.includes('closed') || 
