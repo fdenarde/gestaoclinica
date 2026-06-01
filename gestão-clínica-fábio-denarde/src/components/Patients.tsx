@@ -1,23 +1,11 @@
 import React, { useState, useMemo } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution } from '../types';
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X } from 'lucide-react';
-import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate } from '../lib/utils';
+import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
 import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
-
-// Helpers para validação e normalização de horários (minutos :00 ou :30)
-const isValidTime = (timeStr: string): boolean => {
-  if (!timeStr) return false;
-  return /^([0-1]?[0-9]|2[0-3]):(00|30)$/.test(timeStr.trim());
-};
-
-const normalizeTime = (timeStr: string): string => {
-  if (!isValidTime(timeStr)) return timeStr;
-  const [hour, min] = timeStr.trim().split(':').map(Number);
-  return `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-};
 
 interface PatientsProps {
   state: AppState;

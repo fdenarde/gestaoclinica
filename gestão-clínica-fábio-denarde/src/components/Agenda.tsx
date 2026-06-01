@@ -6,35 +6,13 @@ import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-f
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
-import { cn, getStatusColor, safeFormatDate } from '../lib/utils';
+import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour } from '../lib/utils';
 
-// Normaliza string removendo acentos e convertendo para minúsculas
-const normalizeStr = (s: string) =>
-  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-
-// Helpers para validação e normalização de horários (minutos :00 ou :30)
+// Helper local para renderização da base horária
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
   const [hour] = timeStr.split(':');
   return `${hour}:00`;
-};
-
-const isValidTime = (timeStr: string): boolean => {
-  if (!timeStr) return false;
-  return /^([0-1]?[0-9]|2[0-3]):(00|30)$/.test(timeStr.trim());
-};
-
-const normalizeTime = (timeStr: string): string => {
-  if (!isValidTime(timeStr)) return timeStr;
-  const [hour, min] = timeStr.trim().split(':').map(Number);
-  return `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-};
-
-const addOneHour = (timeStr: string): string => {
-  if (!timeStr) return '';
-  const [hour, min] = timeStr.split(':').map(Number);
-  const newHour = (hour + 1) % 24;
-  return `${String(newHour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 };
 
 // Helper: returns virtual session(s) for a patient on a given date if their fixedDay matches.
