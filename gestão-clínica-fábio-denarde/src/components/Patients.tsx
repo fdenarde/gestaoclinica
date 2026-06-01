@@ -7,6 +7,18 @@ import { showToast } from './Common/Toast';
 import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
 import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
 
+// Helpers para validação e normalização de horários (minutos :00 ou :30)
+const isValidTime = (timeStr: string): boolean => {
+  if (!timeStr) return false;
+  return /^([0-1]?[0-9]|2[0-3]):(00|30)$/.test(timeStr.trim());
+};
+
+const normalizeTime = (timeStr: string): string => {
+  if (!isValidTime(timeStr)) return timeStr;
+  const [hour, min] = timeStr.trim().split(':').map(Number);
+  return `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+};
+
 interface PatientsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
@@ -56,10 +68,17 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       return;
     }
 
+    if (newPatient.fixedTime && !isValidTime(newPatient.fixedTime)) {
+      showToast('Por favor, insira um horário fixo válido no formato HH:00 ou HH:30 (ex: 17:30).', 'error');
+      return;
+    }
+
+    const fixedTimeNormalized = newPatient.fixedTime ? normalizeTime(newPatient.fixedTime) : '08:00';
     const id = Math.random().toString(36).substr(2, 9);
     const patient: Patient = {
       ...newPatient as Patient,
       id,
+      fixedTime: fixedTimeNormalized,
       anamnese: { ...newPatient.anamnese as any },
       clinicalNotes: '',
     };
@@ -473,12 +492,28 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Horário Fixo</label>
                   <select 
-                    value={newPatient.fixedTime}
-                    onChange={e => setNewPatient({...newPatient, fixedTime: e.target.value})}
-                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm"
+                    value={AVAILABLE_TIMES.includes(newPatient.fixedTime || '') ? newPatient.fixedTime : 'custom'}
+                    onChange={e => {
+                      if (e.target.value === 'custom') {
+                        setNewPatient({...newPatient, fixedTime: '17:30'});
+                      } else {
+                        setNewPatient({...newPatient, fixedTime: e.target.value});
+                      }
+                    }}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full"
                   >
                     {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                    <option value="custom">Outro horário...</option>
                   </select>
+                  {(!newPatient.fixedTime || !AVAILABLE_TIMES.includes(newPatient.fixedTime)) && (
+                    <input
+                      type="text"
+                      placeholder="Ex: 17:30"
+                      value={newPatient.fixedTime || ''}
+                      onChange={e => setNewPatient({...newPatient, fixedTime: e.target.value})}
+                      className="px-4 py-3 mt-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full"
+                    />
+                  )}
                 </div>
               </div>
               {/* Toggle Sessão Dupla */}
@@ -656,6 +691,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   }
 
   const handleSavePatientData = () => {
+    if (editForm.fixedTime && !isValidTime(editForm.fixedTime)) {
+      showToast('Por favor, insira um horário fixo válido no formato HH:00 ou HH:30 (ex: 17:30).', 'error');
+      return;
+    }
+    const normalized = editForm.fixedTime ? normalizeTime(editForm.fixedTime) : '';
+    setEditForm(prev => ({ ...prev, fixedTime: normalized }));
+    editForm.fixedTime = normalized;
+
     const isBecomingInactive = editForm.status === 'Concluído' && patient.status !== 'Concluído';
     
     if (isBecomingInactive) {
@@ -1209,9 +1252,29 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Horário Fixo</label>
-                            <select value={editForm.fixedTime || ''} onChange={e => setEditForm({...editForm, fixedTime: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full">
+                            <select 
+                              value={AVAILABLE_TIMES.includes(editForm.fixedTime || '') ? editForm.fixedTime : 'custom'}
+                              onChange={e => {
+                                if (e.target.value === 'custom') {
+                                  setEditForm({...editForm, fixedTime: '17:30'});
+                                } else {
+                                  setEditForm({...editForm, fixedTime: e.target.value});
+                                }
+                              }}
+                              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full"
+                            >
                               {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                              <option value="custom">Outro horário...</option>
                             </select>
+                            {(!editForm.fixedTime || !AVAILABLE_TIMES.includes(editForm.fixedTime)) && (
+                              <input
+                                type="text"
+                                placeholder="Ex: 17:30"
+                                value={editForm.fixedTime || ''}
+                                onChange={e => setEditForm({...editForm, fixedTime: e.target.value})}
+                                className="px-4 py-3 mt-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full animate-in fade-in slide-in-from-top-1"
+                              />
+                            )}
                           </div>
                         </div>
                         {/* Toggle Sessão Dupla */}
