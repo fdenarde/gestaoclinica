@@ -50,6 +50,18 @@ async function run() {
     const dayOfWeekIndex = dateObj.getDay();
     const diaDaSemanaAlvo = diasSemanaNomes[dayOfWeekIndex];
 
+    const configSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+    const settings = configSnapshot.exists ? configSnapshot.data() : {};
+    const holidays = settings.holidays || [];
+    const holidayObj = holidays.find(h => h.date === dateStr);
+    
+    if (holidayObj) {
+      console.log(`📅 ${diaNomeBonito} (${dateStr.split('-').reverse().join('/')})`);
+      console.log(`  🚫 [FERIADO/RECESSO] ${holidayObj.name.trim()} - Mensagens automáticas suspensas.`);
+      console.log(`--------------------------------------------------`);
+      continue;
+    }
+
     // 1. Fetch real sessions for today
     const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
       .where('date', '==', dateStr)
