@@ -85,15 +85,23 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
     const generatedSessions: Session[] = [];
     for (let i = 0; i < 10; i++) {
-      generatedSessions.push({
-        id: Math.random().toString(36).substr(2, 9),
-        patientId: id,
-        date: format(addDays(realStartDate, i * 7), 'yyyy-MM-dd'),
-        time: patient.fixedTime || '08:00',
-        type: SessionType.SIMPLES,
-        status: SessionStatus.AGENDADA,
-        packageNumber: 1
-      });
+      const times = [patient.fixedTime || '08:00'];
+      if (patient.doubleSession) {
+        times.push(addOneHour(patient.fixedTime || '08:00'));
+      }
+      for (const time of times) {
+        generatedSessions.push({
+          id: Math.random().toString(36).substr(2, 9),
+          patientId: id,
+          date: format(addDays(realStartDate, i * 7), 'yyyy-MM-dd'),
+          time,
+          type: patient.doubleSession ? SessionType.DUPLA : SessionType.SIMPLES,
+          status: SessionStatus.AGENDADA,
+          packageNumber: 1,
+          isFixedSchedule: true,
+          source: 'fixed'
+        });
+      }
     }
 
     const generatedPayments: Payment[] = [];
@@ -832,7 +840,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
               status: SessionStatus.AGENDADA,
               packageNumber: info.packageNumber,
               notes: info.notes || '',
-              isFixedSchedule: true
+              isFixedSchedule: true,
+              source: 'fixed'
             });
           }
         }
@@ -894,15 +903,23 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
 
     const generatedSessions: Session[] = [];
     for (let i = 0; i < 10; i++) {
-       generatedSessions.push({
-           id: Math.random().toString(36).substr(2, 9),
-           patientId: patient.id,
-           date: format(addDays(startDate, i * 7), 'yyyy-MM-dd'),
-           time: patient.fixedTime || '08:00',
-           type: SessionType.SIMPLES,
-           status: SessionStatus.AGENDADA,
-           packageNumber: newPackageNumber
-       });
+       const times = [patient.fixedTime || '08:00'];
+       if (patient.doubleSession) {
+         times.push(addOneHour(patient.fixedTime || '08:00'));
+       }
+       for (const time of times) {
+          generatedSessions.push({
+              id: Math.random().toString(36).substr(2, 9),
+              patientId: patient.id,
+              date: format(addDays(startDate, i * 7), 'yyyy-MM-dd'),
+              time,
+              type: patient.doubleSession ? SessionType.DUPLA : SessionType.SIMPLES,
+              status: SessionStatus.AGENDADA,
+              packageNumber: newPackageNumber,
+              isFixedSchedule: true,
+              source: 'fixed'
+          });
+       }
     }
 
     onUpdate({ sessions: [...state.sessions, ...generatedSessions] });
