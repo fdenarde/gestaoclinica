@@ -11,6 +11,11 @@ const path = require('path');
 
 const ROOT = __dirname;
 const DIST = path.join(ROOT, 'dist');
+const GIT_ROOT = (() => {
+  try {
+    return execSync('git rev-parse --show-toplevel', { cwd: ROOT, encoding: 'utf8', windowsHide: true }).trim();
+  } catch { return ROOT; }
+})();
 const PRIMARY_URL = 'https://gestaoclinica-solucoes.vercel.app/';
 const BACKUP_URL = 'https://fdenarde.github.io/gestaoclinica/';
 
@@ -87,9 +92,10 @@ function run(cmd, cwd = ROOT) {
   }
 }
 
-function runRequired(cmd, label) {
+function runRequired(cmd, label, cwdOverride = null) {
+  const cwd = cwdOverride || ROOT;
   try {
-    const out = execSync(cmd, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', windowsHide: true }).trim();
+    const out = execSync(cmd, { cwd, encoding: 'utf8', stdio: 'pipe', windowsHide: true }).trim();
     return out;
   } catch (e) {
     fail(`${label} falhou:\n${e.stderr || e.message}`);
@@ -102,13 +108,13 @@ function runRequired(cmd, label) {
 function etapaVerificarSensiveis() {
   step('ETAPA 1/6: Verificando arquivos sensiveis...');
 
-  const gitRoot = run('git rev-parse --show-toplevel');
+  const gitRoot = GIT_ROOT;
   if (!gitRoot) {
     warn('Nao foi possivel detectar a raiz do Git. Pulando verificacao avancada.');
     return;
   }
 
-  const staged = run('git diff --cached --name-only');
+  const staged = run('git diff --cached --name-only', GIT_ROOT);
   if (!staged) {
     info('Nenhum arquivo staged.');
     return;
@@ -194,7 +200,7 @@ function etapaResumo() {
   step('ETAPA 4/6: Resumo do que sera publicado...');
 
   // Show git status
-  const status = run('git status --short');
+  const status = run('git status --short', GIT_ROOT);
   if (status && status.trim()) {
     console.log(`  ${C.yellow}Arquivos alterados (serao commitados):${C.reset}`);
     status.split('\n').filter(Boolean).forEach(line => {
@@ -223,7 +229,7 @@ function etapaVerificarDiretorio() {
   step('ETAPA 5/6: Verificacao final de seguranca...');
 
   // Check gitignore is protecting sensitive files
-  const gitignorePath = path.join(ROOT, '..', '.gitignore');
+  const gitignorePath = path.join(GIT_ROOT, '.gitignore');
   const gitignore = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
   
   const checks = [
@@ -267,7 +273,7 @@ function etapaPublicar() {
   }
 
   // 6b: Commit and push source changes (only if there are changes)
-  const hasChanges = run('git status --porcelain');
+  const hasChanges = run('git status --porcelain', GIT_ROOT);
   if (hasChanges && hasChanges.trim()) {
     info('Commitando alteracoes do codigo fonte...');
     
@@ -276,10 +282,10 @@ function etapaPublicar() {
     const timeStr = now.toLocaleTimeString('pt-BR');
     const commitMsg = `Deploy seguro — ${dateStr} ${timeStr}`;
     
-    runRequired('git add .', 'git add');
+    runRequired('git add -A', 'git add', GIT_ROOT);
     
     // Double-check forbidden files after add
-    const stagedAfter = run('git diff --cached --name-only');
+    const stagedAfter = run('git diff --cached --name-only', GIT_ROOT);
     if (stagedAfter) {
       const forbidden = stagedAfter.split('\n').filter(Boolean).filter(f => {
         const n = f.replace(/\\/g, '/');
@@ -288,17 +294,17 @@ function etapaPublicar() {
       if (forbidden.length > 0) {
         // Unstage forbidden files
         for (const f of forbidden) {
-          run(`git reset HEAD -- "${f}"`);
+          run(`git reset HEAD -- "${f}"`, GIT_ROOT);
           warn(`Arquivo removido do stage por seguranca: ${f}`);
         }
       }
     }
     
-    runRequired(`git commit -m "${commitMsg}"`, 'git commit');
+    runRequired(`git commit -m "${commitMsg}"`, 'git commit', GIT_ROOT);
     ok(`Commit criado: "${commitMsg}"`);
 
     info('Enviando para o GitHub (git push)...');
-    runRequired('git push origin main', 'git push');
+    runRequired('git push origin main', 'git push', GIT_ROOT);
     ok('Codigo fonte enviado para o GitHub.');
   } else {
     info('Nenhum arquivo alterado para commitar. Apenas o GitHub Pages foi atualizado.');

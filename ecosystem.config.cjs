@@ -10,10 +10,11 @@ module.exports = {
       script: 'server.js',
       cwd: './gestão-clínica-fábio-denarde'
     },
-    {
-      name: 'AutoDeployWatcher',
-      script: 'watch-and-deploy.cjs',
-      cwd: './'
-    }
+    // AutoDeployWatcher desativado — commits/pushes só sob autorização explícita
+    // {
+    //   name: 'AutoDeployWatcher',
+    //   script: 'watch-and-deploy.cjs',
+    //   cwd: './'
+    // }
   ]
 };
