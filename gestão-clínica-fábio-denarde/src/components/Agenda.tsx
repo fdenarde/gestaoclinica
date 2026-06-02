@@ -655,31 +655,31 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
                                   {/* Hover overlay with quick actions (desktop only via hover) */}
                                   {canAct && (
-                                    <div className="absolute inset-0 bg-clinic-header/95 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1 px-1 z-10">
+                                    <div className="absolute inset-0 bg-black/70 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2 px-3 z-10">
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleActionOk(session); }}
-                                        className="bg-status-green-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        className="bg-emerald-500 text-white text-xs font-semibold px-3 py-2 rounded-lg hover:bg-emerald-600 hover:shadow-lg transition-all duration-150"
                                         title="Marcar presença"
                                       >
                                         OK
                                       </button>
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleActionFalta(session); }}
-                                        className="bg-status-red-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        className="bg-red-500 text-white text-xs font-semibold px-3 py-2 rounded-lg hover:bg-red-600 hover:shadow-lg transition-all duration-150"
                                         title="Falta do paciente"
                                       >
                                         Falta
                                       </button>
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleActionFaltaProf(session); }}
-                                        className="bg-status-orange-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        className="bg-amber-500 text-white text-xs font-semibold px-3 py-2 rounded-lg hover:bg-amber-600 hover:shadow-lg transition-all duration-150"
                                         title="Falta do profissional"
                                       >
                                         Falta Prof.
                                       </button>
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleActionCancel(session); }}
-                                        className="bg-rose-700 text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        className="bg-gray-500 text-white text-xs font-semibold px-3 py-2 rounded-lg hover:bg-gray-600 hover:shadow-lg transition-all duration-150"
                                         title="Cancelar"
                                       >
                                         Cancelar
@@ -687,7 +687,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                       {!isVirtual && (
                                         <button
                                           onClick={(e) => { e.stopPropagation(); handleActionDelete(session); }}
-                                          className="bg-gray-600 text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                          className="bg-blue-800 text-white text-xs font-semibold px-3 py-2 rounded-lg hover:bg-blue-900 hover:shadow-lg transition-all duration-150"
                                           title="Remover"
                                         >
                                           Remover
@@ -807,11 +807,11 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
                   {/* Primary actions (Agendada) */}
                   {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel) && (
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 gap-3">
                       {actions.canOk && (
                         <button
                           onClick={() => handleActionOk(actionSession)}
-                          className="py-3 px-3 bg-status-green-text text-white text-xs font-bold rounded-xl hover:bg-green-700 transition-all uppercase tracking-wide active:scale-95"
+                          className="py-3 px-4 bg-emerald-500 text-white text-sm font-semibold rounded-lg hover:bg-emerald-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
                         >
                           OK / Presença
                         </button>
@@ -819,7 +819,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                       {actions.canFalta && (
                         <button
                           onClick={() => handleActionFalta(actionSession)}
-                          className="py-3 px-3 bg-status-red-text text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-all uppercase tracking-wide active:scale-95"
+                          className="py-3 px-4 bg-red-500 text-white text-sm font-semibold rounded-lg hover:bg-red-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
                         >
                           Falta
                         </button>
@@ -827,7 +827,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                       {actions.canFaltaProf && (
                         <button
                           onClick={() => handleActionFaltaProf(actionSession)}
-                          className="py-3 px-3 bg-status-orange-text text-white text-xs font-bold rounded-xl hover:bg-amber-700 transition-all uppercase tracking-wide active:scale-95"
+                          className="py-3 px-4 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
                         >
                           Falta Prof.
                         </button>
@@ -835,7 +835,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                       {actions.canCancel && (
                         <button
                           onClick={() => handleActionCancel(actionSession)}
-                          className="py-3 px-3 bg-rose-700 text-white text-xs font-bold rounded-xl hover:bg-rose-800 transition-all uppercase tracking-wide active:scale-95"
+                          className="py-3 px-4 bg-gray-500 text-white text-sm font-semibold rounded-lg hover:bg-gray-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
                         >
                           Cancelar
                         </button>
@@ -847,7 +847,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                   {actions.canReopen && (
                     <button
                       onClick={() => handleActionReopen(actionSession)}
-                      className="w-full py-3 px-3 bg-clinic-primary text-white text-xs font-bold rounded-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-wide active:scale-95"
+                      className="w-full py-3 px-4 bg-blue-800 text-white text-sm font-semibold rounded-lg hover:bg-blue-900 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
                     >
                       ↻ Reabrir (Voltar para Agendada)
                     </button>
@@ -859,7 +859,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
               {actions.canDelete && !actionSession.isVirtual && (
                 <button
                   onClick={() => handleActionDelete(actionSession)}
-                  className="w-full py-2.5 px-3 bg-gray-200 text-gray-600 text-xs font-bold rounded-xl hover:bg-gray-300 transition-all uppercase tracking-wide active:scale-95"
+                  className="w-full py-3 px-4 bg-gray-100 text-gray-500 text-sm font-semibold rounded-lg hover:bg-gray-200 hover:text-gray-700 transition-all duration-150 active:scale-[0.97]"
                 >
                   Remover Sessão
                 </button>
