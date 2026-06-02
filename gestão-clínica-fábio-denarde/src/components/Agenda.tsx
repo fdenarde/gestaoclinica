@@ -106,10 +106,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
 
-  // Touch overlay state (mobile/tablet: tap to show quick actions, tap button to act)
-  const [touchOverlayId, setTouchOverlayId] = useState<string | null>(null);
-
-  // Reposition Modal State
+// Reposition Modal State
   const [repoModal, setRepoModal] = useState<{ reposition: Reposition; patient: AppState['patients'][0]; originalSession: Session | null } | null>(null);
   const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [repoTime, setRepoTime] = useState('');
@@ -578,7 +575,6 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                           const statusLabel = getStatusLabel(session);
                           const sessionActions = getSessionActions(session);
                           const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canCancel;
-                          const isOverlayActive = touchOverlayId === session.id;
 
                           const handleCardClick = () => {
                             if (!isBlocked && patient) {
@@ -658,14 +654,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                     </div>
                                   )}
 
-                                  {/* ── Indicador visual de clicável (desktop) — sem overlay confuso ── */}
-                                  {canAct && (
-                                    <div className="hidden lg:flex absolute inset-0 bg-black/0 group-hover:bg-black/5 rounded-lg transition-all duration-200 items-center justify-center opacity-0 group-hover:opacity-100 z-10 pointer-events-none">
-                                      <span className="bg-white/90 text-clinic-primary text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full shadow-sm border border-clinic-border">
-                                        Clique para agir
-                                      </span>
-                                    </div>
-                                  )}
+                                  {/* Sem overlay — clique abre modal em qualquer tamanho de tela */}
                                 </div>
                               </div>
 
