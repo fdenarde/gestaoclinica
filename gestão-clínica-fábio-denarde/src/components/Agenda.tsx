@@ -593,7 +593,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                 onClick={handleCardClick}
                                 className={cn(
                                   "p-2 rounded-lg border min-h-[50px] transition-all flex flex-col justify-between shadow-sm",
-                                  isBlocked || !patient ? '' : 'cursor-pointer hover:shadow-md',
+                                  isBlocked || !patient ? '' : 'cursor-pointer hover:shadow-md hover:border-clinic-primary/40 hover:scale-[1.01]',
                                   getStatusCardBg(session)
                                 )}
                               >
@@ -658,60 +658,12 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                     </div>
                                   )}
 
-                                  {/* ── DESKTOP ONLY: hover overlay com botões compactos + tooltip ── */}
+                                  {/* ── Indicador visual de clicável (desktop) — sem overlay confuso ── */}
                                   {canAct && (
-                                    <div
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="hidden lg:flex absolute inset-0 bg-gradient-to-b from-black/70 to-black/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all duration-200 flex-col items-center justify-center gap-1.5 p-1.5 z-10 backdrop-blur-[1px]"
-                                      role="toolbar"
-                                      aria-label="Ações rápidas da sessão"
-                                    >
-                                      {/* Nome do paciente no topo do overlay */}
-                                      <span className="text-white/80 text-[8px] font-bold uppercase tracking-widest truncate w-full text-center px-1 mb-0.5">
-                                        {patient?.name}
+                                    <div className="hidden lg:flex absolute inset-0 bg-black/0 group-hover:bg-black/5 rounded-lg transition-all duration-200 items-center justify-center opacity-0 group-hover:opacity-100 z-10 pointer-events-none">
+                                      <span className="bg-white/90 text-clinic-primary text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full shadow-sm border border-clinic-border">
+                                        Clique para agir
                                       </span>
-                                      {/* Linha de botões compactos com tooltip nativo */}
-                                      <div className="flex flex-row items-center justify-center gap-[3px] w-full">
-                                        <div className="relative group/btn flex-1">
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); handleActionOk(session); }}
-                                            title="✅ Marcar Presença — sessão realizada com sucesso"
-                                            className="w-full bg-emerald-500 text-white font-bold rounded-md hover:bg-emerald-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm shadow-emerald-900/40"
-                                          >✓ OK</button>
-                                        </div>
-                                        <div className="relative group/btn flex-1">
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); handleActionFalta(session); }}
-                                            title="❌ Falta do Paciente — gera reposição pendente"
-                                            className="w-full bg-red-500 text-white font-bold rounded-md hover:bg-red-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm shadow-red-900/40"
-                                          >Falta</button>
-                                        </div>
-                                        <div className="relative group/btn flex-1">
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); handleActionFaltaProf(session); }}
-                                            title="🟠 Falta do Profissional — gera reposição pendente"
-                                            className="w-full bg-amber-500 text-white font-bold rounded-md hover:bg-amber-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm shadow-amber-900/40"
-                                          >F.Prof</button>
-                                        </div>
-                                        <div className="relative group/btn flex-1">
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); handleActionCancel(session); }}
-                                            title="🚫 Cancelar Sessão — marca como cancelada"
-                                            className="w-full bg-slate-500 text-white font-bold rounded-md hover:bg-slate-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm"
-                                          >Cancl.</button>
-                                        </div>
-                                        {!isVirtual && (
-                                          <div className="relative group/btn flex-1">
-                                            <button
-                                              onClick={(e) => { e.stopPropagation(); handleActionDelete(session); }}
-                                              title="🗑 Remover Sessão — apaga permanentemente"
-                                              className="w-full bg-rose-800 text-white font-bold rounded-md hover:bg-rose-700 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm"
-                                            >🗑</button>
-                                          </div>
-                                        )}
-                                      </div>
-                                      {/* Dica de clique */}
-                                      <span className="text-white/40 text-[7px] italic mt-0.5">clique para detalhes</span>
                                     </div>
                                   )}
                                 </div>
