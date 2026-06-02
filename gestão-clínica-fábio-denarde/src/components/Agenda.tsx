@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { ChevronLeft, ChevronRight, AlertCircle, Users, RefreshCw, Lock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, AlertCircle, Users } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
@@ -13,6 +13,74 @@ const getHourBase = (timeStr: string): string => {
   const [hour] = timeStr.split(':');
   return `${hour}:00`;
 };
+
+// ── Status helpers ────────────────────────────────────────────────
+
+function getStatusLabel(session: ProcessedSession): string {
+  if (session.isBlocked) return 'Bloqueado';
+  if (!session.isValid) {
+    if (session.blockedReason === 'feriado/recesso') return 'Feriado';
+    if (session.blockedReason === 'sessão cancelada') return 'Cancelada';
+    if (session.blockedReason === 'status inválido') return 'Inválida';
+    if (session.blockedReason === 'paciente inativo') return 'Inativo';
+    if (session.blockedReason === 'paciente sem WhatsApp') return 'Sem WhatsApp';
+    if (session.blockedReason?.includes('fora do turno')) return 'Fora do turno';
+  }
+  switch (session.status) {
+    case 'Agendada': return 'Agendada';
+    case 'Realizada': return 'Realizada';
+    case 'Falta': return 'Falta';
+    case 'Falta.Prof': return 'Falta Prof.';
+    case 'Cancelada': return 'Cancelada';
+    case 'Reposição': return 'Reposição';
+    default: return session.status || '—';
+  }
+}
+
+function getStatusCardBg(session: ProcessedSession): string {
+  if (session.isBlocked) return 'bg-[#5D4037]/10 border-[#5D4037]/40';
+  if (!session.isValid) {
+    switch (session.blockedReason) {
+      case 'feriado/recesso': return 'bg-orange-500/10 border-orange-400/50';
+      case 'sessão cancelada': return 'bg-rose-900/15 border-rose-900/25';
+      default: return 'bg-gray-100/70 border-gray-300/60';
+    }
+  }
+  switch (session.status) {
+    case 'Agendada': return 'bg-white border-clinic-border';
+    case 'Realizada': return 'bg-blue-500/8 border-blue-400/50';
+    case 'Falta': return 'bg-red-500/10 border-red-500/25';
+    case 'Falta.Prof': return 'bg-orange-500/10 border-orange-500/25';
+    case 'Cancelada': return 'bg-rose-900/15 border-rose-900/25';
+    case 'Reposição': return 'bg-blue-500/8 border-blue-400/50';
+    default: return 'bg-white border-clinic-border';
+  }
+}
+
+function getStatusBadgeStyle(status: string): string {
+  switch (status) {
+    case 'Agendada': return 'bg-status-green-bg text-status-green-text';
+    case 'Realizada': return 'bg-status-blue-bg text-status-blue-text';
+    case 'Falta': return 'bg-status-red-bg text-status-red-text';
+    case 'Falta.Prof': return 'bg-status-orange-bg text-status-orange-text';
+    case 'Cancelada': return 'bg-gray-100 text-gray-400';
+    case 'Reposição': return 'bg-status-blue-bg text-status-blue-text';
+    default: return 'bg-clinic-bg text-clinic-text-muted';
+  }
+}
+
+const STATUS_LEGEND = [
+  { label: 'Agendada', colorClass: 'bg-status-green-bg border-status-green-text' },
+  { label: 'Realizada', colorClass: 'bg-blue-500/8 border-blue-400/60' },
+  { label: 'Falta', colorClass: 'bg-red-500/10 border-red-500/30' },
+  { label: 'Falta Prof.', colorClass: 'bg-orange-500/10 border-orange-500/30' },
+  { label: 'Cancelada', colorClass: 'bg-rose-900/15 border-rose-900/30' },
+  { label: 'Reposição', colorClass: 'bg-blue-500/8 border-blue-400/60' },
+  { label: 'Bloqueado', colorClass: 'bg-[#5D4037]/10 border-[#5D4037]/40' },
+  { label: 'Disponível', colorClass: 'bg-green-500/10 border-green-500/30 border-dashed' },
+];
+
+// ── Component ─────────────────────────────────────────────────────
 
 interface AgendaProps {
   state: AppState;
@@ -31,12 +99,14 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   const [notes, setNotes] = useState('');
   const [isBlockMode, setIsBlockMode] = useState(false);
 
+  // Session Action Modal state (safe click/tap on card)
+  const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
+
   // Reposition Modal State
   const [repoModal, setRepoModal] = useState<{ reposition: Reposition; patient: AppState['patients'][0]; originalSession: Session | null } | null>(null);
   const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [repoTime, setRepoTime] = useState('');
 
-  // Compute available times for selected repoDate
   const repoAvailableTimes = useMemo(() => {
     const dayIndex = getDay(new Date(repoDate + 'T12:00:00'));
     const dayKeys: Record<number, string> = { 1: 'segunda', 2: 'terça', 3: 'quarta', 4: 'quinta', 5: 'sexta', 6: 'sábado' };
@@ -44,6 +114,106 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
   }, [repoDate]);
 
+  // ── Create real session from virtual ──────────────────────────
+  const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
+    const patient = state.patients.find(p => p.id === virtualSession.patientId);
+    if (!patient) return null;
+    const patientSessions = state.sessions.filter(s => s.patientId === patient.id);
+    const maxPackage = patientSessions.reduce((max, s) => {
+      const pn = s.packageNumber || 0;
+      return pn > max ? pn : max;
+    }, 0);
+    let nextPackageNumber = 1;
+    if (maxPackage === 0) {
+      nextPackageNumber = 1;
+    } else {
+      const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+      nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+    }
+    const newReal: Session = {
+      ...virtualSession,
+      id: Math.random().toString(36).substr(2, 9),
+      status: newStatus,
+      packageNumber: nextPackageNumber,
+    };
+    let reposition: Reposition | undefined;
+    if (newStatus === SessionStatus.FALTA || newStatus === SessionStatus.FALTA_PROF) {
+      reposition = {
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: patient.id,
+        originalSessionId: newReal.id,
+        status: 'Pendente',
+      };
+    }
+    return { session: newReal, reposition };
+  };
+
+  // ── Action handlers for the modal ─────────────────────────────
+  const handleActionOk = (session: ProcessedSession) => {
+    if (session.isVirtual) {
+      const result = createRealFromVirtual(session, SessionStatus.REALIZADA);
+      if (result) onUpdate({ sessions: [...state.sessions, result.session] });
+      showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
+    } else {
+      markAsRealized(session);
+    }
+    setActionSession(null);
+  };
+
+  const handleActionFalta = (session: ProcessedSession) => {
+    if (session.isVirtual) {
+      const result = createRealFromVirtual(session, SessionStatus.FALTA);
+      if (result) {
+        onUpdate({
+          sessions: [...state.sessions, result.session],
+          repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions,
+        });
+      }
+      showToast(`Falta registrada. Reposição pendente criada.`);
+    } else {
+      markAsMissed(session);
+    }
+    setActionSession(null);
+  };
+
+  const handleActionFaltaProf = (session: ProcessedSession) => {
+    if (session.isVirtual) {
+      const result = createRealFromVirtual(session, SessionStatus.FALTA_PROF);
+      if (result) {
+        onUpdate({
+          sessions: [...state.sessions, result.session],
+          repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions,
+        });
+      }
+      showToast(`Sua falta registrada. Reposição pendente criada.`);
+    } else {
+      markAsMissedProf(session);
+    }
+    setActionSession(null);
+  };
+
+  const handleActionCancel = (session: ProcessedSession) => {
+    if (session.isVirtual) {
+      const result = createRealFromVirtual(session, SessionStatus.CANCELADA);
+      if (result) onUpdate({ sessions: [...state.sessions, result.session] });
+      showToast('Sessão cancelada.');
+    } else {
+      const updatedSessions = state.sessions.map(s =>
+        s.id === session.id ? { ...s, status: SessionStatus.CANCELADA } : s
+      );
+      onUpdate({ sessions: updatedSessions });
+      showToast('Sessão cancelada.');
+    }
+    setActionSession(null);
+  };
+
+  const handleActionDelete = (session: ProcessedSession) => {
+    if (session.isVirtual) return; // virtuals can't be deleted, they're auto-generated
+    setActionSession(null);
+    setSessionToDelete(session.id);
+  };
+
+  // ── Existing handlers ─────────────────────────────────────────
   const openRepoModal = (reposition: Reposition) => {
     const patient = state.patients.find(p => p.id === reposition.patientId);
     const originalSession = state.sessions.find(s => s.id === reposition.originalSessionId) ?? null;
@@ -84,11 +254,10 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   };
 
   const weekDays = useMemo(() => {
-    const start = startOfWeek(currentDate, { weekStartsOn: 0 }); // Sunday
+    const start = startOfWeek(currentDate, { weekStartsOn: 0 });
     return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
   }, [currentDate]);
 
-  // Filter to active clinic days: segunda (1), terça (2), quarta (3), quinta (4), sexta (5), sábado (6)
   const activeDays = weekDays.filter(d => [1, 2, 3, 4, 5, 6].includes(d.getDay()));
 
   const handlePrevWeek = () => setCurrentDate(subWeeks(currentDate, 1));
@@ -108,7 +277,6 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     }
     const normalizedTime = normalizeTime(selectedSlot.time);
 
-    // Block mode: no patient needed, but blockName (stored in notes) is required
     if (isBlockMode) {
       if (!notes.trim()) {
         showToast('Informe o nome do compromisso para bloquear o horário.', 'error');
@@ -139,18 +307,17 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     if (!patient) return;
 
     const patientSessions = state.sessions.filter(s => s.patientId === patientId);
-      // Determine the current package number and how many sessions are already in it
-      const maxPackage = patientSessions.reduce((max, s) => {
-        const pn = s.packageNumber || 0;
-        return pn > max ? pn : max;
-      }, 0);
-      let nextPackageNumber = 1;
-      if (maxPackage === 0) {
-        nextPackageNumber = 1;
-      } else {
-        const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-        nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-      }
+    const maxPackage = patientSessions.reduce((max, s) => {
+      const pn = s.packageNumber || 0;
+      return pn > max ? pn : max;
+    }, 0);
+    let nextPackageNumber = 1;
+    if (maxPackage === 0) {
+      nextPackageNumber = 1;
+    } else {
+      const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
+      nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
+    }
 
     const newSession: Session = {
       id: Math.random().toString(36).substr(2, 9),
@@ -173,35 +340,26 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.REALIZADA } : s
     );
-    // Remove qualquer reposição pendente ligada a esta sessão (sincronismo)
     const updatedRepositions = state.repositions.filter(r => !(r.originalSessionId === session.id && r.status === 'Pendente'));
-    
     onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
     showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
   };
 
   const markAsMissed = (session: Session) => {
-    // Evita duplicar reposição se já existir uma pendente
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
     }
-
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.FALTA } : s
     );
-    
     const newReposition: Reposition = {
       id: Math.random().toString(36).substr(2, 9),
       patientId: session.patientId,
       originalSessionId: session.id,
       status: 'Pendente'
     };
-
-    onUpdate({ 
-      sessions: updatedSessions,
-      repositions: [...state.repositions, newReposition]
-    });
+    onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
     showToast(`Falta registrada. Reposição pendente criada.`);
   };
 
@@ -210,22 +368,16 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
     }
-
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.FALTA_PROF } : s
     );
-    
     const newReposition: Reposition = {
       id: Math.random().toString(36).substr(2, 9),
       patientId: session.patientId,
       originalSessionId: session.id,
       status: 'Pendente'
     };
-
-    onUpdate({ 
-      sessions: updatedSessions,
-      repositions: [...state.repositions, newReposition]
-    });
+    onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
     showToast(`Sua falta registrada. Reposição pendente criada.`);
   };
 
@@ -252,33 +404,33 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   };
 
   const getDayNameKey = (day: number): string => {
-    const keys: Record<number, string> = {
-      1: 'segunda',
-      2: 'terça',
-      3: 'quarta',
-      4: 'quinta',
-      5: 'sexta',
-      6: 'sábado'
-    };
+    const keys: Record<number, string> = { 1: 'segunda', 2: 'terça', 3: 'quarta', 4: 'quinta', 5: 'sexta', 6: 'sábado' };
     return keys[day] || '';
   };
 
   const getDayNameLabel = (day: number) => {
-    const labels: Record<number, string> = {
-      1: 'SEGUNDA',
-      2: 'TERÇA',
-      3: 'QUARTA',
-      4: 'QUINTA',
-      5: 'SEXTA',
-      6: 'SÁBADO'
-    };
+    const labels: Record<number, string> = { 1: 'SEGUNDA', 2: 'TERÇA', 3: 'QUARTA', 4: 'QUINTA', 5: 'SEXTA', 6: 'SÁBADO' };
     return labels[day] || '';
   };
 
   const [filterPatientId, setFilterPatientId] = useState<string>('');
 
+  // ── Determine if the actionSession is actionable ──────────────
+  const isActionable = (s: ProcessedSession) => {
+    if (s.isBlocked) return false;
+    if (!s.isValid) return false;
+    return s.status === SessionStatus.AGENDADA;
+  };
+
+  const isActionableOrVirtual = (s: ProcessedSession) => {
+    if (s.isBlocked) return false;
+    if (s.isVirtual && s.isValid) return true;
+    return s.status === SessionStatus.AGENDADA;
+  };
+
   return (
     <div className="flex flex-col gap-6 py-6 pb-24">
+      {/* ── Header ── */}
       <div className="flex flex-col md:flex-row justify-between items-center bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-clinic gap-4">
         <div className="flex flex-col">
           <h2 className="font-serif text-2xl font-bold text-clinic-text tracking-tight">Agenda Semanal</h2>
@@ -295,28 +447,26 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={handlePrevWeek} className="p-2.5 hover:bg-clinic-bg text-clinic-text-muted rounded-xl border border-clinic-border transition-all active:scale-90 bg-white shadow-sm">
+          <button onClick={handlePrevWeek} className="p-2.5 hover:bg-clinic-bg text-clinic-text-muted rounded-xl border border-clinic-border transition-all active:scale-90 bg-white shadow-sm" aria-label="Semana anterior">
             <ChevronLeft size={20} />
           </button>
           <span className="font-bold min-w-[150px] text-center text-clinic-text uppercase tracking-widest text-sm">
             {format(weekDays[0], "dd/MM")} — {format(weekDays[6], "dd/MM")}
           </span>
-          <button onClick={handleNextWeek} className="p-2.5 hover:bg-clinic-bg text-clinic-text-muted rounded-xl border border-clinic-border transition-all active:scale-90 bg-white shadow-sm">
+          <button onClick={handleNextWeek} className="p-2.5 hover:bg-clinic-bg text-clinic-text-muted rounded-xl border border-clinic-border transition-all active:scale-90 bg-white shadow-sm" aria-label="Próxima semana">
             <ChevronRight size={20} />
           </button>
         </div>
       </div>
 
-      {/* Agenda Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+      {/* ── Agenda Grid ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
         {activeDays.map(day => {
           const dayKey = getDayNameKey(day.getDay());
           const scheduledTimes = SCHEDULE_CONFIG[dayKey] || [];
           const dayStr = format(day, 'yyyy-MM-dd');
           const holiday = state.settings.holidays?.find(h => h.date === dayStr);
-          const holidays = state.settings.holidays || [];
 
-          // Retrieve processed sessions for the day
           const daySessions = getSessionsForDate({
             dateStr: dayStr,
             patients: state.patients,
@@ -324,10 +474,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
             settings: state.settings
           });
 
-          // Use only the scheduled times; ignore virtual times not in the schedule config
           const times = scheduledTimes;
 
-          
           return (
             <div key={day.toISOString()} className={cn("rounded-xl border shadow-sm flex flex-col h-full overflow-hidden", holiday ? "bg-status-red-bg/5 border-status-red-text/20" : "bg-clinic-surface border-clinic-border")}>
               <div className={cn("px-2 py-1.5 text-center border-b", holiday ? "bg-status-red-text text-white border-status-red-text/30" : "bg-clinic-header text-white border-clinic-border")}>
@@ -337,15 +485,12 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
               </div>
               <div className="p-1.5 space-y-1.5 flex-1">
                 {times.map(time => {
-                  // Find all sessions belonging to this hour base
                   const mergedSessions = daySessions.filter(s => getHourBase(s.time) === time);
 
-                  // Filter logic: if patient filter is active, only show if patientId matches
                   const filteredSessions = filterPatientId
                     ? mergedSessions.filter(s => s.patientId === filterPatientId)
                     : mergedSessions;
 
-                  // If patient filter is active and this slot doesn't have any matching sessions, fade it out
                   if (filterPatientId && filteredSessions.length === 0 && mergedSessions.length > 0) {
                     return (
                       <div key={time} className="p-2 rounded-lg border border-dashed border-clinic-border/20 min-h-[60px] opacity-20 transition-opacity">
@@ -367,7 +512,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                     return (
                       <div key={time} className="group relative">
                         <div 
-                          className="p-2 rounded-lg border min-h-[60px] transition-all flex flex-col justify-between bg-green-500/10 hover:bg-green-500/20 border-green-500/30 border-dashed cursor-pointer pointer-events-auto shadow-inner"
+                          className="p-2 rounded-lg border min-h-[60px] transition-all flex flex-col justify-between bg-green-500/10 hover:bg-green-500/20 border-green-500/30 border-dashed cursor-pointer shadow-inner"
                           onClick={() => openNewSession(day, time)}
                         >
                           <div className="flex justify-between items-start">
@@ -381,7 +526,6 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
                   return (
                     <div key={time} className="flex flex-col gap-1.5 p-1.5 rounded-xl border border-clinic-border bg-clinic-bg/10 min-h-[70px]">
-                      {/* Header slot */}
                       <div className="flex justify-between items-center px-1">
                         <span className="text-[10px] font-bold text-clinic-text-faint">{time}</span>
                         <button
@@ -392,215 +536,143 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                           + Novo
                         </button>
                       </div>
-                      
-                      {/* Sessions list */}
+
                       <div className="space-y-1.5">
                         {filteredSessions.map(session => {
-                          const patient = session ? state.patients.find(p => p.id === session.patientId) : null;
-                          const isBlocked = !!session?.isBlocked;
+                          const patient = session.isBlocked ? null : state.patients.find(p => p.id === session.patientId);
+                          const isBlocked = !!session.isBlocked;
                           const isVirtual = session.isVirtual;
                           const isOnHoliday = !!holiday;
-                          const displayPackage = isVirtual ? null : session.packageNumber;
-                          
+                          const statusLabel = getStatusLabel(session);
+                          const canAct = isActionableOrVirtual(session);
+
+                          const handleCardClick = () => {
+                            if (!isBlocked && patient) {
+                              setActionSession(session);
+                            }
+                          };
+
                           return (
                             <div key={session.id} className="group relative">
-                              <div className={cn(
-                                "p-2 rounded-lg border min-h-[50px] transition-all flex flex-col justify-between bg-white shadow-sm",
-                                isBlocked
-                                  ? 'bg-[#5D4037]/15 border-[#5D4037]/40'
-                                  : isOnHoliday
-                                  ? 'bg-orange-500/10 border-orange-400 border-dashed'
-                                  : session.status === SessionStatus.FALTA
-                                  ? 'bg-red-500/10 border-red-500/20'
-                                  : session.status === SessionStatus.FALTA_PROF
-                                  ? 'bg-orange-500/10 border-orange-500/20'
-                                  : session.status === SessionStatus.CANCELADA
-                                  ? 'bg-rose-900/20 border-rose-900/30'
-                                  : session.status === SessionStatus.REALIZADA
-                                  ? 'bg-blue-500/10 border-blue-400 border-dashed'
-                                  : 'bg-white border-clinic-border'
-                              )}>
+                              <div
+                                onClick={handleCardClick}
+                                className={cn(
+                                  "p-2 rounded-lg border min-h-[50px] transition-all flex flex-col justify-between shadow-sm",
+                                  isBlocked || !patient ? '' : 'cursor-pointer hover:shadow-md',
+                                  getStatusCardBg(session)
+                                )}
+                              >
+                                {/* Top row: time + status badge */}
                                 <div className="flex justify-between items-start gap-1">
                                   <span className={cn("text-[10px] font-black leading-none", isBlocked ? "text-[#5D4037]" : "text-clinic-text")}>
                                     {session.time}
                                   </span>
-                                  
-                                  <div className="flex items-center gap-0.5">
-                                    {isBlocked ? (
-                                      <>
-                                        <button 
-                                          onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
-                                          className="text-[7px] text-status-red-text font-black uppercase tracking-tighter opacity-0 group-hover:opacity-100 transition-opacity mr-0.5"
+                                  <span className={cn(
+                                    "text-[8px] font-black px-1.5 py-0.5 rounded uppercase whitespace-nowrap leading-tight",
+                                    getStatusBadgeStyle(
+                                      session.isBlocked ? 'Bloqueado' :
+                                      !session.isValid && session.blockedReason === 'sessão cancelada' ? 'Cancelada' :
+                                      !session.isValid ? '' :
+                                      session.status
+                                    )
+                                  )}>
+                                    {statusLabel}
+                                  </span>
+                                </div>
+
+                                {/* Patient name or block name */}
+                                <div className="flex flex-col mt-0.5">
+                                  {isBlocked ? (
+                                    <span className="font-bold text-xs truncate leading-tight text-[#5D4037]">{session.blockName}</span>
+                                  ) : (
+                                    <span className={cn(
+                                      "font-bold text-xs truncate leading-tight",
+                                      session.status === 'Cancelada' || (!session.isValid && session.blockedReason === 'sessão cancelada')
+                                        ? "line-through text-gray-400"
+                                        : "text-clinic-text"
+                                    )}>
+                                      {patient?.name || '—'}
+                                    </span>
+                                  )}
+
+                                  {/* Notes preview if not blocked */}
+                                  {!isBlocked && session.notes && session.notes.trim() && (
+                                    <span className="text-[8px] text-clinic-text-muted mt-0.5 truncate italic">
+                                      {session.notes.trim().substring(0, 40)}{session.notes.trim().length > 40 ? '…' : ''}
+                                    </span>
+                                  )}
+
+                                  {/* Virtual / double indicators */}
+                                  {!isBlocked && (
+                                    <div className="flex items-center gap-1 mt-0.5">
+                                      {isVirtual && (
+                                        <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary">Fixo</span>
+                                      )}
+                                      {session.type === SessionType.DUPLA && (
+                                        <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary">Dupla</span>
+                                      )}
+                                      {!isVirtual && !isBlocked && session.packageNumber && session.packageNumber > 0 && (
+                                        <span className="text-[7px] text-clinic-text-muted">
+                                          Pacote {session.packageNumber}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Hover overlay with quick actions (desktop only via hover) */}
+                                  {canAct && (
+                                    <div className="absolute inset-0 bg-clinic-header/95 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1 px-1 z-10">
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleActionOk(session); }}
+                                        className="bg-status-green-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        title="Marcar presença"
+                                      >
+                                        OK
+                                      </button>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleActionFalta(session); }}
+                                        className="bg-status-red-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        title="Falta do paciente"
+                                      >
+                                        Falta
+                                      </button>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleActionFaltaProf(session); }}
+                                        className="bg-status-orange-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        title="Falta do profissional"
+                                      >
+                                        Falta Prof.
+                                      </button>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleActionCancel(session); }}
+                                        className="bg-rose-700 text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                        title="Cancelar"
+                                      >
+                                        Cancelar
+                                      </button>
+                                      {!isVirtual && (
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); handleActionDelete(session); }}
+                                          className="bg-gray-600 text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
+                                          title="Remover"
                                         >
                                           Remover
                                         </button>
-                                        <span className="text-[7px] font-black px-0.5 py-0.2 rounded uppercase bg-[#5D4037]/20 text-[#5D4037]">
-                                          🔒
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        {isOnHoliday && (
-                                          <span className="text-[6px] font-black px-1 py-0.5 rounded uppercase bg-orange-500/20 text-orange-600">
-                                            ⚠ Feriado
-                                          </span>
-                                        )}
-                                        {isVirtual && (
-                                          <span className="text-[6px] font-black px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary">
-                                            Fixo
-                                          </span>
-                                        )}
-                                        {!isVirtual && (
-                                          <button 
-                                            onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
-                                            className="text-[7px] text-status-red-text font-black uppercase tracking-tighter opacity-0 group-hover:opacity-100 transition-opacity mr-0.5"
-                                          >
-                                            Remover
-                                          </button>
-                                        )}
-                                        {session.type === SessionType.DUPLA && (
-                                          <span className="bg-clinic-primary/10 text-clinic-primary text-[6px] font-black px-1 py-0.5 rounded uppercase">2x</span>
-                                        )}
-                                        {!isVirtual && (
-                                          <span className={cn("text-[6px] font-black px-1 py-0.5 rounded uppercase", getStatusColor(session.status))}>
-                                            {session.status.charAt(0)}
-                                          </span>
-                                        )}
-                                      </>
-                                    )}
-                                  </div>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                                
-                                {isBlocked ? (
-                                  <div className="flex flex-col mt-0.5">
-                                    <span className="font-bold text-xs truncate leading-tight text-[#5D4037]">{session.blockName}</span>
-                                  </div>
-                                ) : (
-                                  <div className="flex flex-col mt-0.5">
-                                    <span className="font-bold text-xs truncate leading-tight text-clinic-text">{patient?.name}</span>
-                                    <span className="text-[8px] text-clinic-text-muted mt-0.5">
-                                      {displayPackage ? `S.${displayPackage}` : 'Fixo'}
-                                    </span>
-                                    
-                                    {/* Quick Actions Overlay */}
-                                    {(isVirtual || session.status === SessionStatus.AGENDADA) && (
-                                      <div className="absolute inset-0 bg-clinic-header/95 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1 px-1">
-                                        <button 
-                                          onClick={(e) => { e.stopPropagation(); 
-                                            if (isVirtual) {
-                                              const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
-                                              const maxPackage = patientSessions.reduce((max, s) => {
-                                                const pn = s.packageNumber || 0;
-                                                return pn > max ? pn : max;
-                                              }, 0);
-                                              let nextPackageNumber = 1;
-                                              if (maxPackage === 0) {
-                                                nextPackageNumber = 1;
-                                              } else {
-                                                const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-                                                nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-                                              }
-                                              const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.REALIZADA, packageNumber: nextPackageNumber };
-                                              onUpdate({ sessions: [...state.sessions, newReal] });
-                                              showToast(`${patient?.name} - Presença registrada.`);
-                                            } else {
-                                              markAsRealized(session);
-                                            }
-                                          }}
-                                          className="bg-status-green-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
-                                        >
-                                          OK
-                                        </button>
-                                        <button 
-                                          onClick={(e) => { e.stopPropagation();
-                                            if (isVirtual) {
-                                              const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
-                                              const maxPackage = patientSessions.reduce((max, s) => {
-                                                const pn = s.packageNumber || 0;
-                                                return pn > max ? pn : max;
-                                              }, 0);
-                                              let nextPackageNumber = 1;
-                                              if (maxPackage === 0) {
-                                                nextPackageNumber = 1;
-                                              } else {
-                                                const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-                                                nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-                                              }
-                                              const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.FALTA, packageNumber: nextPackageNumber };
-                                              const newRepo: Reposition = { id: Math.random().toString(36).substr(2, 9), patientId: session.patientId, originalSessionId: newReal.id, status: 'Pendente' };
-                                              onUpdate({ sessions: [...state.sessions, newReal], repositions: [...state.repositions, newRepo] });
-                                              showToast(`Falta registrada. Reposição pendente criada.`);
-                                            } else {
-                                              markAsMissed(session);
-                                            }
-                                          }}
-                                          className="bg-status-red-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
-                                          title="Falta"
-                                        >
-                                          F
-                                        </button>
-                                        <button 
-                                          onClick={(e) => { e.stopPropagation();
-                                            if (isVirtual) {
-                                              const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
-                                              const maxPackage = patientSessions.reduce((max, s) => {
-                                                const pn = s.packageNumber || 0;
-                                                return pn > max ? pn : max;
-                                              }, 0);
-                                              let nextPackageNumber = 1;
-                                              if (maxPackage === 0) {
-                                                nextPackageNumber = 1;
-                                              } else {
-                                                const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-                                                nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-                                              }
-                                              const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.FALTA_PROF, packageNumber: nextPackageNumber };
-                                              const newRepo: Reposition = { id: Math.random().toString(36).substr(2, 9), patientId: session.patientId, originalSessionId: newReal.id, status: 'Pendente' };
-                                              onUpdate({ sessions: [...state.sessions, newReal], repositions: [...state.repositions, newRepo] });
-                                              showToast(`Sua falta registrada. Reposição pendente criada.`);
-                                            } else {
-                                              markAsMissedProf(session);
-                                            }
-                                          }}
-                                          className="bg-status-orange-text text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
-                                          title="Minha Falta"
-                                        >
-                                          FP
-                                        </button>
-                                        <button
-                                          onClick={(e) => { e.stopPropagation();
-                                            if (isVirtual) {
-                                              const patientSessions = state.sessions.filter(s => s.patientId === session.patientId);
-                                              const maxPackage = patientSessions.reduce((max, s) => {
-                                                const pn = s.packageNumber || 0;
-                                                return pn > max ? pn : max;
-                                              }, 0);
-                                              let nextPackageNumber = 1;
-                                              if (maxPackage === 0) {
-                                                nextPackageNumber = 1;
-                                              } else {
-                                                const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-                                                nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-                                              }
-                                              const newReal: Session = { ...session, id: Math.random().toString(36).substr(2, 9), status: SessionStatus.CANCELADA, packageNumber: nextPackageNumber };
-                                              onUpdate({ sessions: [...state.sessions, newReal] });
-                                              showToast('Sessão cancelada.');
-                                            } else {
-                                              const updatedSessions = state.sessions.map(s => s.id === session.id ? { ...s, status: SessionStatus.CANCELADA } : s);
-                                              onUpdate({ sessions: updatedSessions });
-                                              showToast('Sessão cancelada.');
-                                            }
-                                          }}
-                                          className="bg-rose-700 text-white text-[8px] font-black px-1.5 py-1 rounded hover:scale-105"
-                                          title="Cancelar"
-                                        >
-                                          C
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
                               </div>
+
+                              {/* Remove button for blocked sessions (always visible on hover) */}
+                              {isBlocked && (
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
+                                  className="absolute top-1 right-1 text-[7px] text-status-red-text font-black uppercase opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 px-1 rounded"
+                                >
+                                  Remover
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -614,7 +686,141 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
         })}
       </div>
 
-      {/* Faltas e Reposições Pendentes Section */}
+      {/* ── Legend ── */}
+      <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">
+        <div className="px-4 py-3 border-b border-clinic-border bg-clinic-bg/30">
+          <h3 className="font-serif text-sm font-bold text-clinic-text uppercase tracking-wide">Legenda de Cores</h3>
+        </div>
+        <div className="p-4">
+          <div className="flex flex-wrap gap-3">
+            {STATUS_LEGEND.map(item => (
+              <div key={item.label} className="flex items-center gap-1.5">
+                <span className={cn(
+                  "w-4 h-4 rounded border",
+                  item.colorClass
+                )} />
+                <span className="text-[11px] font-medium text-clinic-text-muted">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Session Action Modal ── */}
+      {actionSession && (() => {
+        const patient = state.patients.find(p => p.id === actionSession.patientId);
+        const statusLabel = getStatusLabel(actionSession);
+        const canAct = isActionableOrVirtual(actionSession);
+        const realSession = actionSession.isVirtual ? null : actionSession;
+
+        return (
+          <Modal
+            isOpen={true}
+            onClose={() => setActionSession(null)}
+            title={patient?.name || 'Sessão'}
+            width="max-w-sm"
+          >
+            <div className="space-y-4">
+              {/* Info */}
+              <div className="p-3 bg-clinic-bg rounded-xl border border-clinic-border space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold text-clinic-text">{patient?.name}</span>
+                  <span className={cn("text-[10px] font-black px-2 py-0.5 rounded uppercase", getStatusBadgeStyle(
+                    actionSession.isBlocked ? '' :
+                    !actionSession.isValid && actionSession.blockedReason === 'sessão cancelada' ? 'Cancelada' :
+                    !actionSession.isValid ? '' :
+                    actionSession.status
+                  ))}>
+                    {statusLabel}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-clinic-text-muted">
+                  <span className="font-bold">{safeFormatDate(actionSession.date, 'dd/MM/yyyy')}</span>
+                  <span>•</span>
+                  <span className="font-bold">{actionSession.time}</span>
+                  {actionSession.isVirtual && <span className="text-clinic-primary font-bold">(Fixo)</span>}
+                </div>
+                <div className="text-xs text-clinic-text-muted">
+                  {actionSession.type}
+                </div>
+                {patient && (
+                  <div className="text-xs text-clinic-text-muted">
+                    Responsável: <span className="font-medium">{patient.guardianName}</span>
+                    {patient.whatsapp && <span> • {patient.whatsapp}</span>}
+                  </div>
+                )}
+                {actionSession.notes && actionSession.notes.trim() && (
+                  <div className="text-xs text-clinic-text-muted mt-1 p-2 bg-white rounded-lg border border-clinic-border">
+                    <span className="font-bold block mb-0.5">Observações:</span>
+                    {actionSession.notes.trim()}
+                  </div>
+                )}
+                {!actionSession.isValid && actionSession.blockedReason && (
+                  <div className="text-[10px] font-bold text-status-red-text uppercase mt-1">
+                    Bloqueado: {actionSession.blockedReason}
+                  </div>
+                )}
+              </div>
+
+              {/* Action buttons */}
+              {canAct && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-bold text-clinic-text-faint uppercase tracking-wide">Ações</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => handleActionOk(actionSession)}
+                      className="py-3 px-3 bg-status-green-text text-white text-xs font-bold rounded-xl hover:bg-green-700 transition-all uppercase tracking-wide active:scale-95"
+                    >
+                      OK / Presença
+                    </button>
+                    <button
+                      onClick={() => handleActionFalta(actionSession)}
+                      className="py-3 px-3 bg-status-red-text text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-all uppercase tracking-wide active:scale-95"
+                    >
+                      Falta
+                    </button>
+                    <button
+                      onClick={() => handleActionFaltaProf(actionSession)}
+                      className="py-3 px-3 bg-status-orange-text text-white text-xs font-bold rounded-xl hover:bg-amber-700 transition-all uppercase tracking-wide active:scale-95"
+                    >
+                      Falta Prof.
+                    </button>
+                    <button
+                      onClick={() => handleActionCancel(actionSession)}
+                      className="py-3 px-3 bg-rose-700 text-white text-xs font-bold rounded-xl hover:bg-rose-800 transition-all uppercase tracking-wide active:scale-95"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                  {!actionSession.isVirtual && (
+                    <button
+                      onClick={() => handleActionDelete(actionSession)}
+                      className="w-full py-2.5 px-3 bg-gray-200 text-gray-600 text-xs font-bold rounded-xl hover:bg-gray-300 transition-all uppercase tracking-wide active:scale-95"
+                    >
+                      Remover Sessão
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {!canAct && (
+                <div className="text-center text-xs text-clinic-text-muted italic py-2">
+                  Esta sessão não permite alterações de status.
+                </div>
+              )}
+
+              <button
+                onClick={() => setActionSession(null)}
+                className="w-full py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+              >
+                Fechar
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* ── Faltas e Reposições Pendentes ── */}
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">
         <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/30">
           <AlertCircle size={20} className="text-status-red-text" />
@@ -687,7 +893,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
         </div>
       </div>
 
-      {/* Modal Nova Sessão */}
+      {/* ── Modal Nova Sessão ── */}
       <Modal 
         isOpen={isModalOpen} 
         onClose={() => { setIsModalOpen(false); resetForm(); }} 
@@ -790,7 +996,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
         </div>
       </Modal>
 
-      {/* Modal Confirmar Exclusão de Sessão */}
+      {/* ── Modal Confirmar Exclusão ── */}
       <Modal
         isOpen={!!sessionToDelete}
         onClose={() => setSessionToDelete(null)}
@@ -818,7 +1024,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
         </div>
       </Modal>
 
-      {/* Modal Agendar Reposição */}
+      {/* ── Modal Agendar Reposição ── */}
       {repoModal && (
         <Modal
           isOpen={true}
