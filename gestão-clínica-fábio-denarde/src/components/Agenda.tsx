@@ -685,43 +685,67 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                         </span>
                                       )}
 
-                                      <div className="flex flex-wrap justify-center lg:flex-nowrap items-center gap-1.5 lg:gap-1 w-full">
+                                      {/* DESKTOP: linha única compacta | MOBILE/TABLET: grid 2 colunas */}
+                                      <div className="hidden lg:flex flex-row items-center justify-center gap-[3px] w-full px-1">
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionOk(session); }}
-                                          className="bg-emerald-500 text-white font-semibold rounded-md hover:bg-emerald-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
+                                          className="bg-emerald-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
                                           aria-label="Marcar presença"
-                                        >
-                                          <span className="lg:hidden text-sm">✓</span> OK
-                                        </button>
+                                        >OK</button>
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFalta(session); }}
-                                          className="bg-red-500 text-white font-semibold rounded-md hover:bg-red-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
+                                          className="bg-red-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
                                           aria-label="Marcar falta do paciente"
-                                        >
-                                          <span className="lg:hidden text-sm">✕</span> Falta
-                                        </button>
+                                        >Falta</button>
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFaltaProf(session); }}
-                                          className="bg-amber-500 text-white font-semibold rounded-md hover:bg-amber-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
+                                          className="bg-amber-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1 text-[9px] whitespace-nowrap flex-1 min-w-0"
                                           aria-label="Marcar falta do profissional"
-                                        >
-                                          <span className="lg:hidden text-sm font-bold">FP</span> Falta Prof.
-                                        </button>
+                                        >F.Prof</button>
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionCancel(session); }}
-                                          className="bg-gray-500 text-white font-semibold rounded-md hover:bg-gray-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
+                                          className="bg-gray-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
                                           aria-label="Cancelar sessão"
-                                        >
-                                          <span className="lg:hidden text-sm">🚫</span> Cancelar
-                                        </button>
+                                        >Cancl.</button>
                                         {!isVirtual && (
                                           <button
                                             onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionDelete(session); }}
-                                            className="bg-red-600 text-white font-semibold rounded-md hover:bg-red-700 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
+                                            className="bg-blue-900 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
                                             aria-label="Remover sessão"
-                                          >
-                                            <span className="lg:hidden text-sm">🗑</span> Remover
-                                          </button>
+                                          >Rem.</button>
+                                        )}
+                                      </div>
+
+                                      {/* MOBILE / TABLET: grid 2 colunas, botões grandes para toque */}
+                                      <div className="flex lg:hidden flex-col items-center gap-1.5 w-full px-2">
+                                        <div className="grid grid-cols-2 gap-1.5 w-full">
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionOk(session); }}
+                                            className="bg-emerald-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
+                                            aria-label="Marcar presença"
+                                          >✓ OK</button>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFalta(session); }}
+                                            className="bg-red-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
+                                            aria-label="Marcar falta do paciente"
+                                          >✕ Falta</button>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFaltaProf(session); }}
+                                            className="bg-amber-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
+                                            aria-label="Marcar falta do profissional"
+                                          >FP Falta Prof.</button>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionCancel(session); }}
+                                            className="bg-gray-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
+                                            aria-label="Cancelar sessão"
+                                          >🚫 Cancelar</button>
+                                        </div>
+                                        {!isVirtual && (
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionDelete(session); }}
+                                            className="bg-blue-900 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px] w-full"
+                                            aria-label="Remover sessão"
+                                          >🗑 Remover</button>
                                         )}
                                       </div>
                                     </div>
