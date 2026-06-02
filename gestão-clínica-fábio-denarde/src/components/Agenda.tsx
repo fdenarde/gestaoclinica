@@ -492,7 +492,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       </div>
 
       {/* ── Agenda Grid ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 lg:gap-4">
         {activeDays.map(day => {
           const dayKey = getDayNameKey(day.getDay());
           const scheduledTimes = SCHEDULE_CONFIG[dayKey] || [];
@@ -582,17 +582,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
                           const handleCardClick = () => {
                             if (!isBlocked && patient) {
-                              if (isOverlayActive) {
-                                // Second tap: open detail modal
-                                setTouchOverlayId(null);
-                                setActionSession(session);
-                              } else if (canAct) {
-                                // First tap on actionable session: show touch overlay
-                                setTouchOverlayId(session.id);
-                              } else {
-                                // Non-actionable session: go straight to detail modal
-                                setActionSession(session);
-                              }
+                              // Sempre abre o modal de ações (funciona no mobile e desktop ao clicar)
+                              setActionSession(session);
                             }
                           };
 
@@ -667,87 +658,60 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                     </div>
                                   )}
 
-                                  {/* Quick action overlay: hover (desktop) or tap (mobile/tablet) */}
+                                  {/* ── DESKTOP ONLY: hover overlay com botões compactos + tooltip ── */}
                                   {canAct && (
                                     <div
-                                      onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); }}
-                                      className={cn(
-                                        "absolute inset-0 bg-black/65 rounded-lg transition-opacity duration-200 flex flex-col items-center justify-center gap-1 p-1 z-10",
-                                        isOverlayActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                                      )}
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="hidden lg:flex absolute inset-0 bg-gradient-to-b from-black/70 to-black/80 rounded-lg opacity-0 group-hover:opacity-100 transition-all duration-200 flex-col items-center justify-center gap-1.5 p-1.5 z-10 backdrop-blur-[1px]"
                                       role="toolbar"
                                       aria-label="Ações rápidas da sessão"
                                     >
-                                      {/* Backdrop close hint (mobile/tablet) */}
-                                      {isOverlayActive && (
-                                        <span className="text-white/60 text-[9px] absolute top-1 lg:hidden">
-                                          Toque fora para fechar
-                                        </span>
-                                      )}
-
-                                      {/* DESKTOP: linha única compacta | MOBILE/TABLET: grid 2 colunas */}
-                                      <div className="hidden lg:flex flex-row items-center justify-center gap-[3px] w-full px-1">
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionOk(session); }}
-                                          className="bg-emerald-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
-                                          aria-label="Marcar presença"
-                                        >OK</button>
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFalta(session); }}
-                                          className="bg-red-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
-                                          aria-label="Marcar falta do paciente"
-                                        >Falta</button>
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFaltaProf(session); }}
-                                          className="bg-amber-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1 text-[9px] whitespace-nowrap flex-1 min-w-0"
-                                          aria-label="Marcar falta do profissional"
-                                        >F.Prof</button>
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionCancel(session); }}
-                                          className="bg-gray-500 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
-                                          aria-label="Cancelar sessão"
-                                        >Cancl.</button>
-                                        {!isVirtual && (
+                                      {/* Nome do paciente no topo do overlay */}
+                                      <span className="text-white/80 text-[8px] font-bold uppercase tracking-widest truncate w-full text-center px-1 mb-0.5">
+                                        {patient?.name}
+                                      </span>
+                                      {/* Linha de botões compactos com tooltip nativo */}
+                                      <div className="flex flex-row items-center justify-center gap-[3px] w-full">
+                                        <div className="relative group/btn flex-1">
                                           <button
-                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionDelete(session); }}
-                                            className="bg-blue-900 text-white font-semibold rounded hover:brightness-110 transition-all duration-150 h-[26px] px-1.5 text-[9px] whitespace-nowrap flex-1 min-w-0"
-                                            aria-label="Remover sessão"
-                                          >Rem.</button>
-                                        )}
-                                      </div>
-
-                                      {/* MOBILE / TABLET: grid 2 colunas, botões grandes para toque */}
-                                      <div className="flex lg:hidden flex-col items-center gap-1.5 w-full px-2">
-                                        <div className="grid grid-cols-2 gap-1.5 w-full">
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionOk(session); }}
-                                            className="bg-emerald-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
-                                            aria-label="Marcar presença"
+                                            onClick={(e) => { e.stopPropagation(); handleActionOk(session); }}
+                                            title="✅ Marcar Presença — sessão realizada com sucesso"
+                                            className="w-full bg-emerald-500 text-white font-bold rounded-md hover:bg-emerald-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm shadow-emerald-900/40"
                                           >✓ OK</button>
+                                        </div>
+                                        <div className="relative group/btn flex-1">
                                           <button
-                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFalta(session); }}
-                                            className="bg-red-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
-                                            aria-label="Marcar falta do paciente"
-                                          >✕ Falta</button>
+                                            onClick={(e) => { e.stopPropagation(); handleActionFalta(session); }}
+                                            title="❌ Falta do Paciente — gera reposição pendente"
+                                            className="w-full bg-red-500 text-white font-bold rounded-md hover:bg-red-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm shadow-red-900/40"
+                                          >Falta</button>
+                                        </div>
+                                        <div className="relative group/btn flex-1">
                                           <button
-                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFaltaProf(session); }}
-                                            className="bg-amber-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
-                                            aria-label="Marcar falta do profissional"
-                                          >FP Falta Prof.</button>
+                                            onClick={(e) => { e.stopPropagation(); handleActionFaltaProf(session); }}
+                                            title="🟠 Falta do Profissional — gera reposição pendente"
+                                            className="w-full bg-amber-500 text-white font-bold rounded-md hover:bg-amber-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm shadow-amber-900/40"
+                                          >F.Prof</button>
+                                        </div>
+                                        <div className="relative group/btn flex-1">
                                           <button
-                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionCancel(session); }}
-                                            className="bg-gray-500 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px]"
-                                            aria-label="Cancelar sessão"
-                                          >🚫 Cancelar</button>
+                                            onClick={(e) => { e.stopPropagation(); handleActionCancel(session); }}
+                                            title="🚫 Cancelar Sessão — marca como cancelada"
+                                            className="w-full bg-slate-500 text-white font-bold rounded-md hover:bg-slate-400 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm"
+                                          >Cancl.</button>
                                         </div>
                                         {!isVirtual && (
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionDelete(session); }}
-                                            className="bg-blue-900 text-white font-semibold rounded-md hover:brightness-110 transition-all duration-150 h-[44px] text-[12px] w-full"
-                                            aria-label="Remover sessão"
-                                          >🗑 Remover</button>
+                                          <div className="relative group/btn flex-1">
+                                            <button
+                                              onClick={(e) => { e.stopPropagation(); handleActionDelete(session); }}
+                                              title="🗑 Remover Sessão — apaga permanentemente"
+                                              className="w-full bg-rose-800 text-white font-bold rounded-md hover:bg-rose-700 hover:scale-105 active:scale-95 transition-all duration-150 h-[28px] text-[9px] shadow-sm"
+                                            >🗑</button>
+                                          </div>
                                         )}
                                       </div>
+                                      {/* Dica de clique */}
+                                      <span className="text-white/40 text-[7px] italic mt-0.5">clique para detalhes</span>
                                     </div>
                                   )}
                                 </div>
@@ -809,11 +773,17 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
             width="max-w-sm"
           >
             <div className="space-y-4">
-              {/* Info */}
-              <div className="p-3 bg-clinic-bg rounded-xl border border-clinic-border space-y-1.5">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-bold text-clinic-text">{patient?.name}</span>
-                  <span className={cn("text-[10px] font-black px-2 py-0.5 rounded uppercase", getStatusBadgeStyle(
+              {/* Info card com gradiente */}
+              <div className="rounded-2xl overflow-hidden border border-clinic-border shadow-sm">
+                <div className="bg-gradient-to-r from-clinic-primary/10 to-clinic-primary/5 px-4 py-3 flex justify-between items-start">
+                  <div>
+                    <p className="text-base font-black text-clinic-text">{patient?.name}</p>
+                    <p className="text-xs text-clinic-text-muted mt-0.5">
+                      📅 {safeFormatDate(actionSession.date, 'dd/MM/yyyy')} &nbsp;•&nbsp; 🕐 {actionSession.time}
+                      {actionSession.isVirtual && <span className="ml-2 text-clinic-primary font-bold">📌 Fixo</span>}
+                    </p>
+                  </div>
+                  <span className={cn("text-[10px] font-black px-2.5 py-1 rounded-full uppercase shadow-sm", getStatusBadgeStyle(
                     actionSession.isBlocked ? 'Bloqueado' :
                     actionSession.status === SessionStatus.CANCELADA ? 'Cancelada' :
                     actionSession.status === SessionStatus.FALTA ? 'Falta' :
@@ -826,97 +796,92 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                     {statusLabel}
                   </span>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-clinic-text-muted">
-                  <span className="font-bold">{safeFormatDate(actionSession.date, 'dd/MM/yyyy')}</span>
-                  <span>•</span>
-                  <span className="font-bold">{actionSession.time}</span>
-                  {actionSession.isVirtual && <span className="text-clinic-primary font-bold">(Fixo)</span>}
+                <div className="bg-white px-4 py-2.5 space-y-1 border-t border-clinic-border/50">
+                  {patient && (
+                    <p className="text-xs text-clinic-text-muted">
+                      👤 Responsável: <span className="font-semibold text-clinic-text">{patient.guardianName}</span>
+                      {patient.whatsapp && <span className="ml-2">📱 {patient.whatsapp}</span>}
+                    </p>
+                  )}
+                  <p className="text-xs text-clinic-text-muted">🗂 {actionSession.type}</p>
+                  {actionSession.notes && actionSession.notes.trim() && (
+                    <p className="text-xs text-clinic-text-muted italic border-t border-clinic-border/40 pt-1.5 mt-1">
+                      📝 {actionSession.notes.trim()}
+                    </p>
+                  )}
+                  {actionSession.blockedReason && actionSession.blockedReason !== 'status inválido' && (
+                    <p className="text-[10px] font-bold text-status-red-text uppercase">
+                      ⚠️ {actionSession.blockedReason}
+                    </p>
+                  )}
                 </div>
-                <div className="text-xs text-clinic-text-muted">
-                  {actionSession.type}
-                </div>
-                {patient && (
-                  <div className="text-xs text-clinic-text-muted">
-                    Responsável: <span className="font-medium">{patient.guardianName}</span>
-                    {patient.whatsapp && <span> • {patient.whatsapp}</span>}
-                  </div>
-                )}
-                {actionSession.notes && actionSession.notes.trim() && (
-                  <div className="text-xs text-clinic-text-muted mt-1 p-2 bg-white rounded-lg border border-clinic-border">
-                    <span className="font-bold block mb-0.5">Observações:</span>
-                    {actionSession.notes.trim()}
-                  </div>
-                )}
-                {/* Only show blocked warning for real blockers (feriado, paciente inativo, etc.), not for known statuses */}
-                {actionSession.blockedReason && actionSession.blockedReason !== 'status inválido' && (
-                  <div className="text-[10px] font-bold text-status-red-text uppercase mt-1">
-                    Bloqueado: {actionSession.blockedReason}
-                  </div>
-                )}
               </div>
 
-              {/* Action buttons */}
+              {/* ── Botões de ação ── */}
               {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
-                <div className="space-y-2">
-                  <p className="text-[10px] font-bold text-clinic-text-faint uppercase tracking-wide">Ações</p>
+                <div className="space-y-2.5">
+                  <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">⚡ Ações Rápidas</p>
 
-                  {/* Primary actions (Agendada) */}
                   {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel) && (
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 gap-2.5">
                       {actions.canOk && (
                         <button
                           onClick={() => handleActionOk(actionSession)}
-                          className="py-3 px-4 bg-emerald-500 text-white text-sm font-semibold rounded-lg hover:bg-emerald-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
+                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-bold rounded-2xl shadow-md shadow-emerald-200 hover:shadow-emerald-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          OK / Presença
+                          <span className="text-2xl">✅</span>
+                          <span className="text-xs font-black uppercase tracking-wide">OK / Presença</span>
                         </button>
                       )}
                       {actions.canFalta && (
                         <button
                           onClick={() => handleActionFalta(actionSession)}
-                          className="py-3 px-4 bg-red-500 text-white text-sm font-semibold rounded-lg hover:bg-red-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
+                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-red-400 to-red-600 text-white font-bold rounded-2xl shadow-md shadow-red-200 hover:shadow-red-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          Falta
+                          <span className="text-2xl">❌</span>
+                          <span className="text-xs font-black uppercase tracking-wide">Falta</span>
                         </button>
                       )}
                       {actions.canFaltaProf && (
                         <button
                           onClick={() => handleActionFaltaProf(actionSession)}
-                          className="py-3 px-4 bg-amber-500 text-white text-sm font-semibold rounded-lg hover:bg-amber-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
+                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-amber-400 to-amber-600 text-white font-bold rounded-2xl shadow-md shadow-amber-200 hover:shadow-amber-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          Falta Prof.
+                          <span className="text-2xl">🟠</span>
+                          <span className="text-xs font-black uppercase tracking-wide">Falta Prof.</span>
                         </button>
                       )}
                       {actions.canCancel && (
                         <button
                           onClick={() => handleActionCancel(actionSession)}
-                          className="py-3 px-4 bg-gray-500 text-white text-sm font-semibold rounded-lg hover:bg-gray-600 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
+                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-slate-400 to-slate-600 text-white font-bold rounded-2xl shadow-md shadow-slate-200 hover:shadow-slate-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          Cancelar
+                          <span className="text-2xl">🚫</span>
+                          <span className="text-xs font-black uppercase tracking-wide">Cancelar</span>
                         </button>
                       )}
                     </div>
                   )}
 
-                  {/* Reopen action (finalized sessions) */}
                   {actions.canReopen && (
                     <button
                       onClick={() => handleActionReopen(actionSession)}
-                      className="w-full py-3 px-4 bg-blue-800 text-white text-sm font-semibold rounded-lg hover:bg-blue-900 hover:shadow-md transition-all duration-150 active:scale-[0.97]"
+                      className="w-full flex items-center justify-center gap-2 py-3.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-2xl shadow-md hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                     >
-                      ↻ Reabrir (Voltar para Agendada)
+                      <span className="text-lg">↻</span>
+                      <span className="text-sm font-black uppercase tracking-wide">Reabrir como Agendada</span>
                     </button>
                   )}
                 </div>
               )}
 
-              {/* Remove button — always available for manual non-blocked sessions */}
+              {/* Remover sessão */}
               {actions.canDelete && !actionSession.isVirtual && (
                 <button
                   onClick={() => handleActionDelete(actionSession)}
-                  className="w-full py-3 px-4 bg-gray-100 text-gray-500 text-sm font-semibold rounded-lg hover:bg-gray-200 hover:text-gray-700 transition-all duration-150 active:scale-[0.97]"
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-rose-50 text-rose-600 border border-rose-200 font-bold rounded-xl hover:bg-rose-100 active:scale-95 transition-all duration-150 text-sm"
                 >
-                  Remover Sessão
+                  🗑 Remover Sessão
                 </button>
               )}
 
@@ -928,7 +893,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
               <button
                 onClick={() => setActionSession(null)}
-                className="w-full py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
+                className="w-full py-2.5 bg-clinic-bg text-clinic-text-muted font-bold rounded-xl hover:bg-clinic-border transition-all uppercase tracking-widest text-xs"
               >
                 Fechar
               </button>
