@@ -823,41 +823,41 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                   <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">⚡ Ações Rápidas</p>
 
                   {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel) && (
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="grid grid-cols-2 gap-2">
                       {actions.canOk && (
                         <button
                           onClick={() => handleActionOk(actionSession)}
-                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-bold rounded-2xl shadow-md shadow-emerald-200 hover:shadow-emerald-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          <span className="text-2xl">✅</span>
-                          <span className="text-xs font-black uppercase tracking-wide">OK / Presença</span>
+                          <span className="text-base">✅</span>
+                          <span className="text-xs font-black uppercase">OK / Presença</span>
                         </button>
                       )}
                       {actions.canFalta && (
                         <button
                           onClick={() => handleActionFalta(actionSession)}
-                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-red-400 to-red-600 text-white font-bold rounded-2xl shadow-md shadow-red-200 hover:shadow-red-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-red-400 to-red-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          <span className="text-2xl">❌</span>
-                          <span className="text-xs font-black uppercase tracking-wide">Falta</span>
+                          <span className="text-base">❌</span>
+                          <span className="text-xs font-black uppercase">Falta</span>
                         </button>
                       )}
                       {actions.canFaltaProf && (
                         <button
                           onClick={() => handleActionFaltaProf(actionSession)}
-                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-amber-400 to-amber-600 text-white font-bold rounded-2xl shadow-md shadow-amber-200 hover:shadow-amber-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-amber-400 to-amber-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          <span className="text-2xl">🟠</span>
-                          <span className="text-xs font-black uppercase tracking-wide">Falta Prof.</span>
+                          <span className="text-base">🟠</span>
+                          <span className="text-xs font-black uppercase">Falta Prof.</span>
                         </button>
                       )}
                       {actions.canCancel && (
                         <button
                           onClick={() => handleActionCancel(actionSession)}
-                          className="flex flex-col items-center justify-center gap-1 py-4 px-3 bg-gradient-to-b from-slate-400 to-slate-600 text-white font-bold rounded-2xl shadow-md shadow-slate-200 hover:shadow-slate-300 hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-slate-400 to-slate-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                         >
-                          <span className="text-2xl">🚫</span>
-                          <span className="text-xs font-black uppercase tracking-wide">Cancelar</span>
+                          <span className="text-base">🚫</span>
+                          <span className="text-xs font-black uppercase">Cancelar</span>
                         </button>
                       )}
                     </div>
@@ -866,9 +866,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                   {actions.canReopen && (
                     <button
                       onClick={() => handleActionReopen(actionSession)}
-                      className="w-full flex items-center justify-center gap-2 py-3.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-2xl shadow-md hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                     >
-                      <span className="text-lg">↻</span>
+                      <span>↻</span>
                       <span className="text-sm font-black uppercase tracking-wide">Reabrir como Agendada</span>
                     </button>
                   )}
