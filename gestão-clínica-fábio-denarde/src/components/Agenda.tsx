@@ -18,42 +18,46 @@ const getHourBase = (timeStr: string): string => {
 
 function getStatusLabel(session: ProcessedSession): string {
   if (session.isBlocked) return 'Bloqueado';
-  if (!session.isValid) {
-    if (session.blockedReason === 'feriado/recesso') return 'Feriado';
-    if (session.blockedReason === 'sessão cancelada') return 'Cancelada';
-    if (session.blockedReason === 'status inválido') return 'Inválida';
-    if (session.blockedReason === 'paciente inativo') return 'Inativo';
-    if (session.blockedReason === 'paciente sem WhatsApp') return 'Sem WhatsApp';
-    if (session.blockedReason?.includes('fora do turno')) return 'Fora do turno';
-  }
-  switch (session.status) {
-    case 'Agendada': return 'Agendada';
+
+  // Use the actual session.status as the primary source of truth
+  const status = session.status;
+  switch (status) {
+    case 'Agendada':
+      if (session.blockedReason === 'feriado/recesso') return 'Feriado';
+      return 'Agendada';
     case 'Realizada': return 'Realizada';
     case 'Falta': return 'Falta';
     case 'Falta.Prof': return 'Falta Prof.';
     case 'Cancelada': return 'Cancelada';
     case 'Reposição': return 'Reposição';
-    default: return session.status || '—';
+    default:
+      // Truly unknown status — fall back to blockedReason
+      if (!session.isValid) {
+        if (session.blockedReason === 'feriado/recesso') return 'Feriado';
+        if (session.blockedReason === 'sessão cancelada') return 'Cancelada';
+        if (session.blockedReason === 'paciente inativo') return 'Inativo';
+        if (session.blockedReason === 'paciente sem WhatsApp') return 'Sem WhatsApp';
+      }
+      return session.status || '—';
   }
 }
 
 function getStatusCardBg(session: ProcessedSession): string {
   if (session.isBlocked) return 'bg-[#5D4037]/10 border-[#5D4037]/40';
-  if (!session.isValid) {
-    switch (session.blockedReason) {
-      case 'feriado/recesso': return 'bg-orange-500/10 border-orange-400/50';
-      case 'sessão cancelada': return 'bg-rose-900/15 border-rose-900/25';
-      default: return 'bg-gray-100/70 border-gray-300/60';
-    }
-  }
+
+  // Use actual session.status for color, not blockedReason
   switch (session.status) {
-    case 'Agendada': return 'bg-white border-clinic-border';
+    case 'Agendada':
+      if (session.blockedReason === 'feriado/recesso') return 'bg-orange-500/10 border-orange-400/50';
+      return 'bg-white border-clinic-border';
     case 'Realizada': return 'bg-blue-500/8 border-blue-400/50';
     case 'Falta': return 'bg-red-500/10 border-red-500/25';
     case 'Falta.Prof': return 'bg-orange-500/10 border-orange-500/25';
     case 'Cancelada': return 'bg-rose-900/15 border-rose-900/25';
     case 'Reposição': return 'bg-blue-500/8 border-blue-400/50';
-    default: return 'bg-white border-clinic-border';
+    default:
+      if (!session.isValid) return 'bg-gray-100/70 border-gray-300/60';
+      return 'bg-white border-clinic-border';
   }
 }
 
@@ -208,9 +212,19 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   };
 
   const handleActionDelete = (session: ProcessedSession) => {
-    if (session.isVirtual) return; // virtuals can't be deleted, they're auto-generated
+    if (session.isVirtual) return;
     setActionSession(null);
     setSessionToDelete(session.id);
+  };
+
+  const handleActionReopen = (session: ProcessedSession) => {
+    if (session.isVirtual) return;
+    const updatedSessions = state.sessions.map(s =>
+      s.id === session.id ? { ...s, status: SessionStatus.AGENDADA } : s
+    );
+    onUpdate({ sessions: updatedSessions });
+    showToast(`Sessão de ${state.patients.find(p => p.id === session.patientId)?.name} reaberta como Agendada.`);
+    setActionSession(null);
   };
 
   // ── Existing handlers ─────────────────────────────────────────
@@ -415,17 +429,32 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
   const [filterPatientId, setFilterPatientId] = useState<string>('');
 
-  // ── Determine if the actionSession is actionable ──────────────
-  const isActionable = (s: ProcessedSession) => {
-    if (s.isBlocked) return false;
-    if (!s.isValid) return false;
-    return s.status === SessionStatus.AGENDADA;
-  };
+  // ── Determine if the session has available actions ──────────
+  const getSessionActions = (s: ProcessedSession): {
+    canOk: boolean; canFalta: boolean; canFaltaProf: boolean;
+    canCancel: boolean; canReopen: boolean; canDelete: boolean;
+  } => {
+    if (s.isBlocked) return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: false, canDelete: true };
+    if (s.isVirtual && s.isValid) {
+      // Virtual sessions behave like Agendada
+      return { canOk: true, canFalta: true, canFaltaProf: true, canCancel: true, canReopen: false, canDelete: false };
+    }
+    if (s.isVirtual) return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: false, canDelete: false };
 
-  const isActionableOrVirtual = (s: ProcessedSession) => {
-    if (s.isBlocked) return false;
-    if (s.isVirtual && s.isValid) return true;
-    return s.status === SessionStatus.AGENDADA;
+    // Manual sessions
+    switch (s.status) {
+      case SessionStatus.AGENDADA:
+        return { canOk: true, canFalta: true, canFaltaProf: true, canCancel: true, canReopen: false, canDelete: true };
+      case SessionStatus.REALIZADA:
+      case SessionStatus.FALTA:
+      case SessionStatus.FALTA_PROF:
+      case SessionStatus.CANCELADA:
+        return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: true, canDelete: true };
+      case SessionStatus.REPOSICAO:
+        return { canOk: true, canFalta: true, canFaltaProf: true, canCancel: true, canReopen: false, canDelete: true };
+      default:
+        return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: false, canDelete: true };
+    }
   };
 
   return (
@@ -544,7 +573,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                           const isVirtual = session.isVirtual;
                           const isOnHoliday = !!holiday;
                           const statusLabel = getStatusLabel(session);
-                          const canAct = isActionableOrVirtual(session);
+                          const sessionActions = getSessionActions(session);
+                          const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canCancel;
 
                           const handleCardClick = () => {
                             if (!isBlocked && patient) {
@@ -571,9 +601,13 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                     "text-[8px] font-black px-1.5 py-0.5 rounded uppercase whitespace-nowrap leading-tight",
                                     getStatusBadgeStyle(
                                       session.isBlocked ? 'Bloqueado' :
-                                      !session.isValid && session.blockedReason === 'sessão cancelada' ? 'Cancelada' :
-                                      !session.isValid ? '' :
-                                      session.status
+                                      session.status === SessionStatus.CANCELADA ? 'Cancelada' :
+                                      session.status === SessionStatus.FALTA ? 'Falta' :
+                                      session.status === SessionStatus.FALTA_PROF ? 'Falta.Prof' :
+                                      session.status === SessionStatus.REALIZADA ? 'Realizada' :
+                                      session.status === SessionStatus.REPOSICAO ? 'Reposição' :
+                                      session.status === SessionStatus.AGENDADA ? 'Agendada' :
+                                      ''
                                     )
                                   )}>
                                     {statusLabel}
@@ -710,8 +744,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       {actionSession && (() => {
         const patient = state.patients.find(p => p.id === actionSession.patientId);
         const statusLabel = getStatusLabel(actionSession);
-        const canAct = isActionableOrVirtual(actionSession);
-        const realSession = actionSession.isVirtual ? null : actionSession;
+        const actions = getSessionActions(actionSession);
 
         return (
           <Modal
@@ -726,10 +759,14 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-bold text-clinic-text">{patient?.name}</span>
                   <span className={cn("text-[10px] font-black px-2 py-0.5 rounded uppercase", getStatusBadgeStyle(
-                    actionSession.isBlocked ? '' :
-                    !actionSession.isValid && actionSession.blockedReason === 'sessão cancelada' ? 'Cancelada' :
-                    !actionSession.isValid ? '' :
-                    actionSession.status
+                    actionSession.isBlocked ? 'Bloqueado' :
+                    actionSession.status === SessionStatus.CANCELADA ? 'Cancelada' :
+                    actionSession.status === SessionStatus.FALTA ? 'Falta' :
+                    actionSession.status === SessionStatus.FALTA_PROF ? 'Falta.Prof' :
+                    actionSession.status === SessionStatus.REALIZADA ? 'Realizada' :
+                    actionSession.status === SessionStatus.REPOSICAO ? 'Reposição' :
+                    actionSession.status === SessionStatus.AGENDADA ? 'Agendada' :
+                    ''
                   ))}>
                     {statusLabel}
                   </span>
@@ -755,7 +792,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                     {actionSession.notes.trim()}
                   </div>
                 )}
-                {!actionSession.isValid && actionSession.blockedReason && (
+                {/* Only show blocked warning for real blockers (feriado, paciente inativo, etc.), not for known statuses */}
+                {actionSession.blockedReason && actionSession.blockedReason !== 'status inválido' && (
                   <div className="text-[10px] font-bold text-status-red-text uppercase mt-1">
                     Bloqueado: {actionSession.blockedReason}
                   </div>
@@ -763,49 +801,73 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
               </div>
 
               {/* Action buttons */}
-              {canAct && (
+              {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
                 <div className="space-y-2">
                   <p className="text-[10px] font-bold text-clinic-text-faint uppercase tracking-wide">Ações</p>
-                  <div className="grid grid-cols-2 gap-2">
+
+                  {/* Primary actions (Agendada) */}
+                  {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel) && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {actions.canOk && (
+                        <button
+                          onClick={() => handleActionOk(actionSession)}
+                          className="py-3 px-3 bg-status-green-text text-white text-xs font-bold rounded-xl hover:bg-green-700 transition-all uppercase tracking-wide active:scale-95"
+                        >
+                          OK / Presença
+                        </button>
+                      )}
+                      {actions.canFalta && (
+                        <button
+                          onClick={() => handleActionFalta(actionSession)}
+                          className="py-3 px-3 bg-status-red-text text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-all uppercase tracking-wide active:scale-95"
+                        >
+                          Falta
+                        </button>
+                      )}
+                      {actions.canFaltaProf && (
+                        <button
+                          onClick={() => handleActionFaltaProf(actionSession)}
+                          className="py-3 px-3 bg-status-orange-text text-white text-xs font-bold rounded-xl hover:bg-amber-700 transition-all uppercase tracking-wide active:scale-95"
+                        >
+                          Falta Prof.
+                        </button>
+                      )}
+                      {actions.canCancel && (
+                        <button
+                          onClick={() => handleActionCancel(actionSession)}
+                          className="py-3 px-3 bg-rose-700 text-white text-xs font-bold rounded-xl hover:bg-rose-800 transition-all uppercase tracking-wide active:scale-95"
+                        >
+                          Cancelar
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Reopen action (finalized sessions) */}
+                  {actions.canReopen && (
                     <button
-                      onClick={() => handleActionOk(actionSession)}
-                      className="py-3 px-3 bg-status-green-text text-white text-xs font-bold rounded-xl hover:bg-green-700 transition-all uppercase tracking-wide active:scale-95"
+                      onClick={() => handleActionReopen(actionSession)}
+                      className="w-full py-3 px-3 bg-clinic-primary text-white text-xs font-bold rounded-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-wide active:scale-95"
                     >
-                      OK / Presença
-                    </button>
-                    <button
-                      onClick={() => handleActionFalta(actionSession)}
-                      className="py-3 px-3 bg-status-red-text text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-all uppercase tracking-wide active:scale-95"
-                    >
-                      Falta
-                    </button>
-                    <button
-                      onClick={() => handleActionFaltaProf(actionSession)}
-                      className="py-3 px-3 bg-status-orange-text text-white text-xs font-bold rounded-xl hover:bg-amber-700 transition-all uppercase tracking-wide active:scale-95"
-                    >
-                      Falta Prof.
-                    </button>
-                    <button
-                      onClick={() => handleActionCancel(actionSession)}
-                      className="py-3 px-3 bg-rose-700 text-white text-xs font-bold rounded-xl hover:bg-rose-800 transition-all uppercase tracking-wide active:scale-95"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                  {!actionSession.isVirtual && (
-                    <button
-                      onClick={() => handleActionDelete(actionSession)}
-                      className="w-full py-2.5 px-3 bg-gray-200 text-gray-600 text-xs font-bold rounded-xl hover:bg-gray-300 transition-all uppercase tracking-wide active:scale-95"
-                    >
-                      Remover Sessão
+                      ↻ Reabrir (Voltar para Agendada)
                     </button>
                   )}
                 </div>
               )}
 
-              {!canAct && (
+              {/* Remove button — always available for manual non-blocked sessions */}
+              {actions.canDelete && !actionSession.isVirtual && (
+                <button
+                  onClick={() => handleActionDelete(actionSession)}
+                  className="w-full py-2.5 px-3 bg-gray-200 text-gray-600 text-xs font-bold rounded-xl hover:bg-gray-300 transition-all uppercase tracking-wide active:scale-95"
+                >
+                  Remover Sessão
+                </button>
+              )}
+
+              {!actions.canOk && !actions.canFalta && !actions.canFaltaProf && !actions.canCancel && !actions.canReopen && !actions.canDelete && (
                 <div className="text-center text-xs text-clinic-text-muted italic py-2">
-                  Esta sessão não permite alterações de status.
+                  Nenhuma ação disponível para esta sessão.
                 </div>
               )}
 
