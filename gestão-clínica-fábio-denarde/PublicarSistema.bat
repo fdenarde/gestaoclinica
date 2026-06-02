@@ -8,6 +8,9 @@ echo   PUBLICACAO SEGURA DO SISTEMA
 echo   Gestao Clinica — Fabio Denarde
 echo ════════════════════════════════════════════════════════════════
 echo.
+echo   Link principal (Vercel): https://gestaoclinica-solucoes.vercel.app/
+echo   Link reserva  (GitHub): https://fdenarde.github.io/gestaoclinica/
+echo.
 echo   Iniciando processo de publicacao segura...
 echo   Nao feche esta janela ate o final.
 echo.

@@ -11,7 +11,8 @@ const path = require('path');
 
 const ROOT = __dirname;
 const DIST = path.join(ROOT, 'dist');
-const EXTERNAL_URL = 'https://fdenarde.github.io/gestaoclinica/';
+const PRIMARY_URL = 'https://gestaoclinica-solucoes.vercel.app/';
+const BACKUP_URL = 'https://fdenarde.github.io/gestaoclinica/';
 
 const HORIZONTAL_RULE = '═'.repeat(60);
 
@@ -58,16 +59,24 @@ function err(msg)  { log('ERRO', msg, C.red); }
 function info(msg) { log('INFO', msg, C.blue); }
 function step(msg) { console.log(`\n${C.magenta}${C.bold}▶ ${msg}${C.reset}\n`); }
 
+function esperarTecla(code) {
+  if (process.stdin.isTTY) {
+    console.log('Pressione qualquer tecla para sair...');
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on('data', () => process.exit(code));
+  } else {
+    process.exit(code);
+  }
+}
+
 function fail(msg) {
   console.log(`\n${C.red}${HORIZONTAL_RULE}${C.reset}`);
   console.log(`${C.red}${C.bold}  FALHA NA PUBLICACAO${C.reset}`);
   console.log(`${C.red}  ${msg}${C.reset}`);
   console.log(`${C.red}${HORIZONTAL_RULE}${C.reset}\n`);
   console.log('O sistema NAO foi publicado. Corrija o problema e tente novamente.');
-  console.log('Pressione qualquer tecla para sair...');
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  process.stdin.on('data', () => process.exit(1));
+  esperarTecla(1);
 }
 
 function run(cmd, cwd = ROOT) {
@@ -199,10 +208,12 @@ function etapaResumo() {
   }
 
   console.log('');
-  console.log(`  ${C.bold}Link externo apos publicacao:${C.reset}`);
-  console.log(`  ${C.blue}${C.bold}${EXTERNAL_URL}${C.reset}`);
+  console.log(`  ${C.bold}Links apos publicacao:${C.reset}`);
+  console.log(`  ${C.blue}${C.bold}Principal → ${PRIMARY_URL}${C.reset}`);
+  console.log(`  ${C.dim}Reserva  → ${BACKUP_URL}${C.reset}`);
   console.log('');
-  info(`gh-pages publicara a pasta dist/ no branch gh-pages.`);
+  info(`Vercel fara deploy automatico ao receber o push no GitHub.`);
+  info(`GitHub Pages atualizado como reserva via gh-pages.`);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -246,10 +257,14 @@ function etapaVerificarDiretorio() {
 function etapaPublicar() {
   step('ETAPA 6/6: Publicando sistema...');
 
-  // 6a: Deploy to gh-pages
-  info('Publicando dist/ no GitHub Pages (gh-pages)...');
-  const ghPagesOut = runRequired('npx gh-pages -d dist', 'Publicacao no GitHub Pages');
-  ok('GitHub Pages atualizado com sucesso.');
+  // 6a: Deploy to gh-pages (backup)
+  info('Atualizando GitHub Pages (reserva)...');
+  const ghPagesOut = run('npx gh-pages -d dist');
+  if (ghPagesOut === null) {
+    warn('GitHub Pages (reserva) nao foi atualizado. O link principal (Vercel) funcionara normalmente.');
+  } else {
+    ok('GitHub Pages (reserva) atualizado.');
+  }
 
   // 6b: Commit and push source changes (only if there are changes)
   const hasChanges = run('git status --porcelain');
@@ -299,8 +314,9 @@ function main() {
   console.log(`${C.blue}${C.bold}  PUBLICACAO SEGURA DO SISTEMA${C.reset}`);
   console.log(`${C.blue}${C.bold}  Gestao Clinica — Fabio Denarde${C.reset}`);
   console.log(`${C.blue}${C.bold}${HORIZONTAL_RULE}${C.reset}\n`);
-  console.log(`  Link externo: ${C.blue}${EXTERNAL_URL}${C.reset}`);
-  console.log(`  Metodo: GitHub Pages (gh-pages)\n`);
+  console.log(`  Link principal (Vercel): ${C.blue}${PRIMARY_URL}${C.reset}`);
+  console.log(`  Link reserva  (GitHub): ${C.dim}${BACKUP_URL}${C.reset}`);
+  console.log(`  Metodo: Vercel (deploy automatico ao fazer push) + GitHub Pages (reserva)\n`);
   console.log(`${C.dim}  Nao feche esta janela ate o processo terminar.${C.reset}\n`);
 
   try {
@@ -316,13 +332,11 @@ function main() {
     console.log(`${C.green}${C.bold}  PUBLICACAO CONCLUIDA COM SUCESSO!${C.reset}`);
     console.log(`${C.green}${HORIZONTAL_RULE}${C.reset}\n`);
     console.log(`  ${C.bold}Acesse o sistema em:${C.reset}`);
-    console.log(`  ${C.blue}${C.bold}  → ${EXTERNAL_URL}${C.reset}\n`);
-    console.log(`  ${C.dim}(Pode levar ate 2 minutos para o GitHub Pages atualizar)${C.reset}\n`);
-    console.log('Pressione qualquer tecla para sair...');
-    
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.on('data', () => process.exit(0));
+    console.log(`  ${C.blue}${C.bold}  → ${PRIMARY_URL}${C.reset}\n`);
+    console.log(`  ${C.dim}O Vercel detecta o push e publica automaticamente.${C.reset}`);
+    console.log(`  ${C.dim}(Pode levar ate 1 minuto para aparecer no ar)${C.reset}\n`);
+    console.log(`  ${C.dim}Link reserva (GitHub Pages): ${BACKUP_URL}${C.reset}\n`);
+    esperarTecla(0);
   } catch (e) {
     fail(`Erro inesperado: ${e.message}`);
   }
