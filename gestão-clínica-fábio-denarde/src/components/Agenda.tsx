@@ -672,7 +672,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                     <div
                                       onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); }}
                                       className={cn(
-                                        "absolute inset-0 bg-black/70 rounded-lg transition-opacity duration-200 flex flex-col items-center justify-center gap-2 px-2 py-1 z-10",
+                                        "absolute inset-0 bg-black/65 rounded-lg transition-opacity duration-200 flex flex-col items-center justify-center gap-1 p-1 z-10",
                                         isOverlayActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                                       )}
                                       role="toolbar"
@@ -680,47 +680,47 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                     >
                                       {/* Backdrop close hint (mobile/tablet) */}
                                       {isOverlayActive && (
-                                        <span className="text-white/60 text-[9px] absolute top-1 opacity-0 group-hover:opacity-0">
+                                        <span className="text-white/60 text-[9px] absolute top-1 lg:hidden">
                                           Toque fora para fechar
                                         </span>
                                       )}
 
-                                      <div className="flex flex-wrap justify-center lg:flex-nowrap items-center gap-2 w-full">
+                                      <div className="flex flex-wrap justify-center lg:flex-nowrap items-center gap-1.5 lg:gap-1 w-full">
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionOk(session); }}
-                                          className="bg-emerald-500 text-white font-semibold rounded-lg hover:bg-emerald-600 hover:shadow-lg transition-all duration-150 flex items-center justify-center gap-1.5 text-xs px-3 py-2.5 min-h-[36px] sm:min-h-[40px]"
+                                          className="bg-emerald-500 text-white font-semibold rounded-md hover:bg-emerald-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
                                           aria-label="Marcar presença"
                                         >
-                                          <span className="text-sm">✓</span> OK
+                                          <span className="lg:hidden text-sm">✓</span> OK
                                         </button>
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFalta(session); }}
-                                          className="bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 hover:shadow-lg transition-all duration-150 flex items-center justify-center gap-1.5 text-xs px-3 py-2.5 min-h-[36px] sm:min-h-[40px]"
+                                          className="bg-red-500 text-white font-semibold rounded-md hover:bg-red-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
                                           aria-label="Marcar falta do paciente"
                                         >
-                                          <span className="text-sm">✕</span> Falta
+                                          <span className="lg:hidden text-sm">✕</span> Falta
                                         </button>
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionFaltaProf(session); }}
-                                          className="bg-amber-500 text-white font-semibold rounded-lg hover:bg-amber-600 hover:shadow-lg transition-all duration-150 flex items-center justify-center gap-1.5 text-xs px-3 py-2.5 min-h-[36px] sm:min-h-[40px]"
+                                          className="bg-amber-500 text-white font-semibold rounded-md hover:bg-amber-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
                                           aria-label="Marcar falta do profissional"
                                         >
-                                          <span className="text-sm font-bold">FP</span> Falta Prof.
+                                          <span className="lg:hidden text-sm font-bold">FP</span> Falta Prof.
                                         </button>
                                         <button
                                           onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionCancel(session); }}
-                                          className="bg-gray-500 text-white font-semibold rounded-lg hover:bg-gray-600 hover:shadow-lg transition-all duration-150 flex items-center justify-center gap-1.5 text-xs px-3 py-2.5 min-h-[36px] sm:min-h-[40px]"
+                                          className="bg-gray-500 text-white font-semibold rounded-md hover:bg-gray-600 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
                                           aria-label="Cancelar sessão"
                                         >
-                                          <span className="text-sm">🚫</span> Cancelar
+                                          <span className="lg:hidden text-sm">🚫</span> Cancelar
                                         </button>
                                         {!isVirtual && (
                                           <button
                                             onClick={(e) => { e.stopPropagation(); setTouchOverlayId(null); handleActionDelete(session); }}
-                                            className="bg-blue-800 text-white font-semibold rounded-lg hover:bg-blue-900 hover:shadow-lg transition-all duration-150 flex items-center justify-center gap-1.5 text-xs px-3 py-2.5 min-h-[36px] sm:min-h-[40px]"
+                                            className="bg-red-600 text-white font-semibold rounded-md hover:bg-red-700 transition-all duration-150 flex items-center justify-center gap-1 min-h-[36px] sm:min-h-[40px] lg:min-h-[28px] px-2.5 lg:px-1.5 py-1.5 lg:py-0.5 text-[11px]"
                                             aria-label="Remover sessão"
                                           >
-                                            <span className="text-sm">🗑</span> Remover
+                                            <span className="lg:hidden text-sm">🗑</span> Remover
                                           </button>
                                         )}
                                       </div>
