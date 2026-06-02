@@ -13,7 +13,8 @@
     "server": "node server.js",
     "test-msg": "node test-messages.js",
     "test-wpp": "node send-test-whatsapp.js",
-    "deploy": "npm run build && gh-pages -d dist && git add . && git commit -m \"Auto-update system\" && git push origin main"
+    "deploy": "npm run build && gh-pages -d dist && git add . && git commit -m \"Auto-update system\" && git push origin main",
+    "safe-deploy": "node safe-deploy.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
