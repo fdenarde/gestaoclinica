@@ -210,11 +210,37 @@ Feriados bloqueiam: geração de sessões virtuais, plano de mensagens, envios. 
 
 | Dispositivo | Interação | Resultado |
 |---|---|---|
-| Desktop (hover) | Passar mouse no card (Agendada) | Overlay com botões rápidos: OK, Falta, Falta Prof., Cancelar, Remover |
-| Desktop (clique) | Clicar no card (qualquer status) | Abre modal com ações apropriadas para o status |
-| Mobile/Tablet (toque) | Tocar no card (qualquer status) | Abre modal com ações — **NUNCA executa ação automática** |
+| Desktop (hover) | Passar mouse no card (Agendada) | Overlay compacto com 5 botões em linha horizontal |
+| Desktop (hover) | Clicar em botão no overlay | Executa a ação imediatamente |
+| Desktop (clique) | Clicar no card (qualquer status) | Abre modal com detalhes + ações |
+| Mobile/Tablet (1º toque) | Tocar no card (Agendada) | Mostra overlay touch com botões grandes + ícones |
+| Mobile/Tablet (2º toque) | Tocar no mesmo card | Abre modal com detalhes + ações |
+| Mobile/Tablet (toque fora) | Tocar no fundo escuro do overlay | Fecha o overlay |
+| Mobile/Tablet (não-agendada) | Tocar no card (finalizado) | Abre modal direto com Reabrir/Remover |
 
-### 5.2 Ações disponíveis por status (modal)
+### 5.2 Overlay de botões rápidos (design responsivo)
+
+| Breakpoint | Layout | Altura botão | Fonte | Gap | Ícones |
+|---|---|---|---|---|---|
+| Desktop (>1024px) | `flex` horizontal, 5 em linha | `lg:min-h-[28px]` | `text-[11px]` | `lg:gap-1` | Ocultos |
+| Tablet (768-1024px) | `flex-wrap`, ~3 por linha | `sm:min-h-[40px]` | `text-xs` | `gap-1.5` | Visíveis |
+| Mobile (<768px) | `flex-wrap`, ~3 por linha | `min-h-[36px]` | `text-xs` | `gap-1.5` | Visíveis |
+
+**Cores dos botões:**
+
+| Botão | Cor | Hover |
+|---|---|---|
+| OK | `#10B981` (emerald-500) | `#059669` |
+| Falta | `#EF4444` (red-500) | `#DC2626` |
+| Falta Prof. | `#F59E0B` (amber-500) | `#D97706` |
+| Cancelar | `#6B7280` (gray-500) | `#4B5563` |
+| Remover | `#DC2626` (red-600) | `#B91C1C` |
+
+**Overlay:** fundo `rgba(0,0,0,0.65)`, padding `8px`, border-radius `8px`, fade-in `200ms`.
+
+**Acessibilidade:** `role="toolbar"`, `aria-label` em cada botão, área de toque ≥36px.
+
+### 5.3 Ações disponíveis por status (modal)
 
 | Status | Ações |
 |---|---|
@@ -227,11 +253,17 @@ Feriados bloqueiam: geração de sessões virtuais, plano de mensagens, envios. 
 | **Virtual/Fixo** | OK, Falta, Falta Prof., Cancelar (cria sessão real ao clicar) |
 | **Bloqueado** | Remover |
 
-### 5.3 `getStatusLabel` — NÃO retorna mais "Inválida"
+A lógica de ações é definida por `getSessionActions(session)` que retorna um objeto com booleanos: `{ canOk, canFalta, canFaltaProf, canCancel, canReopen, canDelete }`.
+
+### 5.4 `getStatusLabel` — NÃO retorna mais "Inválida"
 
 A função usa `session.status` como fonte primária. Status como Falta.Prof, Cancelada, Realizada mostram o nome correto, **nunca** "Inválida".
 
-### 5.4 Cores e legenda
+### 5.5 `handleActionReopen` — Reabrir sessão finalizada
+
+Sessões com status Realizada, Falta, Falta.Prof ou Cancelada podem ser reabertas (voltam para Agendada). Disponível no modal, não no overlay rápido.
+
+### 5.6 Cores e legenda
 
 | Status | Cor do card | Badge |
 |---|---|---|
@@ -246,7 +278,7 @@ A função usa `session.status` como fonte primária. Status como Falta.Prof, Ca
 
 A legenda de cores aparece **abaixo da grade semanal**, adaptada responsivamente.
 
-### 5.5 Propriedade `isValid` no `ProcessedSession`
+### 5.7 Propriedade `isValid` no `ProcessedSession`
 
 - `isValid: true` → sessão Agendada com paciente ativo e WhatsApp → **robô envia lembrete**
 - `isValid: false` → **robô NÃO envia lembrete**
