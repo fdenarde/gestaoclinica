@@ -6,6 +6,7 @@ import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
+import { cn } from './lib/utils';
 
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -414,14 +415,14 @@ export default function App() {
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`
-                flex-1 min-w-[120px] flex flex-col md:flex-row items-center justify-center gap-2 py-4 text-[11px] sm:text-sm font-bold uppercase tracking-wider transition-all
+                flex-1 min-w-[130px] flex flex-row items-center justify-center gap-2 py-4 text-[11px] sm:text-sm font-bold uppercase tracking-wider transition-all
                 ${activeTab === tab.id 
                   ? 'text-clinic-header border-b-4 border-clinic-primary bg-clinic-surface' 
                   : 'text-clinic-text-muted hover:bg-clinic-bg/60 border-b-4 border-transparent'}
               `}
             >
-              <tab.icon size={16} className={activeTab === tab.id ? 'text-clinic-primary' : ''} />
-              <span className="hidden sm:inline">{tab.label}</span>
+              <tab.icon size={16} className={cn("shrink-0", activeTab === tab.id ? 'text-clinic-primary' : '')} />
+              <span className="hidden sm:inline whitespace-nowrap leading-none">{tab.label}</span>
             </button>
           ))}
         </div>

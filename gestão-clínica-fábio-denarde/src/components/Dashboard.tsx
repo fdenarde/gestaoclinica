@@ -254,6 +254,15 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
     });
     const whatsappTodayCount = morningPlan.reminders.length + afternoonPlan.reminders.length;
     const whatsappBlockedCount = morningPlan.diagnostics.length + afternoonPlan.diagnostics.length + tomorrowPlan.diagnostics.length;
+    const whatsappTooltip = [
+      'Monitor WhatsApp calculado pelo plano atual, sem enviar mensagens.',
+      `Hoje/manhã: ${morningPlan.reminders.length} envio(s) previsto(s), ${morningPlan.diagnostics.length} bloqueio(s)/ignorado(s).`,
+      `Hoje/tarde: ${afternoonPlan.reminders.length} envio(s) previsto(s), ${afternoonPlan.diagnostics.length} bloqueio(s)/ignorado(s).`,
+      `Véspera: ${tomorrowPlan.reminders.length} envio(s) previsto(s), ${tomorrowPlan.diagnostics.length} bloqueio(s)/ignorado(s).`,
+      morningPlan.isHoliday || afternoonPlan.isHoliday || tomorrowPlan.isHoliday
+        ? 'Há feriado/recesso em pelo menos uma rotina calculada.'
+        : 'Nenhum feriado/recesso bloqueando as rotinas calculadas.'
+    ].join('\n');
     return {
       todayPlanned,
       todayRealized,
@@ -261,9 +270,12 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       pendingRepositions,
       patientsNearRenewal,
       whatsappTodayCount,
+      whatsappMorningCount: morningPlan.reminders.length,
+      whatsappAfternoonCount: afternoonPlan.reminders.length,
       whatsappTomorrowCount: tomorrowPlan.reminders.length,
       whatsappBlockedCount,
-      whatsappHoliday: morningPlan.isHoliday || afternoonPlan.isHoliday || tomorrowPlan.isHoliday
+      whatsappHoliday: morningPlan.isHoliday || afternoonPlan.isHoliday || tomorrowPlan.isHoliday,
+      whatsappTooltip
     };
   }, [state, todaySessions]);
 
@@ -391,21 +403,34 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
           </div>
         </div>
 
-        <div className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic">
+        <div
+          className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic"
+          title={operationalPanel.whatsappTooltip}
+          aria-label={operationalPanel.whatsappTooltip}
+        >
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-serif text-lg font-bold text-clinic-text">WhatsApp</h3>
-            <MessageCircle size={18} className="text-status-green-text" />
+            <MessageCircle size={18} className="text-status-green-text" title={operationalPanel.whatsappTooltip} />
           </div>
           <div className="grid grid-cols-3 gap-2">
-            <div className="bg-status-green-bg rounded-lg p-3 text-center border border-status-green-text/20">
+            <div
+              className="bg-status-green-bg rounded-lg p-3 text-center border border-status-green-text/20"
+              title={`Mensagens do dia previstas: ${operationalPanel.whatsappTodayCount}\nManhã: ${operationalPanel.whatsappMorningCount}\nTarde: ${operationalPanel.whatsappAfternoonCount}`}
+            >
               <p className="text-2xl font-bold text-status-green-text">{operationalPanel.whatsappTodayCount}</p>
               <p className="text-[10px] font-black uppercase text-status-green-text">Hoje</p>
             </div>
-            <div className="bg-status-blue-bg rounded-lg p-3 text-center border border-status-blue-text/20">
+            <div
+              className="bg-status-blue-bg rounded-lg p-3 text-center border border-status-blue-text/20"
+              title={`Mensagens de véspera previstas para o próximo dia útil calculado: ${operationalPanel.whatsappTomorrowCount}`}
+            >
               <p className="text-2xl font-bold text-status-blue-text">{operationalPanel.whatsappTomorrowCount}</p>
               <p className="text-[10px] font-black uppercase text-status-blue-text">Véspera</p>
             </div>
-            <div className="bg-clinic-bg rounded-lg p-3 text-center border border-clinic-border/60">
+            <div
+              className="bg-clinic-bg rounded-lg p-3 text-center border border-clinic-border/60"
+              title={`Bloqueios/ignorados no plano calculado: ${operationalPanel.whatsappBlockedCount}\nInclui feriado, cancelamento, falta de WhatsApp, paciente inativo, fora do turno ou deduplicação.`}
+            >
               <p className="text-2xl font-bold text-clinic-text">{operationalPanel.whatsappBlockedCount}</p>
               <p className="text-[10px] font-black uppercase text-clinic-text-faint">Bloqueios</p>
             </div>

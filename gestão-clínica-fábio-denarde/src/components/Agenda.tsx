@@ -457,6 +457,51 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     }
   };
 
+  const buildAvailableSlotTooltip = (day: Date, time: string, holidayName?: string) => {
+    const dateLabel = safeFormatDate(format(day, 'yyyy-MM-dd'), 'dd/MM/yyyy');
+    if (holidayName) {
+      return [
+        `Horário fechado: ${time}`,
+        `Data: ${dateLabel}`,
+        `Motivo: feriado/recesso (${holidayName})`,
+        'O robô WhatsApp não deve enviar lembretes para este horário.'
+      ].join('\n');
+    }
+
+    return [
+      `Horário disponível: ${time}`,
+      `Data: ${dateLabel}`,
+      'Clique para agendar uma sessão ou bloquear este horário.',
+      'Nenhuma mensagem WhatsApp é enviada ao clicar; o envio automático segue apenas os horários do robô.'
+    ].join('\n');
+  };
+
+  const buildSessionTooltip = (session: ProcessedSession, patient?: AppState['patients'][0]) => {
+    const statusLabel = getStatusLabel(session);
+    const details = [
+      `Horário: ${session.time}`,
+      `Data: ${safeFormatDate(session.date, 'dd/MM/yyyy')}`,
+      `Status: ${statusLabel}`,
+      `Origem: ${session.isVirtual ? 'Agenda fixa calculada' : 'Registro manual'}`
+    ];
+
+    if (session.isBlocked) {
+      details.push(`Bloqueio: ${session.blockName || 'Compromisso bloqueado'}`);
+    } else {
+      details.push(`Atendente: ${patient?.name || 'Não localizado'}`);
+      details.push(`Responsável: ${patient?.guardianName || 'Não informado'}`);
+      details.push(`WhatsApp: ${patient?.whatsapp || 'Não informado'}`);
+      details.push(`Tipo: ${session.type || 'Não informado'}`);
+      details.push(`Pacote: ${session.packageNumber || 'Sem pacote vinculado'}`);
+    }
+
+    if (session.notes?.trim()) details.push(`Observações: ${session.notes.trim()}`);
+    if (session.blockedReason) details.push(`Motivo/alerta: ${session.blockedReason}`);
+
+    details.push(session.isBlocked ? 'Passe o mouse no botão Remover para excluir este bloqueio.' : 'Clique para abrir as ações rápidas deste horário.');
+    return details.join('\n');
+  };
+
   return (
     <div className="flex flex-col gap-6 py-6 pb-24">
       {/* ── Header ── */}
@@ -522,7 +567,15 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
                   if (filterPatientId && filteredSessions.length === 0 && mergedSessions.length > 0) {
                     return (
-                      <div key={time} className="p-2 rounded-lg border border-dashed border-clinic-border/20 min-h-[60px] opacity-20 transition-opacity">
+                      <div
+                        key={time}
+                        className="p-2 rounded-lg border border-dashed border-clinic-border/20 min-h-[60px] opacity-20 transition-opacity"
+                        title={[
+                          `Horário: ${time}`,
+                          `Data: ${safeFormatDate(dayStr, 'dd/MM/yyyy')}`,
+                          'Há sessão neste horário, mas ela está oculta pelo filtro de atendente selecionado.'
+                        ].join('\n')}
+                      >
                         <span className="text-xs font-bold text-clinic-text-faint">{time}</span>
                       </div>
                     );
@@ -530,7 +583,11 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
 
                   if (holiday && mergedSessions.length === 0) {
                     return (
-                      <div key={time} className="p-2 rounded-lg border border-dashed border-status-red-text/20 min-h-[60px] opacity-40 bg-status-red-bg/20 flex flex-col items-center justify-center">
+                      <div
+                        key={time}
+                        className="p-2 rounded-lg border border-dashed border-status-red-text/20 min-h-[60px] opacity-40 bg-status-red-bg/20 flex flex-col items-center justify-center"
+                        title={buildAvailableSlotTooltip(day, time, holiday.name)}
+                      >
                         <span className="text-[10px] font-bold text-status-red-text line-through opacity-50">{time}</span>
                         <span className="text-[8px] font-black uppercase text-status-red-text mt-1 opacity-70">Fechado</span>
                       </div>
@@ -543,6 +600,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                         <div 
                           className="p-2 rounded-lg border min-h-[60px] transition-all flex flex-col justify-between bg-green-500/10 hover:bg-green-500/20 border-green-500/30 border-dashed cursor-pointer shadow-inner"
                           onClick={() => openNewSession(day, time)}
+                          title={buildAvailableSlotTooltip(day, time)}
+                          aria-label={buildAvailableSlotTooltip(day, time)}
                         >
                           <div className="flex justify-between items-start">
                             <span className="text-xs font-bold text-clinic-text">{time}</span>
@@ -554,13 +613,26 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                   }
 
                   return (
-                    <div key={time} className="flex flex-col gap-1.5 p-1.5 rounded-xl border border-clinic-border bg-clinic-bg/10 min-h-[70px]">
+                    <div
+                      key={time}
+                      className="flex flex-col gap-1.5 p-1.5 rounded-xl border border-clinic-border bg-clinic-bg/10 min-h-[70px]"
+                      title={[
+                        `Horário-base: ${time}`,
+                        `Data: ${safeFormatDate(dayStr, 'dd/MM/yyyy')}`,
+                        `Sessões neste horário: ${filteredSessions.length}`,
+                        'Clique em uma sessão para ver ações rápidas e detalhes completos.'
+                      ].join('\n')}
+                    >
                       <div className="flex justify-between items-center px-1">
                         <span className="text-[10px] font-bold text-clinic-text-faint">{time}</span>
                         <button
                           onClick={() => openNewSession(day, time)}
                           className="text-[9px] font-black text-clinic-primary uppercase hover:underline cursor-pointer"
-                          title="Agendar neste horário"
+                          title={[
+                            `Adicionar novo agendamento às ${time}`,
+                            `Data: ${safeFormatDate(dayStr, 'dd/MM/yyyy')}`,
+                            'Abre o formulário de agendamento. Não envia WhatsApp automaticamente.'
+                          ].join('\n')}
                         >
                           + Novo
                         </button>
@@ -587,6 +659,8 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                             <div key={session.id} className="group relative">
                               <div
                                 onClick={handleCardClick}
+                                title={buildSessionTooltip(session, patient || undefined)}
+                                aria-label={buildSessionTooltip(session, patient || undefined)}
                                 className={cn(
                                   "p-2 rounded-lg border min-h-[50px] transition-all flex flex-col justify-between shadow-sm",
                                   isBlocked || !patient ? '' : 'cursor-pointer hover:shadow-md hover:border-clinic-primary/40 hover:scale-[1.01]',
