@@ -90,6 +90,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         times.push(addOneHour(patient.fixedTime || '08:00'));
       }
       for (const time of times) {
+        const sessionNumberInCycle = (generatedSessions.length % 10) + 1;
         generatedSessions.push({
           id: Math.random().toString(36).substr(2, 9),
           patientId: id,
@@ -97,7 +98,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
           time,
           type: patient.doubleSession ? SessionType.DUPLA : SessionType.SIMPLES,
           status: SessionStatus.AGENDADA,
-          packageNumber: 1,
+          packageNumber: sessionNumberInCycle,
           isFixedSchedule: true,
           source: 'fixed'
         });
@@ -883,8 +884,6 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     const DAYS_MAP: Record<string, number> = { 'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6 };
     const targetDay = DAYS_MAP[patient.fixedDay?.toLowerCase() || ''] ?? 1;
 
-    const newPackageNumber = Math.floor(patientSessions.length / 10) + 1;
-
     const scheduledAndRealized = patientSessions;
     let startDate = new Date();
 
@@ -908,6 +907,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
          times.push(addOneHour(patient.fixedTime || '08:00'));
        }
        for (const time of times) {
+          const sessionNumberInCycle = (generatedSessions.length % 10) + 1;
           generatedSessions.push({
               id: Math.random().toString(36).substr(2, 9),
               patientId: patient.id,
@@ -915,7 +915,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
               time,
               type: patient.doubleSession ? SessionType.DUPLA : SessionType.SIMPLES,
               status: SessionStatus.AGENDADA,
-              packageNumber: newPackageNumber,
+              packageNumber: sessionNumberInCycle,
               isFixedSchedule: true,
               source: 'fixed'
           });
