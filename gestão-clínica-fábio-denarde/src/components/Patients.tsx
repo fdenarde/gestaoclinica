@@ -6,6 +6,7 @@ import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
 import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
+import { PatientFileField, uploadPatientFile, validatePatientFile } from '../lib/patientFileStorage';
 
 interface PatientsProps {
   state: AppState;
@@ -41,6 +42,8 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       initialNotes: ''
     }
   });
+  const [newPatientFiles, setNewPatientFiles] = useState<Partial<Record<PatientFileField, File>>>({});
+  const [isUploadingPatientFiles, setIsUploadingPatientFiles] = useState(false);
 
   const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
@@ -50,7 +53,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
            normalize(p.guardianName).includes(normalize(searchTerm));
   }).sort((a,b) => a.name.localeCompare(b.name));
 
-  const handleCreatePatient = () => {
+  const handleCreatePatient = async () => {
     if (!newPatient.name || !newPatient.birthDate || !newPatient.guardianName || !newPatient.whatsapp) {
       showToast('Preencha os campos obrigatórios!', 'error');
       return;
@@ -70,6 +73,20 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       anamnese: { ...newPatient.anamnese as any },
       clinicalNotes: '',
     };
+
+    try {
+      setIsUploadingPatientFiles(true);
+      for (const field of Object.keys(newPatientFiles) as PatientFileField[]) {
+        const file = newPatientFiles[field];
+        if (file) {
+          patient[field] = await uploadPatientFile(id, field, file);
+        }
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Erro ao enviar arquivo para o Firebase Storage.', 'error');
+      setIsUploadingPatientFiles(false);
+      return;
+    }
 
     // Auto-generate 1st package sessions and payments
     const DAYS_MAP: Record<string, number> = {
@@ -142,6 +159,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
     showToast('Atendente e ciclo inicial cadastrados com sucesso!');
     setIsNewPatientModalOpen(false);
     resetNewPatientForm();
+    setIsUploadingPatientFiles(false);
   };
 
   const resetNewPatientForm = () => {
@@ -160,6 +178,21 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         initialNotes: ''
       }
     });
+    setNewPatientFiles({});
+  };
+
+  const handleNewPatientFileSelection = (e: React.ChangeEvent<HTMLInputElement>, field: PatientFileField) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      validatePatientFile(file, field);
+      setNewPatientFiles(prev => ({ ...prev, [field]: file }));
+      showToast('Arquivo selecionado. Ele sera enviado ao salvar o atendente.', 'success');
+    } catch (error) {
+      e.target.value = '';
+      showToast(error instanceof Error ? error.message : 'Arquivo invalido.', 'error');
+    }
   };
 
   const confirmDelete = () => {
@@ -367,16 +400,12 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                 <input 
                   type="file" 
                   accept="image/*"
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, photoUrl: reader.result as string }));
-                      reader.readAsDataURL(file);
-                    }
-                  }}
+                  onChange={e => handleNewPatientFileSelection(e, 'photoUrl')}
                   className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
                 />
+                {newPatientFiles.photoUrl && (
+                  <span className="text-[11px] text-clinic-text-muted">Selecionado: {newPatientFiles.photoUrl.name}</span>
+                )}
               </div>
             </div>
 
@@ -441,32 +470,24 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                 <input 
                   type="file" 
                   accept="application/pdf"
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, reportPdfUrl: reader.result as string }));
-                      reader.readAsDataURL(file);
-                    }
-                  }}
+                  onChange={e => handleNewPatientFileSelection(e, 'reportPdfUrl')}
                   className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
                 />
+                {newPatientFiles.reportPdfUrl && (
+                  <span className="text-[11px] text-clinic-text-muted">Selecionado: {newPatientFiles.reportPdfUrl.name}</span>
+                )}
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Upload Parecer (PDF)</label>
                 <input 
                   type="file" 
                   accept="application/pdf"
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, opinionPdfUrl: reader.result as string }));
-                      reader.readAsDataURL(file);
-                    }
-                  }}
+                  onChange={e => handleNewPatientFileSelection(e, 'opinionPdfUrl')}
                   className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
                 />
+                {newPatientFiles.opinionPdfUrl && (
+                  <span className="text-[11px] text-clinic-text-muted">Selecionado: {newPatientFiles.opinionPdfUrl.name}</span>
+                )}
               </div>
             </div>
 
@@ -558,9 +579,10 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
           <button 
             onClick={handleCreatePatient}
-            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest"
+            disabled={isUploadingPatientFiles}
+            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Salvar Atendente
+            {isUploadingPatientFiles ? 'Enviando arquivos...' : 'Salvar Atendente'}
           </button>
         </div>
       </Modal>
@@ -613,6 +635,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Patient>>(patient);
+  const [uploadingEditField, setUploadingEditField] = useState<PatientFileField | null>(null);
   const [repositionModalSession, setRepositionModalSession] = useState<Session | null>(null);
   const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [repoTime, setRepoTime] = useState(patient?.fixedTime || '08:00');
@@ -865,14 +888,20 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     showToast(realign ? 'Dados salvos e agenda futura realinhada com sucesso!' : 'Dados salvos com sucesso!', 'success');
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'photoUrl' | 'reportPdfUrl' | 'opinionPdfUrl') => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, field: PatientFileField) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditForm(prev => ({ ...prev, [field]: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    try {
+      setUploadingEditField(field);
+      const url = await uploadPatientFile(patient.id, field, file);
+      setEditForm(prev => ({ ...prev, [field]: url }));
+      showToast('Arquivo enviado para o Firebase Storage. Clique em Salvar Alteracoes para gravar no cadastro.', 'success');
+    } catch (error) {
+      e.target.value = '';
+      showToast(error instanceof Error ? error.message : 'Erro ao enviar arquivo para o Firebase Storage.', 'error');
+    } finally {
+      setUploadingEditField(null);
     }
   };
 
@@ -1460,7 +1489,13 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                       </h5>
                       <div className="flex gap-2">
                         <button onClick={() => setIsEditingData(false)} className="text-clinic-text-faint hover:text-clinic-text text-xs uppercase font-bold px-3 py-1.5 transition-colors">Cancelar</button>
-                        <button onClick={handleSavePatientData} className="bg-clinic-primary text-white text-xs uppercase font-bold px-4 py-1.5 rounded-lg hover:bg-clinic-primary/90 transition-colors">Salvar Alterações</button>
+                        <button
+                          onClick={handleSavePatientData}
+                          disabled={!!uploadingEditField}
+                          className="bg-clinic-primary text-white text-xs uppercase font-bold px-4 py-1.5 rounded-lg hover:bg-clinic-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {uploadingEditField ? 'Enviando arquivo...' : 'Salvar Alterações'}
+                        </button>
                       </div>
                     </div>
                     
@@ -1497,7 +1532,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                         </div>
                         <div>
                           <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Foto da Criança</label>
-                          <input type="file" accept="image/*" onChange={e => handleFileUpload(e, 'photoUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                          <input type="file" accept="image/*" disabled={!!uploadingEditField} onChange={e => handleFileUpload(e, 'photoUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted disabled:opacity-60 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
                         </div>
                       </div>
                       
@@ -1537,11 +1572,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
                         <div className="space-y-4 pt-2">
                           <div>
                             <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Upload Relatório (PDF)</label>
-                            <input type="file" accept="application/pdf" onChange={e => handleFileUpload(e, 'reportPdfUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                            <input type="file" accept="application/pdf" disabled={!!uploadingEditField} onChange={e => handleFileUpload(e, 'reportPdfUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted disabled:opacity-60 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Upload Parecer (PDF)</label>
-                            <input type="file" accept="application/pdf" onChange={e => handleFileUpload(e, 'opinionPdfUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                            <input type="file" accept="application/pdf" disabled={!!uploadingEditField} onChange={e => handleFileUpload(e, 'opinionPdfUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted disabled:opacity-60 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
                           </div>
                         </div>
                       </div>

@@ -1,0 +1,33 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isPatientFile() {
+      return request.resource.contentType.matches('image/.*') ||
+        request.resource.contentType == 'application/pdf' ||
+        request.resource.contentType.matches('video/.*');
+    }
+
+    match /users/{userId}/patients/{patientId}/{filePath=**} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId) &&
+        request.resource.size <= 100 * 1024 * 1024 &&
+        isPatientFile();
+    }
+
+    match /sounds/alarms/{fileName} {
+      allow read: if true;
+      allow write: if isSignedIn() &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('audio/.*');
+    }
+  }
+}
