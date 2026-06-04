@@ -44,6 +44,9 @@ service cloud.firestore {
       match /agenda_pessoal/{agendaId} {
         allow read, write: if isOwner(userId);
       }
+      match /packages/{packageId} {
+        allow read, write: if isOwner(userId);
+      }
     }
   }
 }

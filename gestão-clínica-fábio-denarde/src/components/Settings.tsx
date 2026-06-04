@@ -398,14 +398,12 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
 
       {/* Botão de Migração de Pacotes */}
       <button
-        onClick={async () => {
-          const { runPackageMigration } = await import('../scripts/migratePackages');
-          const result = await runPackageMigration();
-          alert(result.message);
-        }}
-        className="w-full mt-4 bg-status-orange-bg hover:bg-status-orange-hover text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-md transition-all"
+        type="button"
+        disabled
+        title="Desativado para proteger os dados reais durante a fase de testes."
+        className="w-full mt-4 bg-status-orange-bg text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-md opacity-60 cursor-not-allowed"
       >
-        <Database size={20} /> Migrar Pacotes (Firestore)
+        <Database size={20} /> Migração de Pacotes Desativada
       </button>
 
       <div className="max-w-2xl mx-auto w-full text-center text-clinic-text-faint text-xs opacity-50">

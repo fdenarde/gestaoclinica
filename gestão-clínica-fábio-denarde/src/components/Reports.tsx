@@ -1,26 +1,22 @@
 import React, { useState } from 'react';
-import { AppState, SessionStatus, Patient } from '../types';
+import { AppState, SessionStatus } from '../types';
 import { FileDown, FileUp, Trash2, Printer, Download, Calendar, DollarSign, User, Database, Clock, Plus, Copy } from 'lucide-react';
 import { showToast } from './Common/Toast';
-import { clearState, loadState, saveState } from '../lib/storage';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
-import { CLINIC_INFO } from '../constants';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
-import Modal from './Common/Modal';
 
 interface ReportsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
 }
 
-export default function Reports({ state, onUpdate }: ReportsProps) {
+export default function Reports({ state }: ReportsProps) {
   const [selectedPatientId, setSelectedPatientId] = useState<string>('all');
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
-  const [isClearDataOpen, setIsClearDataOpen] = useState(false);
 
   const handleExportJSON = () => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state));
@@ -31,27 +27,6 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
     showToast('Backup exportado com sucesso!');
-  };
-
-  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const json = JSON.parse(event.target?.result as string);
-        onUpdate(json);
-        showToast('Dados restaurados com sucesso!');
-      } catch (err) {
-        showToast('Erro ao importar arquivo.', 'error');
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const handleClearData = () => {
-    setIsClearDataOpen(true);
   };
 
   const generateHeader = (doc: jsPDF, title: string) => {
@@ -544,58 +519,33 @@ export default function Reports({ state, onUpdate }: ReportsProps) {
               </div>
             </button>
 
-            <label className="flex items-center justify-center gap-3 p-6 bg-white border border-clinic-border rounded-2xl hover:bg-clinic-bg/50 transition-all group cursor-pointer">
-              <input type="file" className="hidden" accept=".json" onChange={handleImportJSON} />
-              <div className="p-3 bg-status-blue-bg text-status-blue-text rounded-xl group-hover:scale-110 transition-transform"><FileUp size={28} /></div>
+            <button
+              type="button"
+              disabled
+              title="Desativado para proteger os dados reais durante a fase de testes."
+              className="flex items-center justify-center gap-3 p-6 bg-white border border-clinic-border rounded-2xl opacity-60 cursor-not-allowed"
+            >
+              <div className="p-3 bg-status-blue-bg text-status-blue-text rounded-xl"><FileUp size={28} /></div>
               <div className="text-left">
                 <span className="block font-bold text-sm">Importar Backup</span>
-                <span className="block text-[10px] text-clinic-text-muted">Restaurar dados de um arquivo</span>
+                <span className="block text-[10px] text-clinic-text-muted">Desativado para proteger dados reais</span>
               </div>
-            </label>
+            </button>
 
             <button 
-              onClick={handleClearData}
-              className="flex items-center justify-center gap-3 p-6 bg-white border border-clinic-border rounded-2xl hover:bg-status-red-bg/20 transition-all group"
+              type="button"
+              disabled
+              title="Desativado para proteger os dados reais durante a fase de testes."
+              className="flex items-center justify-center gap-3 p-6 bg-white border border-clinic-border rounded-2xl opacity-60 cursor-not-allowed"
             >
-              <div className="p-3 bg-status-red-bg text-status-red-text rounded-xl group-hover:scale-110 transition-transform"><Trash2 size={28} /></div>
+              <div className="p-3 bg-status-red-bg text-status-red-text rounded-xl"><Trash2 size={28} /></div>
               <div className="text-left">
                 <span className="block font-bold text-sm text-status-red-text">Limpar Sistema</span>
-                <span className="block text-[10px] text-clinic-text-muted">Excluir permanentemente todos os dados</span>
+                <span className="block text-[10px] text-clinic-text-muted">Desativado para proteger dados reais</span>
               </div>
             </button>
           </div>
       </div>
-
-      <Modal
-        isOpen={isClearDataOpen}
-        onClose={() => setIsClearDataOpen(false)}
-        title="LIMPEZA PERMANENTE"
-        width="max-w-md"
-      >
-        <div className="space-y-6">
-          <p className="text-status-red-text font-bold">
-            ATENÇÃO: Isso excluirá TODOS os atendentes, sessões e pagamentos permanentemente.
-            Você tem certeza?
-          </p>
-          <div className="flex justify-end gap-3">
-            <button
-              onClick={() => setIsClearDataOpen(false)}
-              className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={() => {
-                clearState();
-                setIsClearDataOpen(false);
-              }}
-              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
-            >
-              Sim, LIMPAR TUDO!
-            </button>
-          </div>
-        </div>
-      </Modal>
 
     </div>
   );

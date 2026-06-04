@@ -16,7 +16,7 @@ import { useAlarms } from './lib/useAlarms';
 
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, collection, deleteDoc, writeBatch } from 'firebase/firestore';
+import { doc, onSnapshot, collection, writeBatch, type WriteBatch } from 'firebase/firestore';
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -177,7 +177,6 @@ export default function App() {
     const userDocRef = doc(db, 'users', user.uid);
     
     try {
-      const operations: (() => void)[] = [];
       let batch = writeBatch(db);
       let opCount = 0;
 
@@ -189,11 +188,39 @@ export default function App() {
         }
       };
 
-      const addOp = async (op: (b: any) => void) => {
+      const addOp = async (op: (b: WriteBatch) => void) => {
         op(batch);
         opCount++;
         if (opCount >= 400) {
           await commitBatch();
+        }
+      };
+
+      const hasMeaningfulChange = <T extends { id: string }>(currentItem: T | undefined, nextItem: T) => {
+        if (!currentItem) return true;
+        return JSON.stringify(currentItem) !== JSON.stringify(nextItem);
+      };
+
+      const syncCollection = async <T extends { id: string }>(
+        collectionName: string,
+        currentItems: T[],
+        nextItems: T[],
+        mapToFirestore: (item: T) => unknown = item => item
+      ) => {
+        const currentMap = new Map(currentItems.map(item => [item.id, item]));
+        const nextMap = new Map(nextItems.map(item => [item.id, item]));
+        const colRef = collection(userDocRef, collectionName);
+
+        for (const id of currentMap.keys()) {
+          if (!nextMap.has(id)) {
+            await addOp(b => b.delete(doc(colRef, id)));
+          }
+        }
+
+        for (const item of nextItems) {
+          if (hasMeaningfulChange(currentMap.get(item.id), item)) {
+            await addOp(b => b.set(doc(colRef, item.id), mapToFirestore(item)));
+          }
         }
       };
 
@@ -202,93 +229,31 @@ export default function App() {
       }
       
       if (newState.patients) {
-        const currentIds = new Set<string>(state.patients.map(p => p.id));
-        const newIds = new Set<string>(newState.patients.map(p => p.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'patients'), id)));
-          }
-        }
-        for (const p of newState.patients) {
-          await addOp(b => b.set(doc(collection(userDocRef, 'patients'), p.id), p));
-        }
+        await syncCollection('patients', state.patients, newState.patients);
       }
       
       if (newState.sessions) {
-        const currentIds = new Set<string>(state.sessions.map(s => s.id));
-        const newIds = new Set<string>(newState.sessions.map(s => s.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'sessions'), id)));
-          }
-        }
-        for (const s of newState.sessions) {
-          await addOp(b => b.set(doc(collection(userDocRef, 'sessions'), s.id), s));
-        }
+        await syncCollection('sessions', state.sessions, newState.sessions);
       }
       
       if (newState.payments) {
-        const currentIds = new Set<string>(state.payments.map(p => p.id));
-        const newIds = new Set<string>(newState.payments.map(p => p.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'payments'), id)));
-          }
-        }
-        for (const p of newState.payments) {
-          await addOp(b => b.set(doc(collection(userDocRef, 'payments'), p.id), p));
-        }
+        await syncCollection('payments', state.payments, newState.payments);
       }
       
       if (newState.repositions) {
-        const currentIds = new Set<string>(state.repositions.map(r => r.id));
-        const newIds = new Set<string>(newState.repositions.map(r => r.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'repositions'), id)));
-          }
-        }
-        for (const r of newState.repositions) {
-          await addOp(b => b.set(doc(collection(userDocRef, 'repositions'), r.id), r));
-        }
+        await syncCollection('repositions', state.repositions, newState.repositions);
       }
       
       if (newState.expenses) {
-        const currentIds = new Set<string>(state.expenses.map(e => e.id));
-        const newIds = new Set<string>(newState.expenses.map(e => e.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'expenses'), id)));
-          }
-        }
-        for (const e of newState.expenses) {
-          await addOp(b => b.set(doc(collection(userDocRef, 'expenses'), e.id), e));
-        }
+        await syncCollection('expenses', state.expenses, newState.expenses);
       }
       
       if (newState.evolutions) {
-        const currentIds = new Set<string>(state.evolutions.map(e => e.id));
-        const newIds = new Set<string>(newState.evolutions.map(e => e.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'evolutions'), id)));
-          }
-        }
-        for (const e of newState.evolutions) {
-          await addOp(b => b.set(doc(collection(userDocRef, 'evolutions'), e.id), e));
-        }
+        await syncCollection('evolutions', state.evolutions, newState.evolutions);
       }
 
       if (newState.personalAppointments) {
-        const currentIds = new Set<string>(state.personalAppointments.map(a => a.id));
-        const newIds = new Set<string>(newState.personalAppointments.map(a => a.id));
-        for (const id of currentIds) {
-          if (!newIds.has(id)) {
-            await addOp(b => b.delete(doc(collection(userDocRef, 'agenda_pessoal'), id)));
-          }
-        }
-        for (const a of newState.personalAppointments) {
-          const dbObj = {
+        await syncCollection('agenda_pessoal', state.personalAppointments, newState.personalAppointments, a => ({
             id: a.id,
             data: a.date,
             hora: a.time,
@@ -302,9 +267,7 @@ export default function App() {
             fade_in: a.alarmFadeIn ?? false,
             status: a.isDone ? 'concluído' : 'ativo',
             criado_em: new Date().toISOString()
-          };
-          await addOp(b => b.set(doc(collection(userDocRef, 'agenda_pessoal'), a.id), dbObj));
-        }
+          }));
       }
 
       await commitBatch();
