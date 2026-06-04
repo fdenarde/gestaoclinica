@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit",
     "server": "node server.js",
     "audit:wpp": "tsx scripts/audit-whatsapp-reminders.ts",
+    "test:wpp:offline": "tsx scripts/test-whatsapp-reminders.ts",
     "test-msg": "node test-messages.js",
     "test-wpp": "node send-test-whatsapp.js",
     "deploy": "node -e \"console.error('Deploy automatico desativado por seguranca. Use npm run safe-deploy.'); process.exit(1)\"",
