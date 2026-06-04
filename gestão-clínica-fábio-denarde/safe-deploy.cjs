@@ -102,6 +102,11 @@ function runRequired(cmd, label, cwdOverride = null) {
   }
 }
 
+function hasForbiddenPath(file) {
+  const normalized = file.replace(/\\/g, '/');
+  return FORBIDDEN.some(forbid => normalized.includes(forbid));
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // ETAPA 1: Verificar arquivos sensíveis
 // ─────────────────────────────────────────────────────────────────────
@@ -114,23 +119,28 @@ function etapaVerificarSensiveis() {
     return;
   }
 
+  const tracked = run('git ls-files', GIT_ROOT);
+  const trackedFiles = tracked ? tracked.split('\n').filter(Boolean) : [];
+  const trackedForbidden = trackedFiles.filter(hasForbiddenPath);
+
+  if (trackedForbidden.length > 0) {
+    console.log(`  ${C.red}ARQUIVOS PROIBIDOS JA RASTREADOS PELO GIT:${C.reset}`);
+    trackedForbidden.slice(0, 30).forEach(f => console.log(`    ${C.red}✗${C.reset} ${f}`));
+    if (trackedForbidden.length > 30) {
+      console.log(`    ${C.red}... +${trackedForbidden.length - 30} arquivos${C.reset}`);
+    }
+    fail('Arquivos sensiveis ja estao versionados. Remova-os do indice com git rm --cached antes de publicar.');
+  }
+
   const staged = run('git diff --cached --name-only', GIT_ROOT);
   if (!staged) {
     info('Nenhum arquivo staged.');
+    ok('Nenhum arquivo sensivel detectado.');
     return;
   }
 
   const stagedFiles = staged.split('\n').filter(Boolean);
-  const foundForbidden = [];
-
-  for (const file of stagedFiles) {
-    const normalized = file.replace(/\\/g, '/');
-    for (const forbid of FORBIDDEN) {
-      if (normalized.includes(forbid)) {
-        foundForbidden.push(file);
-      }
-    }
-  }
+  const foundForbidden = stagedFiles.filter(hasForbiddenPath);
 
   if (foundForbidden.length > 0) {
     console.log(`  ${C.red}ARQUIVOS PROIBIDOS ENCONTRADOS NO STAGE:${C.reset}`);

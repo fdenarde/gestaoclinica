@@ -2,6 +2,12 @@ import fs from 'fs';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 
+if (process.env.ALLOW_FIRESTORE_MUTATION !== 'SIM') {
+  console.error('BLOQUEADO: este script cria sessoes reais no Firestore.');
+  console.error('Para executar conscientemente, defina ALLOW_FIRESTORE_MUTATION=SIM.');
+  process.exit(1);
+}
+
 const sa = JSON.parse(fs.readFileSync('./firebase-key.json', 'utf8'));
 if (!admin.apps.length) {
   admin.initializeApp({ credential: admin.credential.cert(sa) });

@@ -2,6 +2,12 @@ import fs from 'fs';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 
+if (process.env.ALLOW_FIRESTORE_MUTATION !== 'SIM') {
+  console.error('BLOQUEADO: este script deleta dados reais do Firestore.');
+  console.error('Para executar conscientemente, defina ALLOW_FIRESTORE_MUTATION=SIM.');
+  process.exit(1);
+}
+
 const sa = JSON.parse(fs.readFileSync('./firebase-key.json', 'utf8'));
 admin.initializeApp({ credential: admin.credential.cert(sa) });
 const db = getFirestore('ai-studio-587970e5-0653-44a5-93a3-be1a74301eda');

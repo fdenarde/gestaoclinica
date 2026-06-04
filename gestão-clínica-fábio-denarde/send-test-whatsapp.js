@@ -6,6 +6,17 @@ import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
 
+if (process.env.ALLOW_REAL_WHATSAPP_SEND !== 'SIM') {
+    console.error('BLOQUEADO: este script envia WhatsApp real.');
+    console.error('Para executar conscientemente, defina ALLOW_REAL_WHATSAPP_SEND=SIM e informe o numero de destino.');
+    process.exit(1);
+}
+
+if (!process.argv[2]) {
+    console.error('BLOQUEADO: informe explicitamente o numero de destino. O fallback para settings.whatsapp foi desativado por seguranca.');
+    process.exit(1);
+}
+
 // Inicializar Firebase Admin
 const serviceAccountPath = path.resolve('./firebase-key.json');
 

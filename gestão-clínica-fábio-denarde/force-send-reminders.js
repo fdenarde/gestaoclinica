@@ -5,6 +5,12 @@ import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
 
+if (process.env.ALLOW_FORCE_WHATSAPP_SEND !== 'SIM') {
+    console.error('BLOQUEADO: force-send-reminders.js envia lembretes reais para responsaveis.');
+    console.error('Use dry_run_reminders.js para validar. Para executar conscientemente, defina ALLOW_FORCE_WHATSAPP_SEND=SIM.');
+    process.exit(1);
+}
+
 // 1. Inicializar Firebase Admin
 const serviceAccountPath = path.resolve('./firebase-key.json');
 

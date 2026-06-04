@@ -10,7 +10,14 @@ import { collection, getDocs, query, where, orderBy, writeBatch, doc } from 'fir
  * - Cria (ou atualiza) documentos na coleção "packages" com:
  *    - patientId, number, status (Concluído / Em andamento), startDate, endDate
  */
-export async function runPackageMigration(): Promise<{ success: boolean; message: string }> {
+export async function runPackageMigration(confirmText = ''): Promise<{ success: boolean; message: string }> {
+  if (confirmText !== 'CONFIRMO_MIGRACAO_DE_PACOTES') {
+    return {
+      success: false,
+      message: 'Migração bloqueada por segurança. Informe a confirmação explícita antes de alterar pacotes e sessões.'
+    };
+  }
+
   const user = auth.currentUser;
   if (!user) {
     return { success: false, message: 'Usuário não autenticado. Faça login antes de executar a migração.' };
