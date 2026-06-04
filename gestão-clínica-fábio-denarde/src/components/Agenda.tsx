@@ -14,6 +14,8 @@ const getHourBase = (timeStr: string): string => {
   return `${hour}:00`;
 };
 
+const getSessionSortKey = (session: Pick<Session, 'date' | 'time'>) => `${session.date}T${normalizeTime(session.time) || '00:00'}`;
+
 // ── Status helpers ────────────────────────────────────────────────
 
 function getStatusLabel(session: ProcessedSession): string {
@@ -118,27 +120,42 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
   }, [repoDate]);
 
+  const getNextSessionNumberInCycle = (patientId: string, targetDate: string, targetTime: string) => {
+    const targetKey = `${targetDate}T${normalizeTime(targetTime) || '00:00'}`;
+    const previousSessions = state.sessions
+      .filter(s => s.patientId === patientId && !s.isBlocked && (s.packageNumber || 0) > 0)
+      .filter(s => getSessionSortKey(s) < targetKey)
+      .sort((a, b) => getSessionSortKey(a).localeCompare(getSessionSortKey(b)));
+
+    const previousNumber = previousSessions.at(-1)?.packageNumber || 0;
+    return previousNumber >= 10 ? 1 : previousNumber + 1;
+  };
+
+  const getSessionNumberLabel = (session: ProcessedSession) => {
+    const number = session.packageNumber || 0;
+    if (number <= 0) return '';
+
+    if (session.status === SessionStatus.AGENDADA || session.isVirtual) {
+      return `Sessão será ${number}`;
+    }
+
+    if (session.status === SessionStatus.CANCELADA) {
+      return `Sessão seria ${number}`;
+    }
+
+    return `Sessão foi ${number}`;
+  };
+
   // ── Create real session from virtual ──────────────────────────
   const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
     const patient = state.patients.find(p => p.id === virtualSession.patientId);
     if (!patient) return null;
-    const patientSessions = state.sessions.filter(s => s.patientId === patient.id);
-    const maxPackage = patientSessions.reduce((max, s) => {
-      const pn = s.packageNumber || 0;
-      return pn > max ? pn : max;
-    }, 0);
-    let nextPackageNumber = 1;
-    if (maxPackage === 0) {
-      nextPackageNumber = 1;
-    } else {
-      const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-      nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-    }
+    const nextSessionNumber = getNextSessionNumberInCycle(patient.id, virtualSession.date, virtualSession.time);
     const newReal: Session = {
       ...virtualSession,
       id: Math.random().toString(36).substr(2, 9),
       status: newStatus,
-      packageNumber: nextPackageNumber,
+      packageNumber: nextSessionNumber,
     };
     let reposition: Reposition | undefined;
     if (newStatus === SessionStatus.FALTA || newStatus === SessionStatus.FALTA_PROF) {
@@ -320,18 +337,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     const patient = state.patients.find(p => p.id === patientId);
     if (!patient) return;
 
-    const patientSessions = state.sessions.filter(s => s.patientId === patientId);
-    const maxPackage = patientSessions.reduce((max, s) => {
-      const pn = s.packageNumber || 0;
-      return pn > max ? pn : max;
-    }, 0);
-    let nextPackageNumber = 1;
-    if (maxPackage === 0) {
-      nextPackageNumber = 1;
-    } else {
-      const sessionsInCurrent = patientSessions.filter(s => s.packageNumber === maxPackage).length;
-      nextPackageNumber = sessionsInCurrent >= 10 ? maxPackage + 1 : maxPackage;
-    }
+    const nextSessionNumber = getNextSessionNumberInCycle(patientId, selectedSlot.date, selectedSlot.time);
 
     const newSession: Session = {
       id: Math.random().toString(36).substr(2, 9),
@@ -341,7 +347,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       type: sessionType,
       status: SessionStatus.AGENDADA,
       notes,
-      packageNumber: nextPackageNumber
+      packageNumber: nextSessionNumber
     };
 
     onUpdate({ sessions: [...state.sessions, newSession] });
@@ -492,7 +498,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       details.push(`Responsável: ${patient?.guardianName || 'Não informado'}`);
       details.push(`WhatsApp: ${patient?.whatsapp || 'Não informado'}`);
       details.push(`Tipo: ${session.type || 'Não informado'}`);
-      details.push(`Pacote: ${session.packageNumber || 'Sem pacote vinculado'}`);
+      details.push(getSessionNumberLabel(session) || 'Sessão sem número definido');
     }
 
     if (session.notes?.trim()) details.push(`Observações: ${session.notes.trim()}`);
@@ -722,7 +728,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                       )}
                                       {!isVirtual && !isBlocked && session.packageNumber && session.packageNumber > 0 && (
                                         <span className="text-[7px] text-clinic-text-muted">
-                                          Pacote {session.packageNumber}
+                                          {getSessionNumberLabel(session)}
                                         </span>
                                       )}
                                     </div>

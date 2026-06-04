@@ -409,13 +409,13 @@ export default function App() {
 
       {/* Navigation Menu */}
       <nav className="bg-clinic-nav-bg border-b border-clinic-border-dark flex justify-center sticky top-0 z-40 shrink-0">
-        <div className="flex w-full max-w-5xl overflow-x-auto custom-scrollbar">
+        <div className="flex w-full max-w-6xl overflow-x-auto custom-scrollbar">
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`
-                flex-1 min-w-[130px] flex flex-row items-center justify-center gap-2 py-4 text-[11px] sm:text-sm font-bold uppercase tracking-wider transition-all
+                flex-1 min-w-[150px] flex flex-row items-center justify-center gap-3 px-4 py-4 text-[11px] sm:text-sm font-bold uppercase tracking-wider transition-all
                 ${activeTab === tab.id 
                   ? 'text-clinic-header border-b-4 border-clinic-primary bg-clinic-surface' 
                   : 'text-clinic-text-muted hover:bg-clinic-bg/60 border-b-4 border-transparent'}
