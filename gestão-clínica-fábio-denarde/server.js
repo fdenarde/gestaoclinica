@@ -97,6 +97,18 @@ client.on('disconnected', reason => {
 // Funções Auxiliares
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
+const maskName = (name) => {
+    if (!name || !name.trim()) return '(sem nome)';
+    const first = name.trim().split(/\s+/)[0];
+    return `${first[0]}***`;
+};
+
+const maskPhone = (phone) => {
+    if (!phone || !phone.trim()) return '(sem telefone)';
+    const digits = phone.replace(/\D/g, '');
+    return digits.length > 4 ? `***${digits.slice(-4)}` : '***';
+};
+
 // 3. Lógica Principal de Lembretes
 async function dispararLembretes(tipo) {
     console.log(`[${new Date().toISOString()}] Iniciando rotina de Lembretes: ${tipo}`);
@@ -153,7 +165,7 @@ async function dispararLembretes(tipo) {
                 
                 if (tipo === 'AMANHA' && settings.whatsapp) {
                     const clinicPhone = formatPhoneNumber(settings.whatsapp);
-                    console.log(`Avisando administrador no WhatsApp ${clinicPhone}...`);
+                    console.log(`Avisando administrador no WhatsApp ${maskPhone(clinicPhone)}...`);
                     await client.sendMessage(clinicPhone, `*Lembrete do Robô*\n\nOlá! Lembrando que amanhã é feriado/recesso de *${plan.holidayName.trim()}*.\n\nO envio de mensagens automáticas de lembrete para os pacientes está suspenso para amanhã.`);
                 }
                 continue;
@@ -162,11 +174,11 @@ async function dispararLembretes(tipo) {
             console.log(`[INFO] ${plan.dateStr} (${tipo}): ${plan.reminders.length} mensagens únicas para enviar.`);
 
             for (const r of plan.reminders) {
-                console.log(`[ENVIO] Enviando para ${r.guardianName} (${r.phone})...`);
+                console.log(`[ENVIO] Enviando para ${maskName(r.guardianName)} (${maskPhone(r.phone)})...`);
                 try {
                     await client.sendMessage(r.phone, r.message);
                 } catch (sendError) {
-                    console.error(`❌ Erro ao enviar para ${r.phone}:`, sendError.message);
+                    console.error(`❌ Erro ao enviar para ${maskPhone(r.phone)}:`, sendError.message);
                     if (sendError.message.includes('detached') || 
                         sendError.message.includes('Protocol error') || 
                         sendError.message.includes('closed') || 
