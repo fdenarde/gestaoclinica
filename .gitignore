@@ -9,3 +9,5 @@ gestão-clínica-fábio-denarde/firebase-key.json
 .claude/settings.json
 dist/
 *.zip
+backups/
+gestão-clínica-fábio-denarde/backups/
