@@ -1,15 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment } from './types';
 import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, LogIn, Loader2, BookOpen } from 'lucide-react';
-import Dashboard from './components/Dashboard';
-import Agenda from './components/Agenda';
-import PersonalAgenda from './components/PersonalAgenda';
-import Patients from './components/Patients';
-import Finance from './components/Finance';
-import Reports from './components/Reports';
-import Settings from './components/Settings';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
@@ -17,6 +10,14 @@ import { useAlarms } from './lib/useAlarms';
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, onSnapshot, collection, writeBatch, type WriteBatch } from 'firebase/firestore';
+
+const Dashboard = lazy(() => import('./components/Dashboard'));
+const Agenda = lazy(() => import('./components/Agenda'));
+const PersonalAgenda = lazy(() => import('./components/PersonalAgenda'));
+const Patients = lazy(() => import('./components/Patients'));
+const Finance = lazy(() => import('./components/Finance'));
+const Reports = lazy(() => import('./components/Reports'));
+const Settings = lazy(() => import('./components/Settings'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -436,23 +437,29 @@ export default function App() {
              </div>
            </div>
          )}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.3 }}
-          >
-            {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
-            {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} />}
-            {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
-            {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} />}
-            {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
-            {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
-            {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} />}
-          </motion.div>
-        </AnimatePresence>
+        <Suspense fallback={
+          <div className="min-h-[360px] flex items-center justify-center">
+            <Loader2 className="w-8 h-8 text-clinic-primary animate-spin" />
+          </div>
+        }>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.3 }}
+            >
+              {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
+              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} />}
+              {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
+              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} />}
+              {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
+              {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
+              {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} />}
+            </motion.div>
+          </AnimatePresence>
+        </Suspense>
       </main>
 
       {/* Toast Notification Container placeholder */}

@@ -16,6 +16,26 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('jspdf') || id.includes('jspdf-autotable')) return 'vendor-pdf';
+            if (id.includes('html2canvas')) return 'vendor-html2canvas';
+            if (id.includes('dompurify')) return 'vendor-dompurify';
+            if (id.includes('papaparse')) return 'vendor-papaparse';
+            if (id.includes('firebase')) return 'vendor-firebase';
+            if (id.includes('react') || id.includes('scheduler')) return 'vendor-react';
+            if (id.includes('motion') || id.includes('framer-motion')) return 'vendor-motion';
+            if (id.includes('date-fns')) return 'vendor-date';
+            if (id.includes('lucide-react') || id.includes('lucide')) return 'vendor-icons';
+            if (id.includes('clsx') || id.includes('tailwind-merge')) return 'vendor-ui';
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       // Use polling on Windows and ignore problematic paths to avoid file‑watcher crashes
       watch: {
