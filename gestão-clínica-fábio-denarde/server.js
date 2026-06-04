@@ -50,16 +50,30 @@ const client = new Client({
     }
 });
 
+let whatsappReady = false;
+let whatsappQrBlocked = false;
+
 client.on('qr', (qr) => {
-    console.log('SCANNEIE O QR CODE ABAIXO PELO SEU WHATSAPP:');
-    qrcode.generate(qr, { small: true });
+    whatsappReady = false;
+    whatsappQrBlocked = true;
+    if (process.env.ALLOW_WHATSAPP_QR === 'SIM') {
+        console.log('SCANNEIE O QR CODE ABAIXO PELO SEU WHATSAPP:');
+        qrcode.generate(qr, { small: true });
+        return;
+    }
+    console.error('QR Code bloqueado por seguranca. A sessao atual nao sera reautenticada automaticamente.');
+    console.error('Para permitir QR Code explicitamente, reinicie com ALLOW_WHATSAPP_QR=SIM.');
 });
 
 client.on('ready', () => {
+    whatsappReady = true;
+    whatsappQrBlocked = false;
     console.log('✅ Robô do WhatsApp 100% pronto (Evento Ready recebido)!');
 });
 
 client.on('authenticated', () => {
+    whatsappReady = true;
+    whatsappQrBlocked = false;
     console.log('✅ Sessão autenticada e salva!');
     // Bypass visual para tranquilizar o usuário, já que o evento 'ready' está bugado no WhatsApp
     setTimeout(() => {
@@ -69,10 +83,12 @@ client.on('authenticated', () => {
 });
 
 client.on('auth_failure', msg => {
+    whatsappReady = false;
     console.error('❌ Falha na autenticação', msg);
 });
 
 client.on('disconnected', reason => {
+    whatsappReady = false;
     console.error('❌ Cliente do WhatsApp desconectado:', reason);
     console.error('ERRO CRÍTICO DE CONEXÃO. Reiniciando o processo do robô para auto-recuperação...');
     process.exit(1);
@@ -84,6 +100,12 @@ const delay = (ms) => new Promise(res => setTimeout(res, ms));
 // 3. Lógica Principal de Lembretes
 async function dispararLembretes(tipo) {
     console.log(`[${new Date().toISOString()}] Iniciando rotina de Lembretes: ${tipo}`);
+    if (!whatsappReady) {
+        const reason = whatsappQrBlocked ? 'QR Code bloqueado/sem reautenticacao' : 'cliente WhatsApp ainda nao esta pronto';
+        console.error(`[BLOQUEIO] Rotina ${tipo} cancelada: ${reason}. Nenhuma mensagem sera enviada.`);
+        return;
+    }
+
     try {
         const settingsConfigSnapshot = await db.collectionGroup('settings').get();
         
