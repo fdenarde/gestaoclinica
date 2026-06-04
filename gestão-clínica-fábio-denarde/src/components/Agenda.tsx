@@ -7,14 +7,13 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, ProcessedSession } from '../lib/utils';
+import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
   const [hour] = timeStr.split(':');
   return `${hour}:00`;
 };
-
-const getSessionSortKey = (session: Pick<Session, 'date' | 'time'>) => `${session.date}T${normalizeTime(session.time) || '00:00'}`;
 
 // ── Status helpers ────────────────────────────────────────────────
 
@@ -120,37 +119,12 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
   }, [repoDate]);
 
-  const getNextSessionNumberInCycle = (patientId: string, targetDate: string, targetTime: string) => {
-    const targetKey = `${targetDate}T${normalizeTime(targetTime) || '00:00'}`;
-    const previousSessions = state.sessions
-      .filter(s => s.patientId === patientId && !s.isBlocked && (s.packageNumber || 0) > 0)
-      .filter(s => getSessionSortKey(s) < targetKey)
-      .sort((a, b) => getSessionSortKey(a).localeCompare(getSessionSortKey(b)));
-
-    const previousNumber = previousSessions.at(-1)?.packageNumber || 0;
-    return previousNumber >= 10 ? 1 : previousNumber + 1;
-  };
-
-  const getSessionNumberLabel = (session: ProcessedSession) => {
-    const number = session.packageNumber || 0;
-    if (number <= 0) return '';
-
-    if (session.status === SessionStatus.AGENDADA || session.isVirtual) {
-      return `Sessão será ${number}`;
-    }
-
-    if (session.status === SessionStatus.CANCELADA) {
-      return `Sessão seria ${number}`;
-    }
-
-    return `Sessão foi ${number}`;
-  };
-
   // ── Create real session from virtual ──────────────────────────
   const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
     const patient = state.patients.find(p => p.id === virtualSession.patientId);
     if (!patient) return null;
-    const nextSessionNumber = getNextSessionNumberInCycle(patient.id, virtualSession.date, virtualSession.time);
+    const previewSession = { ...virtualSession, status: newStatus };
+    const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
     const newReal: Session = {
       ...virtualSession,
       id: Math.random().toString(36).substr(2, 9),
@@ -337,10 +311,21 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     const patient = state.patients.find(p => p.id === patientId);
     if (!patient) return;
 
-    const nextSessionNumber = getNextSessionNumberInCycle(patientId, selectedSlot.date, selectedSlot.time);
+    const newSessionId = Math.random().toString(36).substr(2, 9);
+    const previewSession: Session = {
+      id: newSessionId,
+      patientId,
+      date: selectedSlot.date,
+      time: selectedSlot.time,
+      type: sessionType,
+      status: SessionStatus.AGENDADA,
+      notes,
+      packageNumber: 0
+    };
+    const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
 
     const newSession: Session = {
-      id: Math.random().toString(36).substr(2, 9),
+      ...previewSession,
       patientId,
       date: selectedSlot.date,
       time: selectedSlot.time,
@@ -498,7 +483,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       details.push(`Responsável: ${patient?.guardianName || 'Não informado'}`);
       details.push(`WhatsApp: ${patient?.whatsapp || 'Não informado'}`);
       details.push(`Tipo: ${session.type || 'Não informado'}`);
-      details.push(getSessionNumberLabel(session) || 'Sessão sem número definido');
+      details.push(getSessionCycleLabel(state.sessions, session) || 'Sessão sem número definido');
     }
 
     if (session.notes?.trim()) details.push(`Observações: ${session.notes.trim()}`);
@@ -653,6 +638,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                           const statusLabel = getStatusLabel(session);
                           const sessionActions = getSessionActions(session);
                           const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canCancel;
+                          const sessionCycleLabel = getSessionCycleLabel(state.sessions, session);
 
                           const handleCardClick = () => {
                             if (!isBlocked && patient) {
@@ -726,9 +712,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                                       {session.type === SessionType.DUPLA && (
                                         <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary">Dupla</span>
                                       )}
-                                      {!isVirtual && !isBlocked && session.packageNumber && session.packageNumber > 0 && (
+                                      {!isBlocked && sessionCycleLabel && (
                                         <span className="text-[7px] text-clinic-text-muted">
-                                          {getSessionNumberLabel(session)}
+                                          {sessionCycleLabel}
                                         </span>
                                       )}
                                     </div>

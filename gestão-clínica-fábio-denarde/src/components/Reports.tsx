@@ -8,6 +8,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
+import { getSessionCycleNumber } from '../lib/sessionSequence';
 
 interface ReportsProps {
   state: AppState;
@@ -114,7 +115,7 @@ export default function Reports({ state }: ReportsProps) {
         startY: 85,
         head: [['S#', 'Data', 'Tipo', 'Status', 'Observação']],
         body: patientSessions.map(s => [
-          `S.${s.packageNumber}`,
+          `S.${getSessionCycleNumber(state.sessions, s) || '-'}`,
           safeFormatDate(s.date, 'dd/MM/yyyy'),
           s.type.split(' (')[0],
           s.status,

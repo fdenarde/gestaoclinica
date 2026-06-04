@@ -7,6 +7,7 @@ import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
 import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
+import { getSessionCycleLabel } from '../lib/sessionSequence';
 
 interface DashboardProps {
   state: AppState;
@@ -500,7 +501,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
                   <div className="text-clinic-header font-black text-lg w-16">{session.time}</div>
                   <div className="flex-1">
                     <p className="font-bold text-clinic-text tracking-tight">{session.patient?.name}</p>
-                    <p className="text-xs text-clinic-text-muted">Sessão {session.packageNumber} de 10</p>
+                    <p className="text-xs text-clinic-text-muted">{getSessionCycleLabel(state.sessions, session) || 'Sessão sem número definido'}</p>
                   </div>
                   
                   {session.status === SessionStatus.AGENDADA ? (
