@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getWhatsappReminderPlan } from '../src/lib/utils';
+import { getWhatsappReminderPlan as getTypedWhatsappReminderPlan } from '../src/lib/utils';
+import { getWhatsappReminderPlan as getSharedWhatsappReminderPlan } from '../src/lib/whatsappReminderPlan.js';
 import type { ClinicSettings, Patient, Session } from '../src/types';
 
 type BackupDoc<T = Record<string, unknown>> = {
@@ -114,13 +115,18 @@ for (const userId of userIds) {
   console.log(`Sessoes no backup: ${sessions.length}`);
 
   for (const tipo of tipos) {
-    const plan = getWhatsappReminderPlan({
+    const planInput = {
       runDateStr,
       tipo,
       patients,
       sessions,
       settings
-    });
+    };
+    const plan = getSharedWhatsappReminderPlan(planInput);
+    const typedPlan = getTypedWhatsappReminderPlan(planInput);
+    if (JSON.stringify(plan) !== JSON.stringify(typedPlan)) {
+      throw new Error(`Divergencia entre modulo compartilhado e frontend para ${tipo} em ${runDateStr}.`);
+    }
 
     console.log('');
     console.log(`- Rotina ${tipo} -> data alvo ${plan.dateStr}`);

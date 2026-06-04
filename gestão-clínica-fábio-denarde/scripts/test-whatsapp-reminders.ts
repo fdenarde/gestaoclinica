@@ -1,4 +1,5 @@
-import { getWhatsappReminderPlan } from '../src/lib/utils';
+import { getWhatsappReminderPlan as getTypedWhatsappReminderPlan } from '../src/lib/utils';
+import { getWhatsappReminderPlan as getSharedWhatsappReminderPlan } from '../src/lib/whatsappReminderPlan.js';
 import type { ClinicSettings, Patient, Session } from '../src/types';
 
 type ReminderType = 'AMANHA' | 'HOJE_MANHA' | 'HOJE_TARDE';
@@ -65,7 +66,13 @@ function plan({
   sessions?: Session[];
   settings?: ClinicSettings;
 }) {
-  return getWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, settings });
+  const sharedPlan = getSharedWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, settings });
+  const typedPlan = getTypedWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, settings });
+  assert(
+    JSON.stringify(sharedPlan) === JSON.stringify(typedPlan),
+    `Modulo compartilhado divergiu da logica atual do frontend para ${tipo} em ${runDateStr}`
+  );
+  return sharedPlan as ReturnType<typeof getTypedWhatsappReminderPlan>;
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -74,7 +81,7 @@ function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
-function assertReminderIds(actual: ReturnType<typeof getWhatsappReminderPlan>, expectedIds: string[], label: string) {
+function assertReminderIds(actual: ReturnType<typeof getTypedWhatsappReminderPlan>, expectedIds: string[], label: string) {
   const actualIds = actual.reminders.map(reminder => reminder.patientId).sort();
   const expected = [...expectedIds].sort();
   assert(
@@ -83,7 +90,7 @@ function assertReminderIds(actual: ReturnType<typeof getWhatsappReminderPlan>, e
   );
 }
 
-function assertDiagnosticReason(actual: ReturnType<typeof getWhatsappReminderPlan>, reason: string, label: string) {
+function assertDiagnosticReason(actual: ReturnType<typeof getTypedWhatsappReminderPlan>, reason: string, label: string) {
   assert(
     actual.diagnostics.some(item => item.blockedReason === reason),
     `${label}: diagnostico nao encontrado: ${reason}`
