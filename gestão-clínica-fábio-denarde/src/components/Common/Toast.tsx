@@ -1,5 +1,3 @@
-import React from 'react';
-
 export function showToast(message: string, type: 'success' | 'error' = 'success') {
   const container = document.getElementById('toast-container');
   if (!container) return;
@@ -9,10 +7,11 @@ export function showToast(message: string, type: 'success' | 'error' = 'success'
     min-w-[250px] px-4 py-3 rounded-lg shadow-xl text-white transform translate-y-10 opacity-0 transition-all duration-300 flex items-center gap-3
     ${type === 'success' ? 'bg-status-green-text' : 'bg-status-red-text'}
   `;
-  
-  toast.innerHTML = `
-    <span class="font-medium text-sm">${message}</span>
-  `;
+
+  const text = document.createElement('span');
+  text.className = 'font-medium text-sm';
+  text.textContent = message;
+  toast.appendChild(text);
 
   container.appendChild(toast);
 

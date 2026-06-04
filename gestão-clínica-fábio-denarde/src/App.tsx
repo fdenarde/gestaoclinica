@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment } from './types';
@@ -47,6 +47,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [notifications, setNotifications] = useState<string[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  const loadedCollectionsRef = useRef<Set<string>>(new Set());
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
 
@@ -67,11 +68,15 @@ export default function App() {
     if (!user) return;
     
     setDataLoading(true);
+    loadedCollectionsRef.current.clear();
     
     // Subscribe to all collections
     const unsubscribers: (() => void)[] = [];
     
     const userDocRef = doc(db, 'users', user.uid);
+    const markCollectionLoaded = (collectionName: string) => {
+      loadedCollectionsRef.current.add(collectionName);
+    };
     
     // settings
     unsubscribers.push(
@@ -80,6 +85,7 @@ export default function App() {
         snapshot.forEach(doc => {
           if (doc.id === 'config') settings = doc.data() as ClinicSettings;
         });
+        markCollectionLoaded('settings');
         setState(prev => ({ ...prev, settings }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'settings'))
     );
@@ -88,6 +94,7 @@ export default function App() {
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'patients'), (snapshot) => {
         const patients = snapshot.docs.map(doc => doc.data() as Patient);
+        markCollectionLoaded('patients');
         setState(prev => ({ ...prev, patients }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'patients'))
     );
@@ -96,6 +103,7 @@ export default function App() {
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'sessions'), (snapshot) => {
         const sessions = snapshot.docs.map(doc => doc.data() as Session);
+        markCollectionLoaded('sessions');
         setState(prev => ({ ...prev, sessions }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'sessions'))
     );
@@ -104,6 +112,7 @@ export default function App() {
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'payments'), (snapshot) => {
         const payments = snapshot.docs.map(doc => doc.data() as Payment);
+        markCollectionLoaded('payments');
         setState(prev => ({ ...prev, payments }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'payments'))
     );
@@ -112,6 +121,7 @@ export default function App() {
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'repositions'), (snapshot) => {
         const repositions = snapshot.docs.map(doc => doc.data() as Reposition);
+        markCollectionLoaded('repositions');
         setState(prev => ({ ...prev, repositions }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'repositions'))
     );
@@ -120,6 +130,7 @@ export default function App() {
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'expenses'), (snapshot) => {
         const expenses = snapshot.docs.map(doc => doc.data() as Expense);
+        markCollectionLoaded('expenses');
         setState(prev => ({ ...prev, expenses }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'expenses'))
     );
@@ -128,6 +139,7 @@ export default function App() {
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'evolutions'), (snapshot) => {
         const evolutions = snapshot.docs.map(doc => doc.data() as Evolution);
+        markCollectionLoaded('evolutions');
         setState(prev => ({ ...prev, evolutions }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'evolutions'))
     );
@@ -153,6 +165,7 @@ export default function App() {
             isDone: data.status === 'concluído'
           } as PersonalAppointment;
         });
+        markCollectionLoaded('agenda_pessoal');
         setState(prev => ({ ...prev, personalAppointments }));
         setDataLoading(false);
       }, (error) => {
@@ -207,6 +220,10 @@ export default function App() {
         nextItems: T[],
         mapToFirestore: (item: T) => unknown = item => item
       ) => {
+        if (!loadedCollectionsRef.current.has(collectionName)) {
+          throw new Error(`Gravação bloqueada: a coleção "${collectionName}" ainda não concluiu o primeiro carregamento.`);
+        }
+
         const currentMap = new Map(currentItems.map(item => [item.id, item]));
         const nextMap = new Map(nextItems.map(item => [item.id, item]));
         const colRef = collection(userDocRef, collectionName);
@@ -225,6 +242,9 @@ export default function App() {
       };
 
       if (newState.settings) {
+        if (!loadedCollectionsRef.current.has('settings')) {
+          throw new Error('Gravação bloqueada: as configurações ainda não concluíram o primeiro carregamento.');
+        }
         await addOp(b => b.set(doc(collection(userDocRef, 'settings'), 'config'), newState.settings!));
       }
       
