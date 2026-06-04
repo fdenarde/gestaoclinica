@@ -1,11 +1,12 @@
 import React, { useMemo } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
-import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X } from 'lucide-react';
+import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, MessageCircle } from 'lucide-react';
 import { formatCurrency, getStatusColor, cn, calculateAge } from '../lib/utils';
 import { format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
+import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
 
 interface DashboardProps {
   state: AppState;
@@ -212,6 +213,60 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       .sort((a, b) => a.time.localeCompare(b.time));
   }, [state]);
 
+  const operationalPanel = useMemo(() => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const todayPlanned = todaySessions.filter(s => s.status === SessionStatus.AGENDADA).length;
+    const todayRealized = todaySessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
+    const todayAbsences = todaySessions.filter(s => s.status === SessionStatus.FALTA || s.status === SessionStatus.FALTA_PROF).length;
+    const pendingRepositions = state.repositions.filter(r => r.status === 'Pendente');
+    const patientsNearRenewal = state.patients
+      .filter(patient => patient.status === 'Ativo')
+      .map(patient => {
+        const realized = state.sessions.filter(s =>
+          s.patientId === patient.id &&
+          (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
+        ).length;
+        const packageCount = realized === 0 ? 0 : (realized % 10 === 0 ? 10 : realized % 10);
+        return { patient, packageCount };
+      })
+      .filter(item => item.packageCount >= 8)
+      .sort((a, b) => b.packageCount - a.packageCount);
+    const morningPlan = getWhatsappReminderPlan({
+      runDateStr: today,
+      tipo: 'HOJE_MANHA',
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings
+    });
+    const afternoonPlan = getWhatsappReminderPlan({
+      runDateStr: today,
+      tipo: 'HOJE_TARDE',
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings
+    });
+    const tomorrowPlan = getWhatsappReminderPlan({
+      runDateStr: today,
+      tipo: 'AMANHA',
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings
+    });
+    const whatsappTodayCount = morningPlan.reminders.length + afternoonPlan.reminders.length;
+    const whatsappBlockedCount = morningPlan.diagnostics.length + afternoonPlan.diagnostics.length + tomorrowPlan.diagnostics.length;
+    return {
+      todayPlanned,
+      todayRealized,
+      todayAbsences,
+      pendingRepositions,
+      patientsNearRenewal,
+      whatsappTodayCount,
+      whatsappTomorrowCount: tomorrowPlan.reminders.length,
+      whatsappBlockedCount,
+      whatsappHoliday: morningPlan.isHoliday || afternoonPlan.isHoliday || tomorrowPlan.isHoliday
+    };
+  }, [state, todaySessions]);
+
   return (
     <div className="flex flex-col gap-6 py-6">
       {/* Birthdays Alert */}
@@ -282,6 +337,86 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
           </div>
         ))}
       </div>
+
+      {/* Painel operacional */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-serif text-lg font-bold text-clinic-text">Hoje na Clínica</h3>
+            <Calendar size={18} className="text-clinic-primary" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-clinic-bg rounded-lg p-3 text-center border border-clinic-border/60">
+              <p className="text-2xl font-bold text-clinic-text">{operationalPanel.todayPlanned}</p>
+              <p className="text-[10px] font-black uppercase text-clinic-text-faint">Agendadas</p>
+            </div>
+            <div className="bg-status-green-bg rounded-lg p-3 text-center border border-status-green-text/20">
+              <p className="text-2xl font-bold text-status-green-text">{operationalPanel.todayRealized}</p>
+              <p className="text-[10px] font-black uppercase text-status-green-text">Realizadas</p>
+            </div>
+            <div className="bg-status-red-bg rounded-lg p-3 text-center border border-status-red-text/20">
+              <p className="text-2xl font-bold text-status-red-text">{operationalPanel.todayAbsences}</p>
+              <p className="text-[10px] font-black uppercase text-status-red-text">Faltas</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-serif text-lg font-bold text-clinic-text">Pendências</h3>
+            <AlertTriangle size={18} className="text-status-orange-text" />
+          </div>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
+              <span className="text-xs font-bold text-clinic-text-muted uppercase">Reposições pendentes</span>
+              <span className={cn("text-sm font-black", operationalPanel.pendingRepositions.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
+                {operationalPanel.pendingRepositions.length}
+              </span>
+            </div>
+            <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
+              <span className="text-xs font-bold text-clinic-text-muted uppercase">Pacotes para renovar</span>
+              <span className={cn("text-sm font-black", operationalPanel.patientsNearRenewal.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
+                {operationalPanel.patientsNearRenewal.length}
+              </span>
+            </div>
+            {operationalPanel.patientsNearRenewal.slice(0, 2).map(({ patient, packageCount }) => (
+              <button
+                key={patient.id}
+                onClick={() => onNavigateToPatient?.(patient.id)}
+                className="w-full text-left text-xs font-bold text-clinic-primary hover:underline"
+              >
+                {patient.name}: {packageCount}/10 sessões
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-serif text-lg font-bold text-clinic-text">WhatsApp</h3>
+            <MessageCircle size={18} className="text-status-green-text" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-status-green-bg rounded-lg p-3 text-center border border-status-green-text/20">
+              <p className="text-2xl font-bold text-status-green-text">{operationalPanel.whatsappTodayCount}</p>
+              <p className="text-[10px] font-black uppercase text-status-green-text">Hoje</p>
+            </div>
+            <div className="bg-status-blue-bg rounded-lg p-3 text-center border border-status-blue-text/20">
+              <p className="text-2xl font-bold text-status-blue-text">{operationalPanel.whatsappTomorrowCount}</p>
+              <p className="text-[10px] font-black uppercase text-status-blue-text">Véspera</p>
+            </div>
+            <div className="bg-clinic-bg rounded-lg p-3 text-center border border-clinic-border/60">
+              <p className="text-2xl font-bold text-clinic-text">{operationalPanel.whatsappBlockedCount}</p>
+              <p className="text-[10px] font-black uppercase text-clinic-text-faint">Bloqueios</p>
+            </div>
+          </div>
+          {operationalPanel.whatsappHoliday && (
+            <p className="text-[11px] font-bold text-status-orange-text mt-3 bg-status-orange-bg border border-status-orange-text/20 rounded-lg px-3 py-2">
+              Há bloqueio por feriado/recesso em alguma rotina calculada.
+            </p>
+          )}
+        </div>
+      </section>
 
       {/* Alertas Automáticos */}
       {(alerts.high.length > 0 || alerts.medium.length > 0 || alerts.low.length > 0) && (
