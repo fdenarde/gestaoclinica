@@ -1,5 +1,13 @@
 import { getWhatsappReminderPlan as getTypedWhatsappReminderPlan } from '../src/lib/utils';
 import { getWhatsappReminderPlan as getSharedWhatsappReminderPlan } from '../src/lib/whatsappReminderPlan.js';
+import {
+  buildExecutionReportMessage,
+  buildPreventiveAlertMessage,
+  createExecutionAudit,
+  finishExecutionAudit,
+  registerPlanDiagnostics,
+  registerSuccessfulSend
+} from '../src/lib/whatsappAdminMonitor.js';
 import type { ClinicSettings, Patient, Session } from '../src/types';
 
 type ReminderType = 'AMANHA' | 'HOJE_MANHA' | 'HOJE_TARDE';
@@ -249,6 +257,50 @@ const tests: Array<{ name: string; run: () => void }> = [
 
       assert(result.reminders[0].phone === '5527988887777@c.us', 'telefone deveria ser formatado para whatsapp-web.js');
       assert(result.reminders[0].whatsapp === '(27) 98888-7777', 'telefone original deveria ser preservado no plano');
+    }
+  },
+  {
+    name: 'monta alerta preventivo administrativo sem alterar o plano de pacientes',
+    run: () => {
+      const result = plan({
+        tipo: 'HOJE_MANHA',
+        patients: [patient({ id: 'p-monitor', fixedTime: '09:00' })]
+      });
+      const message = buildPreventiveAlertMessage({
+        tipo: 'HOJE_MANHA',
+        scheduledAt: new Date('2026-06-01T06:30:00-03:00'),
+        planContexts: [{ userId: 'u1', settings: baseSettings, plan: result }]
+      });
+
+      assert(message.includes('ALERTA DO ROBO'), 'alerta preventivo deveria identificar o monitoramento');
+      assert(message.includes('Quantidade prevista de envios: 1'), 'alerta deveria contar envios previstos');
+      assert(message.includes('Dia do Atendimento - Manha'), 'alerta deveria rotular o tipo da rotina');
+    }
+  },
+  {
+    name: 'monta relatorio administrativo final com contadores de execucao',
+    run: () => {
+      const result = plan({
+        tipo: 'HOJE_MANHA',
+        patients: [
+          patient({ id: 'p-enviado', fixedTime: '09:00' }),
+          patient({ id: 'p-bloqueado', fixedTime: '14:00' })
+        ]
+      });
+      const audit = createExecutionAudit({
+        tipo: 'HOJE_MANHA',
+        startedAt: new Date('2026-06-01T06:30:00-03:00'),
+        planContexts: [{ userId: 'u1', settings: baseSettings, plan: result }]
+      });
+      registerPlanDiagnostics(audit, result);
+      registerSuccessfulSend(audit);
+      finishExecutionAudit(audit, new Date('2026-06-01T06:30:07-03:00'));
+      const message = buildExecutionReportMessage(audit);
+
+      assert(message.includes('RELATORIO DE EXECUCAO'), 'relatorio deveria identificar a execucao');
+      assert(message.includes('Mensagens enviadas: 1'), 'relatorio deveria contar envios');
+      assert(message.includes('Mensagens bloqueadas: 1'), 'relatorio deveria contar bloqueios');
+      assert(message.includes('Tempo total de processamento: 7 segundos'), 'relatorio deveria calcular duracao');
     }
   }
 ];

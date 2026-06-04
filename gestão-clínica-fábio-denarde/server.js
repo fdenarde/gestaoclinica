@@ -6,6 +6,19 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 import { formatPhoneNumber, getWhatsappReminderPlan } from './src/lib/whatsappReminderPlan.js';
+import {
+    buildAdminTestMessage,
+    buildDetailedReportMessage,
+    buildExecutionReportMessage,
+    buildPreventiveAlertMessage,
+    createExecutionAudit,
+    finishExecutionAudit,
+    getAdminMonitorConfig,
+    isAdminMonitoringEnabled,
+    registerPlanDiagnostics,
+    registerSendFailure,
+    registerSuccessfulSend
+} from './src/lib/whatsappAdminMonitor.js';
 
 // 0. Capturar rejeições não tratadas de promessas (como erros do Puppeteer/Chromium)
 process.on('unhandledRejection', (reason) => {
@@ -96,6 +109,7 @@ client.on('disconnected', reason => {
 
 // Funções Auxiliares
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
+const ADMIN_MONITOR = getAdminMonitorConfig();
 
 const maskName = (name) => {
     if (!name || !name.trim()) return '(sem nome)';
@@ -109,6 +123,92 @@ const maskPhone = (phone) => {
     return digits.length > 4 ? `***${digits.slice(-4)}` : '***';
 };
 
+function isCriticalBrowserError(error) {
+    const message = error?.message || String(error || '');
+    return message.includes('detached') ||
+        message.includes('Protocol error') ||
+        message.includes('closed') ||
+        message.includes('session') ||
+        message.includes('frame');
+}
+
+async function sendAdminMonitorMessage(message) {
+    if (!isAdminMonitoringEnabled()) return false;
+    if (!whatsappReady) {
+        const reason = whatsappQrBlocked ? 'QR Code bloqueado/sem reautenticacao' : 'cliente WhatsApp ainda nao esta pronto';
+        console.error(`[MONITOR] Mensagem administrativa nao enviada: ${reason}.`);
+        return false;
+    }
+
+    const adminPhone = formatPhoneNumber(ADMIN_MONITOR.phone);
+    try {
+        await client.sendMessage(adminPhone, message);
+        console.log(`[MONITOR] Mensagem administrativa enviada para ${maskPhone(adminPhone)}.`);
+        return true;
+    } catch (error) {
+        console.error(`[MONITOR] Falha ao enviar mensagem administrativa para ${maskPhone(adminPhone)}:`, error.message);
+        if (isCriticalBrowserError(error)) {
+            console.error('ERRO CRÍTICO DE NAVEGADOR DETECTADO DURANTE MONITORAMENTO. Reiniciando o processo do robô...');
+            process.exit(1);
+        }
+        return false;
+    }
+}
+
+async function buildReminderPlanContexts(tipo) {
+    const contexts = [];
+    const settingsConfigSnapshot = await db.collectionGroup('settings').get();
+
+    for (const configDoc of settingsConfigSnapshot.docs) {
+        const userId = configDoc.ref.parent.parent.id;
+
+        const today = new Date();
+        let dateStr = today.toISOString().split('T')[0];
+        if (tipo === 'AMANHA') {
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            dateStr = tomorrow.toISOString().split('T')[0];
+        }
+
+        const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
+        const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+
+        const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
+        const patients = [];
+        patientsSnapshot.forEach(p => {
+            patients.push({ id: p.id, ...p.data() });
+        });
+
+        const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
+            .where('date', '==', dateStr)
+            .get();
+
+        const sessions = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        const plan = getWhatsappReminderPlan({
+            runDateStr: today.toISOString().split('T')[0],
+            tipo,
+            patients,
+            sessions,
+            settings
+        });
+
+        contexts.push({ userId, settings, plan });
+    }
+
+    return contexts;
+}
+
+async function enviarAlertaPreventivo(tipo, scheduledAt) {
+    console.log(`[MONITOR] Preparando alerta preventivo da rotina ${tipo}.`);
+    try {
+        const planContexts = await buildReminderPlanContexts(tipo);
+        await sendAdminMonitorMessage(buildPreventiveAlertMessage({ tipo, scheduledAt, planContexts }));
+    } catch (error) {
+        console.error(`[MONITOR] Falha ao gerar alerta preventivo da rotina ${tipo}:`, error);
+    }
+}
+
 // 3. Lógica Principal de Lembretes
 async function dispararLembretes(tipo) {
     console.log(`[${new Date().toISOString()}] Iniciando rotina de Lembretes: ${tipo}`);
@@ -119,46 +219,13 @@ async function dispararLembretes(tipo) {
     }
 
     try {
-        const settingsConfigSnapshot = await db.collectionGroup('settings').get();
-        
-        for (const configDoc of settingsConfigSnapshot.docs) {
-            const userId = configDoc.ref.parent.parent.id;
-            
-            // Buscar dados de amanhã/hoje
-            const today = new Date();
-            let dateStr = today.toISOString().split('T')[0];
-            if (tipo === 'AMANHA') {
-                const tomorrow = new Date(today);
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                dateStr = tomorrow.toISOString().split('T')[0];
-            }
-            
-            // Buscar configurações para ler feriados e telefone do admin
-            const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
-            const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
-            
-            // 1. Buscar Pacientes (para mapear nomes e horários fixos)
-            const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
-            const patients = [];
-            patientsSnapshot.forEach(p => {
-                patients.push({ id: p.id, ...p.data() });
-            });
+        const startedAt = new Date();
+        const planContexts = await buildReminderPlanContexts(tipo);
+        const audit = createExecutionAudit({ tipo, startedAt, planContexts });
 
-            // 2. Buscar Sessões Manuais da Data (Qualquer Status)
-            const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
-                .where('date', '==', dateStr)
-                .get();
-            
-            const todasSessoesHoje = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            
-            // 3. Executar o plano de remessa centralizado
-            const plan = getWhatsappReminderPlan({
-                runDateStr: today.toISOString().split('T')[0],
-                tipo,
-                patients,
-                sessions: todasSessoesHoje,
-                settings
-            });
+        for (const context of planContexts) {
+            const { settings, plan } = context;
+            registerPlanDiagnostics(audit, plan);
 
             if (plan.isHoliday) {
                 console.log(`[BLOQUEIO] Data ${plan.dateStr} é feriado (${plan.holidayName}). Disparos cancelados para ${tipo}.`);
@@ -177,13 +244,11 @@ async function dispararLembretes(tipo) {
                 console.log(`[ENVIO] Enviando para ${maskName(r.guardianName)} (${maskPhone(r.phone)})...`);
                 try {
                     await client.sendMessage(r.phone, r.message);
+                    registerSuccessfulSend(audit, r);
                 } catch (sendError) {
+                    registerSendFailure(audit, r, sendError);
                     console.error(`❌ Erro ao enviar para ${maskPhone(r.phone)}:`, sendError.message);
-                    if (sendError.message.includes('detached') || 
-                        sendError.message.includes('Protocol error') || 
-                        sendError.message.includes('closed') || 
-                        sendError.message.includes('session') ||
-                        sendError.message.includes('frame')) {
+                    if (isCriticalBrowserError(sendError)) {
                         console.error('ERRO CRÍTICO DE NAVEGADOR DETECTADO. Reiniciando o processo do robô...');
                         process.exit(1);
                     }
@@ -192,12 +257,46 @@ async function dispararLembretes(tipo) {
             }
 
         }
+        finishExecutionAudit(audit);
+        await sendAdminMonitorMessage(buildExecutionReportMessage(audit));
+        if (ADMIN_MONITOR.detailedReportEnabled) {
+            await delay(1000);
+            await sendAdminMonitorMessage(buildDetailedReportMessage(audit));
+        }
     } catch (error) {
         console.error("Erro crítico na rotina de lembretes:", error);
     }
 }
 
 // 4. Configurar os Alarmes (Cron Jobs)
+// Alertas preventivos administrativos, 30 minutos antes dos disparos reais.
+cron.schedule('0 6 * * *', () => {
+    const today = new Date();
+    if (today.getDay() === 0) return; // Pula Domingo
+    const scheduledAt = new Date(today);
+    scheduledAt.setHours(6, 30, 0, 0);
+    enviarAlertaPreventivo('HOJE_MANHA', scheduledAt);
+});
+
+cron.schedule('30 8 * * *', () => {
+    const today = new Date();
+    if (today.getDay() === 6) {
+        console.log(`[MONITOR] Hoje é Sábado. Alerta preventivo de véspera não será enviado.`);
+        return;
+    }
+    const scheduledAt = new Date(today);
+    scheduledAt.setHours(9, 0, 0, 0);
+    enviarAlertaPreventivo('AMANHA', scheduledAt);
+});
+
+cron.schedule('0 12 * * *', () => {
+    const today = new Date();
+    if (today.getDay() === 0) return; // Pula Domingo
+    const scheduledAt = new Date(today);
+    scheduledAt.setHours(12, 30, 0, 0);
+    enviarAlertaPreventivo('HOJE_TARDE', scheduledAt);
+});
+
 // 06:30 da manhã - Lembretes para HOJE (sessões da manhã)
 cron.schedule('30 6 * * *', () => {
     const today = new Date();
@@ -228,3 +327,33 @@ client.initialize().catch(err => {
     console.error("Dica: Verifique se não há outra instância do navegador aberta ou se a pasta .wwebjs_auth está travada.");
 });
 console.log("Robô iniciado! Aguardando o WhatsApp...");
+
+if (process.env.WHATSAPP_ADMIN_MONITOR_TEST === 'SIM') {
+    let adminMonitorTestSent = false;
+    const testOnly = process.env.WHATSAPP_ADMIN_MONITOR_TEST_ONLY === 'SIM';
+    const testTimeout = testOnly
+        ? setTimeout(() => {
+            console.error('[MONITOR] Teste administrativo encerrado por timeout sem envio confirmado.');
+            process.exit(1);
+        }, 90000)
+        : null;
+
+    const sendAdminMonitorTest = async () => {
+        if (adminMonitorTestSent) return;
+        adminMonitorTestSent = true;
+        const sent = await sendAdminMonitorMessage(buildAdminTestMessage());
+        if (!sent) {
+            adminMonitorTestSent = false;
+            return;
+        }
+        if (testTimeout) clearTimeout(testTimeout);
+        if (testOnly) {
+            setTimeout(() => process.exit(0), 2000);
+        }
+    };
+
+    client.once('ready', sendAdminMonitorTest);
+    client.once('authenticated', () => {
+        setTimeout(sendAdminMonitorTest, 15000);
+    });
+}
