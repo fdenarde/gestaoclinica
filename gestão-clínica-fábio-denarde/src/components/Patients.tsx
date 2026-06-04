@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution } from '../types';
-import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight } from 'lucide-react';
+import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
@@ -1082,6 +1082,72 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   // Determine current package number for in-progress display (number of full packages + 1 if current exists)
   const currentPkgNumber = packageHistory.length > 0 ? packageHistory[packageHistory.length - 1].number : 0;
   const currentPkgProgress = realizedInPackage;
+  const nextSession = patientSessions
+    .filter(s => s.status === SessionStatus.AGENDADA && s.date >= format(new Date(), 'yyyy-MM-dd'))
+    .sort((a,b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))[0];
+  const pendingRepositionsCount = state.repositions.filter(r => r.patientId === patient.id && r.status === 'Pendente').length;
+  const totalPaid = patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const hasSecondPayment = patientPayments.some(p => p.installment === '2ª parcela');
+  const financialStatus = isLate
+    ? { label: 'Atraso', detail: `${daysLate} dias`, tone: 'red' }
+    : patient.paymentModal === PaymentModal.PARCELADO && realizedInPackage >= 4 && !hasSecondPayment
+      ? { label: 'Cobrar em breve', detail: '2ª parcela', tone: 'orange' }
+      : { label: 'Em dia', detail: formatCurrency(totalPaid), tone: 'green' };
+  const packageStatus = realizedInPackage >= 8
+    ? { label: 'Renovar', detail: `${realizedInPackage}/10`, tone: 'orange' }
+    : realizedInPackage === 0
+      ? { label: 'Novo', detail: '0/10', tone: 'blue' }
+      : { label: 'Em andamento', detail: `${realizedInPackage}/10`, tone: 'green' };
+  const whatsappStatus = patient.whatsapp?.trim()
+    ? { label: 'WhatsApp OK', detail: patient.whatsapp, tone: 'green' }
+    : { label: 'Sem WhatsApp', detail: 'Cadastro incompleto', tone: 'red' };
+  const documentItems = [
+    { label: 'Foto', ok: !!patient.photoUrl },
+    { label: 'Relatório', ok: !!patient.reportPdfUrl },
+    { label: 'Parecer', ok: !!patient.opinionPdfUrl },
+    { label: 'Escola', ok: !!patient.school },
+    { label: 'Médico', ok: !!patient.doctorName },
+  ];
+  const completedDocuments = documentItems.filter(item => item.ok).length;
+  const documentStatus = completedDocuments === documentItems.length
+    ? { label: 'Completo', detail: `${completedDocuments}/${documentItems.length}`, tone: 'green' }
+    : { label: 'Pendente', detail: `${completedDocuments}/${documentItems.length}`, tone: completedDocuments >= 3 ? 'orange' : 'red' };
+  const completionItems = [
+    !!patient.name,
+    !!patient.birthDate,
+    !!patient.guardianName,
+    !!patient.whatsapp,
+    !!patient.fixedDay,
+    !!patient.fixedTime,
+    !!patient.startDate,
+    !!patient.school,
+    !!patient.grade,
+    !!patient.shift,
+    !!patient.doctorName,
+    !!patient.medication,
+    !!patient.reportPdfUrl,
+    !!patient.opinionPdfUrl,
+    !!patient.photoUrl,
+    !!patient.anamnese?.complaint,
+    !!patient.anamnese?.diagnoses,
+    !!patient.clinicalNotes,
+  ];
+  const completionScore = Math.round((completionItems.filter(Boolean).length / completionItems.length) * 100);
+  const lastEvolution = patientEvolutions[0];
+  const missingDocuments = documentItems.filter(item => !item.ok).map(item => item.label);
+
+  const statusToneClass = (tone: string) => {
+    switch (tone) {
+      case 'green':
+        return 'bg-status-green-bg text-status-green-text border-status-green-text/20';
+      case 'orange':
+        return 'bg-status-orange-bg text-status-orange-text border-status-orange-text/20';
+      case 'red':
+        return 'bg-status-red-bg text-status-red-text border-status-red-text/20';
+      default:
+        return 'bg-status-blue-bg text-status-blue-text border-status-blue-text/20';
+    }
+  };
 
   const confirmSessionMessage = `Olá ${patient.guardianName}! Confirmando a sessão de ${patient.name} em ${format(new Date(), 'dd/MM')} às ${patient.fixedTime}. Qualquer dúvida estou à disposição. Fábio Denarde.`;
   const paymentMessage = `Olá ${patient.guardianName}! Passando para lembrar que a 2ª parcela do pacote de ${patient.name} (R$500,00) será na próxima sessão. Qualquer dúvida estou à disposição. Fábio Denarde.`;
@@ -1104,6 +1170,119 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={patient.name} width="max-w-5xl">
        <div className="flex flex-col gap-6">
+          {/* Resumo inteligente */}
+          <section className="border border-clinic-border bg-clinic-surface rounded-xl shadow-sm overflow-hidden">
+            <div className="p-4 md:p-5 bg-clinic-bg/50 border-b border-clinic-border flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
+              <div className="flex items-center gap-4 min-w-0">
+                {patient.photoUrl ? (
+                  <img
+                    src={patient.photoUrl}
+                    alt={patient.name}
+                    onClick={() => setIsPhotoExpanded(true)}
+                    className="w-20 h-20 rounded-xl object-cover border border-clinic-border shadow-sm cursor-pointer hover:opacity-90 transition"
+                  />
+                ) : (
+                  <div className="w-20 h-20 rounded-xl bg-white border border-clinic-border flex items-center justify-center text-3xl font-serif font-bold text-clinic-primary shadow-sm">
+                    {patient.name.charAt(0)}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <h3 className="font-serif text-2xl font-bold text-clinic-text truncate">{patient.name}</h3>
+                    <span className={cn(
+                      'px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border',
+                      patient.status === 'Ativo' ? 'bg-status-green-bg text-status-green-text border-status-green-text/20' : 'bg-status-red-bg text-status-red-text border-status-red-text/20'
+                    )}>
+                      {patient.status}
+                    </span>
+                  </div>
+                  <p className="text-sm text-clinic-text-muted font-medium">
+                    {calculateAge(patient.birthDate)} anos • Responsável: {patient.guardianName || 'não informado'}
+                  </p>
+                  <p className="text-xs text-clinic-text-faint font-bold uppercase mt-1">
+                    {patient.fixedDay || 'sem dia'} às {patient.fixedTime || '--:--'} {patient.doubleSession ? '• sessão dupla' : ''}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 lg:min-w-[420px]">
+                {[
+                  { icon: RefreshCw, title: 'Pacote', ...packageStatus },
+                  { icon: DollarSign, title: 'Financeiro', ...financialStatus },
+                  { icon: MessageCircle, title: 'WhatsApp', ...whatsappStatus },
+                  { icon: FileText, title: 'Documentos', ...documentStatus },
+                ].map(item => (
+                  <div key={item.title} className={cn('rounded-lg border px-3 py-2 min-h-[74px]', statusToneClass(item.tone))}>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <item.icon size={13} />
+                      <span className="text-[9px] font-black uppercase tracking-widest">{item.title}</span>
+                    </div>
+                    <p className="text-sm font-black leading-tight truncate">{item.label}</p>
+                    <p className="text-[10px] font-bold opacity-80 truncate">{item.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 p-4">
+              <div className="bg-white/70 border border-clinic-border/70 rounded-lg p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint mb-1">Completude</p>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-serif font-bold text-clinic-text">{completionScore}%</span>
+                  <div className="flex-1 h-2 rounded-full bg-clinic-border overflow-hidden">
+                    <div className={cn(
+                      'h-full rounded-full',
+                      completionScore >= 80 ? 'bg-status-green-text' : completionScore >= 55 ? 'bg-status-orange-text' : 'bg-status-red-text'
+                    )} style={{ width: `${completionScore}%` }} />
+                  </div>
+                </div>
+              </div>
+              <div className="bg-white/70 border border-clinic-border/70 rounded-lg p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint mb-1">Próxima sessão</p>
+                <p className="text-sm font-bold text-clinic-text">
+                  {nextSession ? `${safeFormatDate(nextSession.date, 'dd/MM')} às ${nextSession.time}` : 'Nenhuma agendada'}
+                </p>
+              </div>
+              <div className="bg-white/70 border border-clinic-border/70 rounded-lg p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint mb-1">Reposições</p>
+                <p className={cn('text-sm font-bold', pendingRepositionsCount > 0 ? 'text-status-orange-text' : 'text-clinic-text')}>
+                  {pendingRepositionsCount > 0 ? `${pendingRepositionsCount} pendente(s)` : 'Sem pendências'}
+                </p>
+              </div>
+              <div className="bg-white/70 border border-clinic-border/70 rounded-lg p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint mb-1">Última evolução</p>
+                <p className="text-sm font-bold text-clinic-text">
+                  {lastEvolution ? safeFormatDate(lastEvolution.date, 'dd/MM/yyyy') : 'Sem registro'}
+                </p>
+              </div>
+            </div>
+
+            {(missingDocuments.length > 0 || isLate || realizedInPackage >= 8 || !patient.whatsapp?.trim()) && (
+              <div className="px-4 pb-4 flex flex-col gap-2">
+                {isLate && (
+                  <div className="flex items-center gap-2 text-xs font-bold text-status-red-text bg-status-red-bg border border-status-red-text/20 rounded-lg px-3 py-2">
+                    <AlertTriangle size={14} /> Segunda parcela em atraso há {daysLate} dia(s).
+                  </div>
+                )}
+                {realizedInPackage >= 8 && (
+                  <div className="flex items-center gap-2 text-xs font-bold text-status-orange-text bg-status-orange-bg border border-status-orange-text/20 rounded-lg px-3 py-2">
+                    <RefreshCw size={14} /> Pacote em fase de renovação ({realizedInPackage}/10).
+                  </div>
+                )}
+                {!patient.whatsapp?.trim() && (
+                  <div className="flex items-center gap-2 text-xs font-bold text-status-red-text bg-status-red-bg border border-status-red-text/20 rounded-lg px-3 py-2">
+                    <MessageCircle size={14} /> WhatsApp não informado.
+                  </div>
+                )}
+                {missingDocuments.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs font-bold text-clinic-text-muted bg-clinic-bg border border-clinic-border rounded-lg px-3 py-2">
+                    <FileText size={14} /> Pendências cadastrais/documentais: {missingDocuments.join(', ')}.
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
           {/* Header Actions */}
           <div className="flex flex-wrap items-center gap-3 bg-clinic-bg/50 p-4 rounded-xl border border-clinic-border">
             <a 
