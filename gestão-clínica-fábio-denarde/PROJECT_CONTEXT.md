@@ -1,6 +1,6 @@
 # Gestão Clínica Fábio Denarde — Documentação do Projeto
 
-> Última atualização: 02/06/2026
+> Última atualização: 05/06/2026
 >
 > Use este documento para orientar qualquer IA ou desenvolvedor que for trabalhar neste projeto.
 
@@ -9,6 +9,8 @@
 ## 1. VISÃO GERAL
 
 Sistema completo de gestão clínica para atendimento especializado (neuropsicopedagogia). Possui agenda clínica, agenda pessoal com alarmes, controle financeiro, relatórios, evolução de pacientes e um robô de WhatsApp que envia lembretes automáticos aos responsáveis.
+
+**Sistema em produção com dados reais.** Trate pacientes, agenda, histórico clínico, financeiro e WhatsApp como áreas críticas. Antes de alterar código, entenda o fluxo, valide com testes offline e evite qualquer ação que envie mensagens, altere dados históricos ou reinicie o robô sem autorização explícita.
 
 | Item | Detalhe |
 |---|---|
@@ -64,10 +66,13 @@ D:\Backup Projeto Clinica completo\
     │   │       ├── Modal.tsx     # Componente modal reutilizável
     │   │       └── Toast.tsx     # Notificações toast
     │   └── lib\
-    │       ├── utils.ts          # LÓGICA CENTRAL: getSessionsForDate,
-    │       │                     #   getWhatsappReminderPlan, feriados, etc.
-    │       │                     #   (idêntico ao server.js — alterações devem
-    │       │                     #    ser replicadas nos DOIS arquivos)
+    │       ├── utils.ts          # LÓGICA CENTRAL do frontend: getSessionsForDate,
+    │       │                     #   getWhatsappReminderPlan, feriados, vigência
+    │       │                     #   do horário fixo e agenda visual
+    │       ├── whatsappReminderPlan.js
+    │       │                     # LÓGICA COMPARTILHADA do robô WhatsApp.
+    │       │                     # server.js importa daqui. Manter sincronizado
+    │       │                     # com utils.ts para regras equivalentes.
     │       └── useAlarms.ts      # Hook de alarmes sonoros (Howler.js)
     │
     ├── scratch\                   # Scripts de diagnóstico/simulação
@@ -142,16 +147,16 @@ O watcher automático (`watch-and-deploy.cjs`) foi **removido do PM2** e **comen
 | 09:00 | `AMANHA` | Todas as sessões do dia seguinte | Sábado (amanhã = domingo) |
 | 12:30 | `HOJE_TARDE` | Sessões do dia com hora ≥ 12 | Domingo |
 
-### 4.2 Funções centrais — DUPLICADAS (manter sincronizadas)
+### 4.2 Funções centrais do WhatsApp e agenda — manter sincronizadas
 
-As funções `getSessionsForDate` e `getWhatsappReminderPlan` existem em **dois lugares idênticos**:
+As funções `getSessionsForDate` e `getWhatsappReminderPlan` existem em dois lugares equivalentes:
 
 | Arquivo | Uso |
 |---|---|
 | `src/lib/utils.ts` | Frontend (Agenda visual + dry-run) |
-| `server.js` | Robô WhatsApp |
+| `src/lib/whatsappReminderPlan.js` | Robô WhatsApp; `server.js` importa esta lógica |
 
-**⚠️ Regra crítica:** qualquer alteração em uma DEVE ser replicada na outra.
+**Regra crítica:** qualquer alteração de regra em uma deve ser replicada na outra. O teste `npm run test:wpp:offline` compara os dois módulos e deve passar antes de deploy.
 
 ### 4.3 Lógica de geração de sessões
 
@@ -160,6 +165,26 @@ As funções `getSessionsForDate` e `getWhatsappReminderPlan` existem em **dois 
 3. **Sessões duplas** (`doubleSession: true`): ocupam 2 horários consecutivos. Mensagem única com o horário mais cedo
 4. **isValid / blockedReason:** usado pelo robô para filtrar o que enviar. Status ≠ "Agendada" → `isValid: false, blockedReason: 'status inválido'` — impede envio de WhatsApp para sessões finalizadas
 5. **Feriados:** bloqueiam TODAS as mensagens (manuais e virtuais)
+6. **Vigência de horário fixo:** pacientes podem trocar dia/horário fixo. O passado não pode ser recalculado com o horário atual.
+
+### 4.3.1 Regra crítica de vigência do horário fixo
+
+Campos opcionais em `Patient`:
+
+| Campo | Finalidade |
+|---|---|
+| `fixedScheduleEffectiveFrom` | Data `YYYY-MM-DD` em que o horário fixo atual começa a valer |
+| `fixedScheduleHistory[]` | Histórico de horários anteriores com `effectiveFrom` e `effectiveTo` |
+
+Comportamento esperado:
+
+- Se existe histórico de vigência para a data, usar o dia/horário daquele histórico.
+- Se a data é igual ou posterior a `fixedScheduleEffectiveFrom`, usar `fixedDay`/`fixedTime` atuais.
+- Se a data é passada e o paciente não tem histórico de vigência salvo, **não criar sessão fixa virtual baseada no cadastro atual**.
+- Sessões reais já gravadas em `sessions` continuam aparecendo normalmente.
+- Mudança de dia/horário feita pelo cadastro deve valer a partir de hoje; o horário antigo é registrado como histórico até ontem.
+
+Motivo da regra: evitar que um paciente que hoje está, por exemplo, na quinta-feira apareça em semanas antigas como se também fosse de quinta, quando naquela época podia ser sábado. Isso protege histórico clínico, relatórios, agenda e plano do WhatsApp.
 
 ### 4.4 Bloqueios de envio
 
@@ -205,6 +230,18 @@ Feriados bloqueiam: geração de sessões virtuais, plano de mensagens, envios. 
 ---
 
 ## 5. AGENDA CLÍNICA (Agenda.tsx)
+
+### 5.0 Correções recentes críticas (junho/2026)
+
+| Área | Correção | Arquivos principais | Teste/validação |
+|---|---|---|---|
+| Numeração de sessões | Agenda, paciente e relatórios passaram a usar cálculo unificado de sequência por sessão, evitando exibir "Pacote X" como se fosse número de sessão | `src/lib/sessionSequence.ts`, `Agenda.tsx`, `Dashboard.tsx`, `Reports.tsx` | `npm run audit:sessions` identifica divergências históricas de `packageNumber` |
+| Vigência de horário fixo | Mudança de dia/horário fixo agora vale a partir de hoje e preserva regra anterior no histórico | `src/types.ts`, `src/components/Patients.tsx`, `src/lib/utils.ts`, `src/lib/whatsappReminderPlan.js` | `npm run test:wpp:offline` |
+| Proteção de passado sem histórico | Datas passadas sem `fixedScheduleHistory` não geram sessão virtual com `fixedDay/fixedTime` atual | `src/lib/utils.ts`, `src/lib/whatsappReminderPlan.js` | Teste: "nao projeta horario fixo atual em data passada sem historico de vigencia" |
+| Monitoramento WhatsApp admin | Foram adicionadas mensagens administrativas preventivas/finais sem alterar mensagens de pacientes | `server.js`, `src/lib/whatsappAdminMonitor.js` | `npm run test:wpp:offline` |
+| UI da agenda | Cards ganharam tooltips, espaçamentos e textos de sessão mais legíveis | `src/components/Agenda.tsx`, `src/App.tsx` | `npm run build` |
+
+**Importante:** anotações clínicas/manuais antigas não são corrigidas automaticamente. Se uma anotação antiga mencionar conflito de horário de outro paciente, ela deve ser auditada manualmente antes de qualquer alteração no texto ou nos registros históricos.
 
 ### 5.1 Interação nos cards (DESKTOP + MOBILE + TABLET)
 
@@ -294,7 +331,8 @@ Database: `ai-studio-587970e5-0653-44a5-93a3-be1a74301eda`
 users/{userId}/
 ├── settings/config        # ClinicSettings (name, whatsapp, holidays[], etc.)
 ├── patients/{patientId}   # Patient (name, guardianName, fixedDay, fixedTime,
-│                          #   doubleSession?, status, whatsapp, etc.)
+│                          #   doubleSession?, fixedScheduleEffectiveFrom?,
+│                          #   fixedScheduleHistory?, status, whatsapp, etc.)
 ├── sessions/{sessionId}   # Session (patientId, date, time, type, status,
 │                          #   packageNumber, notes?, isBlocked?, blockName?)
 ├── payments/{paymentId}
@@ -309,7 +347,7 @@ users/{userId}/
 **SessionStatus enum:**
 - `Agendada`, `Realizada`, `Falta`, `Falta.Prof`, `Cancelada`, `Reposição`
 
-**Patient:** `id, name, birthDate, guardianName, whatsapp, fixedDay, fixedTime, doubleSession?, status ('Ativo'|'Concluído'), paymentModal, ...`
+**Patient:** `id, name, birthDate, guardianName, whatsapp, fixedDay, fixedTime, doubleSession?, fixedScheduleEffectiveFrom?, fixedScheduleHistory?, status ('Ativo'|'Concluído'), paymentModal, ...`
 
 **Session:** `id, patientId, date, time, type (SIMPLES|DUPLA), status, notes?, packageNumber, isBlocked?, blockName?, ...`
 
@@ -345,19 +383,44 @@ Horários customizados com `:30` (ex: 17:30) são suportados via campo manual.
 - ❌ Reativar o `AutoDeployWatcher`
 - ❌ Fazer deploy sem antes rodar lint + build
 - ❌ Enviar mensagens reais no WhatsApp durante testes
-- ❌ Alterar `utils.ts` ou `server.js` sem replicar mudanças no outro
+- ❌ Inicializar WhatsApp, gerar QR Code ou reautenticar WhatsApp sem autorização explícita
+- ❌ Reiniciar `RoboClinica` sem motivo validado e autorização explícita
+- ❌ Alterar `utils.ts` ou `whatsappReminderPlan.js` sem replicar regra equivalente no outro
 - ❌ Usar o script antigo `npm run deploy` (faz `git add .` cegamente)
 - ❌ Usar `session.isValid` para decidir o que mostrar na UI — use `session.status`
 - ❌ Retornar "Inválida" como status no `getStatusLabel` para statuses conhecidos
+- ❌ Projetar `fixedDay/fixedTime` atual em datas passadas sem histórico de vigência
+- ❌ Executar migrações destrutivas, apagar sessões históricas, limpar dados ou recriar banco
+- ❌ Implementar Firebase Storage/Cloud Storage sem considerar custo; em 05/06/2026 o projeto estava em Spark e Storage exigia upgrade de plano
 
 ### 8.2 SEMPRE FAÇA
 
 - ✅ Use `safe-deploy.cjs` ou `PublicarSistema.bat` para publicar
-- ✅ Se alterar `getSessionsForDate` ou `getWhatsappReminderPlan`, altere nos DOIS arquivos (`utils.ts` E `server.js`)
-- ✅ Teste com `scratch/inspect_june_1_to_6.js` — é o espelho fiel do server.js
+- ✅ Se alterar `getSessionsForDate` ou `getWhatsappReminderPlan`, altere nos DOIS arquivos (`src/lib/utils.ts` E `src/lib/whatsappReminderPlan.js`)
+- ✅ Rode `npm run test:wpp:offline` após qualquer alteração relacionada a agenda, sessão, WhatsApp, feriado, bloqueio ou horário fixo
+- ✅ Rode `npm run lint` e `npm run build` antes de deploy
+- ✅ Teste com scripts offline/dry-run; eles não devem enviar WhatsApp nem iniciar o robô
 - ✅ `generate_week_report.js` NÃO verifica feriados — não use como referência
 - ✅ Horários usam `normalizeTime()` — garante formato `HH:MM` com 2 dígitos
 - ✅ O campo `fixedDay` aceita: "segunda", "terça", "quarta", "quinta", "sexta", "sábado"
+- ✅ Em mudança de dia/horário fixo do paciente, preservar histórico: passado fica com a vigência anterior; novo horário vale a partir de hoje
+
+### 8.3 Validações obrigatórias antes de deploy
+
+```bash
+npm run lint
+npm run build
+npm run test:wpp:offline
+```
+
+Após deploy:
+
+```bash
+Invoke-WebRequest -UseBasicParsing https://gestaoclinica-solucoes.vercel.app/
+pm2 status
+```
+
+O `RoboClinica` deve continuar `online`. Não reinicie o robô apenas para validar frontend.
 
 ---
 
@@ -383,6 +446,8 @@ npm run dev                # Frontend em http://localhost:3000
 npm run server             # Robô WhatsApp (ou IniciaRoboClinica.bat)
 npm run lint               # TypeScript check (tsc --noEmit)
 npm run build              # Build de produção (vite build)
+npm run test:wpp:offline   # Teste seguro do plano WhatsApp; não inicia robô e não envia mensagens
+npm run audit:sessions     # Auditoria de sequência/numeração das sessões
 
 # Deploy
 npm run safe-deploy        # OU clique em PublicarSistema.bat
@@ -401,7 +466,9 @@ node scratch/view_settings.js
 
 ---
 
-## 11. PACIENTES ATUAIS (02/06/2026)
+## 11. PACIENTES — RETRATO HISTÓRICO (02/06/2026)
+
+Esta tabela é apenas um retrato documentado em 02/06/2026. Para qualquer análise real, use o Firestore e a agenda atual como fonte de verdade. Não altere pacientes, horários ou WhatsApp com base apenas nesta tabela.
 
 | Paciente | Responsável | Dia fixo | Horário | Dupla? | WhatsApp |
 |---|---|---|---|---|---|
