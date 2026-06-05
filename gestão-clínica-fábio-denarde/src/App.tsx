@@ -7,6 +7,7 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
+import packageJson from '../package.json';
 
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -39,6 +40,8 @@ const DEFAULT_STATE: AppState = {
   settings: DEFAULT_SETTINGS,
   personalAppointments: [],
 };
+
+const APP_VERSION = `v${packageJson.version}`;
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -477,7 +480,7 @@ export default function App() {
               <span>End: {state.settings.address}</span>
             </div>
             <div className="text-center md:text-right">
-              {state.settings.name} Gestão Clínica v1.5 • 2026
+              {state.settings.name} Gestão Clínica {APP_VERSION} • 2026
             </div>
           </>
         )}
