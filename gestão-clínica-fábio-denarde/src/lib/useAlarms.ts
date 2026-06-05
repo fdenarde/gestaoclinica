@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { PersonalAppointment } from '../types';
 import { differenceInSeconds, addMinutes } from 'date-fns';
-import { Howl } from 'howler';
-import { loadAlarmSounds, AlarmSoundMeta } from './alarmSounds';
+import { loadAlarmSounds, AlarmSoundMeta, DEFAULT_ALARM_SOUND_ID, getFallbackAlarmSoundId } from './alarmSounds';
 
 const advanceToMinutes = (advance?: string): number => {
   switch (advance) {
@@ -25,87 +24,234 @@ const advanceToMinutes = (advance?: string): number => {
   }
 };
 
-let currentHowl: Howl | null = null;
-let previewHowl: Howl | null = null;
-let fadeInInterval: ReturnType<typeof setInterval> | null = null;
-let stereoInterval: ReturnType<typeof setInterval> | null = null;
+type OscillatorKind = OscillatorType;
+
+interface ToneStep {
+  frequency: number;
+  duration: number;
+  gap: number;
+  type?: OscillatorKind;
+}
+
+interface AlarmTonePattern {
+  steps: ToneStep[];
+  repeatPause: number;
+  vibrate: number[];
+}
+
+const TONE_PATTERNS: Record<string, AlarmTonePattern> = {
+  mobile_strong: {
+    steps: [
+      { frequency: 1040, duration: 180, gap: 70, type: 'square' },
+      { frequency: 1320, duration: 180, gap: 70, type: 'square' },
+      { frequency: 1040, duration: 180, gap: 70, type: 'square' },
+      { frequency: 1560, duration: 220, gap: 140, type: 'square' },
+    ],
+    repeatPause: 180,
+    vibrate: [450, 130, 450, 130, 650],
+  },
+  classic_clock: {
+    steps: [
+      { frequency: 880, duration: 260, gap: 90, type: 'triangle' },
+      { frequency: 880, duration: 260, gap: 90, type: 'triangle' },
+      { frequency: 988, duration: 260, gap: 90, type: 'triangle' },
+      { frequency: 988, duration: 260, gap: 140, type: 'triangle' },
+    ],
+    repeatPause: 220,
+    vibrate: [300, 120, 300, 120, 300],
+  },
+  short_siren: {
+    steps: [
+      { frequency: 720, duration: 220, gap: 40, type: 'sawtooth' },
+      { frequency: 1280, duration: 220, gap: 40, type: 'sawtooth' },
+      { frequency: 760, duration: 220, gap: 40, type: 'sawtooth' },
+      { frequency: 1420, duration: 260, gap: 120, type: 'sawtooth' },
+    ],
+    repeatPause: 120,
+    vibrate: [550, 80, 550, 80, 550],
+  },
+  urgent_pulse: {
+    steps: [
+      { frequency: 1180, duration: 120, gap: 60, type: 'square' },
+      { frequency: 1180, duration: 120, gap: 60, type: 'square' },
+      { frequency: 1180, duration: 120, gap: 60, type: 'square' },
+      { frequency: 1500, duration: 300, gap: 160, type: 'square' },
+    ],
+    repeatPause: 160,
+    vibrate: [180, 80, 180, 80, 180, 80, 500],
+  },
+  continuous_alert: {
+    steps: [
+      { frequency: 980, duration: 380, gap: 70, type: 'square' },
+      { frequency: 1120, duration: 380, gap: 70, type: 'square' },
+      { frequency: 980, duration: 380, gap: 120, type: 'square' },
+    ],
+    repeatPause: 140,
+    vibrate: [650, 180, 650],
+  },
+};
+
+interface SynthPlayback {
+  ctx: AudioContext;
+  masterGain: GainNode;
+  timers: ReturnType<typeof setTimeout>[];
+  nodes: OscillatorNode[];
+  stopped: boolean;
+}
+
+let audioContext: AudioContext | null = null;
+let currentPlayback: SynthPlayback | null = null;
+let previewPlayback: SynthPlayback | null = null;
+
+const clampVolume = (volume: number) => Math.min(0.95, Math.max(0.05, volume / 100));
+
+function getAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextCtor) return null;
+  if (!audioContext) audioContext = new AudioContextCtor();
+  return audioContext;
+}
+
+export async function prepareAlarmAudio() {
+  const ctx = getAudioContext();
+  if (!ctx) return false;
+  try {
+    if (ctx.state === 'suspended') await ctx.resume();
+    return true;
+  } catch (err) {
+    console.warn('[Alarme] Não foi possível preparar o áudio:', err);
+    return false;
+  }
+}
+
+function stopPlayback(playback: SynthPlayback | null) {
+  if (!playback) return;
+  playback.stopped = true;
+  playback.timers.forEach(timer => clearTimeout(timer));
+  playback.timers = [];
+  playback.nodes.forEach(node => {
+    try { node.stop(); } catch {}
+    try { node.disconnect(); } catch {}
+  });
+  playback.nodes = [];
+  try { playback.masterGain.disconnect(); } catch {}
+}
 
 function stopAllSounds() {
-  if (fadeInInterval) { clearInterval(fadeInInterval); fadeInInterval = null; }
-  if (stereoInterval) { clearInterval(stereoInterval); stereoInterval = null; }
-  if (previewHowl) { previewHowl.unload(); previewHowl = null; }
-  if (currentHowl) { currentHowl.unload(); currentHowl = null; }
+  stopPlayback(previewPlayback);
+  previewPlayback = null;
+  stopPlayback(currentPlayback);
+  currentPlayback = null;
   try { if (typeof navigator !== 'undefined' && 'vibrate' in navigator) (navigator as any).vibrate(0); } catch {}
 }
 
-function playAlarmSound(url: string, volume: number = 80, fadeIn: boolean = false) {
-  stopAllSounds();
+function playToneStep(playback: SynthPlayback, step: ToneStep, channelPan = 0) {
+  if (playback.stopped) return;
 
-  const initialVol = fadeIn ? 0.2 : volume / 100;
+  const ctx = playback.ctx;
+  const oscillator = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const panner = typeof ctx.createStereoPanner === 'function' ? ctx.createStereoPanner() : null;
 
-  currentHowl = new Howl({
-    src: [url],
-    loop: true,
-    volume: initialVol,
-    html5: true,
-    onend: () => { /* loop handles this */ },
-    onload: () => {
-      if (fadeIn && currentHowl) {
-        const targetVol = volume / 100;
-        const steps = 60;
-        const stepSize = (targetVol - 0.2) / steps;
-        let step = 0;
-        fadeInInterval = setInterval(() => {
-          step++;
-          const newVol = 0.2 + stepSize * step;
-          if (newVol >= targetVol || !currentHowl) {
-            if (currentHowl) currentHowl.volume(targetVol);
-            if (fadeInInterval) { clearInterval(fadeInInterval); fadeInInterval = null; }
-            return;
-          }
-          currentHowl.volume(newVol);
-        }, 500);
-      }
-    },
-  });
+  oscillator.type = step.type || 'square';
+  oscillator.frequency.setValueAtTime(step.frequency, ctx.currentTime);
 
-  currentHowl.play();
-  currentHowl.stereo(-0.5);
+  const now = ctx.currentTime;
+  const durationSec = step.duration / 1000;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.85, now + 0.018);
+  gain.gain.setValueAtTime(0.85, Math.max(now + 0.02, now + durationSec - 0.035));
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+  if (panner) {
+    panner.pan.setValueAtTime(channelPan, now);
+    oscillator.connect(gain).connect(panner).connect(playback.masterGain);
+  } else {
+    oscillator.connect(gain).connect(playback.masterGain);
+  }
+
+  playback.nodes.push(oscillator);
+  oscillator.start(now);
+  oscillator.stop(now + durationSec);
+
+  oscillator.onended = () => {
+    playback.nodes = playback.nodes.filter(node => node !== oscillator);
+    try { oscillator.disconnect(); } catch {}
+    try { gain.disconnect(); } catch {}
+    try { panner?.disconnect(); } catch {}
+  };
+}
+
+async function playSyntheticAlarm(soundId: string, volume = 80, fadeIn = false, loop = true, mode: 'current' | 'preview' = 'current') {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+
+  try { if (ctx.state === 'suspended') await ctx.resume(); } catch {}
+
+  if (mode === 'current') {
+    stopPlayback(currentPlayback);
+    currentPlayback = null;
+  } else {
+    stopPlayback(previewPlayback);
+    previewPlayback = null;
+  }
+
+  const resolvedSoundId = getFallbackAlarmSoundId(soundId);
+  const pattern = TONE_PATTERNS[resolvedSoundId] || TONE_PATTERNS[DEFAULT_ALARM_SOUND_ID];
+  const targetVolume = clampVolume(volume);
+  const initialVolume = fadeIn ? Math.max(0.04, targetVolume * 0.2) : targetVolume;
+  const masterGain = ctx.createGain();
+  masterGain.gain.setValueAtTime(initialVolume, ctx.currentTime);
+  if (fadeIn) {
+    masterGain.gain.linearRampToValueAtTime(targetVolume, ctx.currentTime + 30);
+  }
+  masterGain.connect(ctx.destination);
+
+  const playback: SynthPlayback = { ctx, masterGain, timers: [], nodes: [], stopped: false };
+  if (mode === 'current') currentPlayback = playback;
+  else previewPlayback = playback;
 
   let stereoLeft = true;
-  stereoInterval = setInterval(() => {
-    if (!currentHowl) { clearInterval(stereoInterval); stereoInterval = null; return; }
-    stereoLeft = !stereoLeft;
-    currentHowl.stereo(stereoLeft ? -0.5 : 0.5);
-  }, 800);
+  const cycleDuration = pattern.steps.reduce((total, step) => total + step.duration + step.gap, 0) + pattern.repeatPause;
 
-  // Vibração
+  const playCycle = () => {
+    if (playback.stopped) return;
+    let elapsed = 0;
+
+    pattern.steps.forEach(step => {
+      const timer = setTimeout(() => {
+        stereoLeft = !stereoLeft;
+        playToneStep(playback, step, stereoLeft ? -0.25 : 0.25);
+      }, elapsed);
+      playback.timers.push(timer);
+      elapsed += step.duration + step.gap;
+    });
+
+    if (loop) {
+      const nextCycleTimer = setTimeout(playCycle, cycleDuration);
+      playback.timers.push(nextCycleTimer);
+    } else {
+      const cleanupTimer = setTimeout(() => {
+        stopPlayback(playback);
+        if (mode === 'preview' && previewPlayback === playback) previewPlayback = null;
+        if (mode === 'current' && currentPlayback === playback) currentPlayback = null;
+      }, cycleDuration + 150);
+      playback.timers.push(cleanupTimer);
+    }
+  };
+
+  playCycle();
+
   try {
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      (navigator as any).vibrate([500, 200, 500, 200, 500]);
+      (navigator as any).vibrate(loop ? pattern.vibrate : pattern.vibrate.slice(0, 5));
     }
   } catch {}
 }
 
-export async function previewSound(soundId: string, volume: number = 80) {
-  if (previewHowl) { previewHowl.unload(); previewHowl = null; }
-
-  const sounds = await loadAlarmSounds();
-  const meta = sounds.find(s => s.id === soundId);
-  if (!meta) return;
-
-  previewHowl = new Howl({
-    src: [meta.url],
-    loop: false,
-    volume: volume / 100,
-    html5: true,
-  });
-
-  previewHowl.play();
-
-  setTimeout(() => {
-    if (previewHowl) { previewHowl.unload(); previewHowl = null; }
-  }, 3500);
+export async function previewSound(soundId: string, volume = 80) {
+  await playSyntheticAlarm(soundId, volume, false, false, 'preview');
 }
 
 export function useAlarms(appointments: PersonalAppointment[]) {
@@ -119,6 +265,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
   const [activeAlarmLabel, setActiveAlarmLabel] = useState('');
 
   const requestPermission = useCallback(async () => {
+    await prepareAlarmAudio();
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') { setPermission('granted'); return; }
     if (Notification.permission === 'denied') return;
@@ -157,7 +304,6 @@ export function useAlarms(appointments: PersonalAppointment[]) {
     const scheduleNextCheck = (nextTriggerMs: number | null) => {
       if (nextTimeout) clearTimeout(nextTimeout);
       if (nextTriggerMs === null || nextTriggerMs <= 0) return;
-      // Agenda o próximo check para 5 segundos antes do trigger (margem de segurança)
       const delay = Math.max(1000, nextTriggerMs - 5000);
       console.log(`[Alarme] Próximo check agendado para daqui ${Math.round(delay / 1000)}s (trigger em ${Math.round(nextTriggerMs / 1000)}s)`);
       nextTimeout = setTimeout(checkAlarms, delay);
@@ -167,7 +313,7 @@ export function useAlarms(appointments: PersonalAppointment[]) {
       try {
       if (soundsRef.current.length === 0) {
         console.log('[Alarme] Sons ainda não carregados, tentando novamente...');
-        loadAlarmSounds(true).then(s => { soundsRef.current = s; }).catch(() => {});
+        loadAlarmSounds().then(s => { soundsRef.current = s; }).catch(() => {});
         scheduleNextCheck(30000);
         return;
       }
@@ -201,34 +347,29 @@ export function useAlarms(appointments: PersonalAppointment[]) {
         const advanceMins = advanceToMinutes(app.alarmAdvance);
         const triggerTime = addMinutes(todayOccurrence, -advanceMins);
 
-        // secondsSinceTrigger > 0 means trigger time has PASSED (alarm should fire)
-        // secondsSinceTrigger < 0 means trigger time is in the FUTURE (wait)
         const secondsSinceTrigger = differenceInSeconds(now, triggerTime);
 
         console.log(`[Alarme] ${app.type}: trigger=${triggerTime.toLocaleTimeString('pt-BR')} evento=${todayOccurrence.toLocaleTimeString('pt-BR')} secSinceTrigger=${secondsSinceTrigger} advance=${advanceMins}min`);
 
-        // If trigger is in the future, track it for precise scheduling
         if (secondsSinceTrigger < 0) {
           const msUntilTrigger = Math.abs(secondsSinceTrigger) * 1000;
           if (nextTriggerMs === null || msUntilTrigger < nextTriggerMs) {
             nextTriggerMs = msUntilTrigger;
           }
-          return; // Not time yet
+          return;
         }
 
-        // Trigger window: fire if trigger time passed within the last 90 seconds
-        // This gives enough margin for timer imprecision and tab switching
         if (secondsSinceTrigger <= 90) {
           const alarmKey = `${app.id}-${now.toDateString()}`;
           if (!triggeredAlarms.current.has(alarmKey)) {
             triggeredAlarms.current.add(alarmKey);
             triggeredCount++;
 
-            const soundId = app.alarmSound || 'nokia_classic';
-            const meta = soundsRef.current.find(s => s.id === soundId);
+            const soundId = getFallbackAlarmSoundId(app.alarmSound);
+            const meta = soundsRef.current.find(s => s.id === soundId) || soundsRef.current[0];
             console.log(`[Alarme] 🔔 DISPARANDO: ${app.type} (som: ${soundId}, volume: ${app.alarmVolume}, fadeIn: ${app.alarmFadeIn})`);
             if (meta) {
-              playAlarmSound(meta.url, app.alarmVolume ?? 80, app.alarmFadeIn ?? false);
+              void playSyntheticAlarm(meta.id, app.alarmVolume ?? 80, app.alarmFadeIn ?? false, true, 'current');
             }
 
             setActiveAlarmId(app.id);
@@ -246,14 +387,12 @@ export function useAlarms(appointments: PersonalAppointment[]) {
             }
           }
         }
-        // If more than 90s past trigger, it's too late — skip silently
       });
 
       if (triggeredCount === 0 && nextTriggerMs === null) {
         console.log('[Alarme] Nenhum alarme pendente para hoje');
       }
 
-      // Schedule next check: precise timing if we know the next trigger, otherwise every 30s
       scheduleNextCheck(nextTriggerMs ?? 30000);
       } catch (e) {
         console.error('[Alarme] ERRO no checkAlarms:', e);

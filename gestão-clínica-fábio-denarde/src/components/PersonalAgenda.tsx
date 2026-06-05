@@ -6,8 +6,8 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
-import { previewSound } from '../lib/useAlarms';
-import { loadAlarmSounds, AlarmSoundMeta, getDefaultSounds } from '../lib/alarmSounds';
+import { previewSound, prepareAlarmAudio } from '../lib/useAlarms';
+import { loadAlarmSounds, AlarmSoundMeta, getDefaultSounds, DEFAULT_ALARM_SOUND_ID, getFallbackAlarmSoundId } from '../lib/alarmSounds';
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
@@ -95,7 +95,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [notes, setNotes] = useState('');
   const [alarmEnabled, setAlarmEnabled] = useState(false);
   const [alarmAdvance, setAlarmAdvance] = useState<AlarmAdvance>('Na hora');
-  const [alarmSound, setAlarmSound] = useState<string>('nokia_classic');
+  const [alarmSound, setAlarmSound] = useState<string>(DEFAULT_ALARM_SOUND_ID);
   const [alarmVolume, setAlarmVolume] = useState(80);
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>(() => getDefaultSounds());
@@ -111,6 +111,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     setRecurrence('Não repetir');
     setNotes('');
     setAlarmEnabled(false);
+    setAlarmAdvance('Na hora');
+    setAlarmSound(DEFAULT_ALARM_SOUND_ID);
     setAlarmVolume(80);
     setAlarmFadeIn(false);
     setSelectedApptId(null);
@@ -132,7 +134,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     setNotes(app.notes);
     setAlarmEnabled(app.alarmEnabled);
     if (app.alarmAdvance) setAlarmAdvance(app.alarmAdvance);
-    if (app.alarmSound) setAlarmSound(app.alarmSound);
+    setAlarmSound(getFallbackAlarmSoundId(app.alarmSound));
     if (app.alarmVolume !== undefined) setAlarmVolume(app.alarmVolume);
     setAlarmFadeIn(app.alarmFadeIn ?? false);
     setIsModalOpen(true);
@@ -151,7 +153,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       notes,
       alarmEnabled,
       alarmAdvance: alarmEnabled ? alarmAdvance : undefined,
-      alarmSound: alarmEnabled ? alarmSound : undefined,
+      alarmSound: alarmEnabled ? getFallbackAlarmSoundId(alarmSound) : undefined,
       alarmVolume: alarmEnabled ? alarmVolume : undefined,
       alarmFadeIn: alarmEnabled ? alarmFadeIn : undefined,
       isDone: false,
@@ -644,12 +646,22 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
             <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Observações</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full p-2 border rounded-lg h-20" placeholder="Detalhes opcionais..." />
           </div>
-          <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
-            <input type="checkbox" checked={alarmEnabled} onChange={e => setAlarmEnabled(e.target.checked)} className="w-4 h-4 rounded text-[#5D4037]" />
+          <div className="flex items-center gap-3 p-3 bg-[#F7F1ED] rounded-xl border border-[#DED4C8] shadow-sm">
+            <input
+              type="checkbox"
+              checked={alarmEnabled}
+              onChange={async e => {
+                const checked = e.target.checked;
+                setAlarmEnabled(checked);
+                if (checked) await prepareAlarmAudio();
+              }}
+              className="w-4 h-4 rounded text-[#5D4037]"
+            />
             <div className="flex-1">
-              <span className="text-sm font-bold text-gray-700">Ativar Alarme Sonoro</span>
-              <p className="text-[10px] text-gray-500">O sistema emitirá um alerta no horário configurado</p>
+              <span className="text-sm font-black text-[#3F2A23]">Ativar Alarme Sonoro</span>
+              <p className="text-[10px] text-gray-600">Prepara o áudio do navegador e emite um alerta no horário configurado.</p>
             </div>
+            <span className="hidden sm:inline-flex px-2 py-1 rounded-full bg-[#5D4037] text-white text-[9px] font-black uppercase tracking-wider">Novo</span>
           </div>
           {alarmEnabled && (
              <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
@@ -698,48 +710,83 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">
-                    Som selecionado:{' '}
-                    <span className="text-[#5D4037] font-black">
-                      {alarmSoundsList.find(s => s.id === alarmSound)?.name || 'Nokia Clássico'}
-                    </span>
-                  </label>
+                <div className="rounded-2xl border border-[#DED4C8] bg-[#FFF9F6] p-3 shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+                    <div>
+                      <label className="block text-[10px] font-black text-[#5D4037] uppercase tracking-widest">Som selecionado</label>
+                      <p className="text-sm font-black text-[#2F211D]">
+                        {alarmSoundsList.find(s => s.id === alarmSound)?.name || alarmSoundsList[0]?.name || 'Alarme Celular Forte'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        previewSound(getFallbackAlarmSoundId(alarmSound), alarmVolume);
+                      }}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-[#5D4037] text-white text-xs font-black hover:bg-[#4E342E] transition-all shadow-sm"
+                    >
+                      🔊 Testar selecionado
+                    </button>
+                  </div>
+
                   {alarmSoundsList.length === 0 ? (
                     <p className="text-[10px] text-gray-400 italic">Carregando sons...</p>
                   ) : (
-                    <div className="space-y-2">
-                      {(['suave', 'medio', 'forte'] as const).map(cat => {
-                        const catSounds = alarmSoundsList.filter(s => s.category === cat);
-                        if (catSounds.length === 0) return null;
-                        const catLabel = cat === 'suave' ? '🔔 Suaves' : cat === 'medio' ? '📢 Médios' : '🚨 Fortes';
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {alarmSoundsList.map(s => {
+                        const isSelected = alarmSound === s.id;
+                        const isVeryStrong = s.intensity === 'Muito forte';
                         return (
-                          <div key={cat}>
-                            <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">{catLabel}</span>
-                            <div className="grid grid-cols-4 gap-1.5 mt-1">
-                              {catSounds.map(s => {
-                                const isSelected = alarmSound === s.id;
-                                return (
-                                  <button
-                                    key={s.id}
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      e.preventDefault();
-                                      setAlarmSound(s.id);
-                                      previewSound(s.id, alarmVolume);
-                                    }}
-                                    className={`
-                                      flex items-center justify-center gap-1 px-1.5 py-2 rounded-lg border text-[9px] font-bold uppercase tracking-wider cursor-pointer transition-all
-                                      ${isSelected
-                                        ? 'bg-[#5D4037] text-white shadow-sm border-[#5D4037]'
-                                        : 'border-gray-200 text-gray-600 hover:bg-[#F5EBE6] hover:text-[#5D4037] hover:border-[#DED4C8]'}
-                                    `}
-                                  >
-                                    <span className="text-xs">{isSelected ? '🔊' : '▶'}</span> {s.label}
-                                  </button>
-                                );
-                              })}
+                          <div
+                            key={s.id}
+                            className={`rounded-2xl border p-3 transition-all ${isSelected ? 'border-[#5D4037] bg-[#F1E3DC] shadow-md' : 'border-[#E7DDD5] bg-white hover:border-[#BCA79B]'}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  setAlarmSound(s.id);
+                                  previewSound(s.id, alarmVolume);
+                                }}
+                                className="text-left flex-1 cursor-pointer"
+                              >
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-lg">{isSelected ? '🔊' : isVeryStrong ? '🚨' : '⏰'}</span>
+                                  <span className="text-xs font-black text-[#3F2A23] uppercase tracking-wide">{s.name}</span>
+                                </div>
+                                <p className="text-[10px] leading-snug text-gray-600">{s.description}</p>
+                              </button>
+                              <span className={`shrink-0 px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-wider ${isVeryStrong ? 'bg-red-100 text-red-700 border border-red-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+                                {s.intensity}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-3">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  setAlarmSound(s.id);
+                                }}
+                                className={`flex-1 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${isSelected ? 'bg-[#5D4037] text-white' : 'bg-[#F7F1ED] text-[#5D4037] hover:bg-[#E9D8CF]'}`}
+                              >
+                                {isSelected ? 'Selecionado' : 'Selecionar'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  previewSound(s.id, alarmVolume);
+                                }}
+                                className="px-3 py-2 rounded-xl border border-[#DED4C8] text-[#5D4037] text-[10px] font-black uppercase tracking-wider hover:bg-[#F7F1ED] transition-all"
+                              >
+                                ▶ Testar
+                              </button>
                             </div>
                           </div>
                         );
