@@ -1,12 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { ChevronLeft, ChevronRight, AlertCircle, Users } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
-import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, ProcessedSession } from '../lib/utils';
+import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
 
 const getHourBase = (timeStr: string): string => {
@@ -90,9 +90,10 @@ const STATUS_LEGEND = [
 interface AgendaProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+  onNavigateToPatient?: (id: string) => void;
 }
 
-export default function Agenda({ state, onUpdate }: AgendaProps) {
+export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
@@ -103,6 +104,9 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
   const [sessionType, setSessionType] = useState<SessionType>(SessionType.SIMPLES);
   const [notes, setNotes] = useState('');
   const [isBlockMode, setIsBlockMode] = useState(false);
+  const [generalNotesDraft, setGeneralNotesDraft] = useState('');
+  const [actionGeneralNotesDraft, setActionGeneralNotesDraft] = useState('');
+  const [isEditingActionGeneralNotes, setIsEditingActionGeneralNotes] = useState(false);
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
@@ -118,6 +122,118 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     const key = dayKeys[dayIndex];
     return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
   }, [repoDate]);
+
+  const selectedPatient = useMemo(
+    () => state.patients.find(p => p.id === patientId) || null,
+    [patientId, state.patients]
+  );
+
+  useEffect(() => {
+    setGeneralNotesDraft(selectedPatient?.clinicalNotes || '');
+  }, [selectedPatient?.id, selectedPatient?.clinicalNotes]);
+
+  useEffect(() => {
+    const patient = actionSession ? state.patients.find(p => p.id === actionSession.patientId) : null;
+    setActionGeneralNotesDraft(patient?.clinicalNotes || '');
+    setIsEditingActionGeneralNotes(false);
+  }, [actionSession?.id, actionSession?.patientId, state.patients]);
+
+  const getPatientSessions = (targetPatientId: string) =>
+    state.sessions
+      .filter(s => s.patientId === targetPatientId && !s.isBlocked)
+      .sort((a, b) => `${a.date}T${a.time}|${a.id}`.localeCompare(`${b.date}T${b.time}|${b.id}`));
+
+  const getPatientRecentSessions = (targetPatientId: string) =>
+    getPatientSessions(targetPatientId)
+      .filter(s => [SessionStatus.REALIZADA, SessionStatus.FALTA, SessionStatus.FALTA_PROF, SessionStatus.CANCELADA, SessionStatus.REPOSICAO].includes(s.status))
+      .slice(-4)
+      .reverse();
+
+  const getPatientFinancialSummary = (targetPatientId: string) => {
+    const payments = state.payments.filter(p => p.patientId === targetPatientId);
+    const total = payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+    if (payments.length === 0) return 'Sem pagamentos registrados';
+    return `${payments.length} pagamento(s) - ${total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
+  };
+
+  const buildPreviewSession = (): Session | null => {
+    if (!selectedSlot || !patientId) return null;
+    const previewSession: Session = {
+      id: 'preview-agenda-session',
+      patientId,
+      date: selectedSlot.date,
+      time: normalizeTime(selectedSlot.time),
+      type: sessionType,
+      status: SessionStatus.AGENDADA,
+      notes,
+      packageNumber: 0,
+    };
+    return {
+      ...previewSession,
+      packageNumber: getSessionCycleNumber([...state.sessions, previewSession], previewSession),
+    };
+  };
+
+  const getWhatsappPreviewMessage = () => {
+    const previewSession = buildPreviewSession();
+    if (!previewSession || !selectedPatient) return '';
+    const planType = Number(previewSession.time.split(':')[0] || 0) < 12 ? 'HOJE_MANHA' : 'HOJE_TARDE';
+    const plan = getWhatsappReminderPlan({
+      runDateStr: previewSession.date,
+      tipo: planType,
+      patients: [selectedPatient],
+      sessions: [previewSession],
+      settings: state.settings,
+    });
+    return plan.reminders.find(r => r.patientId === selectedPatient.id)?.message || 'Sem mensagem prevista: verifique WhatsApp, status do paciente, feriado/recesso ou bloqueios.';
+  };
+
+  const getSchedulingWarnings = () => {
+    if (!selectedSlot) return [];
+    const normalizedTime = isValidTime(selectedSlot.time) ? normalizeTime(selectedSlot.time) : selectedSlot.time;
+    const warnings: string[] = [];
+    const holiday = state.settings.holidays?.find(h => h.date === selectedSlot.date);
+    if (holiday) warnings.push(`Data fechada por feriado/recesso: ${holiday.name}.`);
+
+    const occupied = state.sessions.find(s =>
+      s.date === selectedSlot.date &&
+      normalizeTime(s.time) === normalizedTime &&
+      !s.isBlocked &&
+      s.status !== SessionStatus.CANCELADA
+    );
+    if (occupied) {
+      const occupiedPatient = state.patients.find(p => p.id === occupied.patientId);
+      warnings.push(`Horário já ocupado por ${occupiedPatient?.name || 'outro registro'}.`);
+    }
+
+    if (patientId) {
+      const samePatientSameTime = state.sessions.find(s =>
+        s.patientId === patientId &&
+        s.date === selectedSlot.date &&
+        normalizeTime(s.time) === normalizedTime &&
+        s.status !== SessionStatus.CANCELADA
+      );
+      if (samePatientSameTime) warnings.push('Este atendente já possui uma sessão neste mesmo horário.');
+
+      const samePatientSameDay = state.sessions.filter(s =>
+        s.patientId === patientId &&
+        s.date === selectedSlot.date &&
+        normalizeTime(s.time) !== normalizedTime &&
+        s.status !== SessionStatus.CANCELADA
+      );
+      if (samePatientSameDay.length > 0) warnings.push(`Atenção: este atendente já possui ${samePatientSameDay.length} sessão(ões) no mesmo dia.`);
+    }
+
+    return warnings;
+  };
+
+  const saveGeneralNotes = (targetPatientId: string, value: string) => {
+    const updatedPatients = state.patients.map(patient =>
+      patient.id === targetPatientId ? { ...patient, clinicalNotes: value } : patient
+    );
+    onUpdate({ patients: updatedPatients });
+    showToast('Anotações gerais do paciente atualizadas.', 'success');
+  };
 
   // ── Create real session from virtual ──────────────────────────
   const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
@@ -281,6 +397,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       return;
     }
     const normalizedTime = normalizeTime(selectedSlot.time);
+    const holiday = state.settings.holidays?.find(h => h.date === selectedSlot.date);
 
     if (isBlockMode) {
       if (!notes.trim()) {
@@ -311,12 +428,29 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
     const patient = state.patients.find(p => p.id === patientId);
     if (!patient) return;
 
+    if (holiday) {
+      showToast(`Não é possível agendar em data fechada: ${holiday.name}.`, 'error');
+      return;
+    }
+
+    const occupiedSession = state.sessions.find(s =>
+      s.date === selectedSlot.date &&
+      normalizeTime(s.time) === normalizedTime &&
+      !s.isBlocked &&
+      s.status !== SessionStatus.CANCELADA
+    );
+    if (occupiedSession) {
+      const occupiedPatient = state.patients.find(p => p.id === occupiedSession.patientId);
+      showToast(`Horário já ocupado por ${occupiedPatient?.name || 'outro registro'}.`, 'error');
+      return;
+    }
+
     const newSessionId = Math.random().toString(36).substr(2, 9);
     const previewSession: Session = {
       id: newSessionId,
       patientId,
       date: selectedSlot.date,
-      time: selectedSlot.time,
+      time: normalizedTime,
       type: sessionType,
       status: SessionStatus.AGENDADA,
       notes,
@@ -328,7 +462,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
       ...previewSession,
       patientId,
       date: selectedSlot.date,
-      time: selectedSlot.time,
+      time: normalizedTime,
       type: sessionType,
       status: SessionStatus.AGENDADA,
       notes,
@@ -777,7 +911,7 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
             isOpen={true}
             onClose={() => setActionSession(null)}
             title={patient?.name || 'Sessão'}
-            width="max-w-sm"
+            width="max-w-xl"
           >
             <div className="space-y-4">
               {/* Info card com gradiente */}
@@ -823,6 +957,100 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
                   )}
                 </div>
               </div>
+
+              {patient && (
+                <div className="rounded-2xl border border-clinic-border bg-white p-4 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">Anotações gerais do paciente</p>
+                      <p className="text-xs text-clinic-text-muted mt-0.5">Mesmo campo usado no cadastro completo.</p>
+                    </div>
+                    {!isEditingActionGeneralNotes ? (
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingActionGeneralNotes(true)}
+                        className="px-3 py-1.5 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-primary font-black uppercase text-[10px] hover:bg-clinic-border/40 transition"
+                      >
+                        Editar
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActionGeneralNotesDraft(patient.clinicalNotes || '');
+                          setIsEditingActionGeneralNotes(false);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-text-muted font-black uppercase text-[10px] hover:bg-clinic-border/40 transition"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                  </div>
+
+                  {isEditingActionGeneralNotes ? (
+                    <>
+                      <textarea
+                        value={actionGeneralNotesDraft}
+                        onChange={e => setActionGeneralNotesDraft(e.target.value)}
+                        className="w-full min-h-[108px] rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-clinic-primary"
+                        placeholder="Anotações gerais sincronizadas com o cadastro do paciente."
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActionGeneralNotesDraft(patient.clinicalNotes || '');
+                            setIsEditingActionGeneralNotes(false);
+                          }}
+                          className="py-2 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-text-muted font-black uppercase tracking-wide text-[10px] hover:bg-clinic-border/40 transition"
+                        >
+                          Cancelar edição
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            saveGeneralNotes(patient.id, actionGeneralNotesDraft);
+                            setIsEditingActionGeneralNotes(false);
+                          }}
+                          className="py-2 rounded-lg bg-clinic-primary text-white font-black uppercase tracking-wide text-[10px] hover:bg-clinic-primary-hover transition"
+                        >
+                          Salvar anotações
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="min-h-[52px] rounded-xl bg-clinic-bg border border-clinic-border px-3 py-2 text-sm text-clinic-text-muted whitespace-pre-wrap">
+                      {patient.clinicalNotes?.trim() || 'Sem anotações gerais registradas.'}
+                    </p>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilterPatientId(patient.id);
+                        setActionSession(null);
+                        showToast('Filtro aplicado na agenda para este atendente.', 'success');
+                      }}
+                      className="w-full py-2 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-primary font-black uppercase tracking-wide text-[10px] hover:bg-clinic-border/40 transition"
+                    >
+                      Ver histórico na agenda
+                    </button>
+                    {onNavigateToPatient && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActionSession(null);
+                          onNavigateToPatient(patient.id);
+                        }}
+                        className="w-full py-2 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-primary font-black uppercase tracking-wide text-[10px] hover:bg-clinic-border/40 transition"
+                      >
+                        Ver cadastro completo
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* ── Botões de ação ── */}
               {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
@@ -987,101 +1215,230 @@ export default function Agenda({ state, onUpdate }: AgendaProps) {
         isOpen={isModalOpen} 
         onClose={() => { setIsModalOpen(false); resetForm(); }} 
         title={selectedSlot ? (isBlockMode ? `Bloquear: ${safeFormatDate(selectedSlot.date, 'dd/MM')} — ${selectedSlot.time}` : `Agendar: ${safeFormatDate(selectedSlot.date, 'dd/MM')} — ${selectedSlot.time}`) : 'Agendar Sessão'}
+        width="max-w-4xl"
       >
-        <div className="space-y-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">Atendente</label>
-            <select 
-              value={isBlockMode ? '__BLOCK__' : patientId}
-              onChange={(e) => {
-                if (e.target.value === '__BLOCK__') {
-                  setIsBlockMode(true);
-                  setPatientId('');
-                } else {
-                  setIsBlockMode(false);
-                  setPatientId(e.target.value);
-                }
-              }}
-              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
-            >
-              <option value="">Selecione um atendente...</option>
-              <option value="__BLOCK__">🔒 Bloquear Horário</option>
-              {state.patients.filter(p => p.status === 'Ativo').sort((a, b) => a.name.localeCompare(b.name)).map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {selectedSlot && (
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.15fr] gap-5">
+          <div className="space-y-4">
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Horário do atendimento</label>
-              <select
-                value={AVAILABLE_TIMES.includes(selectedSlot.time) ? selectedSlot.time : 'custom'}
-                onChange={e => {
-                  if (e.target.value === 'custom') {
-                    setSelectedSlot(prev => prev ? { ...prev, time: getHourBase(prev.time).split(':')[0] + ':30' } : null);
+              <label className="text-xs font-bold text-clinic-text-faint uppercase">Atendente</label>
+              <select 
+                value={isBlockMode ? '__BLOCK__' : patientId}
+                onChange={(e) => {
+                  if (e.target.value === '__BLOCK__') {
+                    setIsBlockMode(true);
+                    setPatientId('');
                   } else {
-                    setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null);
+                    setIsBlockMode(false);
+                    setPatientId(e.target.value);
                   }
                 }}
-                className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm w-full font-medium"
-              >
-                {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
-                <option value="custom">Outro horário...</option>
-              </select>
-              {(!AVAILABLE_TIMES.includes(selectedSlot.time)) && (
-                <input
-                  type="text"
-                  placeholder="Ex: 17:30"
-                  value={selectedSlot.time}
-                  onChange={e => setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null)}
-                  className="px-4 py-3 mt-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full animate-in fade-in"
-                />
-              )}
-            </div>
-          )}
-
-          {!isBlockMode && (
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Tipo de Sessão</label>
-              <select 
-                value={sessionType}
-                onChange={(e) => setSessionType(e.target.value as SessionType)}
                 className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
               >
-                <option value={SessionType.SIMPLES}>{SessionType.SIMPLES}</option>
-                <option value={SessionType.DUPLA}>{SessionType.DUPLA}</option>
+                <option value="">Selecione um atendente...</option>
+                <option value="__BLOCK__">Bloquear Horário</option>
+                {state.patients.filter(p => p.status === 'Ativo').sort((a, b) => a.name.localeCompare(b.name)).map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
               </select>
             </div>
-          )}
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">
-              {isBlockMode ? 'Nome do Compromisso *' : 'Observações'}
-            </label>
-            <textarea 
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder={isBlockMode ? 'Ex: Reunião, Consulta médica, Compromisso pessoal...' : 'Digite alguma anotação técnica opcional...'}
-              className={cn(
-                "px-4 py-3 bg-clinic-bg rounded-xl border focus:ring-2 focus:ring-clinic-primary outline-none transition-all min-h-[100px]",
-                isBlockMode && !notes.trim() ? "border-red-300" : "border-clinic-border"
-              )}
-            />
+            {selectedSlot && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-bold text-clinic-text-faint uppercase">Horário do atendimento</label>
+                  <select
+                    value={AVAILABLE_TIMES.includes(selectedSlot.time) ? selectedSlot.time : 'custom'}
+                    onChange={e => {
+                      if (e.target.value === 'custom') {
+                        setSelectedSlot(prev => prev ? { ...prev, time: getHourBase(prev.time).split(':')[0] + ':30' } : null);
+                      } else {
+                        setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null);
+                      }
+                    }}
+                    className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm w-full font-medium"
+                  >
+                    {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
+                    <option value="custom">Outro horário...</option>
+                  </select>
+                </div>
+                {!isBlockMode && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-bold text-clinic-text-faint uppercase">Tipo de Sessão</label>
+                    <select 
+                      value={sessionType}
+                      onChange={(e) => setSessionType(e.target.value as SessionType)}
+                      className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
+                    >
+                      <option value={SessionType.SIMPLES}>{SessionType.SIMPLES}</option>
+                      <option value={SessionType.DUPLA}>{SessionType.DUPLA}</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedSlot && !AVAILABLE_TIMES.includes(selectedSlot.time) && (
+              <input
+                type="text"
+                placeholder="Ex: 17:30"
+                value={selectedSlot.time}
+                onChange={e => setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null)}
+                className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full"
+              />
+            )}
+
+            {getSchedulingWarnings().length > 0 && (
+              <div className="rounded-xl border border-status-orange-text/25 bg-status-orange-bg/70 p-3 space-y-1">
+                {getSchedulingWarnings().map(warning => (
+                  <p key={warning} className="flex items-start gap-2 text-xs font-semibold text-status-orange-text">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-bold text-clinic-text-faint uppercase">
+                {isBlockMode ? 'Nome do Compromisso *' : 'Observação da sessão'}
+              </label>
+              <textarea 
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder={isBlockMode ? 'Ex: Reunião, consulta médica, compromisso pessoal...' : 'Esta observação pertence somente a este agendamento.'}
+                className={cn(
+                  "px-4 py-3 bg-clinic-bg rounded-xl border focus:ring-2 focus:ring-clinic-primary outline-none transition-all min-h-[104px]",
+                  isBlockMode && !notes.trim() ? "border-red-300" : "border-clinic-border"
+                )}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPatientId('');
+                  setNotes('');
+                  setGeneralNotesDraft('');
+                }}
+                className="py-3 bg-clinic-bg text-clinic-text-muted font-bold rounded-xl border border-clinic-border hover:bg-clinic-border/40 transition-all uppercase tracking-widest text-xs"
+              >
+                Limpar seleção
+              </button>
+              <button 
+                onClick={handleSaveSession}
+                disabled={isBlockMode ? !notes.trim() : !patientId}
+                className={cn(
+                  "py-3 text-white font-bold rounded-xl shadow-lg transition-all uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed text-xs",
+                  isBlockMode
+                    ? "bg-[#5D4037] hover:bg-[#4E342E]"
+                    : "bg-clinic-primary hover:bg-clinic-primary-hover"
+                )}
+              >
+                {isBlockMode ? 'Bloquear Horário' : 'Confirmar Agendamento'}
+              </button>
+            </div>
           </div>
 
-          <button 
-            onClick={handleSaveSession}
-            disabled={isBlockMode ? !notes.trim() : !patientId}
-            className={cn(
-              "w-full py-4 text-white font-bold rounded-xl shadow-lg transition-all uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed",
-              isBlockMode
-                ? "bg-[#5D4037] hover:bg-[#4E342E]"
-                : "bg-clinic-primary hover:bg-clinic-primary-hover"
+          <div className="space-y-3">
+            {selectedPatient && !isBlockMode ? (
+              <>
+                <div className="rounded-xl border border-clinic-border bg-white shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 bg-clinic-bg/40 border-b border-clinic-border flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-serif text-xl font-bold text-clinic-text truncate">{selectedPatient.name}</p>
+                      <p className="text-xs text-clinic-text-muted mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                        <span className="inline-flex items-center gap-1"><User size={13} /> {selectedPatient.guardianName}</span>
+                        <span className="inline-flex items-center gap-1"><Phone size={13} /> {selectedPatient.whatsapp || 'Sem telefone'}</span>
+                      </p>
+                    </div>
+                    <span className="px-2 py-1 rounded-full bg-status-green-bg text-status-green-text text-[10px] font-black uppercase">
+                      {selectedPatient.status}
+                    </span>
+                  </div>
+                  <div className="p-4 grid grid-cols-2 gap-2">
+                    <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3">
+                      <p className="text-[10px] font-black text-clinic-text-faint uppercase">Última sessão</p>
+                      <p className="text-sm font-bold text-clinic-text mt-1">{getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]?.date ? getSessionCycleLabel(state.sessions, getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]) : 'Sem sessão realizada'}</p>
+                    </div>
+                    <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3">
+                      <p className="text-[10px] font-black text-clinic-text-faint uppercase">Próxima lógica</p>
+                      <p className="text-sm font-bold text-clinic-text mt-1">{buildPreviewSession() ? getSessionCycleLabel([...state.sessions, buildPreviewSession() as Session], buildPreviewSession() as Session) : '--'}</p>
+                    </div>
+                    <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3 col-span-2">
+                      <p className="text-[10px] font-black text-clinic-text-faint uppercase flex items-center gap-1"><DollarSign size={12} /> Financeiro</p>
+                      <p className="text-sm font-bold text-clinic-text mt-1">{getPatientFinancialSummary(selectedPatient.id)}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {onNavigateToPatient && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsModalOpen(false);
+                      resetForm();
+                      onNavigateToPatient(selectedPatient.id);
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-clinic-bg border border-clinic-border text-clinic-primary font-black uppercase tracking-wide text-[10px] hover:bg-clinic-border/40 transition"
+                  >
+                    Ver cadastro completo do paciente
+                  </button>
+                )}
+
+                <div className="rounded-xl border border-clinic-border bg-white p-3">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">Histórico recente</p>
+                    <Clock size={14} className="text-clinic-text-faint" />
+                  </div>
+                  <div className="space-y-1.5">
+                    {getPatientRecentSessions(selectedPatient.id).length > 0 ? getPatientRecentSessions(selectedPatient.id).map(session => (
+                      <div key={session.id} className="flex items-center justify-between gap-2 text-xs border border-clinic-border/60 rounded-lg px-2 py-1.5">
+                        <span className="font-bold text-clinic-text">{safeFormatDate(session.date, 'dd/MM')} às {session.time}</span>
+                        <span className={cn("font-black uppercase text-[9px] px-1.5 py-0.5 rounded", getStatusBadgeStyle(session.status))}>{session.status}</span>
+                      </div>
+                    )) : (
+                      <p className="text-xs text-clinic-text-muted italic">Sem histórico recente registrado.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-clinic-border bg-white p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">Anotações gerais do paciente</p>
+                    <FileText size={14} className="text-clinic-text-faint" />
+                  </div>
+                  <textarea
+                    value={generalNotesDraft}
+                    onChange={e => setGeneralNotesDraft(e.target.value)}
+                    className="w-full min-h-[86px] rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-clinic-primary"
+                    placeholder="Anotações gerais sincronizadas com o cadastro do paciente."
+                  />
+                  <button
+                    type="button"
+                    onClick={() => saveGeneralNotes(selectedPatient.id, generalNotesDraft)}
+                    className="w-full py-2 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-primary font-black uppercase tracking-wide text-[10px] hover:bg-clinic-border/40 transition"
+                  >
+                    Salvar anotações gerais
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-status-green-text/20 bg-status-green-bg/50 p-3">
+                  <p className="text-[10px] font-black text-status-green-text uppercase tracking-widest flex items-center gap-1 mb-2">
+                    <MessageCircle size={13} /> Prévia WhatsApp
+                  </p>
+                  <p className="whitespace-pre-wrap text-xs text-clinic-text leading-relaxed">{getWhatsappPreviewMessage()}</p>
+                  <p className="text-[10px] text-clinic-text-muted mt-2 font-semibold">Prévia visual. Nenhum envio é executado nesta tela.</p>
+                </div>
+              </>
+            ) : (
+              <div className="h-full min-h-[260px] rounded-xl border border-dashed border-clinic-border bg-clinic-bg/40 flex items-center justify-center text-center p-6">
+                <p className="text-sm text-clinic-text-muted">
+                  Selecione um atendente para ver resumo clínico, histórico, financeiro e prévia do WhatsApp.
+                </p>
+              </div>
             )}
-          >
-            {isBlockMode ? '🔒 Bloquear Horário' : 'Confirmar Agendamento'}
-          </button>
+          </div>
         </div>
       </Modal>
 

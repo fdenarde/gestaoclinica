@@ -103,7 +103,8 @@ function runRequired(cmd, label, cwdOverride = null) {
 }
 
 function hasForbiddenPath(file) {
-  const normalized = file.replace(/\\/g, '/');
+  const normalized = file.replace(/^"|"$/g, '').replace(/\\/g, '/');
+  if (normalized.endsWith('.env.example')) return false;
   return FORBIDDEN.some(forbid => normalized.includes(forbid));
 }
 

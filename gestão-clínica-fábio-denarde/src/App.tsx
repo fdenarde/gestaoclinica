@@ -452,7 +452,7 @@ export default function App() {
               transition={{ duration: 0.3 }}
             >
               {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
-              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} />}
+              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
