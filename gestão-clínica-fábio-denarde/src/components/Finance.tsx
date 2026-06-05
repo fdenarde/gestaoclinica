@@ -1,24 +1,154 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { AppState, Payment, PaymentModal, SessionStatus, Expense, Session, Patient } from '../types';
-import { DollarSign, Plus, Search, History, Trash2, TrendingUp, TrendingDown, Wallet, Link, Calendar as CalendarIcon } from 'lucide-react';
+import { AppState, Payment, Expense } from '../types';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Calendar as CalendarIcon, CheckCircle2, ChevronDown, CircleDollarSign, Clock3, DollarSign, HandCoins, History, Info, Link, Minus, Plus, Search, Sparkles, Trash2, TrendingUp, Wallet } from 'lucide-react';
+import { motion } from 'motion/react';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
 import { format, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, startOfDay, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
+import { calculatePackageFinancialSummary, FinancialStatus, PACKAGE_GROSS_VALUE, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE } from '../lib/financePackages';
 
 interface FinanceProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
 }
 
-interface ExpectedPayment {
-  id: string;
-  amount: number;
-  date: Date;
-  status: 'PENDENTE' | 'PARCIAL' | 'QUITADO' | 'ATRASADO';
-  paidAmount: number;
-  pendingAmount: number;
+type MetricBadgeTone = 'green' | 'orange' | 'red' | 'blue';
+type StatusFilter = 'Todos' | FinancialStatus | 'Com pagamento no período' | 'Sem pagamento no período';
+
+const badgeToneClasses: Record<MetricBadgeTone, string> = {
+  green: 'bg-status-green-bg text-status-green-text border border-status-green-text/15',
+  orange: 'bg-status-orange-bg text-status-orange-text border border-status-orange-text/15',
+  red: 'bg-status-red-bg text-status-red-text border border-status-red-text/15',
+  blue: 'bg-status-blue-bg text-status-blue-text border border-status-blue-text/15',
+};
+
+function AnimatedCurrencyValue({ value, className }: { value: number; className?: string }) {
+  const [displayValue, setDisplayValue] = useState(value);
+
+  useEffect(() => {
+    const startValue = displayValue;
+    const delta = value - startValue;
+
+    if (delta === 0) return;
+
+    let frameId = 0;
+    const startedAt = performance.now();
+    const duration = 550;
+
+    const tick = (now: number) => {
+      const progress = Math.min((now - startedAt) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplayValue(startValue + delta * eased);
+      if (progress < 1) frameId = requestAnimationFrame(tick);
+    };
+
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [value]);
+
+  return <span className={className}>{formatCurrency(displayValue)}</span>;
+}
+
+function MetricBadge({ label, tone }: { label: string; tone: MetricBadgeTone }) {
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold tracking-[0.04em]', badgeToneClasses[tone])}>
+      <Sparkles size={12} />
+      {label}
+    </span>
+  );
+}
+
+function MetricChip({
+  icon,
+  label,
+  value,
+  tone,
+  align = 'left',
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  tone: MetricBadgeTone;
+  align?: 'left' | 'right';
+}) {
+  return (
+    <div className={cn('rounded-2xl border p-4 shadow-sm', badgeToneClasses[tone], align === 'right' && 'text-right')}>
+      <div className={cn('mb-2 flex items-center gap-2 text-[13px] font-bold tracking-[0.06em]', align === 'right' && 'justify-end')}>
+        {icon}
+        <span>{label}</span>
+      </div>
+      <AnimatedCurrencyValue value={value} className="text-base font-black sm:text-lg" />
+    </div>
+  );
+}
+
+function CardHelp({ tooltip }: { tooltip: string }) {
+  return (
+    <span
+      title={tooltip}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-clinic-border bg-clinic-bg/80 text-clinic-text-muted transition-colors hover:text-clinic-text"
+      aria-label={tooltip}
+    >
+      <Info size={15} />
+    </span>
+  );
+}
+
+function ProgressPanel({
+  label,
+  percentage,
+}: {
+  label: string;
+  percentage: number;
+}) {
+  return (
+    <div className="rounded-2xl border border-clinic-border bg-clinic-bg/70 p-4">
+      <div className="mb-2 flex items-center justify-between gap-3 text-sm font-semibold tracking-[0.04em] text-clinic-text-muted">
+        <span>{label}</span>
+        <span>{Math.round(percentage)}%</span>
+      </div>
+      <div className="h-3 overflow-hidden rounded-full bg-clinic-border/70">
+        <div className="h-full rounded-full bg-gradient-to-r from-status-green-text via-clinic-primary to-status-orange-text transition-all duration-500" style={{ width: `${percentage}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function CardLegend({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-3 rounded-xl border border-clinic-border bg-clinic-bg/60 px-3 py-2 text-[13px] leading-relaxed text-clinic-text-muted">
+      {children}
+    </p>
+  );
+}
+
+const statusClasses: Record<FinancialStatus, string> = {
+  'QUITADO': 'bg-status-green-bg text-status-green-text border-status-green-text/20',
+  'PARCIAL': 'bg-status-blue-bg text-status-blue-text border-status-blue-text/20',
+  'EM ABERTO': 'bg-status-orange-bg text-status-orange-text border-status-orange-text/20',
+  'ATRASADO': 'bg-status-red-bg text-status-red-text border-status-red-text/20',
+  'SEM MOVIMENTAÇÃO': 'bg-clinic-bg text-clinic-text-muted border-clinic-border',
+};
+
+const statusTooltips: Record<FinancialStatus, string> = {
+  'QUITADO': 'Pacote atual totalmente pago. Pacotes anteriores não entram nesta validação.',
+  'PARCIAL': 'Existe pagamento registrado no pacote atual, mas ainda falta completar o valor do pacote.',
+  'EM ABERTO': 'Pacote atual iniciado ou agendado sem pagamento registrado para este pacote.',
+  'ATRASADO': 'Pacote atual possui pendência vencida conforme a regra de vencimento do plano.',
+  'SEM MOVIMENTAÇÃO': 'Não há sessões, pacote ou pagamento relevante para leitura atual.',
+};
+
+function FinancialStatusBadge({ status }: { status: FinancialStatus }) {
+  return (
+    <span
+      title={statusTooltips[status]}
+      className={cn('inline-flex items-center justify-center rounded-full border px-2.5 py-1 text-[11px] font-black tracking-[0.06em] whitespace-nowrap', statusClasses[status])}
+    >
+      {status}
+    </span>
+  );
 }
 
 export default function Finance({ state, onUpdate }: FinanceProps) {
@@ -28,6 +158,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [expandedPatientId, setExpandedPatientId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('Todos');
   const [paymentToDelete, setPaymentToDelete] = useState<string | null>(null);
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
 
@@ -136,40 +268,10 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
 
   const patientFinancials = useMemo(() => {
     const today = startOfDay(new Date());
-    
-    return state.patients.filter(p => p.status === 'Ativo' || state.payments.some(pm => pm.patientId === p.id)).map(patient => {
-      const patientPayments = state.payments
-        .filter(p => p.patientId === patient.id)
-        .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-        
-      const totalPaid = patientPayments.reduce((s, p) => s + p.amount, 0);
-      const pagoNoPacoteAtual = totalPaid % 1000;
-      
-      const expectedPayments: ExpectedPayment[] = [];
-      
-      if (pagoNoPacoteAtual > 0) {
-        const currentPackageIndex = Math.floor(totalPaid / 1000);
-        const allPatientSessions = state.sessions
-          .filter(s => s.patientId === patient.id && s.status !== SessionStatus.CANCELADA && !s.isBlocked)
-          .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-          
-        const sixthSession = allPatientSessions[currentPackageIndex * 10 + 5];
-        const dueDate = sixthSession ? parseISO(sixthSession.date) : today;
-        
-        const isAtrasado = dueDate < today;
-        
-        expectedPayments.push({
-          id: `pkg_${currentPackageIndex}_rem`,
-          amount: 1000 - pagoNoPacoteAtual,
-          date: dueDate,
-          status: isAtrasado ? 'ATRASADO' : 'PENDENTE',
-          paidAmount: 0,
-          pendingAmount: 1000 - pagoNoPacoteAtual
-        });
-      }
-      
-      return { patient, expectedPayments, patientPayments, totalPaid, pagoNoPacoteAtual };
-    });
+
+    return state.patients
+      .filter(patient => patient.status === 'Ativo' || state.payments.some(payment => payment.patientId === patient.id))
+      .map(patient => calculatePackageFinancialSummary(patient, state.sessions, state.payments, today));
   }, [state.patients, state.sessions, state.payments]);
 
   const metrics = useMemo(() => {
@@ -187,18 +289,16 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       if (isWithinInterval(parseISO(e.date), interval)) despesasNoPeriodo += e.amount;
     });
   
-    patientFinancials.forEach(pf => {
-      pf.expectedPayments.forEach(exp => {
-        if (isWithinInterval(exp.date, interval) && exp.pendingAmount > 0) {
-          previstoNoPeriodo += exp.pendingAmount;
-        }
-        if (exp.status === 'ATRASADO') saldoAtrasado += exp.pendingAmount;
-        else if (exp.status === 'PENDENTE' || exp.status === 'PARCIAL') saldoEmAberto += exp.pendingAmount;
-      });
+    patientFinancials.forEach(summary => {
+      if (summary.pendingGross > 0) {
+        previstoNoPeriodo += summary.pendingGross;
+      }
+      if (summary.overdueGross > 0) saldoAtrasado += summary.overdueGross;
+      else if (summary.pendingGross > 0) saldoEmAberto += summary.pendingGross;
     });
 
-    saldoEmAberto = saldoEmAberto * 0.8;
-    saldoAtrasado = saldoAtrasado * 0.8;
+    saldoEmAberto = saldoEmAberto * (1 - PARTNER_SHARE_RATE);
+    saldoAtrasado = saldoAtrasado * (1 - PARTNER_SHARE_RATE);
   
     return { 
       recebidoNoPeriodo, 
@@ -211,40 +311,64 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     };
   }, [patientFinancials, state.payments, state.expenses, interval]);
 
+  const financeDashboard = useMemo(() => {
+    const receitaProjetada = metrics.recebidoNoPeriodo + metrics.previstoNoPeriodo;
+    const progressoRecebido = metrics.previstoNoPeriodo > 0 ? Math.min((metrics.recebidoNoPeriodo / metrics.previstoNoPeriodo) * 100, 100) : 0;
+
+    const receitaBadge = receitaProjetada <= 0
+      ? { label: 'Atenção', tone: 'orange' as MetricBadgeTone }
+      : progressoRecebido !== null && progressoRecebido >= 75
+        ? { label: 'Excelente', tone: 'green' as MetricBadgeTone }
+        : progressoRecebido !== null && progressoRecebido >= 35
+          ? { label: 'Atenção', tone: 'orange' as MetricBadgeTone }
+          : { label: 'Baixa Receita', tone: 'red' as MetricBadgeTone };
+
+    const saldoBadge = metrics.saldoAtrasado > 0
+      ? { label: 'Atrasado', tone: 'red' as MetricBadgeTone }
+      : metrics.saldoEmAberto > 0
+        ? { label: 'Pendente', tone: 'orange' as MetricBadgeTone }
+        : { label: 'Em Dia', tone: 'green' as MetricBadgeTone };
+
+    return {
+      receitaProjetada,
+      progressoRecebido,
+      receitaBadge,
+      saldoBadge,
+    };
+  }, [metrics]);
+
+  const revenueTitle = periodFilter === 'Personalizado' ? 'Receita Bruta do Período' : `Receita Bruta ${periodFilter}`;
+
   const patientList = useMemo(() => {
-    return patientFinancials.filter(pf => pf.patient.status === 'Ativo').map(pf => {
-      const paymentsInPeriod = pf.patientPayments.filter(p => isWithinInterval(parseISO(p.date), interval));
-      const valorJaPago = paymentsInPeriod.reduce((s, p) => s + p.amount, 0);
-      
-      const expectedInPeriod = pf.expectedPayments.filter(exp => isWithinInterval(exp.date, interval) && exp.pendingAmount > 0);
-      const valorPendente = expectedInPeriod.reduce((s, exp) => s + exp.pendingAmount, 0);
-      
-      const hasOverdue = expectedInPeriod.some(exp => exp.status === 'ATRASADO');
-      
-      let indicator = 'QUITADO';
-      if (valorPendente > 0) {
-        if (hasOverdue) indicator = 'ATRASADO';
-        else indicator = 'PENDENTE';
-      }
+    return patientFinancials.filter(summary => summary.patient.status === 'Ativo').map(summary => {
+      const paymentsInPeriod = summary.allPayments.filter(payment => isWithinInterval(parseISO(payment.date), interval));
+      const valorJaPago = paymentsInPeriod.reduce((sum, payment) => sum + payment.amount, 0);
+      const hasPaymentInPeriod = paymentsInPeriod.length > 0;
 
       return {
-        ...pf.patient,
+        ...summary,
         valorJaPago,
-        valorPendente,
-        indicator,
-        pagoNoPacoteAtual: pf.pagoNoPacoteAtual,
-        pacotesCompletos: Math.floor(pf.totalPaid / 1000)
+        valorPendente: summary.pendingGross,
+        valorAtrasado: summary.overdueGross,
+        hasPaymentInPeriod,
       };
-    }).filter(p => {
+    }).filter(item => {
         const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-        return normalize(p.name).includes(normalize(searchTerm));
+        const matchesSearch = normalize(item.patient.name).includes(normalize(searchTerm));
+        if (!matchesSearch) return false;
+        if (statusFilter === 'Todos') return true;
+        if (statusFilter === 'Com pagamento no período') return item.hasPaymentInPeriod;
+        if (statusFilter === 'Sem pagamento no período') return !item.hasPaymentInPeriod;
+        return item.status === statusFilter;
       })
       .sort((a,b) => {
-        if (a.indicator === 'ATRASADO' && b.indicator !== 'ATRASADO') return -1;
-        if (b.indicator === 'ATRASADO' && a.indicator !== 'ATRASADO') return 1;
-        return a.name.localeCompare(b.name);
+        if (a.status === 'ATRASADO' && b.status !== 'ATRASADO') return -1;
+        if (b.status === 'ATRASADO' && a.status !== 'ATRASADO') return 1;
+        if (a.status === 'EM ABERTO' && b.status !== 'EM ABERTO') return -1;
+        if (b.status === 'EM ABERTO' && a.status !== 'EM ABERTO') return 1;
+        return a.patient.name.localeCompare(b.patient.name);
       });
-  }, [patientFinancials, interval, searchTerm]);
+  }, [patientFinancials, interval, searchTerm, statusFilter]);
 
   const groupedTransactions = useMemo(() => {
     const inPeriod = state.payments.filter(p => isWithinInterval(parseISO(p.date), interval))
@@ -284,9 +408,11 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       return;
     }
 
+    const targetPackageNumber = patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1;
+
     const newPayment: Payment = {
       id: Math.random().toString(36).substr(2, 9),
-      patientId, amount, date, installment, method
+      patientId, amount, date, installment, method, packageNumber: targetPackageNumber
     };
 
     const patientName = state.patients.find(p => p.id === patientId)?.name || 'Atendente';
@@ -342,112 +468,241 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     <div className="flex flex-col gap-6 py-6">
       
       {/* Top Filter */}
-      <div className="bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm flex flex-col gap-3">
-        <div className="flex flex-col md:flex-row items-center gap-4 justify-between">
-          <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
+      <div className="rounded-[20px] border border-clinic-border bg-clinic-surface p-5 shadow-sm">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl bg-clinic-primary/10 p-3 text-clinic-primary">
+                <CalendarIcon size={18} />
+              </div>
+              <div>
+                <p className="text-base font-black tracking-[0.06em] text-clinic-text">Painel Financeiro</p>
+                <p className="text-sm text-clinic-text-muted">Acompanhe receitas, pendências e resultado líquido com leitura rápida.</p>
+              </div>
+            </div>
+            <div className="inline-flex items-center rounded-full border border-clinic-border bg-clinic-bg px-3 py-1.5 text-[13px] font-bold tracking-[0.06em] text-clinic-text-muted">
+              Período analisado: {intervalDisplay}
+            </div>
+          </div>
+          <div className="flex w-full flex-col gap-3 xl:w-auto xl:items-end">
+            <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
             {['Semanal', 'Mensal', 'Anual', 'Personalizado'].map(f => (
               <button 
                 key={f}
                 onClick={() => setPeriodFilter(f as any)}
                 className={cn(
-                  "flex-1 md:flex-none px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-all", 
-                  periodFilter === f ? 'bg-clinic-text text-white shadow-md' : 'text-clinic-text-muted hover:text-clinic-text'
+                  "flex-1 md:flex-none px-5 py-2.5 rounded-lg text-sm font-bold tracking-[0.06em] transition-all", 
+                  periodFilter === f ? 'bg-clinic-text text-white shadow-md' : 'text-clinic-text-muted hover:bg-white/70 hover:text-clinic-text'
                 )}
               >
                 {f}
               </button>
             ))}
-          </div>
-          {periodFilter === 'Personalizado' && (
-            <div className="flex items-center gap-2 w-full md:w-auto">
-              <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
-              <span className="text-clinic-text-faint text-xs font-bold">até</span>
-              <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} className="px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs focus:ring-1 focus:ring-clinic-primary outline-none" />
             </div>
-          )}
-        </div>
-        {periodFilter !== 'Personalizado' && (
-          <div className="text-center md:text-left text-xs font-bold text-clinic-text-muted uppercase tracking-widest px-2">
-            Período: {intervalDisplay}
+            {periodFilter === 'Personalizado' && (
+              <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center w-full md:w-auto">
+                <input type="date" value={customStartDate} onChange={e => setCustomStartDate(e.target.value)} className="px-3 py-2.5 bg-clinic-bg rounded-xl border border-clinic-border text-sm focus:ring-2 focus:ring-clinic-primary outline-none" />
+                <span className="text-center text-clinic-text-faint text-sm font-semibold tracking-[0.04em]">até</span>
+                <input type="date" value={customEndDate} onChange={e => setCustomEndDate(e.target.value)} className="px-3 py-2.5 bg-clinic-bg rounded-xl border border-clinic-border text-sm focus:ring-2 focus:ring-clinic-primary outline-none" />
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
       {/* Cards de Resumo */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Receitas */}
-        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
-          <div className="flex justify-between items-start mb-3">
-            <div className="flex items-center gap-2 text-clinic-text">
-              <TrendingUp size={16} />
-              <p className="text-[10px] uppercase font-bold tracking-widest">Receitas ({periodFilter})</p>
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+        <motion.div
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35 }}
+          whileHover={{ y: -4, scale: 1.01 }}
+          className="group relative flex h-full flex-col overflow-hidden rounded-[20px] border border-clinic-border bg-clinic-surface p-6 shadow-clinic transition-shadow hover:shadow-xl"
+        >
+          <div className="absolute inset-x-0 top-0 h-1 bg-status-green-text/70"></div>
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-start gap-3 text-clinic-text">
+                <div className="shrink-0 rounded-2xl bg-status-green-bg p-3 text-status-green-text shadow-sm">
+                  <TrendingUp size={20} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-base font-black tracking-[0.04em] text-clinic-text">{revenueTitle}</p>
+                  <p className="text-sm text-clinic-text-muted">Total recebido no período selecionado</p>
+                  <div className="mt-2">
+                    <MetricBadge label={financeDashboard.receitaBadge.label} tone={financeDashboard.receitaBadge.tone} />
+                  </div>
+                </div>
+              </div>
             </div>
-            <p className="text-lg font-black text-clinic-text">{formatCurrency(metrics.totalReceitas)}</p>
+            <div className="rounded-full border border-clinic-border bg-clinic-bg px-3 py-1.5 text-[13px] font-bold tracking-[0.04em] text-clinic-text-muted">
+              {periodFilter}
+            </div>
           </div>
-          <div className="flex justify-between items-center text-xs mt-auto pt-3 border-t border-clinic-border">
-             <div className="flex flex-col"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">✅ Recebido</span><span className="font-bold text-status-green-text">{formatCurrency(metrics.recebidoNoPeriodo)}</span></div>
-             <div className="flex flex-col items-end"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">⏳ Previsto</span><span className="font-bold text-status-orange-text">{formatCurrency(metrics.previstoNoPeriodo)}</span></div>
-          </div>
-        </div>
 
-        {/* Saldo a Receber */}
-        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col">
-          <div className="flex items-center gap-2 mb-3 text-clinic-text">
-            <DollarSign size={16} />
-            <p className="text-[10px] uppercase font-bold tracking-widest">Saldo a Receber</p>
+          <div className="border-y border-clinic-border py-4">
+            <AnimatedCurrencyValue value={metrics.totalReceitas} className="block text-[28px] font-black leading-none text-clinic-text sm:text-[32px] xl:text-[36px]" />
+            <p className="mt-2 text-sm text-clinic-text-muted">Visão consolidada da receita bruta do período.</p>
+            <CardLegend>Compara o recebido com o previsto para o período selecionado.</CardLegend>
           </div>
-          <div className="flex justify-between items-center text-xs mt-auto pt-3 border-t border-clinic-border">
-             <div className="flex flex-col"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">⏳ Em aberto</span><span className="font-bold text-status-orange-text">{formatCurrency(metrics.saldoEmAberto)}</span></div>
-             <div className="flex flex-col items-end"><span className="text-[10px] text-clinic-text-faint uppercase font-bold">⚠️ Atrasado</span><span className="font-bold text-status-red-text">{formatCurrency(metrics.saldoAtrasado)}</span></div>
-          </div>
-        </div>
 
-        {/* Lucro Liquido */}
-        <div className="bg-clinic-surface p-5 rounded-2xl border border-clinic-border shadow-clinic flex flex-col relative overflow-hidden">
+          <div className="mt-4">
+            <ProgressPanel
+              label="Recebido x Previsto"
+              percentage={financeDashboard.progressoRecebido}
+            />
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <MetricChip icon={<CheckCircle2 size={14} />} label="Recebido" value={metrics.recebidoNoPeriodo} tone="green" />
+            <MetricChip icon={<Clock3 size={14} />} label="Previsto" value={metrics.previstoNoPeriodo} tone="orange" align="right" />
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.06 }}
+          whileHover={{ y: -4, scale: 1.01 }}
+          className="group relative flex h-full flex-col overflow-hidden rounded-[20px] border border-clinic-border bg-clinic-surface p-6 shadow-clinic transition-shadow hover:shadow-xl"
+        >
+          <div className="absolute inset-x-0 top-0 h-1 bg-status-orange-text/70"></div>
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-start gap-3 text-clinic-text">
+                <div className="shrink-0 rounded-2xl bg-status-orange-bg p-3 text-status-orange-text shadow-sm">
+                  <HandCoins size={20} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-base font-black tracking-[0.04em] text-clinic-text">Saldo a Receber</p>
+                  <p className="text-sm text-clinic-text-muted">Pendências financeiras com destaque para atrasos</p>
+                  <div className="mt-2">
+                    <MetricBadge label={financeDashboard.saldoBadge.label} tone={financeDashboard.saldoBadge.tone} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <CircleDollarSign className="shrink-0 text-status-orange-text/70" size={22} />
+          </div>
+
+          <div className="border-y border-clinic-border py-4">
+            <AnimatedCurrencyValue value={metrics.saldoEmAberto + metrics.saldoAtrasado} className="block text-[28px] font-black leading-none text-clinic-text sm:text-[32px] xl:text-[36px]" />
+            <p className="mt-2 text-sm text-clinic-text-muted">Saldo total pendente no período atual.</p>
+            <CardLegend>Separa valores pendentes entre em aberto e atrasados.</CardLegend>
+          </div>
+
+          <div className="mt-4">
+            <ProgressPanel
+              label="Recebido x Previsto"
+              percentage={financeDashboard.progressoRecebido}
+            />
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <MetricChip icon={<Clock3 size={14} />} label="Em Aberto" value={metrics.saldoEmAberto} tone="orange" />
+            <MetricChip icon={<AlertTriangle size={14} />} label="Atrasado" value={metrics.saldoAtrasado} tone="red" align="right" />
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.12 }}
+          whileHover={{ y: -4, scale: 1.01 }}
+          className="group relative flex h-full flex-col overflow-hidden rounded-[20px] border border-clinic-border bg-clinic-surface p-6 shadow-clinic transition-shadow hover:shadow-xl md:col-span-2 xl:col-span-1"
+        >
           <div className="absolute inset-0 bg-clinic-primary/5 pointer-events-none"></div>
-          <div className="flex items-center gap-2 mb-1 text-clinic-primary">
-            <Wallet size={16} />
-            <p className="text-[10px] uppercase font-bold tracking-widest">Lucro Líquido</p>
+          <div className="absolute inset-x-0 top-0 h-1 bg-clinic-primary/70"></div>
+          <div className="relative mb-5 flex items-start justify-between gap-4">
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 text-clinic-text">
+                <div className="rounded-2xl bg-clinic-primary/10 p-3 text-clinic-primary shadow-sm">
+                  <Wallet size={20} />
+                </div>
+                <div>
+                  <p className="text-base font-black tracking-[0.06em] text-clinic-text">Lucro Líquido</p>
+                  <p className="text-sm text-clinic-text-muted">Resultado após despesas registradas no período</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Sparkles className="text-clinic-primary/70" size={22} />
+              <CardHelp tooltip="Resultado calculado com base nas receitas recebidas menos as despesas do período." />
+            </div>
           </div>
-          <p className="text-2xl font-black text-clinic-text relative z-10">{formatCurrency(metrics.lucroLiquido)}</p>
-          <div className="flex justify-between items-center text-[10px] mt-auto pt-3 border-t border-clinic-border opacity-70">
-             <span className="font-bold">Receitas recebidas</span>
-             <span className="font-bold">- Despesas do período</span>
+
+          <div className="relative border-y border-clinic-border py-5">
+            <AnimatedCurrencyValue value={metrics.lucroLiquido} className="block text-[28px] font-black leading-none text-clinic-text sm:text-[32px] xl:text-[36px]" />
+            <p className="mt-2 text-sm text-clinic-text-muted">Leitura premium do resultado financeiro do período.</p>
           </div>
-        </div>
+
+          <div className="relative mt-5 space-y-3 rounded-2xl border border-clinic-border bg-clinic-bg/70 p-4">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <div className="flex items-center gap-2 font-bold text-clinic-text-muted">
+                <ArrowUpRight size={16} className="text-status-green-text" />
+                <span>Receitas Recebidas</span>
+              </div>
+              <AnimatedCurrencyValue value={metrics.recebidoNoPeriodo} className="font-black text-status-green-text" />
+            </div>
+            <div className="flex items-center justify-center text-clinic-text-faint">
+              <Minus size={16} />
+            </div>
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <div className="flex items-center gap-2 font-bold text-clinic-text-muted">
+                <ArrowDownRight size={16} className="text-status-red-text" />
+                <span>Despesas do Período</span>
+              </div>
+              <AnimatedCurrencyValue value={metrics.despesasNoPeriodo} className="font-black text-status-red-text" />
+            </div>
+            <div className="border-t border-clinic-border pt-3">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <div className="flex items-center gap-2 font-black text-clinic-text">
+                  <Wallet size={16} className="text-clinic-primary" />
+                  <span>Lucro Líquido</span>
+                </div>
+                <AnimatedCurrencyValue value={metrics.lucroLiquido} className="font-black text-clinic-text" />
+              </div>
+            </div>
+          </div>
+        </motion.div>
       </div>
 
-      <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm">
-        <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
+      <div className="flex flex-col gap-4 rounded-[20px] border border-clinic-border bg-clinic-surface p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center">
+          <div className="flex bg-clinic-bg p-1 rounded-xl w-full md:w-auto">
           <button 
             onClick={() => setViewMode('Receitas')}
-            className={cn("flex-1 md:flex-none px-6 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-all", viewMode === 'Receitas' ? 'bg-white shadow-sm text-clinic-text' : 'text-clinic-text-muted hover:text-clinic-text')}
+            className={cn("flex-1 md:flex-none px-6 py-2.5 rounded-lg text-sm font-bold tracking-[0.06em] transition-all", viewMode === 'Receitas' ? 'bg-white shadow-sm text-clinic-text' : 'text-clinic-text-muted hover:bg-white/70 hover:text-clinic-text')}
           >
             Receitas
           </button>
           <button 
             onClick={() => setViewMode('Despesas')}
-            className={cn("flex-1 md:flex-none px-6 py-2.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-all", viewMode === 'Despesas' ? 'bg-white shadow-sm text-clinic-text' : 'text-clinic-text-muted hover:text-clinic-text')}
+            className={cn("flex-1 md:flex-none px-6 py-2.5 rounded-lg text-sm font-bold tracking-[0.06em] transition-all", viewMode === 'Despesas' ? 'bg-white shadow-sm text-clinic-text' : 'text-clinic-text-muted hover:bg-white/70 hover:text-clinic-text')}
           >
             Despesas
           </button>
+          </div>
+          <div className="text-sm text-clinic-text-muted">
+            {viewMode === 'Receitas' ? 'Visão detalhada de recebimentos por atendente e por transação.' : 'Visão detalhada das saídas registradas no período.'}
+          </div>
         </div>
 
         {viewMode === 'Receitas' ? (
-          <div className="flex w-full md:w-auto gap-4">
+          <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row md:items-center">
             <div className="relative flex-1 md:w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-clinic-text-faint" size={16} />
               <input 
                 type="text" placeholder="Buscar atendente..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-4 py-2.5 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-xs"
+                className="w-full pl-9 pr-4 py-2.5 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm"
               />
             </div>
-            <button onClick={() => setIsPaymentModalOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-clinic-primary text-white font-bold rounded-xl shadow-md hover:bg-clinic-primary-hover transition-all uppercase tracking-widest text-[10px]">
+            <button onClick={() => setIsPaymentModalOpen(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-clinic-primary text-white font-bold rounded-xl shadow-md hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm">
               <Plus size={16} /> Nova Receita
             </button>
           </div>
         ) : (
-          <button onClick={() => setIsExpenseModalOpen(true)} className="w-full md:w-auto flex items-center gap-2 px-6 py-2.5 bg-status-red-text text-white font-bold rounded-xl shadow-md hover:bg-red-700 transition-all uppercase tracking-widest text-xs justify-center">
+          <button onClick={() => setIsExpenseModalOpen(true)} className="w-full md:w-auto flex items-center gap-2 px-6 py-2.5 bg-status-red-text text-white font-bold rounded-xl shadow-md hover:bg-red-700 transition-all tracking-[0.06em] text-sm justify-center">
             <Plus size={16} /> Nova Despesa
           </button>
         )}
@@ -456,65 +711,202 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       {viewMode === 'Receitas' && (
         <div className="flex flex-col gap-6">
           <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
-            <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2">
-              <DollarSign size={20} />
-              <h2 className="font-serif text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
-            </div>
-            <div className="p-6 space-y-4">
-              {patientList.map(item => {
-                let colorClass = "bg-white border-clinic-border";
-                let textClass = "text-clinic-text-muted";
-                
-                if (item.indicator === 'ATRASADO') { colorClass = "bg-status-red-bg border-red-200"; textClass = "text-status-red-text"; }
-                else if (item.indicator === 'QUITADO') { textClass = "text-status-green-text"; }
-                else if (item.indicator === 'PARCIAL') { textClass = "text-status-orange-text"; }
-
-                return (
-                <div key={item.id} className={cn("p-4 rounded-xl border transition-all flex flex-col md:flex-row items-center gap-4 hover:shadow-sm", colorClass)}>
-                  <div className="flex-1 w-full text-center md:text-left">
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <h4 className="font-bold text-clinic-text">{item.name}</h4>
-                      <span className="text-[10px] text-clinic-text-faint font-bold uppercase px-2 py-0.5 bg-clinic-bg/50 rounded">{item.paymentModal.split(': ')[0]}</span>
-                    </div>
-                    <div className="flex flex-col md:flex-row items-center gap-4 mt-2">
-                       <div className="text-xs text-clinic-text-muted">Pago no período: <span className="font-bold text-clinic-text">{formatCurrency(item.valorJaPago)}</span></div>
-                       <div className="text-xs text-clinic-text-muted">Pendente no período: <span className="font-bold text-clinic-text">{formatCurrency(item.valorPendente)}</span></div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-6 w-full md:w-auto justify-between md:justify-end">
-                    <div className={cn("px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-white shadow-sm border border-clinic-border", textClass)}>{item.indicator}</div>
-                  </div>
+            <div className="px-4 sm:px-6 py-4 border-b border-clinic-border flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <DollarSign size={20} />
+                  <h2 className="font-serif text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
                 </div>
-              )})}
-              {patientList.length === 0 && <p className="text-center text-sm text-clinic-text-muted italic py-4">Nenhum dado financeiro de receitas para o período selecionado.</p>}
+                <p className="max-w-4xl rounded-xl border border-clinic-border bg-clinic-bg/60 px-3 py-2 text-[13px] leading-relaxed text-clinic-text-muted">
+                  Os status abaixo consideram o pacote atual, sessões iniciadas/agendadas e pagamentos registrados. Pacotes anteriores quitados não quitam automaticamente novos pacotes. O status usa o valor bruto do pacote ({formatCurrency(PACKAGE_GROSS_VALUE)}); métricas de saldo descontam o repasse de {Math.round(PARTNER_SHARE_RATE * 100)}% da sócia.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                {(['Todos', 'ATRASADO', 'EM ABERTO', 'PARCIAL', 'QUITADO', 'Com pagamento no período', 'Sem pagamento no período'] as StatusFilter[]).map(filter => (
+                  <button
+                    key={filter}
+                    type="button"
+                    onClick={() => setStatusFilter(filter)}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-[11px] font-black tracking-[0.05em] transition-colors',
+                      statusFilter === filter ? 'border-clinic-primary bg-clinic-primary text-white shadow-sm' : 'border-clinic-border bg-white text-clinic-text-muted hover:bg-clinic-bg'
+                    )}
+                  >
+                    {filter}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="overflow-hidden">
+              <div className="hidden xl:grid grid-cols-[minmax(220px,1.6fr)_0.8fr_0.9fr_0.7fr_0.9fr_0.9fr_0.9fr_0.9fr_0.6fr] gap-3 px-6 py-3 bg-clinic-bg/40 border-b border-clinic-border text-[11px] font-black uppercase tracking-[0.08em] text-clinic-text-faint">
+                <span>Atendente</span>
+                <span>Tipo</span>
+                <span>Pacote atual</span>
+                <span>Sessões</span>
+                <span className="text-right">Pago período</span>
+                <span className="text-right">Pendente</span>
+                <span>Último pagamento</span>
+                <span>Status</span>
+                <span className="text-right">Ações</span>
+              </div>
+              <div className="divide-y divide-clinic-border">
+                {patientList.map(item => {
+                  const isExpanded = expandedPatientId === item.patient.id;
+                  const typeLabel = item.patient.paymentModal.split(': ')[0];
+                  const lastPaymentLabel = item.lastPayment ? `${safeFormatDate(item.lastPayment.date, 'dd/MM/yyyy')} · ${formatCurrency(item.lastPayment.amount)}` : 'Sem pagamento';
+
+                  return (
+                    <div key={item.patient.id} className={cn('transition-colors', item.status === 'ATRASADO' ? 'bg-status-red-bg/50' : 'bg-white hover:bg-clinic-bg/30')}>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedPatientId(isExpanded ? null : item.patient.id)}
+                        className="grid w-full grid-cols-1 gap-3 px-4 py-3 text-left transition-colors sm:px-6 xl:grid-cols-[minmax(220px,1.6fr)_0.8fr_0.9fr_0.7fr_0.9fr_0.9fr_0.9fr_0.9fr_0.6fr] xl:items-center xl:gap-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-black text-clinic-text">{item.patient.name}</span>
+                            {item.hasNewPackageWithoutPayment && <AlertTriangle size={15} className="shrink-0 text-status-orange-text" />}
+                          </div>
+                          <span className="text-[11px] font-semibold text-clinic-text-faint">Resp.: {item.patient.guardianName}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 xl:block">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Tipo</span>
+                          <span className="rounded-full border border-clinic-border bg-clinic-bg px-2.5 py-1 text-[11px] font-bold text-clinic-text-muted">{typeLabel}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-sm font-bold text-clinic-text xl:block">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pacote</span>
+                          <span>Pacote {item.packageNumber}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-sm xl:block">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Sessões</span>
+                          <span className="font-black text-clinic-text">{item.completedSessionsInCurrentPackage}/{SESSIONS_PER_PACKAGE}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-sm xl:block xl:text-right">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pago período</span>
+                          <span className="font-black text-status-green-text">{formatCurrency(item.valorJaPago)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-sm xl:block xl:text-right">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pendente</span>
+                          <span className={cn('font-black', item.pendingGross > 0 ? 'text-status-orange-text' : 'text-clinic-text-muted')}>{formatCurrency(item.pendingGross)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-sm text-clinic-text-muted xl:block">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Último pag.</span>
+                          <span className="font-semibold">{lastPaymentLabel}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 xl:block">
+                          <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Status</span>
+                          <FinancialStatusBadge status={item.status} />
+                        </div>
+                        <div className="flex items-center justify-end gap-2 text-clinic-primary">
+                          <span className="text-[11px] font-black uppercase tracking-wider">Detalhes</span>
+                          <ChevronDown size={16} className={cn('transition-transform', isExpanded && 'rotate-180')} />
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="mx-4 mb-4 rounded-2xl border border-clinic-border bg-clinic-bg/45 p-4 sm:mx-6">
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            <div className="rounded-xl bg-white p-3 border border-clinic-border">
+                              <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pacote atual</p>
+                              <p className="mt-1 text-sm font-black text-clinic-text">Pacote {item.packageNumber}</p>
+                              <p className="text-xs text-clinic-text-muted">{item.sessionsInCurrentPackage} sessão(ões) cadastradas, {item.remainingSessionsInCurrentPackage} restante(s)</p>
+                            </div>
+                            <div className="rounded-xl bg-white p-3 border border-clinic-border">
+                              <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Valores do pacote</p>
+                              <p className="mt-1 text-sm font-black text-clinic-text">{formatCurrency(item.grossExpected)} bruto</p>
+                              <p className="text-xs text-clinic-text-muted">Repasse previsto: {formatCurrency(item.partnerShareExpected)} · Líquido: {formatCurrency(item.netExpected)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white p-3 border border-clinic-border">
+                              <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pago no pacote atual</p>
+                              <p className="mt-1 text-sm font-black text-status-green-text">{formatCurrency(item.paidGross)}</p>
+                              <p className="text-xs text-clinic-text-muted">Líquido após repasse: {formatCurrency(item.paidNet)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white p-3 border border-clinic-border">
+                              <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pendente atual</p>
+                              <p className="mt-1 text-sm font-black text-status-orange-text">{formatCurrency(item.pendingGross)}</p>
+                              <p className="text-xs text-clinic-text-muted">Líquido a receber: {formatCurrency(item.pendingNet)}</p>
+                            </div>
+                          </div>
+                          {item.hasNewPackageWithoutPayment && (
+                            <p className="mt-3 rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-3 py-2 text-xs font-bold text-status-orange-text">
+                              Este paciente tem pacote atual iniciado/agendado sem pagamento vinculado ao pacote {item.packageNumber}. Se pacote anterior foi quitado, ele permanece apenas como histórico.
+                            </p>
+                          )}
+                          <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                            <div>
+                              <p className="mb-2 text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pagamentos do pacote atual</p>
+                              <div className="space-y-2">
+                                {item.currentPackagePayments.length > 0 ? item.currentPackagePayments.map(payment => (
+                                  <div key={payment.id} className="flex items-center justify-between gap-3 rounded-xl border border-clinic-border bg-white px-3 py-2 text-sm">
+                                    <span className="font-bold text-clinic-text">{safeFormatDate(payment.date, 'dd/MM/yyyy')} · {payment.installment}</span>
+                                    <span className="font-black text-status-green-text">{formatCurrency(payment.amount)}</span>
+                                  </div>
+                                )) : <p className="rounded-xl border border-dashed border-clinic-border bg-white px-3 py-3 text-sm italic text-clinic-text-muted">Nenhum pagamento vinculado ao pacote atual.</p>}
+                              </div>
+                            </div>
+                            <div>
+                              <p className="mb-2 text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pacote anterior</p>
+                              <div className="rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text-muted">
+                                {item.previousPackageNumber ? (
+                                  <>
+                                    <p className="font-bold text-clinic-text">Pacote {item.previousPackageNumber}</p>
+                                    <p>{item.previousPackagePayments.length} pagamento(s) registrado(s), total {formatCurrency(item.previousPackagePayments.reduce((sum, payment) => sum + payment.amount, 0))}.</p>
+                                  </>
+                                ) : 'Não há pacote anterior para este atendente.'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {patientList.length === 0 && (
+                  <div className="px-6 py-10 text-center">
+                    <p className="font-bold text-clinic-text">Nenhum atendente encontrado para os filtros atuais.</p>
+                    <p className="mt-1 text-sm text-clinic-text-muted">Ajuste a busca ou os filtros para visualizar a situação financeira.</p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
           <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
-             <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/10">
-              <History size={20} className="text-clinic-text-faint" />
-              <h2 className="font-serif text-xl font-bold">Histórico de Transações</h2>
+             <div className="px-4 sm:px-6 py-4 border-b border-clinic-border flex flex-col gap-2 bg-clinic-bg/10 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-2">
+                <History size={20} className="text-clinic-text-faint" />
+                <div>
+                  <h2 className="font-serif text-xl font-bold">Histórico de Transações</h2>
+                  <p className="text-sm text-clinic-text-muted">Receitas reais registradas no período, com atendente, responsável, pacote, forma e valor.</p>
+                </div>
+              </div>
+              <button onClick={() => setIsPaymentModalOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wider text-clinic-primary transition-colors hover:bg-clinic-bg">
+                <Plus size={14} /> Registrar nova receita
+              </button>
             </div>
-            <div className="overflow-x-auto">
+            <div className="responsive-table">
               <table className="w-full text-left">
                 <thead>
-                  <tr className="bg-clinic-bg/50 text-[10px] font-bold uppercase tracking-widest text-clinic-text-faint border-b border-clinic-border">
+                  <tr className="bg-clinic-bg/50 text-[13px] font-bold tracking-[0.06em] text-clinic-text-faint border-b border-clinic-border">
                     <th className="px-6 py-4">Data</th>
                     <th className="px-6 py-4">Atendente</th>
+                    <th className="px-6 py-4">Responsável</th>
+                    <th className="px-6 py-4">Pacote</th>
                     <th className="px-6 py-4">Parcela</th>
                     <th className="px-6 py-4">Forma</th>
+                    <th className="px-6 py-4">Status</th>
                     <th className="px-6 py-4 text-right">Valor</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-clinic-border">
                   {(Object.entries(groupedTransactions) as [string, { total: number, count: number, items: Payment[] }][]).map(([monthYear, group]) => (
                     <React.Fragment key={monthYear}>
-                      <tr className="bg-clinic-bg/20 border-y border-clinic-border">
-                        <td colSpan={5} className="px-6 py-3">
+                      <tr className="bg-clinic-bg/20 border-y border-clinic-border" data-group="true">
+                        <td colSpan={8} className="px-6 py-3">
                           <div className="flex justify-between items-center">
-                            <span className="font-bold text-clinic-text text-sm uppercase tracking-wide">{monthYear}</span>
+                            <span className="font-bold text-clinic-text text-sm tracking-[0.04em]">{monthYear}</span>
                             <div className="flex items-center gap-3">
-                              <span className="text-[10px] uppercase font-bold text-clinic-text-faint bg-white px-2 py-1 rounded shadow-sm">{group.count} transaç{group.count > 1 ? 'ões' : 'ão'}</span>
+                              <span className="text-[13px] font-semibold text-clinic-text-faint bg-white px-2.5 py-1.5 rounded shadow-sm">{group.count} transaç{group.count > 1 ? 'ões' : 'ão'}</span>
                               <span className="font-black text-status-green-text ml-2">{formatCurrency(group.total)}</span>
                             </div>
                           </div>
@@ -522,11 +914,14 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                       </tr>
                       {group.items.map(p => (
                         <tr key={p.id} className="hover:bg-clinic-bg/30 transition-colors group">
-                          <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(p.date, 'dd/MM/yyyy')}</td>
-                          <td className="px-6 py-4 text-sm font-bold text-clinic-text">{state.patients.find(pt => pt.id === p.patientId)?.name || 'Desconhecido'}</td>
-                          <td className="px-6 py-4 text-xs">{p.installment}</td>
-                          <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{p.method}</span></td>
-                          <td className="px-6 py-4 text-right text-sm font-bold text-status-green-text flex items-center justify-end gap-3">
+                          <td data-label="Data" className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(p.date, 'dd/MM/yyyy')}</td>
+                          <td data-label="Atendente" className="px-6 py-4 text-sm font-bold text-clinic-text">{state.patients.find(pt => pt.id === p.patientId)?.name || 'Desconhecido'}</td>
+                          <td data-label="Responsável" className="px-6 py-4 text-sm text-clinic-text-muted">{state.patients.find(pt => pt.id === p.patientId)?.guardianName || '-'}</td>
+                          <td data-label="Pacote" className="px-6 py-4"><span className="px-2.5 py-1.5 bg-clinic-bg rounded text-[13px] font-semibold text-clinic-text-muted">{p.packageNumber ? `Pacote ${p.packageNumber}` : 'Histórico'}</span></td>
+                          <td data-label="Parcela" className="px-6 py-4 text-sm">{p.installment}</td>
+                          <td data-label="Forma" className="px-6 py-4"><span className="px-2.5 py-1.5 bg-clinic-bg rounded text-[13px] font-semibold text-clinic-text-muted">{p.method}</span></td>
+                          <td data-label="Status" className="px-6 py-4"><span className="px-2.5 py-1.5 rounded-full bg-status-green-bg text-status-green-text text-[11px] font-black uppercase tracking-wider">Recebido</span></td>
+                          <td data-label="Valor" className="px-6 py-4 text-right text-sm font-bold text-status-green-text flex items-center justify-end gap-3">
                             {formatCurrency(p.amount)}
                             <button onClick={() => setPaymentToDelete(p.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
                           </td>
@@ -536,7 +931,15 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   ))}
                 </tbody>
               </table>
-              {Object.keys(groupedTransactions).length === 0 && <p className="py-10 text-center text-clinic-text-muted italic text-sm">Nenhum pagamento registado neste período.</p>}
+              {Object.keys(groupedTransactions).length === 0 && (
+                <div className="px-6 py-12 text-center">
+                  <p className="font-black text-clinic-text">Nenhuma transação encontrada para o período selecionado.</p>
+                  <p className="mx-auto mt-2 max-w-lg text-sm text-clinic-text-muted">Quando uma receita for registrada, ela aparecerá aqui com data, atendente, responsável, forma de pagamento, parcela, pacote e valor.</p>
+                  <button onClick={() => setIsPaymentModalOpen(true)} className="mt-5 inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-clinic-primary-hover">
+                    <Plus size={16} /> Registrar nova receita
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -548,10 +951,10 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
             <History size={20} className="text-clinic-text-faint" />
             <h2 className="font-serif text-xl font-bold">Histórico de Despesas</h2>
           </div>
-          <div className="overflow-x-auto">
+          <div className="responsive-table">
             <table className="w-full text-left">
               <thead>
-                <tr className="bg-clinic-bg/50 text-[10px] font-bold uppercase tracking-widest text-clinic-text-faint border-b border-clinic-border">
+                <tr className="bg-clinic-bg/50 text-[13px] font-bold tracking-[0.06em] text-clinic-text-faint border-b border-clinic-border">
                   <th className="px-6 py-4">Data</th>
                   <th className="px-6 py-4">Descrição</th>
                   <th className="px-6 py-4">Categoria</th>
@@ -561,12 +964,12 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
               <tbody className="divide-y divide-clinic-border">
                 {(Object.entries(groupedExpenses) as [string, { total: number, count: number, items: Expense[] }][]).map(([monthYear, group]) => (
                   <React.Fragment key={monthYear}>
-                    <tr className="bg-clinic-bg/20 border-y border-clinic-border">
+                    <tr className="bg-clinic-bg/20 border-y border-clinic-border" data-group="true">
                       <td colSpan={4} className="px-6 py-3">
                         <div className="flex justify-between items-center">
-                          <span className="font-bold text-clinic-text text-sm uppercase tracking-wide">{monthYear}</span>
+                          <span className="font-bold text-clinic-text text-sm tracking-[0.04em]">{monthYear}</span>
                           <div className="flex items-center gap-3">
-                            <span className="text-[10px] uppercase font-bold text-clinic-text-faint bg-white px-2 py-1 rounded shadow-sm">{group.count} transaç{group.count > 1 ? 'ões' : 'ão'}</span>
+                            <span className="text-[13px] font-semibold text-clinic-text-faint bg-white px-2.5 py-1.5 rounded shadow-sm">{group.count} transaç{group.count > 1 ? 'ões' : 'ão'}</span>
                             <span className="font-black text-status-red-text ml-2">- {formatCurrency(group.total)}</span>
                           </div>
                         </div>
@@ -574,19 +977,19 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                     </tr>
                     {group.items.map(e => (
                       <tr key={e.id} className="hover:bg-clinic-bg/30 transition-colors group">
-                        <td className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(e.date, 'dd/MM/yyyy')}</td>
-                        <td className="px-6 py-4 text-sm font-bold text-clinic-text">
+                        <td data-label="Data" className="px-6 py-4 text-sm whitespace-nowrap">{safeFormatDate(e.date, 'dd/MM/yyyy')}</td>
+                        <td data-label="Descrição" className="px-6 py-4 text-sm font-bold text-clinic-text">
                           <div className="flex items-center gap-2">
                             {e.description}
                             {e.auto_gerado && (
-                              <span title="Gerado automaticamente pelo sistema" className="inline-flex items-center gap-1 px-2 py-0.5 bg-clinic-bg border border-clinic-border rounded text-[10px] text-clinic-text-faint font-bold">
+                              <span title="Gerado automaticamente pelo sistema" className="inline-flex items-center gap-1 px-2.5 py-1 bg-clinic-bg border border-clinic-border rounded text-[13px] text-clinic-text-faint font-semibold">
                                 <Link size={10} /> Auto
                               </span>
                             )}
                           </div>
                         </td>
-                        <td className="px-6 py-4"><span className="px-2 py-1 bg-clinic-bg rounded text-[10px] font-bold text-clinic-text-muted">{e.category}</span></td>
-                        <td className="px-6 py-4 text-right text-sm font-bold text-status-red-text flex items-center justify-end gap-3">
+                        <td data-label="Categoria" className="px-6 py-4"><span className="px-2.5 py-1.5 bg-clinic-bg rounded text-[13px] font-semibold text-clinic-text-muted">{e.category}</span></td>
+                        <td data-label="Valor" className="px-6 py-4 text-right text-sm font-bold text-status-red-text flex items-center justify-end gap-3">
                           - {formatCurrency(e.amount)}
                           {!e.auto_gerado && (
                             <button onClick={() => setExpenseToDelete(e.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
@@ -608,7 +1011,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         <div className="space-y-6">
           <p className="text-clinic-text">Deseja realmente excluir esta receita? O repasse automático da sócia vinculado também será removido.</p>
           <div className="flex justify-end gap-3">
-            <button onClick={() => setPaymentToDelete(null)} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs">Cancelar</button>
+            <button onClick={() => setPaymentToDelete(null)} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all tracking-[0.04em] text-sm">Cancelar</button>
             <button
               onClick={() => {
                 if (paymentToDelete) {
@@ -620,7 +1023,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   setPaymentToDelete(null);
                 }
               }}
-              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
+              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all tracking-[0.04em] text-sm"
             >
               Excluir
             </button>
@@ -631,42 +1034,47 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Nova Receita">
         <div className="space-y-5">
            <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">Atendente</label>
+            <label className="text-sm font-bold text-clinic-text-faint">Atendente</label>
             <select value={patientId} onChange={(e) => setPatientId(e.target.value)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all">
               <option value="">Selecione o atendente...</option>
               {state.patients.filter(p => p.status === 'Ativo').sort((a,b) => a.name.localeCompare(b.name)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
+            {patientId && (
+              <p className="rounded-xl border border-clinic-border bg-clinic-bg/70 px-3 py-2 text-xs font-semibold text-clinic-text-muted">
+                Esta receita será vinculada ao pacote atual: <span className="font-black text-clinic-text">Pacote {patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1}</span>.
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-4">
              <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Valor (R$)</label>
+              <label className="text-sm font-bold text-clinic-text-faint">Valor (R$)</label>
               <input type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all" />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Data</label>
+              <label className="text-sm font-bold text-clinic-text-faint">Data</label>
               <input type="date" value={date} onChange={e => setDate(e.target.value)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
              <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Parcela</label>
+              <label className="text-sm font-bold text-clinic-text-faint">Parcela</label>
               <select value={installment} onChange={e => setInstallment(e.target.value as any)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none">
                 <option value="Pagamento integral">Pagamento integral</option><option value="1ª parcela">1ª parcela</option><option value="2ª parcela">2ª parcela</option>
               </select>
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Forma</label>
+              <label className="text-sm font-bold text-clinic-text-faint">Forma</label>
               <select value={method} onChange={e => setMethod(e.target.value as any)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none">
                 <option value="Pix">Pix</option><option value="Dinheiro">Dinheiro</option><option value="Transferência">Transferência</option><option value="Outro">Outro</option>
               </select>
             </div>
           </div>
           {amount > 0 && (
-            <div className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border text-xs text-clinic-text-muted">
+            <div className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border text-sm text-clinic-text-muted">
               Repasse automático para sócia: <span className="font-bold text-clinic-text">{formatCurrency(amount * 0.2)}</span>
             </div>
           )}
-          <button onClick={handleSavePayment} disabled={!patientId || amount <= 0} className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest disabled:opacity-50">Confirmar Recebimento</button>
+          <button onClick={handleSavePayment} disabled={!patientId || amount <= 0} className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm disabled:opacity-50">Confirmar Recebimento</button>
         </div>
       </Modal>
 
@@ -674,8 +1082,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         <div className="space-y-6">
           <p className="text-clinic-text">Deseja realmente excluir esta despesa?</p>
           <div className="flex justify-end gap-3">
-            <button onClick={() => setExpenseToDelete(null)} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs">Cancelar</button>
-            <button onClick={() => { if (expenseToDelete) { onUpdate({ expenses: (state.expenses || []).filter(e => e.id !== expenseToDelete) }); showToast('Despesa excluída'); setExpenseToDelete(null); } }} className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs">Excluir</button>
+            <button onClick={() => setExpenseToDelete(null)} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all tracking-[0.04em] text-sm">Cancelar</button>
+            <button onClick={() => { if (expenseToDelete) { onUpdate({ expenses: (state.expenses || []).filter(e => e.id !== expenseToDelete) }); showToast('Despesa excluída'); setExpenseToDelete(null); } }} className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all tracking-[0.04em] text-sm">Excluir</button>
           </div>
         </div>
       </Modal>
@@ -683,26 +1091,26 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       <Modal isOpen={isExpenseModalOpen} onClose={() => setIsExpenseModalOpen(false)} title="Nova Despesa">
         <div className="space-y-5">
            <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">Descrição</label>
+            <label className="text-sm font-bold text-clinic-text-faint">Descrição</label>
             <input type="text" placeholder="Ex: Conta de Luz, Aluguel..." value={expenseDesc} onChange={e => setExpenseDesc(e.target.value)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all" />
           </div>
           <div className="grid grid-cols-2 gap-4">
              <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Valor (R$)</label>
+              <label className="text-sm font-bold text-clinic-text-faint">Valor (R$)</label>
               <input type="number" value={expenseAmount} onChange={e => setExpenseAmount(Number(e.target.value))} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all" />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-clinic-text-faint uppercase">Data</label>
+              <label className="text-sm font-bold text-clinic-text-faint">Data</label>
               <input type="date" value={expenseDate} onChange={e => setExpenseDate(e.target.value)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all" />
             </div>
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-bold text-clinic-text-faint uppercase">Categoria</label>
+            <label className="text-sm font-bold text-clinic-text-faint">Categoria</label>
             <select value={expenseCategory} onChange={e => setExpenseCategory(e.target.value as any)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none">
               <option value="Aluguel">Aluguel</option><option value="Energia">Energia</option><option value="Internet">Internet</option><option value="Materiais">Materiais</option><option value="Impostos">Impostos</option><option value="Repasse Sócia">Repasse Sócia</option><option value="Outro">Outro</option>
             </select>
           </div>
-          <button onClick={handleSaveExpense} disabled={!expenseDesc || expenseAmount <= 0} className="w-full py-4 bg-status-red-text text-white font-bold rounded-xl shadow-xl hover:bg-red-700 transition-all uppercase tracking-widest disabled:opacity-50">Confirmar Despesa</button>
+          <button onClick={handleSaveExpense} disabled={!expenseDesc || expenseAmount <= 0} className="w-full py-4 bg-status-red-text text-white font-bold rounded-xl shadow-xl hover:bg-red-700 transition-all tracking-[0.06em] text-sm disabled:opacity-50">Confirmar Despesa</button>
         </div>
       </Modal>
 

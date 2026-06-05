@@ -42,6 +42,7 @@ const DEFAULT_STATE: AppState = {
 };
 
 const APP_VERSION = `v${packageJson.version}`;
+type DensityMode = 'comfortable' | 'standard' | 'compact';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -51,6 +52,10 @@ export default function App() {
   
   const [activeTab, setActiveTab] = useState('dashboard');
   const [notifications, setNotifications] = useState<string[]>([]);
+  const [density, setDensity] = useState<DensityMode>(() => {
+    const saved = localStorage.getItem('clinic-density-mode');
+    return saved === 'comfortable' || saved === 'compact' || saved === 'standard' ? saved : 'standard';
+  });
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
 
@@ -68,6 +73,10 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('clinic-density-mode', density);
+  }, [density]);
 
   useEffect(() => {
     if (!user) return;
@@ -348,8 +357,8 @@ export default function App() {
   const currentDateStr = format(new Date(), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
 
   return (
-    <div className="min-h-screen flex flex-col pb-10">
-      <header className="bg-clinic-header text-white px-8 py-4 flex flex-col md:flex-row gap-4 justify-between items-center shadow-lg shrink-0">
+    <div className={cn("min-h-screen flex flex-col pb-10", `density-${density}`)}>
+      <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-3 md:py-4 flex flex-col md:flex-row gap-3 md:gap-4 justify-between items-center shadow-lg shrink-0">
         <div className="flex flex-col text-center md:text-left">
           {state.settings.customHeader ? (
              <h1 className="font-serif text-xl md:text-2xl font-bold tracking-tight whitespace-pre-line">
@@ -366,7 +375,27 @@ export default function App() {
             </>
           )}
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center justify-center md:justify-end gap-3 sm:gap-4 xl:gap-6">
+          <div className="flex items-center gap-1 rounded-full bg-white/10 p-1 border border-white/10" aria-label="Densidade visual">
+            {([
+              ['comfortable', 'Confortável'],
+              ['standard', 'Padrão'],
+              ['compact', 'Compacto'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setDensity(value)}
+                className={cn(
+                  'rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-colors',
+                  density === value ? 'bg-white text-clinic-header shadow-sm' : 'text-white/75 hover:bg-white/10 hover:text-white'
+                )}
+                title={`Densidade ${label}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="text-right hidden md:block">
             <p className="text-[10px] opacity-70 uppercase font-bold tracking-wider">{currentDateStr}</p>
             <p className="text-xs font-medium">Vila Velha, ES</p>
@@ -412,13 +441,13 @@ export default function App() {
 
       {/* Navigation Menu */}
       <nav className="bg-clinic-nav-bg border-b border-clinic-border-dark flex justify-center sticky top-0 z-40 shrink-0">
-        <div className="flex w-full max-w-6xl overflow-x-auto custom-scrollbar">
+        <div className="flex w-full max-w-[100rem] overflow-x-auto custom-scrollbar px-1 sm:px-2">
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`
-                flex-1 min-w-[150px] flex flex-row items-center justify-center gap-3 px-4 py-4 text-[11px] sm:text-sm font-bold uppercase tracking-wider transition-all
+                flex-1 min-w-[76px] sm:min-w-[132px] xl:min-w-[150px] flex flex-row items-center justify-center gap-2 xl:gap-3 px-2 sm:px-3 xl:px-4 py-3 xl:py-4 text-[10px] sm:text-xs xl:text-sm font-bold uppercase tracking-wider transition-all touch-manipulation
                 ${activeTab === tab.id 
                   ? 'text-clinic-header border-b-4 border-clinic-primary bg-clinic-surface' 
                   : 'text-clinic-text-muted hover:bg-clinic-bg/60 border-b-4 border-transparent'}
@@ -432,7 +461,7 @@ export default function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="flex-1 w-full max-w-[1200px] mx-auto px-4 overflow-x-hidden relative">
+      <main className="app-main flex-1 w-full mx-auto px-3 sm:px-4 lg:px-5 xl:px-6 2xl:px-8 overflow-x-hidden relative">
          {dataLoading && (
            <div className="absolute inset-0 bg-clinic-bg/50 backdrop-blur-sm z-50 flex items-center justify-center rounded-3xl">
              <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center gap-4">

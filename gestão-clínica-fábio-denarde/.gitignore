@@ -11,6 +11,7 @@ firebase-key*
 .wwebjs*
 *.json
 temp_*
+responsive-backups/
 
 !package.json
 !package-lock.json
