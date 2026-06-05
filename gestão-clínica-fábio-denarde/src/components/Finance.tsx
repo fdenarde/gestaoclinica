@@ -718,7 +718,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   <h2 className="font-serif text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
                 </div>
                 <p className="max-w-4xl rounded-xl border border-clinic-border bg-clinic-bg/60 px-3 py-2 text-[13px] leading-relaxed text-clinic-text-muted">
-                  Os status abaixo consideram o pacote atual, sessões iniciadas/agendadas e pagamentos registrados. Pacotes anteriores quitados não quitam automaticamente novos pacotes. O status usa o valor bruto do pacote ({formatCurrency(PACKAGE_GROSS_VALUE)}); métricas de saldo descontam o repasse de {Math.round(PARTNER_SHARE_RATE * 100)}% da sócia.
+                  A situação financeira considera pendências reais do pacote atual ou parcelas abertas. A ausência de pagamento no período não gera pendência automaticamente. Pacotes anteriores quitados permanecem apenas como histórico. O status usa o valor bruto do pacote ({formatCurrency(PACKAGE_GROSS_VALUE)}); métricas de saldo descontam o repasse de {Math.round(PARTNER_SHARE_RATE * 100)}% da sócia.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2 lg:justify-end">
@@ -775,11 +775,11 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                         </div>
                         <div className="flex items-center justify-between gap-2 text-sm font-bold text-clinic-text xl:block">
                           <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pacote</span>
-                          <span>Pacote {item.packageNumber}</span>
+                          <span>{item.hasCurrentPackage ? `Pacote ${item.packageNumber}` : 'Sem pendência'}</span>
                         </div>
                         <div className="flex items-center justify-between gap-2 text-sm xl:block">
                           <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Sessões</span>
-                          <span className="font-black text-clinic-text">{item.completedSessionsInCurrentPackage}/{SESSIONS_PER_PACKAGE}</span>
+                          <span className="font-black text-clinic-text">{item.hasCurrentPackage ? `${item.completedSessionsInCurrentPackage}/${SESSIONS_PER_PACKAGE}` : '-'}</span>
                         </div>
                         <div className="flex items-center justify-between gap-2 text-sm xl:block xl:text-right">
                           <span className="xl:hidden text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pago período</span>
@@ -808,8 +808,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                             <div className="rounded-xl bg-white p-3 border border-clinic-border">
                               <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pacote atual</p>
-                              <p className="mt-1 text-sm font-black text-clinic-text">Pacote {item.packageNumber}</p>
-                              <p className="text-xs text-clinic-text-muted">{item.sessionsInCurrentPackage} sessão(ões) cadastradas, {item.remainingSessionsInCurrentPackage} restante(s)</p>
+                              <p className="mt-1 text-sm font-black text-clinic-text">{item.hasCurrentPackage ? `Pacote ${item.packageNumber}` : 'Sem pacote financeiro ativo'}</p>
+                              <p className="text-xs text-clinic-text-muted">{item.hasCurrentPackage ? `${item.completedSessionsInCurrentPackage} sessão(ões) realizadas/reposição, ${item.remainingSessionsInCurrentPackage} restante(s)` : 'Agenda futura não gera dívida automaticamente.'}</p>
                             </div>
                             <div className="rounded-xl bg-white p-3 border border-clinic-border">
                               <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Valores do pacote</p>
@@ -829,7 +829,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                           </div>
                           {item.hasNewPackageWithoutPayment && (
                             <p className="mt-3 rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-3 py-2 text-xs font-bold text-status-orange-text">
-                              Este paciente tem pacote atual iniciado/agendado sem pagamento vinculado ao pacote {item.packageNumber}. Se pacote anterior foi quitado, ele permanece apenas como histórico.
+                              Este paciente tem pacote atual iniciado por sessão realizada/reposição sem pagamento vinculado ao pacote {item.packageNumber}. Se pacote anterior foi quitado, ele permanece apenas como histórico.
                             </p>
                           )}
                           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -1041,7 +1041,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
             </select>
             {patientId && (
               <p className="rounded-xl border border-clinic-border bg-clinic-bg/70 px-3 py-2 text-xs font-semibold text-clinic-text-muted">
-                Esta receita será vinculada ao pacote atual: <span className="font-black text-clinic-text">Pacote {patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1}</span>.
+                Esta receita será vinculada ao pacote financeiro atual: <span className="font-black text-clinic-text">Pacote {patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1}</span>.
               </p>
             )}
           </div>

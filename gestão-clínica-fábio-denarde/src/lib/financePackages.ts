@@ -38,14 +38,6 @@ const COUNTED_SESSION_STATUSES = new Set<string>([
   SessionStatus.REPOSICAO,
 ]);
 
-const ACTIVE_PACKAGE_SESSION_STATUSES = new Set<string>([
-  SessionStatus.AGENDADA,
-  SessionStatus.REALIZADA,
-  SessionStatus.REPOSICAO,
-  SessionStatus.FALTA,
-  SessionStatus.FALTA_PROF,
-]);
-
 function sortSessionsChronologically(a: Session, b: Session) {
   const dateCompare = (a.date || '').localeCompare(b.date || '');
   if (dateCompare !== 0) return dateCompare;
@@ -60,22 +52,46 @@ function sortPaymentsChronologically(a: Payment, b: Payment) {
   return (a.id || '').localeCompare(b.id || '');
 }
 
-function getPackageNumberForSession(session: Session, chronologicalIndex: number) {
-  void session;
-  // Session.packageNumber stores the session number inside the cycle (1-10), not the package index.
-  return Math.floor(chronologicalIndex / SESSIONS_PER_PACKAGE) + 1;
+function clampCurrency(value: number) {
+  return Math.min(Math.max(value, 0), PACKAGE_GROSS_VALUE);
 }
 
-export function getPaymentPackageNumber(payment: Payment, packageStarts: { packageNumber: number; startDate: string }[]) {
-  if (payment.packageNumber && payment.packageNumber > 0) return payment.packageNumber;
-  if (packageStarts.length === 0) return 1;
+function isCountedSession(session: Session) {
+  return COUNTED_SESSION_STATUSES.has(session.status);
+}
 
-  const paymentDate = payment.date || '';
-  let inferred = packageStarts[0].packageNumber;
-  for (const pkg of packageStarts) {
-    if (pkg.startDate <= paymentDate) inferred = pkg.packageNumber;
-  }
-  return inferred;
+function getExplicitPackageNumber(payment: Payment) {
+  const packageNumber = Number(payment.packageNumber || 0);
+  return packageNumber > 0 ? packageNumber : null;
+}
+
+export function getPaymentPackageNumber(payment: Payment, _packageStarts: { packageNumber: number; startDate: string }[]) {
+  return getExplicitPackageNumber(payment) || 1;
+}
+
+function getPaymentsForPackage(patientPayments: Payment[], packageNumber: number) {
+  const packagePayments: Payment[] = [];
+  let cumulativePaid = 0;
+
+  patientPayments.forEach(payment => {
+    const amount = Number(payment.amount) || 0;
+    const explicitPackageNumber = getExplicitPackageNumber(payment);
+
+    if (explicitPackageNumber === packageNumber) {
+      packagePayments.push(payment);
+    } else if (!explicitPackageNumber && amount > 0) {
+      const firstCoveredPackage = Math.floor(cumulativePaid / PACKAGE_GROSS_VALUE) + 1;
+      const lastCoveredPackage = Math.floor(Math.max(cumulativePaid + amount - 0.01, 0) / PACKAGE_GROSS_VALUE) + 1;
+
+      if (packageNumber >= firstCoveredPackage && packageNumber <= lastCoveredPackage) {
+        packagePayments.push(payment);
+      }
+    }
+
+    cumulativePaid += amount;
+  });
+
+  return packagePayments;
 }
 
 export function calculatePackageFinancialSummary(
@@ -88,53 +104,58 @@ export function calculatePackageFinancialSummary(
     .filter(session => session.patientId === patient.id && !session.isBlocked && session.status !== SessionStatus.CANCELADA)
     .sort(sortSessionsChronologically);
 
-  const sessionsByPackage = new Map<number, Session[]>();
-  patientSessions.forEach((session, index) => {
-    const packageNumber = getPackageNumberForSession(session, index);
-    const current = sessionsByPackage.get(packageNumber) || [];
-    current.push(session);
-    sessionsByPackage.set(packageNumber, current);
-  });
-
-  const packageNumbers = Array.from(sessionsByPackage.keys()).sort((a, b) => a - b);
-  const activePackageNumbers = packageNumbers.filter(packageNumber =>
-    (sessionsByPackage.get(packageNumber) || []).some(session => ACTIVE_PACKAGE_SESSION_STATUSES.has(session.status))
-  );
-
-  const explicitPaymentPackages = payments
-    .filter(payment => payment.patientId === patient.id && payment.packageNumber && payment.packageNumber > 0)
-    .map(payment => payment.packageNumber || 1);
-
-  const packageNumber = Math.max(1, ...packageNumbers, ...activePackageNumbers, ...explicitPaymentPackages);
-  const previousPackageNumber = packageNumber > 1 ? packageNumber - 1 : null;
-
-  const packageStarts = packageNumbers.map(number => ({
-    packageNumber: number,
-    startDate: (sessionsByPackage.get(number) || [])[0]?.date || patient.startDate || '',
-  }));
+  const completedSessions = patientSessions.filter(isCountedSession);
+  const completedPackageNumber = completedSessions.length > 0
+    ? Math.floor((completedSessions.length - 1) / SESSIONS_PER_PACKAGE) + 1
+    : 0;
 
   const patientPayments = payments
     .filter(payment => payment.patientId === patient.id)
     .sort(sortPaymentsChronologically);
 
-  const paymentsByPackage = new Map<number, Payment[]>();
-  patientPayments.forEach(payment => {
-    const paymentPackage = getPaymentPackageNumber(payment, packageStarts);
-    const current = paymentsByPackage.get(paymentPackage) || [];
-    current.push(payment);
-    paymentsByPackage.set(paymentPackage, current);
-  });
+  const totalPaidGross = patientPayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+  const paidFullPackagesByTotal = Math.floor(totalPaidGross / PACKAGE_GROSS_VALUE);
+  const hasPartialPackageByTotal = totalPaidGross % PACKAGE_GROSS_VALUE > 0;
+  const packageByTotalPayments = paidFullPackagesByTotal + (hasPartialPackageByTotal ? 1 : 0);
 
-  const currentPackageSessions = sessionsByPackage.get(packageNumber) || [];
-  const currentPackagePayments = paymentsByPackage.get(packageNumber) || [];
-  const previousPackagePayments = previousPackageNumber ? paymentsByPackage.get(previousPackageNumber) || [] : [];
-  const paidGross = currentPackagePayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-  const pendingGross = Math.max(PACKAGE_GROSS_VALUE - paidGross, 0);
-  const completedSessionsInCurrentPackage = currentPackageSessions.filter(session => COUNTED_SESSION_STATUSES.has(session.status)).length;
-  const sessionsInCurrentPackage = currentPackageSessions.length;
-  const remainingSessionsInCurrentPackage = Math.max(SESSIONS_PER_PACKAGE - sessionsInCurrentPackage, 0);
-  const hasCurrentPackage = sessionsInCurrentPackage > 0 || currentPackagePayments.length > 0;
-  const hasNewPackageWithoutPayment = packageNumber > 1 && sessionsInCurrentPackage > 0 && paidGross <= 0;
+  const explicitPackageNumbers = patientPayments
+    .map(getExplicitPackageNumber)
+    .filter((packageNumber): packageNumber is number => packageNumber !== null);
+
+  const latestExplicitPackageNumber = explicitPackageNumbers.length > 0 ? Math.max(...explicitPackageNumbers) : 0;
+  const paymentIndicatedPackageNumber = Math.max(latestExplicitPackageNumber, packageByTotalPayments);
+  const hasStartedNextPackageWithoutPayment =
+    totalPaidGross > 0 &&
+    !hasPartialPackageByTotal &&
+    completedPackageNumber === paidFullPackagesByTotal + 1 &&
+    latestExplicitPackageNumber <= paidFullPackagesByTotal;
+
+  const packageNumber = Math.max(
+    1,
+    hasStartedNextPackageWithoutPayment ? completedPackageNumber : 0,
+    paymentIndicatedPackageNumber,
+    paymentIndicatedPackageNumber === 0 ? Math.min(completedPackageNumber, 1) : 0
+  );
+
+  const previousPackageNumber = packageNumber > 1 ? packageNumber - 1 : null;
+  const currentPackageStartIndex = (packageNumber - 1) * SESSIONS_PER_PACKAGE;
+  const currentPackageSessions = completedSessions.slice(currentPackageStartIndex, currentPackageStartIndex + SESSIONS_PER_PACKAGE);
+  const completedSessionsInCurrentPackage = currentPackageSessions.length;
+  const sessionsInCurrentPackage = completedSessionsInCurrentPackage;
+  const remainingSessionsInCurrentPackage = Math.max(SESSIONS_PER_PACKAGE - completedSessionsInCurrentPackage, 0);
+
+  const currentPackagePayments = getPaymentsForPackage(patientPayments, packageNumber);
+  const previousPackagePayments = previousPackageNumber ? getPaymentsForPackage(patientPayments, previousPackageNumber) : [];
+
+  const packagePaymentsGross = currentPackagePayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+  const inferredPaidGrossFromTotal = clampCurrency(totalPaidGross - ((packageNumber - 1) * PACKAGE_GROSS_VALUE));
+  const paidGross = Math.max(packagePaymentsGross, inferredPaidGrossFromTotal);
+  const packageHasStarted = completedSessionsInCurrentPackage > 0;
+  const hasUnpaidStartedPackage = packageHasStarted && paidGross <= 0;
+  const hasPartialPayment = paidGross > 0 && paidGross < PACKAGE_GROSS_VALUE;
+  const pendingGross = hasUnpaidStartedPackage || hasPartialPayment
+    ? Math.max(PACKAGE_GROSS_VALUE - paidGross, 0)
+    : 0;
 
   const dueSessionIndex = patient.paymentModal === PaymentModal.PARCELADO ? 5 : 0;
   const dueSession = currentPackageSessions[dueSessionIndex];
@@ -146,6 +167,7 @@ export function calculatePackageFinancialSummary(
     && !!dueDate
     && new Date(`${dueDate}T23:59:59`).getTime() < today.getTime();
 
+  const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0;
   let status: FinancialStatus = 'SEM MOVIMENTAÇÃO';
   if (hasCurrentPackage) {
     if (pendingGross <= 0) status = 'QUITADO';
@@ -155,6 +177,7 @@ export function calculatePackageFinancialSummary(
   }
 
   const lastPayment = patientPayments.length > 0 ? patientPayments[patientPayments.length - 1] : null;
+  const hasNewPackageWithoutPayment = hasStartedNextPackageWithoutPayment && pendingGross > 0;
 
   return {
     patient,
