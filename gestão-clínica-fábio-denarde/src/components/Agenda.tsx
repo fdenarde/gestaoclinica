@@ -788,7 +788,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
                                 title={buildSessionTooltip(session, patient || undefined)}
                                 aria-label={buildSessionTooltip(session, patient || undefined)}
                                 className={cn(
-                                  "p-2 rounded-lg border min-h-[50px] transition-all flex flex-col justify-between shadow-sm",
+                                  "p-2 rounded-lg border min-h-[56px] transition-all flex flex-col justify-between shadow-sm",
                                   isBlocked || !patient ? '' : 'cursor-pointer hover:shadow-md hover:border-clinic-primary/40 hover:scale-[1.01]',
                                   getStatusCardBg(session)
                                 )}
@@ -832,22 +832,22 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
 
                                   {/* Notes preview if not blocked */}
                                   {!isBlocked && session.notes && session.notes.trim() && (
-                                    <span className="text-[8px] text-clinic-text-muted mt-0.5 truncate italic">
+                                    <span className="text-[10px] text-clinic-text-muted mt-1 truncate italic leading-snug">
                                       {session.notes.trim().substring(0, 40)}{session.notes.trim().length > 40 ? '…' : ''}
                                     </span>
                                   )}
 
                                   {/* Virtual / double indicators */}
                                   {!isBlocked && (
-                                    <div className="flex items-center gap-1 mt-0.5">
+                                    <div className="flex items-center gap-1.5 mt-1">
                                       {isVirtual && (
-                                        <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary">Fixo</span>
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary leading-tight">Fixo</span>
                                       )}
                                       {session.type === SessionType.DUPLA && (
-                                        <span className="text-[7px] font-bold px-1 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary">Dupla</span>
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase bg-clinic-primary/10 text-clinic-primary leading-tight">Dupla</span>
                                       )}
                                       {!isBlocked && sessionCycleLabel && (
-                                        <span className="text-[7px] text-clinic-text-muted">
+                                        <span className="text-[9px] font-medium text-clinic-text-muted leading-tight">
                                           {sessionCycleLabel}
                                         </span>
                                       )}
