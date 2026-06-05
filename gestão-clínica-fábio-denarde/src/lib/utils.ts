@@ -245,8 +245,13 @@ export function getFixedScheduleForDate(patient: Patient, dateStr: string): {
     };
   }
 
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
+  if (!patient.fixedScheduleEffectiveFrom && history.length === 0 && dateStr < todayStr) {
+    return null;
+  }
+
   const effectiveFrom = patient.fixedScheduleEffectiveFrom || patient.startDate || '';
-  if (effectiveFrom && dateStr < effectiveFrom && history.length > 0) {
+  if (effectiveFrom && dateStr < effectiveFrom) {
     return null;
   }
 

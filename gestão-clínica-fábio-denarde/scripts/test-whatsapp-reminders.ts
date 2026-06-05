@@ -31,6 +31,7 @@ function patient(overrides: Partial<Patient>): Patient {
     whatsapp: '(27) 99999-0001',
     fixedDay: 'segunda',
     fixedTime: '09:00',
+    fixedScheduleEffectiveFrom: '2026-01-01',
     paymentModal: 'PADRAO' as any,
     startDate: '2026-01-01',
     anamnese: {
@@ -203,6 +204,26 @@ const tests: Array<{ name: string; run: () => void }> = [
       assert(previousSchedule.reminders[0].time === '09:00', 'vigencia anterior deveria usar segunda 09:00');
       assertReminderIds(currentSchedule, ['p-vigencia'], 'vigencia atual');
       assert(currentSchedule.reminders[0].time === '14:00', 'vigencia atual deveria usar quinta 14:00');
+    }
+  },
+  {
+    name: 'nao projeta horario fixo atual em data passada sem historico de vigencia',
+    run: () => {
+      const result = plan({
+        runDateStr: '2020-01-01',
+        tipo: 'HOJE_MANHA',
+        patients: [
+          patient({
+            id: 'p-passado-sem-historico',
+            fixedDay: 'quarta',
+            fixedTime: '09:00',
+            startDate: '2020-01-01'
+          })
+        ]
+      });
+
+      assertReminderIds(result, [], 'data passada sem historico');
+      assert(result.diagnostics.length === 0, 'data passada sem historico nao deveria criar sessao virtual nem diagnostico');
     }
   },
   {

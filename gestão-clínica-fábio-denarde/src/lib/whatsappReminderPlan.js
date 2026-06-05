@@ -29,6 +29,10 @@ function formatDateStr(date) {
   return date.toISOString().split('T')[0];
 }
 
+function formatLocalDateStr(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function getFixedScheduleForDate(patient, dateStr) {
   const history = patient.fixedScheduleHistory || [];
   const historicalSchedule = history.find(item =>
@@ -46,8 +50,13 @@ function getFixedScheduleForDate(patient, dateStr) {
     };
   }
 
+  const todayStr = formatLocalDateStr(new Date());
+  if (!patient.fixedScheduleEffectiveFrom && history.length === 0 && dateStr < todayStr) {
+    return null;
+  }
+
   const effectiveFrom = patient.fixedScheduleEffectiveFrom || patient.startDate || '';
-  if (effectiveFrom && dateStr < effectiveFrom && history.length > 0) {
+  if (effectiveFrom && dateStr < effectiveFrom) {
     return null;
   }
 
