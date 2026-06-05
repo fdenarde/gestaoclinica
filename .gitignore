@@ -6,6 +6,12 @@ node_modules/
 gestão-clínica-fábio-denarde/.wwebjs_auth/
 gestão-clínica-fábio-denarde/.wwebjs_auth_temp/
 gestão-clínica-fábio-denarde/firebase-key.json
+.env
+.env.*
+!*.env.example
+gestão-clínica-fábio-denarde/.env
+gestão-clínica-fábio-denarde/.env.*
+!gestão-clínica-fábio-denarde/.env.example
 .claude/settings.json
 dist/
 *.zip
