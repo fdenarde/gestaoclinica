@@ -170,6 +170,42 @@ const tests: Array<{ name: string; run: () => void }> = [
     }
   },
   {
+    name: 'respeita historico de vigencia quando o horario fixo muda',
+    run: () => {
+      const changedPatient = patient({
+        id: 'p-vigencia',
+        fixedDay: 'quinta',
+        fixedTime: '14:00',
+        fixedScheduleEffectiveFrom: '2026-06-04',
+        fixedScheduleHistory: [
+          {
+            fixedDay: 'segunda',
+            fixedTime: '09:00',
+            doubleSession: false,
+            effectiveFrom: '2026-01-01',
+            effectiveTo: '2026-06-03'
+          }
+        ]
+      });
+
+      const previousSchedule = plan({
+        runDateStr: '2026-06-01',
+        tipo: 'HOJE_MANHA',
+        patients: [changedPatient]
+      });
+      const currentSchedule = plan({
+        runDateStr: '2026-06-04',
+        tipo: 'HOJE_TARDE',
+        patients: [changedPatient]
+      });
+
+      assertReminderIds(previousSchedule, ['p-vigencia'], 'vigencia anterior');
+      assert(previousSchedule.reminders[0].time === '09:00', 'vigencia anterior deveria usar segunda 09:00');
+      assertReminderIds(currentSchedule, ['p-vigencia'], 'vigencia atual');
+      assert(currentSchedule.reminders[0].time === '14:00', 'vigencia atual deveria usar quinta 14:00');
+    }
+  },
+  {
     name: 'deduplica sessao dupla e envia apenas uma mensagem por paciente',
     run: () => {
       const result = plan({

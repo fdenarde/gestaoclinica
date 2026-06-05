@@ -31,6 +31,14 @@ export interface Patient {
   fixedDay: string; // terça, quinta, sexta, sábado
   fixedTime: string;
   doubleSession?: boolean; // true = atende 2 horários seguidos (ex: 14h e 15h)
+  fixedScheduleEffectiveFrom?: string; // YYYY-MM-DD; current fixed schedule starts on this date
+  fixedScheduleHistory?: {
+    fixedDay: string;
+    fixedTime: string;
+    doubleSession?: boolean;
+    effectiveFrom: string;
+    effectiveTo: string;
+  }[];
   paymentModal: PaymentModal;
   startDate: string;
   photoUrl?: string;

@@ -853,7 +853,35 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
       }
     }
     
-    const updatedPatients = state.patients.map(p => p.id === patient.id ? { ...p, ...editForm } as Patient : p);
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    const previousScheduleEnd = format(addDays(parseISO(todayStr), -1), 'yyyy-MM-dd');
+    const previousScheduleStart = patient.fixedScheduleEffectiveFrom || patient.startDate || todayStr;
+    const shouldKeepPreviousSchedule =
+      !!confirmScheduleChange.oldDay &&
+      !!confirmScheduleChange.oldTime &&
+      previousScheduleStart <= previousScheduleEnd;
+
+    const previousSchedule = shouldKeepPreviousSchedule
+      ? [{
+          fixedDay: confirmScheduleChange.oldDay,
+          fixedTime: confirmScheduleChange.oldTime,
+          doubleSession: confirmScheduleChange.oldDouble,
+          effectiveFrom: previousScheduleStart,
+          effectiveTo: previousScheduleEnd
+        }]
+      : [];
+
+    const updatedPatient = {
+      ...patient,
+      ...editForm,
+      fixedScheduleEffectiveFrom: todayStr,
+      fixedScheduleHistory: [
+        ...(patient.fixedScheduleHistory || []),
+        ...previousSchedule
+      ]
+    } as Patient;
+
+    const updatedPatients = state.patients.map(p => p.id === patient.id ? updatedPatient : p);
     
     onUpdate({ 
       patients: updatedPatients,
@@ -2189,6 +2217,9 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
 
             <p className="text-sm text-clinic-text">
               Deseja realinhar automaticamente as sessões futuras agendadas para o novo dia/horário fixo?
+            </p>
+            <p className="text-xs text-clinic-text-muted leading-relaxed">
+              O histórico anterior será preservado: semanas passadas continuarão usando o dia/horário que estava vigente na época, e o novo horário valerá a partir de hoje.
             </p>
 
             <div className="flex flex-col gap-3">

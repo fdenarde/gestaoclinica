@@ -29,6 +29,35 @@ function formatDateStr(date) {
   return date.toISOString().split('T')[0];
 }
 
+function getFixedScheduleForDate(patient, dateStr) {
+  const history = patient.fixedScheduleHistory || [];
+  const historicalSchedule = history.find(item =>
+    item.effectiveFrom &&
+    item.effectiveTo &&
+    item.effectiveFrom <= dateStr &&
+    dateStr <= item.effectiveTo
+  );
+
+  if (historicalSchedule) {
+    return {
+      fixedDay: historicalSchedule.fixedDay || '',
+      fixedTime: historicalSchedule.fixedTime || '',
+      doubleSession: !!historicalSchedule.doubleSession
+    };
+  }
+
+  const effectiveFrom = patient.fixedScheduleEffectiveFrom || patient.startDate || '';
+  if (effectiveFrom && dateStr < effectiveFrom && history.length > 0) {
+    return null;
+  }
+
+  return {
+    fixedDay: patient.fixedDay || '',
+    fixedTime: patient.fixedTime || '',
+    doubleSession: !!patient.doubleSession
+  };
+}
+
 export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
   const processed = [];
 
@@ -87,11 +116,14 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
     for (const p of patients) {
       if (p.status !== 'Ativo') continue;
 
-      const fixedDayNorm = normalizeStr(p.fixedDay).replace('-feira', '');
+      const fixedSchedule = getFixedScheduleForDate(p, dateStr);
+      if (!fixedSchedule?.fixedDay || !fixedSchedule.fixedTime) continue;
+
+      const fixedDayNorm = normalizeStr(fixedSchedule.fixedDay).replace('-feira', '');
       const targetDayNorm = normalizeStr(dayKey).replace('-feira', '');
 
-      if (fixedDayNorm === targetDayNorm && p.fixedTime) {
-        const time1 = p.fixedTime;
+      if (fixedDayNorm === targetDayNorm && fixedSchedule.fixedTime) {
+        const time1 = fixedSchedule.fixedTime;
         const hasManual1 = dbSessions.some(
           s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time1)
         );
@@ -102,7 +134,7 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
             patientId: p.id,
             date: dateStr,
             time: time1,
-            type: p.doubleSession ? 'Sessão dupla (2 × 50 min)' : 'Sessão simples (50 min)',
+            type: fixedSchedule.doubleSession ? 'Sessão dupla (2 × 50 min)' : 'Sessão simples (50 min)',
             status: 'Agendada',
             notes: '',
             packageNumber: 0,
@@ -112,8 +144,8 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
           });
         }
 
-        if (p.doubleSession) {
-          const time2 = addOneHour(p.fixedTime);
+        if (fixedSchedule.doubleSession) {
+          const time2 = addOneHour(fixedSchedule.fixedTime);
           const hasManual2 = dbSessions.some(
             s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time2)
           );
