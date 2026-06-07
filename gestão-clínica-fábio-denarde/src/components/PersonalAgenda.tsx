@@ -1,13 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance, AlarmSound } from '../types';
+import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance } from '../types';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Bell, CheckCircle2, Edit2, Trash2, BookOpen } from 'lucide-react';
-import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfMonth, endOfMonth, eachDayOfInterval, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
+import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
 import { previewSound, prepareAlarmAudio } from '../lib/useAlarms';
-import { loadAlarmSounds, AlarmSoundMeta, getDefaultSounds, DEFAULT_ALARM_SOUND_ID, getFallbackAlarmSoundId } from '../lib/alarmSounds';
+import { ALARM_ADVANCE_OPTIONS, loadAlarmSounds, AlarmSoundMeta, getDefaultSounds, DEFAULT_ALARM_SOUND_ID, getFallbackAlarmSoundId } from '../lib/alarmSounds';
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
@@ -246,10 +246,10 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
   const listDateRange = useMemo(() => {
     if (listFilter === 'hoje') {
-      return { start: currentDate, end: currentDate };
+      return { start: startOfDay(currentDate), end: endOfDay(currentDate) };
     } else if (listFilter === 'semana') {
       const start = startOfWeek(currentDate, { weekStartsOn: 1 });
-      const end = endOfWeek(currentDate, { weekStartsOn: 1 });
+      const end = endOfDay(endOfWeek(currentDate, { weekStartsOn: 1 }));
       return { start, end };
     } else {
       const start = startOfMonth(currentDate);
@@ -668,21 +668,9 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                 <div>
                   <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Antecedência</label>
                   <select value={alarmAdvance} onChange={e => setAlarmAdvance(e.target.value as AlarmAdvance)} className="w-full p-2 border rounded-lg text-sm">
-                    <option value="Na hora">No horário</option>
-                    <option value="5 min">5 min antes</option>
-                    <option value="10 min">10 min antes</option>
-                    <option value="15 min">15 min antes</option>
-                    <option value="20 min">20 min antes</option>
-                    <option value="25 min">25 min antes</option>
-                    <option value="30 min">30 min antes</option>
-                    <option value="35 min">35 min antes</option>
-                    <option value="40 min">40 min antes</option>
-                    <option value="45 min">45 min antes</option>
-                    <option value="50 min">50 min antes</option>
-                    <option value="55 min">55 min antes</option>
-                    <option value="1 hora">1 hora antes</option>
-                    <option value="1h30">1h30 antes</option>
-                    <option value="2 horas">2 horas antes</option>
+                    {ALARM_ADVANCE_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
                   </select>
                 </div>
 
