@@ -1,23 +1,45 @@
 import React, { useState, useMemo } from 'react';
-import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution } from '../types';
-import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle } from 'lucide-react';
+import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution, ExternalRegistrationForm } from '../types';
+import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
 import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
+import { createStrongToken, getExternalRegistrationExpiry, getExternalRegistrationExpiryMs, patientToExternalRegistrationData, sanitizeForFirestore } from '../lib/externalRegistration';
+import { db } from '../firebase';
+import { doc, setDoc, Timestamp } from 'firebase/firestore';
 
 interface PatientsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
   selectedPatientId?: string | null;
   setSelectedPatientId?: (id: string | null) => void;
+  currentUserId?: string;
+  currentUserName?: string;
 }
 
-export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId }: PatientsProps) {
+const PATIENT_FIELD_LABELS: Record<string, string> = {
+  name: 'nome',
+  birthDate: 'nascimento',
+  guardianName: 'responsável',
+  whatsapp: 'WhatsApp',
+  school: 'escola',
+  grade: 'ano escolar',
+  shift: 'turno',
+  doctorName: 'médico',
+  medication: 'medicação',
+};
+
+function getFieldLabelForPatient(field: string) {
+  return PATIENT_FIELD_LABELS[field] || field;
+}
+
+export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId, currentUserId, currentUserName }: PatientsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showInactive, setShowInactive] = useState(false);
   const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
+  const [lastGeneratedPreRegistrationLink, setLastGeneratedPreRegistrationLink] = useState('');
   
   const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
   const selectedPatientId = propSelectedId !== undefined ? propSelectedId : internalSelectedId;
@@ -182,6 +204,68 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
   const selectedPatient = state.patients.find(p => p.id === selectedPatientId);
 
+  const copyExternalRegistrationLink = async (link: string) => {
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast('Link copiado para envio manual pelo WhatsApp.', 'success');
+    } catch {
+      window.prompt('Copie o link para enviar manualmente:', link);
+    }
+  };
+
+  const createExternalRegistrationForm = async (type: 'new' | 'update', linkedPatient?: Patient) => {
+    if (!currentUserId) {
+      showToast('Usuário não identificado para gerar o link.', 'error');
+      return '';
+    }
+
+    const token = createStrongToken();
+    const now = new Date().toISOString();
+    const expiresAtMs = getExternalRegistrationExpiryMs();
+    const currentData = type === 'update' && linkedPatient ? patientToExternalRegistrationData(linkedPatient) : undefined;
+    const form: ExternalRegistrationForm = {
+      id: token,
+      token,
+      ownerUserId: currentUserId,
+      type,
+      status: 'Pendente de preenchimento',
+      patientId: type === 'update' ? linkedPatient?.id || null : null,
+      patientSnapshot: type === 'update' && linkedPatient ? {
+        id: linkedPatient.id || '',
+        name: linkedPatient.name || '',
+        birthDate: linkedPatient.birthDate || '',
+        guardianName: linkedPatient.guardianName || '',
+        whatsapp: linkedPatient.whatsapp || '',
+        school: linkedPatient.school || '',
+        grade: linkedPatient.grade || '',
+        shift: linkedPatient.shift || '',
+        doctorName: linkedPatient.doctorName || '',
+        medication: linkedPatient.medication || '',
+      } : null,
+      currentData,
+      createdAt: now,
+      expiresAt: getExternalRegistrationExpiry(),
+      expiresAtMs,
+      expiresAtTimestamp: Timestamp.fromMillis(expiresAtMs),
+      reviewedBy: currentUserName || 'Usuário',
+    };
+
+    await setDoc(doc(db, 'externalRegistrationForms', token), sanitizeForFirestore(form));
+    return `${window.location.origin}/pre-cadastro/${token}`;
+  };
+
+  const generateNewPreRegistrationLink = async () => {
+    try {
+      const link = await createExternalRegistrationForm('new');
+      if (!link) return;
+      setLastGeneratedPreRegistrationLink(link);
+      await copyExternalRegistrationLink(link);
+    } catch (error) {
+      console.error('Erro ao gerar link de pré-cadastro:', error);
+      showToast('Não foi possível criar o link. Confira o console e as permissões do Firestore.', 'error');
+    }
+  };
+
   return (
     <div className="space-y-6 pb-10">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-clinic-surface p-4 rounded-2xl border border-clinic-border shadow-sm">
@@ -206,14 +290,41 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
             Mostrar Concluídos
           </label>
         </div>
-        <button 
-          onClick={() => setIsNewPatientModalOpen(true)}
-          className="flex items-center gap-2 px-6 py-3 bg-clinic-primary text-white font-bold rounded-xl shadow-lg hover:bg-clinic-primary-hover transition-all uppercase tracking-widest text-sm w-full md:w-auto justify-center"
-        >
-          <Plus size={20} />
-          Novo Atendente
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+          <button
+            type="button"
+            onClick={generateNewPreRegistrationLink}
+            className="flex items-center gap-2 px-5 py-3 bg-status-blue-bg text-status-blue-text border border-status-blue-text/20 font-bold rounded-xl shadow-sm hover:bg-status-blue-bg/70 transition-all uppercase tracking-widest text-xs w-full sm:w-auto justify-center"
+          >
+            <LinkIcon size={18} />
+            Gerar link de novo pré-cadastro
+          </button>
+          <button
+            onClick={() => setIsNewPatientModalOpen(true)}
+            className="flex items-center gap-2 px-6 py-3 bg-clinic-primary text-white font-bold rounded-xl shadow-lg hover:bg-clinic-primary-hover transition-all uppercase tracking-widest text-sm w-full sm:w-auto justify-center"
+          >
+            <Plus size={20} />
+            Novo Atendente
+          </button>
+        </div>
       </div>
+
+      {lastGeneratedPreRegistrationLink && (
+        <div className="bg-clinic-surface border border-clinic-border rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-2 shadow-sm">
+          <input
+            readOnly
+            value={lastGeneratedPreRegistrationLink}
+            className="flex-1 px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs text-clinic-text"
+          />
+          <button
+            type="button"
+            onClick={() => copyExternalRegistrationLink(lastGeneratedPreRegistrationLink)}
+            className="px-3 py-2 bg-clinic-header text-white rounded-lg text-[10px] font-black uppercase tracking-wide flex items-center justify-center gap-2"
+          >
+            <ClipboardCopy size={14} /> Copiar
+          </button>
+        </div>
+      )}
 
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
         <div className="p-6 space-y-4">
@@ -602,13 +713,17 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
           patient={selectedPatient}
           state={state}
           onUpdate={onUpdate}
+          currentUserId={currentUserId || ''}
+          currentUserName={currentUserName || 'Usuário'}
+          createExternalRegistrationForm={createExternalRegistrationForm}
+          copyExternalRegistrationLink={copyExternalRegistrationLink}
         />
       )}
     </div>
   );
 }
 
-function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void }) {
+function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void> }) {
   const [activeSubTab, setActiveSubTab] = useState('dados');
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
@@ -647,12 +762,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
   
   const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [newEvoNotes, setNewEvoNotes] = useState('');
+  const [lastGeneratedExternalLink, setLastGeneratedExternalLink] = useState('');
 
   if (!patient) return null;
 
   const patientSessions = state.sessions.filter(s => s.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const patientPayments = state.payments.filter(p => p.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const patientEvolutions = (state.evolutions || []).filter(e => e.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const latestExternalHistory = patient.externalRegistrationHistory?.[patient.externalRegistrationHistory.length - 1];
 
   const getInferredPackageNumber = (paymentDate: string) => {
     if (patientSessions.length === 0) return 1;
@@ -681,6 +798,18 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
     onUpdate({ evolutions: [...(state.evolutions || []), newEvolution] });
     setNewEvoNotes('');
     showToast('Evolução salva com sucesso!');
+  };
+
+  const generateExternalRegistrationLink = async () => {
+    try {
+      const link = await createExternalRegistrationForm('update', patient);
+      if (!link) return;
+      setLastGeneratedExternalLink(link);
+      await copyExternalRegistrationLink(link);
+    } catch (error) {
+      console.error('Erro ao gerar link de atualização cadastral:', error);
+      showToast('Não foi possível criar o link. Confira o console e as permissões do Firestore.', 'error');
+    }
   };
   // Realized sessions sorted chronologically (ascending)
   const realizedSessionsChronological = patientSessions
@@ -1370,6 +1499,55 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate }: { ke
           <div className="mt-4">
             {activeSubTab === 'dados' && (
               <div className="animate-in fade-in slide-in-from-top-2">
+                <div className="mb-4 space-y-3">
+                  {patient.lastExternalRegistrationUpdate && (
+                    <div className="bg-status-blue-bg border border-status-blue-text/20 rounded-xl p-3 text-sm text-status-blue-text font-bold flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <span>
+                        Cadastro atualizado via formulário do responsável em {safeFormatDate(patient.lastExternalRegistrationUpdate, 'dd/MM/yyyy HH:mm')}.
+                      </span>
+                      {latestExternalHistory && (
+                        <span className="text-[10px] uppercase tracking-wider">
+                          Campos: {latestExternalHistory.changedFields.map(getFieldLabelForPatient).join(', ') || 'sem alteração'}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="bg-clinic-bg/70 border border-clinic-border rounded-xl p-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint">Formulário externo</p>
+                      <p className="text-xs text-clinic-text-muted font-medium">
+                        Gere o link de conferência deste cadastro e envie manualmente pelo WhatsApp. Nenhuma mensagem automática será disparada.
+                      </p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <button
+                        type="button"
+                        onClick={generateExternalRegistrationLink}
+                        className="px-3 py-2 bg-clinic-primary text-white rounded-lg text-[10px] font-black uppercase tracking-wide flex items-center justify-center gap-2"
+                      >
+                        <LinkIcon size={14} /> Gerar link para atualizar este cadastro
+                      </button>
+                    </div>
+                  </div>
+
+                  {lastGeneratedExternalLink && (
+                    <div className="bg-white border border-clinic-border rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-2">
+                      <input
+                        readOnly
+                        value={lastGeneratedExternalLink}
+                        className="flex-1 px-3 py-2 bg-clinic-bg rounded-lg border border-clinic-border text-xs text-clinic-text"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => copyExternalRegistrationLink(lastGeneratedExternalLink)}
+                        className="px-3 py-2 bg-clinic-header text-white rounded-lg text-[10px] font-black uppercase tracking-wide flex items-center justify-center gap-2"
+                      >
+                        <ClipboardCopy size={14} /> Copiar
+                      </button>
+                    </div>
+                  )}
+                </div>
                 {!isEditingData ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
                     <div className="col-span-1 md:col-span-2 flex items-center justify-between border-b border-clinic-border pb-2">

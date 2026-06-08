@@ -1,0 +1,321 @@
+LEIA-ME — COMO USAR OS PROMPTS NO CODEX
+Projeto: Gestão Clínica Neuropsicopedagógica
+Atualizado em: 06/06/2026
+
+============================================================
+OBJETIVO DESTE ARQUIVO
+============================================================
+Este arquivo explica como usar corretamente os prompts salvos nesta pasta para orientar o Codex em alterações no projeto da clínica, principalmente nas áreas sensíveis:
+
+- Agenda
+- Pacientes
+- Pacotes
+- Sessões
+- Pagamentos
+- Relatórios
+- Robô WhatsApp
+- Sincronismo entre abas
+- Deploy
+
+Atenção: este projeto contém dados reais de pacientes, responsáveis, horários, pagamentos e regras de envio automático. Portanto, mudanças devem ser feitas com cautela, testes e validação antes de deploy.
+
+============================================================
+ARQUIVOS PRINCIPAIS
+============================================================
+Use principalmente estes arquivos:
+
+1. 01_PROMPT_LONGO_SEGURANCA_SINCRONISMO_CODEX.md
+   Use para tarefas críticas, como Agenda, Pagamentos, Sessões, Pacotes, Robô WhatsApp, relatórios, sincronismo e deploy.
+
+2. 02_PROMPT_CURTO_SEGURANCA_SINCRONISMO_CODEX.md
+   Use para tarefas mais simples, como ajustes visuais, botões, fontes, espaçamento, cards, modais e pequenas melhorias de responsividade.
+
+3. LEIA-ME_COMO_USAR.txt
+   Arquivo de orientação para saber a ordem correta de uso dos prompts no Codex.
+
+============================================================
+CONFIGURAÇÃO RECOMENDADA NO CODEX
+============================================================
+Antes de iniciar uma tarefa sensível no projeto da clínica, configure o Codex assim:
+
+1. Modelo:
+   GPT-5.5
+
+2. Raciocínio:
+   Altíssimo
+
+3. Permissão:
+   Solicitar aprovação
+
+4. Modo planejamento:
+   Ativado
+
+5. Meta:
+   Usar /meta, quando disponível.
+
+IMPORTANTE:
+Evite usar “Acesso completo” quando a tarefa envolver Agenda, Pagamentos, Pacientes, Sessões, Robô WhatsApp, dados reais ou deploy.
+
+============================================================
+ORDEM CORRETA DE USO
+============================================================
+A ordem ideal é:
+
+1. Abrir o projeto da clínica no Codex.
+2. Trocar a permissão para “Solicitar aprovação”.
+3. Selecionar GPT-5.5.
+4. Selecionar raciocínio “Altíssimo”.
+5. Ativar “Modo planejamento”.
+6. Digitar /meta.
+7. Escrever uma meta curta.
+8. Enviar a meta.
+9. Colar o prompt longo ou curto.
+10. No final do prompt, escrever a tarefa específica.
+11. Esperar o Codex apresentar o plano de análise.
+12. Só aprovar execução se o plano estiver seguro.
+13. Após execução, exigir relatório final e testes.
+14. Só fazer deploy depois de validação local.
+
+============================================================
+COMO USAR A META
+============================================================
+No campo de mensagem do Codex, digite:
+
+/meta
+
+Depois escreva uma meta curta, por exemplo:
+
+Corrigir e proteger o sincronismo entre Agenda, Pacientes, Pacotes, Sessões, Pagamentos e Robô WhatsApp, sem enviar mensagens, sem inicializar WhatsApp, sem gerar QR Code e sem fazer deploy antes dos testes.
+
+A meta serve para definir o objetivo principal da tarefa.
+
+============================================================
+ONDE ENTRA O PROMPT LONGO OU CURTO
+============================================================
+Depois de definir a meta, cole o prompt longo ou curto no campo normal de mensagem do Codex.
+
+Use esta ordem:
+
+1. /meta
+2. Meta curta
+3. Prompt longo ou curto
+4. Tarefa específica no final do prompt
+
+Exemplo:
+
+[COLE AQUI O PROMPT LONGO]
+
+TAREFA ESPECÍFICA:
+Analise e corrija a aba Pagamentos, pois o Weslley iniciou o pacote 2 em 03/06, mas a quantidade de sessões exibida está fora de sincronismo. Também verifique a Luiza, pois ainda existe pendência na parcela 2 restante. Antes de editar qualquer arquivo, apresente o plano de análise e os riscos encontrados.
+
+============================================================
+QUANDO USAR O PROMPT LONGO
+============================================================
+Use o prompt longo quando a tarefa envolver:
+
+- Agenda
+- Pagamentos
+- Pacientes
+- Pacotes
+- Sessões
+- Robô WhatsApp
+- Relatório offline do robô
+- Sincronismo entre abas
+- Deploy
+- Dados reais de pacientes
+- Parcelas
+- Saldo a receber
+- Receita bruta
+- Correção de lógica
+- Erro que possa gerar prejuízo financeiro
+- Risco de mensagem errada para responsáveis
+
+Na dúvida, use o prompt longo. Melhor gastar alguns tokens do que transformar a clínica em um festival de bugs com recibo.
+
+============================================================
+QUANDO USAR O PROMPT CURTO
+============================================================
+Use o prompt curto somente em tarefas simples, como:
+
+- Ajustar botão
+- Corrigir fonte
+- Melhorar espaçamento
+- Melhorar card
+- Melhorar modal
+- Ajustar ícones
+- Corrigir alinhamento
+- Melhorar responsividade visual simples
+
+Mesmo em tarefas visuais, se a tela exibir dados reais, pagamentos ou informações da agenda, prefira o prompt longo.
+
+============================================================
+CUIDADOS COM O ROBÔ WHATSAPP
+============================================================
+Para qualquer tarefa envolvendo o robô WhatsApp, o Codex deve seguir estas regras:
+
+- Não enviar mensagens reais.
+- Não inicializar WhatsApp.
+- Não gerar QR Code.
+- Não executar scripts de envio real.
+- Não acionar lembretes automáticos.
+- Não alterar telefone de responsáveis.
+- Não alterar textos oficiais sem mostrar antes.
+- Não fazer deploy sem teste local.
+- Usar apenas simulação offline ou relatório offline, salvo autorização explícita.
+
+Scripts como force-send-reminders, send-reminders, start-bot ou similares não devem ser executados sem autorização explícita.
+
+============================================================
+CUIDADOS COM PAGAMENTOS E SESSÕES
+============================================================
+Antes de corrigir Pagamentos ou Sessões, o Codex deve verificar:
+
+- Data de início do pacote atual.
+- Sessões realizadas dentro do pacote atual.
+- Sessões antigas.
+- Agendamentos futuros.
+- Faltas.
+- Cancelamentos.
+- Parcelas pagas.
+- Parcelas pendentes.
+- Saldo a receber.
+- Receita bruta.
+- Cadastro do paciente.
+- Dados usados pela Agenda.
+
+Regras importantes:
+
+- Sessões antigas não podem entrar em pacote novo.
+- Agendamentos futuros não contam como sessões realizadas.
+- Cancelamentos não contam como sessões realizadas.
+- Faltas só contam como sessão se essa já for a regra atual do sistema.
+- A aba Pagamentos não deve usar mock, valor fixo ou dado fictício.
+
+============================================================
+CUIDADOS COM DESIGN E FRONT-END
+============================================================
+Melhorias visuais são bem-vindas, mas não podem quebrar regra de negócio.
+
+Antes de alterar telas que exibem dados reais, o Codex deve verificar de onde os dados vêm.
+
+Melhorar visual pode envolver:
+
+- Hierarquia visual
+- Espaçamento
+- Legibilidade
+- Contraste
+- Tamanho de fonte
+- Alinhamento
+- Botões
+- Cards
+- Modais
+- Estados vazios
+- Mensagens de erro
+- Feedback visual
+- Responsividade
+- Acessibilidade
+
+Mas nunca substituir cálculo real por dado fixo, mock ou simulação visual.
+
+============================================================
+TESTES OBRIGATÓRIOS APÓS ALTERAÇÃO
+============================================================
+Após qualquer alteração sensível, o Codex deve testar:
+
+1. Criar agendamento.
+2. Editar agendamento.
+3. Marcar sessão como realizada.
+4. Marcar falta.
+5. Marcar cancelamento.
+6. Conferir número da sessão.
+7. Conferir pacote atual.
+8. Conferir aba Pagamentos.
+9. Conferir parcelas pagas e pendentes.
+10. Conferir saldo a receber.
+11. Conferir cadastro do paciente.
+12. Conferir se o robô WhatsApp não foi executado.
+13. Conferir se nenhuma mensagem foi enviada.
+14. Conferir se nenhum QR Code foi gerado.
+15. Conferir responsividade visual.
+16. Conferir console do navegador.
+17. Rodar lint/build/testes, quando existirem.
+18. Verificar se não houve regressão em outras abas.
+
+============================================================
+RELATÓRIO FINAL OBRIGATÓRIO
+============================================================
+Ao finalizar, o Codex deve entregar um relatório com:
+
+1. Resumo do problema encontrado.
+2. Arquivos analisados.
+3. Arquivos alterados.
+4. Lógica anterior.
+5. Lógica corrigida.
+6. Riscos identificados.
+7. Como o sincronismo foi preservado.
+8. Testes realizados.
+9. Resultado dos testes.
+10. Resultado dos pacientes analisados, quando houver.
+11. Confirmação de que o robô WhatsApp não foi executado.
+12. Confirmação de que nenhuma mensagem foi enviada.
+13. Confirmação de que nenhum QR Code foi gerado.
+14. Pendências ou riscos restantes.
+15. Orientação se deve ou não fazer deploy.
+16. Nota de Arquitetura: 0–100.
+17. Nota de Performance: 0–100.
+18. Nota de Segurança: 0–100.
+19. Nota de Usabilidade: 0–100.
+20. Nota de Escalabilidade: 0–100.
+21. Nota Geral: 0–100.
+
+Ao final, o Codex deve perguntar:
+
+“Deseja que eu faça alguma melhoria ou correção adicional relacionada a este assunto, considerando qualquer uma das pastas ou conversas do projeto?”
+
+============================================================
+EXEMPLO PRONTO DE USO
+============================================================
+PASSO 1:
+Digite no Codex:
+
+/meta
+
+PASSO 2:
+Escreva a meta:
+
+Corrigir e proteger o sincronismo entre Agenda, Pacientes, Pacotes, Sessões, Pagamentos e Robô WhatsApp, sem enviar mensagens, sem inicializar WhatsApp, sem gerar QR Code e sem fazer deploy antes dos testes.
+
+PASSO 3:
+Cole o prompt longo.
+
+PASSO 4:
+No final do prompt longo, escreva:
+
+TAREFA ESPECÍFICA:
+Analise e corrija [descrever aqui o problema]. Antes de editar qualquer arquivo, apresente primeiro o plano de análise, os arquivos que pretende verificar e os riscos envolvidos.
+
+============================================================
+RESUMO RÁPIDO
+============================================================
+Para tarefas críticas:
+
+- GPT-5.5
+- Raciocínio Altíssimo
+- Solicitar aprovação
+- Modo planejamento ativado
+- /meta
+- Prompt longo
+- Tarefa específica
+- Plano antes da execução
+- Testes obrigatórios
+- Relatório final
+- Deploy somente após validação
+
+Para tarefas simples:
+
+- GPT-5.5
+- Raciocínio Média ou Alta
+- Prompt curto
+- Teste visual
+- Sem mexer em lógica sensível
+

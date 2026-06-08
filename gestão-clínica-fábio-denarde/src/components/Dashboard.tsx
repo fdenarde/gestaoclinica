@@ -8,6 +8,7 @@ import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
 import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
 import { getSessionCycleLabel } from '../lib/sessionSequence';
+import { isPendingExternalRegistrationStatus } from '../lib/externalRegistration';
 
 interface DashboardProps {
   state: AppState;
@@ -220,6 +221,9 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
     const todayRealized = todaySessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
     const todayAbsences = todaySessions.filter(s => s.status === SessionStatus.FALTA || s.status === SessionStatus.FALTA_PROF).length;
     const pendingRepositions = state.repositions.filter(r => r.status === 'Pendente');
+    const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
+      isPendingExternalRegistrationStatus(form.status)
+    );
     const patientsNearRenewal = state.patients
       .filter(patient => patient.status === 'Ativo')
       .map(patient => {
@@ -269,6 +273,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       todayRealized,
       todayAbsences,
       pendingRepositions,
+      pendingExternalForms,
       patientsNearRenewal,
       whatsappTodayCount,
       whatsappMorningCount: morningPlan.reminders.length,
@@ -380,6 +385,12 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
             <AlertTriangle size={18} className="text-status-orange-text" />
           </div>
           <div className="space-y-3">
+            <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
+              <span className="text-xs font-bold text-clinic-text-muted uppercase">Formulários recebidos</span>
+              <span className={cn("text-sm font-black", operationalPanel.pendingExternalForms.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
+                {operationalPanel.pendingExternalForms.length}
+              </span>
+            </div>
             <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
               <span className="text-xs font-bold text-clinic-text-muted uppercase">Reposições pendentes</span>
               <span className={cn("text-sm font-black", operationalPanel.pendingRepositions.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>

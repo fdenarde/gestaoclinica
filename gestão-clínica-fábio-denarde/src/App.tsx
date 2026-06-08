@@ -1,17 +1,19 @@
 import React, { Suspense, lazy, useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
-import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment } from './types';
-import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, LogIn, Loader2, BookOpen } from 'lucide-react';
+import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment, ExternalRegistrationForm } from './types';
+import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, LogIn, Loader2, BookOpen, ClipboardList } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
+import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
 import packageJson from '../package.json';
 
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, onSnapshot, collection, writeBatch, type WriteBatch } from 'firebase/firestore';
+import { doc, onSnapshot, collection, writeBatch, type WriteBatch, query, where } from 'firebase/firestore';
+import ExternalRegistrationPage from './components/ExternalRegistrationPage';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -20,6 +22,7 @@ const Patients = lazy(() => import('./components/Patients'));
 const Finance = lazy(() => import('./components/Finance'));
 const Reports = lazy(() => import('./components/Reports'));
 const Settings = lazy(() => import('./components/Settings'));
+const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -39,12 +42,13 @@ const DEFAULT_STATE: AppState = {
   evolutions: [],
   settings: DEFAULT_SETTINGS,
   personalAppointments: [],
+  externalRegistrationForms: [],
 };
 
 const APP_VERSION = `v${packageJson.version}`;
-type DensityMode = 'comfortable' | 'standard' | 'compact';
 
 export default function App() {
+  const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [state, setState] = useState<AppState>(DEFAULT_STATE);
@@ -52,14 +56,14 @@ export default function App() {
   
   const [activeTab, setActiveTab] = useState('dashboard');
   const [notifications, setNotifications] = useState<string[]>([]);
-  const [density, setDensity] = useState<DensityMode>(() => {
-    const saved = localStorage.getItem('clinic-density-mode');
-    return saved === 'comfortable' || saved === 'compact' || saved === 'standard' ? saved : 'standard';
-  });
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
+
+  if (publicRegistrationMatch) {
+    return <ExternalRegistrationPage token={publicRegistrationMatch[1]} />;
+  }
 
   const navigateToPatient = (id: string) => {
     setSelectedPatientId(id);
@@ -74,9 +78,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem('clinic-density-mode', density);
-  }, [density]);
 
   useEffect(() => {
     if (!user) return;
@@ -186,6 +187,14 @@ export default function App() {
         handleFirestoreError(error, OperationType.GET, 'agenda_pessoal');
         setDataLoading(false);
       })
+    );
+
+    unsubscribers.push(
+      onSnapshot(query(collection(db, 'externalRegistrationForms'), where('ownerUserId', '==', user.uid)), (snapshot) => {
+        const externalRegistrationForms = snapshot.docs.map(doc => doc.data() as ExternalRegistrationForm);
+        markCollectionLoaded('externalRegistrationForms');
+        setState(prev => ({ ...prev, externalRegistrationForms }));
+      }, (error) => handleFirestoreError(error, OperationType.GET, 'externalRegistrationForms'))
     );
     
     // Fallback: Se a internet estiver lenta ou o Firebase não responder, destrava após 3s
@@ -304,6 +313,30 @@ export default function App() {
           }));
       }
 
+      if (newState.externalRegistrationForms) {
+        if (!loadedCollectionsRef.current.has('externalRegistrationForms')) {
+          throw new Error('Gravação bloqueada: os formulários externos ainda não concluíram o primeiro carregamento.');
+        }
+        const collectionName = 'externalRegistrationForms';
+        const currentItems: ExternalRegistrationForm[] = state.externalRegistrationForms || [];
+        const nextItems: ExternalRegistrationForm[] = newState.externalRegistrationForms;
+        const currentMap = new Map<string, ExternalRegistrationForm>(currentItems.map(item => [item.id, item]));
+        const nextMap = new Map<string, ExternalRegistrationForm>(nextItems.map(item => [item.id, item]));
+        const colRef = collection(db, collectionName);
+
+        for (const id of currentMap.keys()) {
+          if (!nextMap.has(id)) {
+            await addOp(b => b.delete(doc(colRef, id)));
+          }
+        }
+
+        for (const item of nextItems) {
+          if (hasMeaningfulChange(currentMap.get(item.id), item)) {
+            await addOp(b => b.set(doc(colRef, item.id), sanitizeForFirestore(item)));
+          }
+        }
+      }
+
       await commitBatch();
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'users/' + user.uid);
@@ -344,11 +377,16 @@ export default function App() {
     );
   }
 
+  const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
+    isPendingExternalRegistrationStatus(form.status)
+  ).length;
+
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'agenda', label: 'Agenda', icon: Calendar },
     { id: 'agenda-pessoal', label: 'Agenda Pessoal', icon: BookOpen },
     { id: 'atendentes', label: 'Atendentes', icon: Users },
+    { id: 'pre-cadastros', label: 'Pré-cadastros', icon: ClipboardList, badge: pendingExternalForms },
     { id: 'pagamentos', label: 'Pagamentos', icon: DollarSign },
     { id: 'relatorios', label: 'Relatórios', icon: BarChart3 },
     { id: 'ajustes', label: 'Ajustes', icon: SettingsIcon },
@@ -357,7 +395,7 @@ export default function App() {
   const currentDateStr = format(new Date(), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
 
   return (
-    <div className={cn("min-h-screen flex flex-col pb-10", `density-${density}`)}>
+    <div className="min-h-screen flex flex-col pb-10">
       <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-3 md:py-4 flex flex-col md:flex-row gap-3 md:gap-4 justify-between items-center shadow-lg shrink-0">
         <div className="flex flex-col text-center md:text-left">
           {state.settings.customHeader ? (
@@ -376,26 +414,6 @@ export default function App() {
           )}
         </div>
         <div className="flex flex-wrap items-center justify-center md:justify-end gap-3 sm:gap-4 xl:gap-6">
-          <div className="flex items-center gap-1 rounded-full bg-white/10 p-1 border border-white/10" aria-label="Densidade visual">
-            {([
-              ['comfortable', 'Confortável'],
-              ['standard', 'Padrão'],
-              ['compact', 'Compacto'],
-            ] as const).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setDensity(value)}
-                className={cn(
-                  'rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-colors',
-                  density === value ? 'bg-white text-clinic-header shadow-sm' : 'text-white/75 hover:bg-white/10 hover:text-white'
-                )}
-                title={`Densidade ${label}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
           <div className="text-right hidden md:block">
             <p className="text-[10px] opacity-70 uppercase font-bold tracking-wider">{currentDateStr}</p>
             <p className="text-xs font-medium">Vila Velha, ES</p>
@@ -409,9 +427,9 @@ export default function App() {
            </div>
           <div className="relative bg-clinic-primary p-2 rounded-full cursor-pointer hover:bg-clinic-primary-hover shadow-md transition-all active:scale-95">
             <Bell size={20} />
-            {notifications.length > 0 && (
+            {(notifications.length + pendingExternalForms) > 0 && (
               <span className="absolute -top-1 -right-1 bg-white text-clinic-primary text-[10px] font-bold px-1.5 rounded-full border border-clinic-primary">
-                {notifications.length}
+                {notifications.length + pendingExternalForms}
               </span>
             )}
           </div>
@@ -455,6 +473,11 @@ export default function App() {
             >
               <tab.icon size={16} className={cn("shrink-0", activeTab === tab.id ? 'text-clinic-primary' : '')} />
               <span className="hidden sm:inline whitespace-nowrap leading-none">{tab.label}</span>
+              {'badge' in tab && !!tab.badge && (
+                <span className="ml-1 min-w-5 h-5 px-1 rounded-full bg-status-orange-text text-white text-[10px] font-black flex items-center justify-center">
+                  {tab.badge}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -486,7 +509,8 @@ export default function App() {
               {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
-              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} />}
+              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
+              {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
               {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} />}

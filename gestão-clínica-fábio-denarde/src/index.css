@@ -76,6 +76,10 @@
     @apply bg-clinic-surface rounded-xl border border-clinic-border shadow-clinic;
   }
 
+  .clinic-input {
+    @apply w-full px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm;
+  }
+
   .app-main {
     max-width: min(100%, 76rem);
     padding-top: calc(1.5rem * var(--density-scale));

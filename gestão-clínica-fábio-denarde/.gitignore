@@ -18,3 +18,4 @@ responsive-backups/
 !firebase-blueprint.json
 !firebase-applet-config.json
 !tsconfig.json
+.vercel

@@ -93,6 +93,7 @@ const INITIAL_STATE: AppState = {
   expenses: [],
   evolutions: [],
   personalAppointments: [],
+  externalRegistrationForms: [],
   settings: CLINIC_INFO
 };
 

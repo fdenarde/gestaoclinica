@@ -47,6 +47,8 @@ export interface Patient {
   shift?: string;
   doctorName?: string;
   medication?: string;
+  lastExternalRegistrationUpdate?: string;
+  externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;
   opinionPdfUrl?: string;
   emergencyContact?: string;
@@ -61,6 +63,65 @@ export interface Patient {
   };
   clinicalNotes: string;
   status: 'Ativo' | 'Concluído';
+}
+
+export interface ExternalRegistrationData {
+  name: string;
+  birthDate: string;
+  guardianName: string;
+  whatsapp: string;
+  school?: string;
+  grade?: string;
+  shift?: string;
+  hasMedicalFollowUp: 'Sim' | 'Não' | '';
+  doctorName?: string;
+  usesMedication: 'Sim' | 'Não' | '';
+  medication?: string;
+  authorizationAccepted: boolean;
+}
+
+export type ExternalRegistrationType = 'new' | 'update';
+
+export type ExternalRegistrationStatus =
+  | 'Pendente de preenchimento'
+  | 'Pré-cadastro recebido'
+  | 'Atualização recebida'
+  | 'Novo cadastro criado'
+  | 'Cadastro atualizado'
+  | 'Arquivado';
+
+export interface ExternalRegistrationHistoryItem {
+  id: string;
+  formId: string;
+  submittedAt: string;
+  approvedAt: string;
+  type: ExternalRegistrationType;
+  action: string;
+  changedFields: string[];
+  approvedBy?: string;
+}
+
+export interface ExternalRegistrationForm {
+  id: string;
+  token: string;
+  ownerUserId: string;
+  type: ExternalRegistrationType;
+  status: ExternalRegistrationStatus;
+  patientId?: string | null;
+  patientSnapshot?: Partial<Patient> | null;
+  currentData?: ExternalRegistrationData;
+  submittedData?: ExternalRegistrationData;
+  selectedFields?: string[];
+  createdAt: string;
+  expiresAt: string;
+  expiresAtMs: number;
+  expiresAtTimestamp?: unknown;
+  submittedAt?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  archivedAt?: string;
+  notes?: string;
+  history?: ExternalRegistrationHistoryItem[];
 }
 
 export interface Session {
@@ -177,4 +238,5 @@ export interface AppState {
   evolutions: Evolution[];
   settings: ClinicSettings;
   personalAppointments: PersonalAppointment[];
+  externalRegistrationForms: ExternalRegistrationForm[];
 }

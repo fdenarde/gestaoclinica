@@ -17,3 +17,5 @@ dist/
 *.zip
 backups/
 gestão-clínica-fábio-denarde/backups/
+
+.vercel

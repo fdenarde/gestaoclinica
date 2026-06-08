@@ -1,0 +1,67 @@
+--- /mnt/data/work/src_original2/src/App.tsx	2026-06-08 06:18:58.000000000 +0000
++++ src/App.tsx	2026-06-08 19:39:01.263000065 +0000
+@@ -46,7 +46,6 @@
+ };
+ 
+ const APP_VERSION = `v${packageJson.version}`;
+-type DensityMode = 'comfortable' | 'standard' | 'compact';
+ 
+ export default function App() {
+   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
+@@ -57,10 +56,6 @@
+   
+   const [activeTab, setActiveTab] = useState('dashboard');
+   const [notifications, setNotifications] = useState<string[]>([]);
+-  const [density, setDensity] = useState<DensityMode>(() => {
+-    const saved = localStorage.getItem('clinic-density-mode');
+-    return saved === 'comfortable' || saved === 'compact' || saved === 'standard' ? saved : 'standard';
+-  });
+   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+   const loadedCollectionsRef = useRef<Set<string>>(new Set());
+ 
+@@ -83,9 +78,6 @@
+     return () => unsubscribe();
+   }, []);
+ 
+-  useEffect(() => {
+-    localStorage.setItem('clinic-density-mode', density);
+-  }, [density]);
+ 
+   useEffect(() => {
+     if (!user) return;
+@@ -403,7 +395,7 @@
+   const currentDateStr = format(new Date(), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
+ 
+   return (
+-    <div className={cn("min-h-screen flex flex-col pb-10", `density-${density}`)}>
++    <div className="min-h-screen flex flex-col pb-10">
+       <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-3 md:py-4 flex flex-col md:flex-row gap-3 md:gap-4 justify-between items-center shadow-lg shrink-0">
+         <div className="flex flex-col text-center md:text-left">
+           {state.settings.customHeader ? (
+@@ -422,26 +414,6 @@
+           )}
+         </div>
+         <div className="flex flex-wrap items-center justify-center md:justify-end gap-3 sm:gap-4 xl:gap-6">
+-          <div className="flex items-center gap-1 rounded-full bg-white/10 p-1 border border-white/10" aria-label="Densidade visual">
+-            {([
+-              ['comfortable', 'Confortável'],
+-              ['standard', 'Padrão'],
+-              ['compact', 'Compacto'],
+-            ] as const).map(([value, label]) => (
+-              <button
+-                key={value}
+-                type="button"
+-                onClick={() => setDensity(value)}
+-                className={cn(
+-                  'rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider transition-colors',
+-                  density === value ? 'bg-white text-clinic-header shadow-sm' : 'text-white/75 hover:bg-white/10 hover:text-white'
+-                )}
+-                title={`Densidade ${label}`}
+-              >
+-                {label}
+-              </button>
+-            ))}
+-          </div>
+           <div className="text-right hidden md:block">
+             <p className="text-[10px] opacity-70 uppercase font-bold tracking-wider">{currentDateStr}</p>
+             <p className="text-xs font-medium">Vila Velha, ES</p>

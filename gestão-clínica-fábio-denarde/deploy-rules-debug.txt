@@ -1,0 +1,53 @@
+[2026-06-08T06:35:41.997Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[2026-06-08T06:35:41.998Z] > authorizing via signed-in user (fdenarde@gmail.com)
+[2026-06-08T06:35:41.998Z] [iam] checking project ai-studio-applet-webapp-e3283 for permissions ["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]
+[2026-06-08T06:35:41.999Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:41.999Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:42.000Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:testIamPermissions [none]
+[2026-06-08T06:35:42.000Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:testIamPermissions  x-goog-user-project=ai-studio-applet-webapp-e3283
+[2026-06-08T06:35:42.000Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]}
+[2026-06-08T06:35:42.879Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:testIamPermissions 200
+[2026-06-08T06:35:42.879Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get"]}
+
+=== Deploying to 'ai-studio-applet-webapp-e3283'...
+
+i  deploying firestore 
+i  firestore: ensuring required API firestore.googleapis.com is enabled... 
+i  firestore: ensuring required API firestore.googleapis.com is enabled... 
+[2026-06-08T06:35:42.882Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:42.882Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:42.882Z] >>> [apiv2][query] GET https://firestore.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/databases/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda [none]
+[2026-06-08T06:35:43.767Z] <<< [apiv2][status] GET https://firestore.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/databases/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda 200
+[2026-06-08T06:35:43.767Z] <<< [apiv2][body] GET https://firestore.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/databases/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda {"name":"projects/ai-studio-applet-webapp-e3283/databases/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda","uid":"6ac24346-cfe4-4daa-85dc-eab13c878013","createTime":"2026-05-02T05:02:27.891336Z","updateTime":"2026-05-02T05:02:27.891336Z","locationId":"us-east1","type":"FIRESTORE_NATIVE","concurrencyMode":"OPTIMISTIC","versionRetentionPeriod":"3600s","earliestVersionTime":"2026-06-08T05:35:52.633091Z","appEngineIntegrationMode":"DISABLED","pointInTimeRecoveryEnablement":"POINT_IN_TIME_RECOVERY_DISABLED","deleteProtectionState":"DELETE_PROTECTION_DISABLED","databaseEdition":"ENTERPRISE","freeTier":true,"realtimeUpdatesMode":"REALTIME_UPDATES_MODE_ENABLED","firestoreDataAccessMode":"DATA_ACCESS_MODE_ENABLED","mongodbCompatibleDataAccessMode":"DATA_ACCESS_MODE_DISABLED","freeTierLimited":true,"etag":"IO3Qx8aD95QDMLyK6s7rmZQD"}
+i  cloud.firestore: checking firestore.rules for compilation errors... 
+[2026-06-08T06:35:43.768Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:43.768Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:43.768Z] >>> [apiv2][query] POST https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:test [none]
+[2026-06-08T06:35:43.768Z] >>> [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:test [omitted]
+[2026-06-08T06:35:44.983Z] <<< [apiv2][status] POST https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:test 200
+[2026-06-08T06:35:44.983Z] <<< [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283:test {}
++  cloud.firestore: rules file firestore.rules compiled successfully 
+[2026-06-08T06:35:44.984Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:44.984Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:44.984Z] >>> [apiv2][query] GET https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases pageSize=10&pageToken=
+[2026-06-08T06:35:46.080Z] <<< [apiv2][status] GET https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases 200
+[2026-06-08T06:35:46.080Z] <<< [apiv2][body] GET https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases {"releases":[{"name":"projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda","rulesetName":"projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee","createTime":"2026-05-02T05:03:20.906096Z","updateTime":"2026-06-08T06:26:00.559368Z"}]}
+[2026-06-08T06:35:46.080Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:46.080Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:46.080Z] >>> [apiv2][query] GET https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee [none]
+[2026-06-08T06:35:47.231Z] <<< [apiv2][status] GET https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee 200
+[2026-06-08T06:35:47.231Z] <<< [apiv2][body] GET https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee [omitted]
+i  firestore: latest version of firestore.rules already up to date, skipping upload... 
+[2026-06-08T06:35:47.232Z] [rules] releasing cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda with ruleset projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee
+[2026-06-08T06:35:47.232Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:47.232Z] Checked if tokens are valid: true, expires at: 1780904080311
+[2026-06-08T06:35:47.232Z] >>> [apiv2][query] PATCH https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda [none]
+[2026-06-08T06:35:47.232Z] >>> [apiv2][body] PATCH https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda {"release":{"name":"projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda","rulesetName":"projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee"}}
+[2026-06-08T06:35:48.521Z] <<< [apiv2][status] PATCH https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda 200
+[2026-06-08T06:35:48.522Z] <<< [apiv2][body] PATCH https://firebaserules.googleapis.com/v1/projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda {"name":"projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda","rulesetName":"projects/ai-studio-applet-webapp-e3283/rulesets/dfe7b660-d69f-4fc4-9fba-8706cef98dee","createTime":"2026-05-02T05:03:20.906096Z","updateTime":"2026-06-08T06:35:57.317640Z"}
+[2026-06-08T06:35:48.522Z] [rules] updated release projects/ai-studio-applet-webapp-e3283/releases/cloud.firestore/ai-studio-587970e5-0653-44a5-93a3-be1a74301eda
++  firestore: released rules firestore.rules to cloud.firestore 
+
++  Deploy complete! 
+
+Project Console: https://console.firebase.google.com/project/ai-studio-applet-webapp-e3283/overview
