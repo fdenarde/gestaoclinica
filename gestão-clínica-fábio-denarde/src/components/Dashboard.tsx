@@ -472,7 +472,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-serif text-lg font-bold text-clinic-text">Hoje na Clínica</h3>
+            <h3 className="text-lg font-bold text-clinic-text">Hoje na Clínica</h3>
             <Calendar size={18} className="text-clinic-primary" />
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -493,7 +493,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
 
         <div className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-serif text-lg font-bold text-clinic-text">Pendências</h3>
+            <h3 className="text-lg font-bold text-clinic-text">Pendências</h3>
             <AlertTriangle size={18} className="text-status-orange-text" />
           </div>
           <div className="space-y-3">
@@ -533,7 +533,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
           aria-label={operationalPanel.whatsappTooltip}
         >
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-serif text-lg font-bold text-clinic-text">WhatsApp</h3>
+            <h3 className="text-lg font-bold text-clinic-text">WhatsApp</h3>
             <MessageCircle size={18} className="text-status-green-text" title={operationalPanel.whatsappTooltip} />
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -610,7 +610,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-0">
         {/* Próximas Sessões */}
         <div className="bg-clinic-surface rounded-2xl border border-clinic-border p-6 flex flex-col shadow-clinic overflow-hidden">
-          <h3 className="font-serif text-xl font-bold mb-4 border-b border-clinic-border pb-2">Próximas Sessões — Hoje</h3>
+          <h3 className="text-xl font-bold mb-4 border-b border-clinic-border pb-2">Próximas Sessões — Hoje</h3>
           <div className="flex flex-col gap-3 overflow-y-auto">
             {todaySessions.length > 0 ? (
               todaySessions.map(session => (
@@ -672,7 +672,7 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
 
         {/* Progresso de Atendentes */}
         <div className="bg-clinic-surface rounded-2xl border border-clinic-border p-6 flex flex-col shadow-clinic overflow-hidden">
-          <h3 className="font-serif text-xl font-bold mb-4 border-b border-clinic-border pb-2">Progresso dos Atendentes</h3>
+          <h3 className="text-xl font-bold mb-4 border-b border-clinic-border pb-2">Progresso dos Atendentes</h3>
           <div className="flex flex-col gap-5 overflow-y-auto pr-2 custom-scrollbar">
             {state.patients.filter(p => p.status === 'Ativo').slice(0, 10).map(patient => {
               const getRealizedCount = (patientId: string) => state.sessions.filter(s => s.patientId === patientId && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;

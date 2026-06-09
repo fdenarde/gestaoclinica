@@ -791,7 +791,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <DollarSign size={20} />
-                  <h2 className="font-serif text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
+                  <h2 className="text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
                 </div>
                 <p className="max-w-4xl rounded-xl border border-clinic-border bg-clinic-bg/60 px-3 py-2 text-[13px] leading-relaxed text-clinic-text-muted">
                   A situação financeira considera pendências reais do pacote atual ou parcelas abertas. A ausência de pagamento no período não gera pendência automaticamente. Pacotes anteriores quitados permanecem apenas como histórico. O status usa o valor bruto do pacote ({formatCurrency(PACKAGE_GROSS_VALUE)}); métricas de saldo descontam o repasse de {Math.round(PARTNER_SHARE_RATE * 100)}% da sócia.
@@ -971,7 +971,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
               <div className="flex items-center gap-2">
                 <History size={20} className="text-clinic-text-faint" />
                 <div>
-                  <h2 className="font-serif text-xl font-bold">Histórico de Transações</h2>
+                  <h2 className="text-xl font-bold">Histórico de Transações</h2>
                   <p className="text-sm text-clinic-text-muted">Receitas reais registradas no período, com atendente, responsável, pacote, forma e valor.</p>
                 </div>
               </div>
@@ -1044,7 +1044,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
            <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/10">
             <History size={20} className="text-clinic-text-faint" />
-            <h2 className="font-serif text-xl font-bold">Histórico de Despesas</h2>
+            <h2 className="text-xl font-bold">Histórico de Despesas</h2>
           </div>
           <div className="responsive-table">
             <table className="w-full text-left">

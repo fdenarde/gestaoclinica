@@ -341,13 +341,13 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
               
               return (
                 <div key={patient.id} className="p-5 rounded-2xl border border-clinic-border hover:bg-clinic-bg/40 transition-all flex flex-col md:flex-row items-center gap-6">
-                  <div className="w-14 h-14 rounded-full bg-clinic-primary/10 text-clinic-primary flex items-center justify-center font-serif text-xl font-bold border-2 border-clinic-primary/20 shrink-0">
+                  <div className="w-14 h-14 rounded-full bg-clinic-primary/10 text-clinic-primary flex items-center justify-center text-xl font-bold border-2 border-clinic-primary/20 shrink-0">
                     {patient.name.split(' ').map(n => n[0]).slice(0, 2).join('')}
                   </div>
                   
                   <div className="flex-1 min-w-0 w-full text-center md:text-left">
                     <div className="flex flex-col md:flex-row items-center gap-2 mb-1">
-                      <h3 className="font-serif text-xl font-bold truncate leading-tight">{patient.name}</h3>
+                      <h3 className="text-xl font-bold truncate leading-tight">{patient.name}</h3>
                       <span className="text-xs text-clinic-text-muted px-2 py-0.5 bg-clinic-bg rounded-full">{calculateAge(patient.birthDate)} anos</span>
                     </div>
                     <div className="flex flex-col md:flex-row items-center gap-x-4 gap-y-1 text-sm text-clinic-text-muted">
@@ -408,7 +408,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
             })
           ) : (
             <div className="py-20 text-center text-clinic-text-muted">
-              <p className="text-lg italic font-serif opacity-50">Nenhum atendente encontrado.</p>
+              <p className="text-lg italic opacity-50">Nenhum atendente encontrado.</p>
             </div>
           )}
         </div>
@@ -424,7 +424,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         <div className="space-y-8">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div className="space-y-4">
-              <h4 className="font-serif text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
+              <h4 className="text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
                 <Users size={18} className="text-clinic-primary" />
                 Dados Pessoais
               </h4>
@@ -492,7 +492,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
             </div>
 
             <div className="space-y-4">
-              <h4 className="font-serif text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
+              <h4 className="text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
                 <FileText size={18} className="text-clinic-primary" />
                 Escolar e Clínico
               </h4>
@@ -582,7 +582,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
             </div>
 
             <div className="space-y-4">
-              <h4 className="font-serif text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
+              <h4 className="text-lg font-bold border-b border-clinic-border pb-2 flex items-center gap-2">
                 <Clock size={18} className="text-clinic-primary" />
                 Configuração do Pacote
               </h4>
@@ -1339,13 +1339,13 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                     className="w-20 h-20 rounded-xl object-cover border border-clinic-border shadow-sm cursor-pointer hover:opacity-90 transition"
                   />
                 ) : (
-                  <div className="w-20 h-20 rounded-xl bg-white border border-clinic-border flex items-center justify-center text-3xl font-serif font-bold text-clinic-primary shadow-sm">
+                  <div className="w-20 h-20 rounded-xl bg-white border border-clinic-border flex items-center justify-center text-3xl font-bold text-clinic-primary shadow-sm">
                     {patient.name.charAt(0)}
                   </div>
                 )}
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-1">
-                    <h3 className="font-serif text-2xl font-bold text-clinic-text truncate">{patient.name}</h3>
+                    <h3 className="text-2xl font-bold text-clinic-text truncate">{patient.name}</h3>
                     <span className={cn(
                       'px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border',
                       patient.status === 'Ativo' ? 'bg-status-green-bg text-status-green-text border-status-green-text/20' : 'bg-status-red-bg text-status-red-text border-status-red-text/20'
@@ -1385,7 +1385,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
               <div className="bg-white/70 border border-clinic-border/70 rounded-lg p-3">
                 <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint mb-1">Completude</p>
                 <div className="flex items-center gap-3">
-                  <span className="text-2xl font-serif font-bold text-clinic-text">{completionScore}%</span>
+                  <span className="text-2xl font-bold text-clinic-text">{completionScore}%</span>
                   <div className="flex-1 h-2 rounded-full bg-clinic-border overflow-hidden">
                     <div className={cn(
                       'h-full rounded-full',
@@ -1560,7 +1560,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                             className="w-14 h-14 rounded-full object-cover border border-clinic-border/50 shadow-sm cursor-pointer hover:opacity-80 transition" 
                           />
                         ) : (
-                          <div className="w-14 h-14 rounded-full bg-clinic-bg flex items-center justify-center border border-clinic-border/50 text-clinic-text-faint text-xl font-serif shadow-sm">
+                          <div className="w-14 h-14 rounded-full bg-clinic-bg flex items-center justify-center border border-clinic-border/50 text-clinic-text-faint text-xl shadow-sm">
                             {patient.name.charAt(0)}
                           </div>
                         )}
@@ -1642,7 +1642,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                     </div>
 
                     <div className="col-span-1 md:col-span-2 pt-2 border-t border-clinic-border space-y-2">
-                      <h5 className="font-serif text-[15px] font-bold text-clinic-text">Histórico de Pacotes</h5>
+                      <h5 className="text-[15px] font-bold text-clinic-text">Histórico de Pacotes</h5>
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                         {packageHistory.filter(p => p.completed).length > 0 ? packageHistory.filter(p => p.completed).map(pkg => (
                           <div key={pkg.number} className="flex justify-between items-center text-sm py-2 px-3 border border-clinic-border/50 rounded-lg bg-clinic-bg/30 shadow-sm">
@@ -1660,7 +1660,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                 ) : (
                   <div className="space-y-4 bg-clinic-bg/30 p-4 shrink-0 border border-clinic-border rounded-xl">
                     <div className="flex items-center justify-between border-b border-clinic-border pb-4 mb-4">
-                      <h5 className="font-serif text-lg font-bold text-clinic-text flex items-center gap-2">
+                      <h5 className="text-lg font-bold text-clinic-text flex items-center gap-2">
                         <Edit3 size={18} className="text-clinic-primary" />
                         Editar Dados
                       </h5>
@@ -1673,7 +1673,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-4">
                       {/* Column 1: Dados Pessoais */}
                       <div className="space-y-4">
-                        <h4 className="font-serif text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
+                        <h4 className="text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
                           <Users size={16} className="text-clinic-primary" />
                           Dados Pessoais
                         </h4>
@@ -1709,7 +1709,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                       
                       {/* Column 2: Escolar e Clínico */}
                       <div className="space-y-4">
-                        <h4 className="font-serif text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
+                        <h4 className="text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
                           <FileText size={16} className="text-clinic-primary" />
                           Escolar e Clínico
                         </h4>
@@ -1754,7 +1754,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                       
                       {/* Column 3: Configuração do Pacote e Status */}
                       <div className="space-y-4">
-                        <h4 className="font-serif text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
+                        <h4 className="text-base font-bold border-b border-clinic-border pb-2 flex items-center gap-2 text-clinic-text">
                           <Clock size={16} className="text-clinic-primary" />
                           Configuração do Pacote
                         </h4>
@@ -1916,7 +1916,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
             {activeSubTab === 'pacotes' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
                 <div className="flex items-center justify-between">
-                  <h5 className="font-serif text-lg font-bold text-clinic-text">Histórico de Pacotes</h5>
+                  <h5 className="text-lg font-bold text-clinic-text">Histórico de Pacotes</h5>
                   <span className="text-xs font-bold text-clinic-text-faint uppercase bg-clinic-bg px-3 py-1 rounded-full border">
                     Pacote Atual: #{currentPkgNumber} ({currentPkgProgress}/10 sessões)
                   </span>
@@ -1988,7 +1988,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
             {activeSubTab === 'financeiro' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
                 <div className="flex items-center justify-between">
-                  <h5 className="font-serif text-lg font-bold text-clinic-text">Resumo Financeiro</h5>
+                  <h5 className="text-lg font-bold text-clinic-text">Resumo Financeiro</h5>
                   <div className="flex gap-2">
                     <button onClick={handleRegisterPaymentClick} className="px-3 py-1.5 bg-status-green-bg text-status-green-text font-bold text-xs uppercase tracking-wide rounded-lg hover:bg-green-100 transition-colors border border-green-200 shadow-sm hover:shadow">
                       + Registar Pagamento
@@ -2009,11 +2009,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                 <div className="grid grid-cols-2 gap-4">
                    <div className="p-4 bg-status-green-bg text-status-green-text rounded-2xl border border-green-100 h-full">
                       <span className="block text-[10px] font-bold uppercase">Total Pago</span>
-                      <span className="text-2xl font-serif font-bold">{formatCurrency(patientPayments.reduce((s, p) => s + p.amount, 0))}</span>
+                      <span className="text-2xl font-bold">{formatCurrency(patientPayments.reduce((s, p) => s + p.amount, 0))}</span>
                    </div>
                    <div className="p-4 bg-status-orange-bg text-status-orange-text rounded-2xl border border-orange-100 h-full">
                       <span className="block text-[10px] font-bold uppercase">Status Financeiro</span>
-                      <span className="text-2xl font-serif font-bold italic">{patient.paymentModal === PaymentModal.PIX_FULL ? 'Único' : 'Parcelado'}</span>
+                      <span className="text-2xl font-bold italic">{patient.paymentModal === PaymentModal.PIX_FULL ? 'Único' : 'Parcelado'}</span>
                    </div>
                 </div>
                 <div className="space-y-6">
@@ -2355,7 +2355,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
               <p>
                 Você alterou o dia/horário fixo de <strong>{patient.name}</strong>:
               </p>
-              <div className="flex items-center gap-4 justify-center bg-white p-3 rounded-lg border border-clinic-border font-serif text-sm">
+              <div className="flex items-center gap-4 justify-center bg-white p-3 rounded-lg border border-clinic-border text-sm">
                 <div className="text-center">
                   <span className="block text-[10px] uppercase font-bold text-clinic-text-faint">Anterior</span>
                   <span className="font-bold text-status-red-text">

@@ -29,7 +29,7 @@ export default function Modal({ isOpen, onClose, title, children, width = 'max-w
             className={`relative bg-clinic-surface w-full ${width} rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[94dvh] sm:max-h-[90vh] overflow-hidden`}
           >
             <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-clinic-border flex justify-between items-center gap-3 bg-clinic-header text-white">
-              <h3 className="font-serif text-lg sm:text-xl font-semibold uppercase tracking-wide leading-tight">{title}</h3>
+              <h3 className="text-lg sm:text-xl font-semibold uppercase tracking-wide leading-tight">{title}</h3>
               <button
                 onClick={onClose}
                 className="p-2 -mr-2 hover:bg-white/20 rounded-full transition-colors touch-manipulation"

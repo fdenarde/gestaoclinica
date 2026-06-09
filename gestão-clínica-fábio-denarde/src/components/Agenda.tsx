@@ -632,7 +632,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
       {/* ── Header ── */}
       <div className="flex flex-col md:flex-row justify-between items-center bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-clinic gap-4">
         <div className="flex flex-col">
-          <h2 className="font-serif text-2xl font-bold text-clinic-text tracking-tight">Agenda Semanal</h2>
+          <h2 className="text-2xl font-bold text-clinic-text tracking-tight">Agenda Semanal</h2>
           <div className="flex items-center gap-2 mt-1">
             <Users size={12} className="text-clinic-text-faint" />
             <select 
@@ -883,7 +883,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
       {/* ── Legend ── */}
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">
         <div className="px-4 py-3 border-b border-clinic-border bg-clinic-bg/30">
-          <h3 className="font-serif text-sm font-bold text-clinic-text uppercase tracking-wide">Legenda de Cores</h3>
+          <h3 className="text-sm font-bold text-clinic-text uppercase tracking-wide">Legenda de Cores</h3>
         </div>
         <div className="p-4">
           <div className="flex flex-wrap gap-3">
@@ -1141,7 +1141,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">
         <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/30">
           <AlertCircle size={20} className="text-status-red-text" />
-          <h3 className="font-serif text-xl font-bold">Faltas e Reposições Pendentes</h3>
+          <h3 className="text-xl font-bold">Faltas e Reposições Pendentes</h3>
         </div>
         <div className="p-6">
           {state.repositions.filter(r => r.status === 'Pendente').length > 0 ? (
@@ -1346,7 +1346,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
                 <div className="rounded-xl border border-clinic-border bg-white shadow-sm overflow-hidden">
                   <div className="px-4 py-3 bg-clinic-bg/40 border-b border-clinic-border flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="font-serif text-xl font-bold text-clinic-text truncate">{selectedPatient.name}</p>
+                      <p className="text-xl font-bold text-clinic-text truncate">{selectedPatient.name}</p>
                       <p className="text-xs text-clinic-text-muted mt-1 flex flex-wrap gap-x-3 gap-y-1">
                         <span className="inline-flex items-center gap-1"><User size={13} /> {selectedPatient.guardianName}</span>
                         <span className="inline-flex items-center gap-1"><Phone size={13} /> {selectedPatient.whatsapp || 'Sem telefone'}</span>

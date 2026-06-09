@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { AppTheme } from './lib/theme';
+
 export enum PaymentModal {
   PIX_FULL = 'PADRÃO: Pix integral — R$1.000 antes da 1ª sessão',
   PARCELADO = 'ALTERNATIVA: Parcelado — R$500 antes da 1ª / R$500 na 5ª sessão'
@@ -168,6 +170,7 @@ export interface ClinicSettings {
   customHeader?: string;
   customFooter?: string;
   holidays?: { id: string; date: string; name: string }[];
+  visualTheme?: AppTheme;
 }
 
 export interface Expense {

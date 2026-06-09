@@ -117,7 +117,7 @@ export default function ExternalRegistrationPage({ token }: { token: string }) {
       <div className="min-h-screen bg-clinic-bg flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-clinic-surface border border-clinic-border rounded-2xl p-6 shadow-clinic text-center">
           <AlertTriangle className="w-10 h-10 text-status-orange-text mx-auto mb-4" />
-          <h1 className="font-serif text-2xl font-bold text-clinic-text mb-2">Link indisponível</h1>
+          <h1 className="text-2xl font-bold text-clinic-text mb-2">Link indisponível</h1>
           <p className="text-sm text-clinic-text-muted">{friendlyError}</p>
         </div>
       </div>
@@ -129,7 +129,7 @@ export default function ExternalRegistrationPage({ token }: { token: string }) {
       <div className="min-h-screen bg-clinic-bg flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-clinic-surface border border-clinic-border rounded-2xl p-6 shadow-clinic text-center">
           <CheckCircle className="w-12 h-12 text-status-green-text mx-auto mb-4" />
-          <h1 className="font-serif text-2xl font-bold text-clinic-text mb-3">Cadastro enviado com sucesso.</h1>
+          <h1 className="text-2xl font-bold text-clinic-text mb-3">Cadastro enviado com sucesso.</h1>
           <p className="text-sm text-clinic-text-muted leading-relaxed">
             As informações serão conferidas pela clínica. Caso seja necessário, entraremos em contato pelo WhatsApp informado.
           </p>
@@ -147,7 +147,7 @@ export default function ExternalRegistrationPage({ token }: { token: string }) {
               <Users size={24} />
             </div>
             <div>
-              <h1 className="font-serif text-2xl font-bold">{pageTitle}</h1>
+              <h1 className="text-2xl font-bold">{pageTitle}</h1>
               <p className="text-xs text-white/75 font-bold uppercase tracking-wider">Gestão Clínica Neuropsicopedagógica</p>
             </div>
           </div>
@@ -161,7 +161,7 @@ export default function ExternalRegistrationPage({ token }: { token: string }) {
           )}
 
           <section className="space-y-4">
-            <h2 className="font-serif text-lg font-bold text-clinic-text border-b border-clinic-border pb-2">Dados Pessoais</h2>
+            <h2 className="text-lg font-bold text-clinic-text border-b border-clinic-border pb-2">Dados Pessoais</h2>
             <Field label="Nome da criança *">
               <input value={formData.name} onChange={e => updateField('name', e.target.value)} className="clinic-input" />
             </Field>
@@ -190,7 +190,7 @@ export default function ExternalRegistrationPage({ token }: { token: string }) {
           </section>
 
           <section className="space-y-4">
-            <h2 className="font-serif text-lg font-bold text-clinic-text border-b border-clinic-border pb-2">Escolar e Clínico</h2>
+            <h2 className="text-lg font-bold text-clinic-text border-b border-clinic-border pb-2">Escolar e Clínico</h2>
             <Field label="Escola">
               <input value={formData.school || ''} onChange={e => updateField('school', e.target.value)} className="clinic-input" />
             </Field>

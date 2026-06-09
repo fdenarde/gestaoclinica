@@ -1,17 +1,23 @@
 import React, { useState, useRef } from 'react';
 import { AppState, ClinicSettings, Patient, PaymentModal } from '../types';
-import { Save, Building, Mail, Phone, MapPin, User, CheckCircle, Database, Download, Upload, Calendar, Trash2 } from 'lucide-react';
+import { Save, Building, Mail, Phone, MapPin, User, CheckCircle, Database, Download, Upload, Calendar, Trash2, Palette, ChevronDown } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import Papa from 'papaparse';
 import { safeFormatDate, generateHolidaysForYear } from '../lib/utils';
+import { APP_THEMES, resolveTheme, type AppTheme } from '../lib/theme';
 
 interface SettingsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+  onThemeChange: (theme: AppTheme) => Promise<boolean>;
 }
 
-export default function Settings({ state, onUpdate }: SettingsProps) {
+export default function Settings({ state, onUpdate, onThemeChange }: SettingsProps) {
   const [settings, setSettings] = useState<ClinicSettings>(state.settings);
   const [success, setSuccess] = useState(false);
+  const [themeMessage, setThemeMessage] = useState('');
+  const [savingTheme, setSavingTheme] = useState<AppTheme | null>(null);
+  const [themeOptionsOpen, setThemeOptionsOpen] = useState(false);
   const [importSuccess, setImportSuccess] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -60,9 +66,25 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
   };
 
   const handleSave = () => {
-    onUpdate({ settings });
+    onUpdate({
+      settings: {
+        ...settings,
+        visualTheme: state.settings.visualTheme,
+      },
+    });
     setSuccess(true);
     setTimeout(() => setSuccess(false), 3000);
+  };
+
+  const handleThemeChange = async (theme: AppTheme) => {
+    if (savingTheme || theme === resolveTheme(state.settings.visualTheme)) return;
+
+    setSavingTheme(theme);
+    setThemeMessage('');
+    const saved = await onThemeChange(theme);
+    setThemeMessage(saved ? 'Tema aplicado e salvo.' : 'Tema aplicado. Não foi possível sincronizar com o banco.');
+    setSavingTheme(null);
+    setTimeout(() => setThemeMessage(''), 3500);
   };
 
   const exportCSV = () => {
@@ -158,16 +180,18 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
     });
   };
 
+  const currentTheme = APP_THEMES.find(theme => theme.id === resolveTheme(state.settings.visualTheme)) ?? APP_THEMES[0];
+
   return (
-    <div className="flex flex-col gap-6 py-6 pb-20">
-      <div className="bg-clinic-surface rounded-2xl border border-clinic-border p-8 shadow-clinic max-w-2xl mx-auto w-full">
-        <h2 className="font-serif text-2xl font-bold text-clinic-text mb-6 flex items-center gap-2">
+    <div className="flex w-full flex-col gap-6 py-6 pb-20">
+      <section className="w-full rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-6 xl:p-8">
+        <h2 className="text-2xl font-bold text-clinic-text mb-6 flex items-center gap-2">
           <Building className="text-clinic-primary" />
           Configurações da Clínica
         </h2>
 
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Nome Profissional</label>
               <div className="relative">
@@ -189,20 +213,19 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
                 className="w-full px-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
               />
             </div>
+            <div className="space-y-1 md:col-span-2 xl:col-span-1">
+              <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Descrição Curta (Header)</label>
+              <input
+                type="text"
+                value={settings.title}
+                onChange={(e) => setSettings({...settings, title: e.target.value})}
+                className="w-full px-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
+                placeholder="Ex: Neuropsicopedagogia"
+              />
+            </div>
           </div>
 
-          <div className="space-y-1">
-            <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Descrição Curta (Header)</label>
-            <input 
-              type="text" 
-              value={settings.title}
-              onChange={(e) => setSettings({...settings, title: e.target.value})}
-              className="w-full px-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
-              placeholder="Ex: Neuropsicopedagogia"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Email</label>
               <div className="relative">
@@ -227,24 +250,23 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
                 />
               </div>
             </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Endereço Completo</label>
-            <div className="relative">
-              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-clinic-text-faint" size={16} />
-              <input 
-                type="text" 
-                value={settings.address}
-                onChange={(e) => setSettings({...settings, address: e.target.value})}
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
-              />
+            <div className="space-y-1 md:col-span-2 xl:col-span-1">
+              <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Endereço Completo</label>
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-clinic-text-faint" size={16} />
+                <input
+                  type="text"
+                  value={settings.address}
+                  onChange={(e) => setSettings({...settings, address: e.target.value})}
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
+                />
+              </div>
             </div>
           </div>
 
           <div className="pt-4 border-t border-clinic-border">
-            <h3 className="font-serif font-bold text-lg text-clinic-text mb-4">Personalização da Plataforma e Relatórios</h3>
-            <div className="space-y-4">
+            <h3 className="font-bold text-lg text-clinic-text mb-4">Personalização da Plataforma e Relatórios</h3>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Cabeçalho Personalizado (opcional)</label>
                 <textarea 
@@ -268,32 +290,161 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
             </div>
           </div>
 
-          <button 
-            onClick={handleSave}
-            className="w-full mt-8 bg-clinic-primary hover:bg-clinic-primary-hover text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg transition-all active:scale-95"
-          >
-            {success ? (
-              <><CheckCircle size={20} /> Alterações Salvas!</>
-            ) : (
-              <><Save size={20} /> Salvar Configurações</>
-            )}
-          </button>
-        </div>
-      </div>
+          <section className="border-t border-clinic-border pt-5">
+            <div className="flex flex-col gap-4 rounded-xl border border-clinic-border bg-clinic-bg/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Palette size={17} className="shrink-0 text-clinic-primary" />
+                  <h3 className="text-base font-bold text-clinic-text">Aparência do Sistema</h3>
+                </div>
+                <p className="mt-1 text-xs text-clinic-text-muted">
+                  Personalize as cores da interface sem alterar dados ou relatórios.
+                </p>
+              </div>
 
+              <div className="flex flex-col gap-3 sm:min-w-[320px] sm:flex-row sm:items-center sm:justify-end">
+                <div className="flex items-center gap-3 rounded-lg border border-clinic-border bg-clinic-surface px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <span className="block text-[9px] font-black uppercase tracking-wider text-clinic-text-faint">Tema atual</span>
+                    <span className="block truncate text-sm font-bold text-clinic-text">{currentTheme.name}</span>
+                  </div>
+                  <div className="flex shrink-0 gap-1" role="img" aria-label={`Prévia do tema ${currentTheme.name}`}>
+                    {currentTheme.preview.map((color, index) => (
+                      <span
+                        key={`${color}-${index}`}
+                        className="h-5 w-5 rounded-full border border-black/10"
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setThemeOptionsOpen(open => !open)}
+                  aria-expanded={themeOptionsOpen}
+                  aria-controls="theme-options"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-clinic-primary/30 bg-clinic-surface px-4 py-2 text-xs font-black uppercase tracking-wider text-clinic-primary transition-colors hover:bg-clinic-bg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-clinic-primary/30"
+                >
+                  {themeOptionsOpen ? 'Fechar opções' : 'Alterar tema'}
+                  <ChevronDown size={15} className={`transition-transform duration-200 ${themeOptionsOpen ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            <AnimatePresence initial={false}>
+              {themeOptionsOpen && (
+                <motion.div
+                  id="theme-options"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  className="overflow-hidden"
+                >
+                  <div className="grid grid-cols-1 gap-3 pt-4 sm:grid-cols-2 2xl:grid-cols-4">
+                    {APP_THEMES.map(theme => {
+                      const isSelected = currentTheme.id === theme.id;
+                      const isSaving = savingTheme === theme.id;
+
+                      return (
+                        <button
+                          key={theme.id}
+                          type="button"
+                          onClick={() => handleThemeChange(theme.id)}
+                          aria-pressed={isSelected}
+                          disabled={savingTheme !== null}
+                          className={`min-h-[108px] rounded-xl border p-3 text-left transition-all focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-clinic-primary/30 disabled:cursor-wait ${
+                            isSelected
+                              ? 'border-clinic-primary/60 bg-clinic-bg shadow-sm'
+                              : 'border-clinic-border bg-clinic-surface hover:border-clinic-border-dark hover:bg-clinic-bg/30'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-sm font-bold text-clinic-text">{theme.name}</span>
+                                {theme.isDefault && (
+                                  <span className="rounded-full bg-clinic-nav-bg px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-clinic-header">
+                                    Padrão
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 text-[11px] leading-snug text-clinic-text-muted">{theme.description}</p>
+                            </div>
+                            <span
+                              aria-hidden="true"
+                              className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                                isSelected ? 'border-clinic-primary bg-clinic-primary text-white' : 'border-clinic-border-dark'
+                              }`}
+                            >
+                              {isSelected && <CheckCircle size={13} />}
+                            </span>
+                          </div>
+
+                          <div className="mt-3 flex gap-1.5" role="img" aria-label={`Paleta ${theme.name}`}>
+                            {theme.preview.map((color, index) => (
+                              <span
+                                key={`${color}-${index}`}
+                                className="h-5 w-8 rounded-md border border-black/10"
+                                style={{ backgroundColor: color }}
+                              />
+                            ))}
+                          </div>
+
+                          {isSaving && (
+                            <span className="mt-2 block text-[9px] font-black uppercase tracking-wider text-clinic-text-faint">
+                              Salvando...
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="mt-3 min-h-5 text-[10px] font-bold text-clinic-text-faint">
+              {themeMessage ? (
+                <span role="status" className="text-clinic-text-muted">{themeMessage}</span>
+              ) : (
+                <span>Esta preferência é aplicada e salva automaticamente.</span>
+              )}
+            </div>
+          </section>
+
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={handleSave}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-8 py-3 font-bold text-white shadow-lg transition-all hover:bg-clinic-primary-hover active:scale-95 sm:w-auto"
+            >
+              {success ? (
+                <><CheckCircle size={20} /> Alterações Salvas!</>
+              ) : (
+                <><Save size={20} /> Salvar Configurações</>
+              )}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
       {/* Feriados e Recessos Section */}
-      <div className="bg-clinic-surface rounded-2xl border border-clinic-border p-8 shadow-clinic max-w-2xl mx-auto w-full">
-        <h2 className="font-serif text-2xl font-bold text-clinic-text mb-2 flex items-center gap-2">
-          <Calendar className="text-clinic-primary" />
-          Feriados e Recessos
+      <section className="w-full rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-6 xl:p-8">
+        <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="flex items-center gap-2 text-xl font-bold text-clinic-text">
+            <Calendar className="text-clinic-primary" />
+            Feriados e Recessos
+          </h2>
           <button 
             onClick={handleAutoFillHolidays}
             title={`Preencher automaticamente com feriados nacionais e de Vila Velha para ${new Date().getFullYear()}`}
-            className="ml-auto bg-clinic-bg hover:bg-clinic-border text-clinic-primary text-xs px-3 py-1.5 rounded-lg transition-colors font-bold flex items-center gap-1 shadow-sm"
+            className="flex items-center justify-center gap-1 self-start rounded-lg bg-clinic-bg px-3 py-2 text-xs font-bold text-clinic-primary shadow-sm transition-colors hover:bg-clinic-border sm:self-auto"
           >
             <Calendar size={14} /> Auto-preencher {new Date().getFullYear()}
           </button>
-        </h2>
+        </div>
         <p className="text-sm text-clinic-text-muted mb-6">
           Cadastre os dias em que você não fará atendimentos. O robô irá pausar automaticamente o envio de mensagens para os pacientes nessas datas e avisará você com um dia de antecedência.
         </p>
@@ -354,10 +505,10 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
             <><Save size={20} /> Salvar Feriados</>
           )}
         </button>
-      </div>
+      </section>
 
-      <div className="bg-clinic-surface rounded-2xl border border-clinic-border p-8 shadow-clinic max-w-2xl mx-auto w-full">
-        <h2 className="font-serif text-2xl font-bold text-clinic-text mb-2 flex items-center gap-2">
+      <section className="w-full rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-6 xl:p-8">
+        <h2 className="text-xl font-bold text-clinic-text mb-2 flex items-center gap-2">
           <Database className="text-clinic-primary" />
           Backup e Importação (Planilha)
         </h2>
@@ -394,6 +545,7 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
             {importSuccess}
           </div>
         )}
+      </section>
       </div>
 
       {/* Botão de Migração de Pacotes */}
@@ -406,7 +558,7 @@ export default function Settings({ state, onUpdate }: SettingsProps) {
         <Database size={20} /> Migração de Pacotes Desativada
       </button>
 
-      <div className="max-w-2xl mx-auto w-full text-center text-clinic-text-faint text-xs opacity-50">
+      <div className="w-full text-center text-clinic-text-faint text-xs opacity-50">
         As alterações acima são aplicadas instantaneamente no topo e rodapé da aplicação.
       </div>
     </div>

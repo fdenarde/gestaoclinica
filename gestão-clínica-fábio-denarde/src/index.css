@@ -1,9 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-serif: "Playfair Display", serif;
-  --font-sans: "DM Sans", sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-weight-black: 700;
 
   --color-clinic-bg: #F5EDE3;
   --color-clinic-header: #5C3D2E;
@@ -35,6 +34,103 @@
     --app-font-scale: 1;
   }
 
+  :root,
+  :root[data-theme="current"] {
+    --color-clinic-bg: #F5EDE3;
+    --color-clinic-header: #5C3D2E;
+    --color-clinic-nav-bg: #E8D5C8;
+    --color-clinic-primary: #C4603A;
+    --color-clinic-primary-hover: #A33A1A;
+    --color-clinic-surface: #FFFAF7;
+    --color-clinic-border: #E8D5C8;
+    --color-clinic-border-dark: #D8C5B8;
+    --color-clinic-text: #2C1810;
+    --color-clinic-text-muted: #6B4C3B;
+    --color-clinic-text-faint: #A07060;
+    --logo-brain-base: #E98258;
+    --logo-brain-light: #FFD0BA;
+    --logo-brain-shadow: #8D3824;
+    --logo-brain-stroke: #74301F;
+    --logo-brain-glow: #F3A16F;
+    --logo-text: #FFFFFF;
+    --logo-accent: #FF7A2F;
+    --logo-subtitle: rgba(255, 255, 255, 0.9);
+    --logo-divider: rgba(255, 255, 255, 0.7);
+    --shadow-clinic: 0 4px 6px -1px rgba(92, 61, 46, 0.05), 0 2px 4px -1px rgba(92, 61, 46, 0.03);
+  }
+
+  :root[data-theme="calm-tech"] {
+    --color-clinic-bg: #F4F7F9;
+    --color-clinic-header: #2B5B84;
+    --color-clinic-nav-bg: #E8EFF4;
+    --color-clinic-primary: #2B5B84;
+    --color-clinic-primary-hover: #234A6B;
+    --color-clinic-surface: #FFFFFF;
+    --color-clinic-border: #D8E3EB;
+    --color-clinic-border-dark: #C4D2DE;
+    --color-clinic-text: #1F2D3A;
+    --color-clinic-text-muted: #52677A;
+    --color-clinic-text-faint: #7D91A3;
+    --logo-brain-base: #8CCBEF;
+    --logo-brain-light: #E6F7FF;
+    --logo-brain-shadow: #22577E;
+    --logo-brain-stroke: #194766;
+    --logo-brain-glow: #80CFFF;
+    --logo-text: #FFFFFF;
+    --logo-accent: #5CBAF2;
+    --logo-subtitle: rgba(255, 255, 255, 0.9);
+    --logo-divider: rgba(231, 246, 255, 0.72);
+    --shadow-clinic: 0 4px 6px -1px rgba(43, 91, 132, 0.05), 0 2px 4px -1px rgba(43, 91, 132, 0.03);
+  }
+
+  :root[data-theme="health-balance"] {
+    --color-clinic-bg: #F5FAF8;
+    --color-clinic-header: #1E7B56;
+    --color-clinic-nav-bg: #D9F0E8;
+    --color-clinic-primary: #1E7B56;
+    --color-clinic-primary-hover: #176445;
+    --color-clinic-surface: #FFFFFF;
+    --color-clinic-border: #CBE5DA;
+    --color-clinic-border-dark: #A9D3C2;
+    --color-clinic-text: #19372D;
+    --color-clinic-text-muted: #4D6B60;
+    --color-clinic-text-faint: #789589;
+    --logo-brain-base: #82D6B7;
+    --logo-brain-light: #E5FFF5;
+    --logo-brain-shadow: #176247;
+    --logo-brain-stroke: #124F3A;
+    --logo-brain-glow: #70DCB2;
+    --logo-text: #FFFFFF;
+    --logo-accent: #66D9B1;
+    --logo-subtitle: rgba(255, 255, 255, 0.9);
+    --logo-divider: rgba(229, 255, 246, 0.72);
+    --shadow-clinic: 0 4px 6px -1px rgba(30, 123, 86, 0.05), 0 2px 4px -1px rgba(30, 123, 86, 0.03);
+  }
+
+  :root[data-theme="soft-welcome"] {
+    --color-clinic-bg: #FAF7F4;
+    --color-clinic-header: #795548;
+    --color-clinic-nav-bg: #F4EFEB;
+    --color-clinic-primary: #9E6D54;
+    --color-clinic-primary-hover: #7E543F;
+    --color-clinic-surface: #FFFCFA;
+    --color-clinic-border: #E8DED7;
+    --color-clinic-border-dark: #D6C5BA;
+    --color-clinic-text: #3E2F28;
+    --color-clinic-text-muted: #6F5A50;
+    --color-clinic-text-faint: #9A8479;
+    --logo-brain-base: #DDA08E;
+    --logo-brain-light: #FFE7DF;
+    --logo-brain-shadow: #8F594A;
+    --logo-brain-stroke: #75483D;
+    --logo-brain-glow: #E9AFA0;
+    --logo-text: #FFF9F5;
+    --logo-accent: #FF858A;
+    --logo-subtitle: rgba(255, 249, 245, 0.9);
+    --logo-divider: rgba(255, 240, 233, 0.7);
+    --shadow-clinic: 0 4px 6px -1px rgba(121, 85, 72, 0.05), 0 2px 4px -1px rgba(121, 85, 72, 0.03);
+  }
+
   @media (min-width: 1920px) {
     :root {
       --app-font-scale: 1.05;
@@ -55,12 +151,30 @@
 
   html {
     font-size: calc(16px * var(--app-font-scale));
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  body,
+  #root {
+    font-family: var(--font-sans);
   }
 
   body {
     @apply bg-clinic-bg text-clinic-text font-sans antialiased;
     min-width: 320px;
     overflow-x: hidden;
+    text-rendering: optimizeLegibility;
+    font-synthesis: none;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    line-height: 1.2;
   }
 
   button,
@@ -144,7 +258,7 @@
 
   .custom-scrollbar {
     scrollbar-width: thin;
-    scrollbar-color: rgba(92, 61, 46, 0.35) transparent;
+    scrollbar-color: color-mix(in srgb, var(--color-clinic-header) 35%, transparent) transparent;
   }
 
   .custom-scrollbar::-webkit-scrollbar {
@@ -152,7 +266,7 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(92, 61, 46, 0.35);
+    background: color-mix(in srgb, var(--color-clinic-header) 35%, transparent);
     border-radius: 999px;
   }
 
@@ -210,7 +324,7 @@
     }
 
     .responsive-table tr[data-group="true"] {
-      background: rgba(232, 213, 200, 0.45);
+      background: color-mix(in srgb, var(--color-clinic-nav-bg) 45%, transparent);
       box-shadow: none;
     }
 
@@ -226,7 +340,7 @@
       gap: 1rem;
       padding: 0.75rem 1rem;
       text-align: right;
-      border-bottom: 1px solid rgba(232, 213, 200, 0.7);
+      border-bottom: 1px solid color-mix(in srgb, var(--color-clinic-border) 70%, transparent);
       white-space: normal;
     }
 

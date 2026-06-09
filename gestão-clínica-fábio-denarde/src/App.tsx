@@ -8,12 +8,14 @@ import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
 import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
+import { applyTheme, resolveTheme, storeTheme, type AppTheme } from './lib/theme';
 import packageJson from '../package.json';
 
 import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, onSnapshot, collection, writeBatch, type WriteBatch, query, where } from 'firebase/firestore';
 import ExternalRegistrationPage from './components/ExternalRegistrationPage';
+import BrandLogo from './components/Common/BrandLogo';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -98,10 +100,15 @@ export default function App() {
       onSnapshot(collection(userDocRef, 'settings'), (snapshot) => {
         let settings = DEFAULT_SETTINGS;
         snapshot.forEach(doc => {
-          if (doc.id === 'config') settings = doc.data() as ClinicSettings;
+          if (doc.id === 'config') {
+            settings = { ...DEFAULT_SETTINGS, ...doc.data() } as ClinicSettings;
+          }
         });
+        const visualTheme = resolveTheme(settings.visualTheme);
+        applyTheme(visualTheme);
+        storeTheme(visualTheme);
         markCollectionLoaded('settings');
-        setState(prev => ({ ...prev, settings }));
+        setState(prev => ({ ...prev, settings: { ...settings, visualTheme } }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'settings'))
     );
     
@@ -343,6 +350,31 @@ export default function App() {
     }
   };
 
+  const updateVisualTheme = async (visualTheme: AppTheme): Promise<boolean> => {
+    applyTheme(visualTheme);
+    storeTheme(visualTheme);
+    setState(prev => ({
+      ...prev,
+      settings: { ...prev.settings, visualTheme },
+    }));
+
+    if (!user || !loadedCollectionsRef.current.has('settings')) return false;
+
+    try {
+      const batch = writeBatch(db);
+      batch.set(
+        doc(collection(doc(db, 'users', user.uid), 'settings'), 'config'),
+        { visualTheme },
+        { merge: true },
+      );
+      await batch.commit();
+      return true;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}/settings/config`);
+      return false;
+    }
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-clinic-bg">
@@ -355,13 +387,13 @@ export default function App() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-clinic-bg p-4 relative overflow-hidden">
         <div className="absolute w-[600px] h-[600px] bg-clinic-primary opacity-5 rounded-full blur-3xl -top-20 -left-20 pointer-events-none"></div>
-        <div className="absolute w-[400px] h-[400px] bg-[#A07060]/10 rounded-full blur-3xl bottom-0 -right-20 pointer-events-none"></div>
+        <div className="absolute w-[400px] h-[400px] bg-clinic-text-faint/10 rounded-full blur-3xl bottom-0 -right-20 pointer-events-none"></div>
 
         <div className="bg-clinic-surface p-12 rounded-3xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] border border-clinic-border max-w-sm w-full text-center relative z-10 flex flex-col items-center">
-          <div className="bg-white p-4 rounded-2xl shadow-sm mb-6 border border-clinic-border">
+          <div className="bg-clinic-bg p-4 rounded-2xl shadow-sm mb-6 border border-clinic-border">
             <Users size={32} className="text-clinic-primary" />
           </div>
-          <h1 className="font-serif text-3xl font-bold text-clinic-text mb-2 tracking-tight">Gestão Clínica</h1>
+          <h1 className="text-3xl font-bold text-clinic-text mb-2 tracking-tight">Gestão Clínica</h1>
           <p className="text-sm text-clinic-text-muted mb-8 px-4 font-medium leading-relaxed">
             Acesse o sistema com sua conta do Google para visualizar seus pacientes, agendas e relatórios.
           </p>
@@ -396,22 +428,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col pb-10">
-      <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-3 md:py-4 flex flex-col md:flex-row gap-3 md:gap-4 justify-between items-center shadow-lg shrink-0">
-        <div className="flex flex-col text-center md:text-left">
-          {state.settings.customHeader ? (
-             <h1 className="font-serif text-xl md:text-2xl font-bold tracking-tight whitespace-pre-line">
-               {state.settings.customHeader}
-             </h1>
-          ) : (
-            <>
-              <h1 className="font-serif text-2xl font-bold tracking-tight">
-                {state.settings.name}
-              </h1>
-              <p className="text-[10px] text-clinic-bg/80 uppercase tracking-widest font-bold">
-                {state.settings.title}
-              </p>
-            </>
-          )}
+      <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-1.5 md:py-2 lg:py-2 flex min-h-[56px] flex-col md:min-h-[64px] md:flex-row lg:min-h-[70px] xl:min-h-[74px] gap-2 md:gap-2.5 justify-between items-center shadow-lg shrink-0">
+        <div className="md:hidden">
+          <BrandLogo variant="compact" theme={state.settings.visualTheme} className="shrink-0" />
+        </div>
+        <div className="hidden md:block">
+          <BrandLogo theme={state.settings.visualTheme} className="shrink-0" />
         </div>
         <div className="flex flex-wrap items-center justify-center md:justify-end gap-3 sm:gap-4 xl:gap-6">
           <div className="text-right hidden md:block">
@@ -421,7 +443,7 @@ export default function App() {
           <div className="flex items-center gap-3">
              <div className="flex flex-col text-right hidden sm:flex">
                <span className="text-[10px] uppercase tracking-wider opacity-80 font-bold whitespace-nowrap overflow-hidden text-ellipsis max-w-[120px]">{user.displayName}</span>
-               <button onClick={logout} className="text-xs text-[#E17A61] hover:text-[#C15A41] font-bold transition-colors">Sair</button>
+               <button onClick={logout} className="text-xs text-clinic-nav-bg hover:text-white font-bold transition-colors">Sair</button>
              </div>
              <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} alt="User" className="w-10 h-10 rounded-full border-2 border-white/20 shadow-md" />
            </div>
@@ -487,7 +509,7 @@ export default function App() {
       <main className="app-main flex-1 w-full mx-auto px-3 sm:px-4 lg:px-5 xl:px-6 2xl:px-8 overflow-x-hidden relative">
          {dataLoading && (
            <div className="absolute inset-0 bg-clinic-bg/50 backdrop-blur-sm z-50 flex items-center justify-center rounded-3xl">
-             <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center gap-4">
+             <div className="bg-clinic-surface p-6 rounded-2xl shadow-xl flex flex-col items-center gap-4">
                <Loader2 className="w-8 h-8 text-clinic-primary animate-spin" />
                <span className="text-sm font-bold text-clinic-text">Sincronizando banco de dados...</span>
              </div>
@@ -513,7 +535,7 @@ export default function App() {
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
-              {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} />}
+              {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} onThemeChange={updateVisualTheme} />}
             </motion.div>
           </AnimatePresence>
         </Suspense>

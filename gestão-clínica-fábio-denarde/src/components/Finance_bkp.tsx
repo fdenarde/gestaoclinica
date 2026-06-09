@@ -243,7 +243,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
           <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
             <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2">
               <DollarSign size={20} />
-              <h2 className="font-serif text-xl font-bold">Situação por Atendente</h2>
+              <h2 className="text-xl font-bold">Situação por Atendente</h2>
             </div>
             <div className="p-6 space-y-4">
               {filteredPatientsFinance.map(item => (
@@ -275,7 +275,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
           <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
              <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/10">
               <History size={20} className="text-clinic-text-faint" />
-              <h2 className="font-serif text-xl font-bold">Histórico de Transações</h2>
+              <h2 className="text-xl font-bold">Histórico de Transações</h2>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left">
@@ -313,7 +313,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm">
            <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2 bg-clinic-bg/10">
             <History size={20} className="text-clinic-text-faint" />
-            <h2 className="font-serif text-xl font-bold">Histórico de Despesas</h2>
+            <h2 className="text-xl font-bold">Histórico de Despesas</h2>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">

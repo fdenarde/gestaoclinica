@@ -231,7 +231,7 @@ export default function PreRegistrations({ state, onUpdate, currentUserName, onN
         <div className="flex items-center gap-3">
           <ClipboardList className="text-status-orange-text" size={22} />
           <div>
-            <h2 className="font-serif text-xl font-bold text-clinic-text">Formulários recebidos</h2>
+            <h2 className="text-xl font-bold text-clinic-text">Formulários recebidos</h2>
             <p className="text-sm text-clinic-text-muted">{pendingCount} pendente(s) de revisão manual.</p>
           </div>
         </div>
@@ -353,7 +353,7 @@ export default function PreRegistrations({ state, onUpdate, currentUserName, onN
 
             {selectedForm.type === 'update' && changedFields.length > 0 && (
               <div className="bg-clinic-bg border border-clinic-border rounded-xl p-4 space-y-3">
-                <h4 className="font-serif font-bold text-clinic-text">Campos alterados</h4>
+                <h4 className="font-bold text-clinic-text">Campos alterados</h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                   {changedFields.map(field => (
                     <label key={field} className="flex items-center gap-2 text-sm font-bold text-clinic-text">
@@ -455,7 +455,7 @@ function Info({ label, value }: { label: string; value: string }) {
 function DataCard({ title, data, highlightKeys = [] }: { title: string; data?: Record<string, any>; highlightKeys?: string[] }) {
   return (
     <div className="bg-clinic-surface border border-clinic-border rounded-xl p-4 shadow-sm">
-      <h4 className="font-serif font-bold text-clinic-text mb-3">{title}</h4>
+      <h4 className="font-bold text-clinic-text mb-3">{title}</h4>
       <div className="space-y-1">
         {EXTERNAL_REGISTRATION_FIELDS.map(field => (
           <div key={field.key} className={cn('flex justify-between gap-4 border-b border-clinic-border/40 py-1.5 text-sm', highlightKeys.includes(field.key) && 'bg-status-orange-bg/60 rounded px-2')}>

@@ -300,17 +300,17 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   return (
     <div className="flex flex-col gap-6 py-6 pb-24">
       {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-center bg-[#FDFBF7] p-6 rounded-2xl border border-[#DED4C8] shadow-sm gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-center bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-sm gap-4">
         <div className="flex items-center gap-3">
-          <h2 className="font-serif text-2xl font-bold text-[#5D4037] tracking-tight flex items-center gap-2">
-            <BookOpen className="text-[#5D4037]" /> Agenda Pessoal
+          <h2 className="text-2xl font-bold text-clinic-primary tracking-tight flex items-center gap-2">
+            <BookOpen className="text-clinic-primary" /> Agenda Pessoal
           </h2>
-          <span className="bg-[#5D4037] text-white text-[10px] font-bold px-2 py-1 rounded-full">
+          <span className="bg-clinic-primary text-white text-[10px] font-bold px-2 py-1 rounded-full">
             {currentWeekOccurrences.filter(o => !o.isDone).length} pendentes
           </span>
         </div>
 
-        <div className="flex bg-white rounded-xl p-1 border border-[#DED4C8] shadow-sm">
+        <div className="flex bg-white rounded-xl p-1 border border-clinic-border shadow-sm">
           {[
             { id: 'semanal', icon: LayoutGrid, label: 'Semanal' },
             { id: 'mensal', icon: CalendarIcon, label: 'Mensal' },
@@ -322,7 +322,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               onClick={() => setViewMode(view.id as ViewMode)}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
-                viewMode === view.id ? "bg-[#5D4037] text-white shadow-sm" : "text-[#8D6E63] hover:bg-[#F5EBE6]"
+                viewMode === view.id ? "bg-clinic-primary text-white shadow-sm" : "text-clinic-text-muted hover:bg-clinic-bg"
               )}
             >
               <view.icon size={14} />
@@ -334,20 +334,20 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
         <div className="flex items-center gap-2">
           <button
             onClick={() => setCurrentDate(new Date())}
-            className="px-3 py-1.5 text-xs font-bold text-[#5D4037] border border-[#5D4037]/30 rounded-lg hover:bg-[#5D4037]/5 transition-colors uppercase"
+            className="px-3 py-1.5 text-xs font-bold text-clinic-primary border border-clinic-primary/30 rounded-lg hover:bg-clinic-primary/5 transition-colors uppercase"
           >
             Hoje
           </button>
-          <div className="flex items-center gap-1 bg-white rounded-xl border border-[#DED4C8] p-1 shadow-sm">
-            <button onClick={handlePrev} className="p-1 hover:bg-[#F5EBE6] text-[#5D4037] rounded-lg transition-colors"><ChevronLeft size={18} /></button>
-            <span className="font-bold min-w-[120px] text-center text-[#5D4037] uppercase tracking-widest text-xs">
+          <div className="flex items-center gap-1 bg-white rounded-xl border border-clinic-border p-1 shadow-sm">
+            <button onClick={handlePrev} className="p-1 hover:bg-clinic-bg text-clinic-primary rounded-lg transition-colors"><ChevronLeft size={18} /></button>
+            <span className="font-bold min-w-[120px] text-center text-clinic-primary uppercase tracking-widest text-xs">
               {viewMode === 'mensal' ? format(currentDate, "MMMM", { locale: ptBR }) :
                 viewMode === 'semanal' ? `${format(weekDays[0], 'dd/MM')} - ${format(weekDays[6], 'dd/MM')}` :
                 viewMode === 'lista' && listFilter === 'semana' ? `${format(listDateRange.start, 'dd/MM')} - ${format(listDateRange.end, 'dd/MM')}` :
                 viewMode === 'lista' && listFilter === 'mes' ? format(currentDate, "MMMM", { locale: ptBR }) :
                 format(currentDate, 'dd/MM/yyyy')}
             </span>
-            <button onClick={handleNext} className="p-1 hover:bg-[#F5EBE6] text-[#5D4037] rounded-lg transition-colors"><ChevronRight size={18} /></button>
+            <button onClick={handleNext} className="p-1 hover:bg-clinic-bg text-clinic-primary rounded-lg transition-colors"><ChevronRight size={18} /></button>
           </div>
         </div>
       </div>
@@ -358,8 +358,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
           {weekDays.map(day => {
             const isToday = isSameDay(day, new Date());
             return (
-              <div key={day.toISOString()} className={cn("rounded-xl border shadow-sm flex flex-col h-full bg-white", isToday ? "border-[#5D4037]" : "border-[#DED4C8]")}>
-                <div className={cn("px-2 py-1.5 text-center border-b border-[#DED4C8]", isToday ? "bg-[#5D4037] text-white" : "bg-[#F5EBE6] text-[#5D4037]")}>
+              <div key={day.toISOString()} className={cn("rounded-xl border shadow-sm flex flex-col h-full bg-white", isToday ? "border-clinic-primary" : "border-clinic-border")}>
+                <div className={cn("px-2 py-1.5 text-center border-b border-clinic-border", isToday ? "bg-clinic-primary text-white" : "bg-clinic-bg text-clinic-primary")}>
                   <span className="block text-[10px] font-bold opacity-80 tracking-[0.2em] mb-0.5">{getDayNameLabel(day.getDay())}</span>
                   <span className="block text-xl font-bold">{format(day, 'dd')}</span>
                 </div>
@@ -370,7 +370,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
                     if (appts.length === 0) {
                       return (
-                        <div key={time} onClick={() => openNew(day, time)} className="p-1.5 rounded-lg border border-dashed border-[#DED4C8]/50 min-h-[44px] bg-green-500/5 hover:bg-green-500/10 cursor-pointer flex items-start group transition-colors">
+                        <div key={time} onClick={() => openNew(day, time)} className="p-1.5 rounded-lg border border-dashed border-clinic-border/50 min-h-[44px] bg-green-500/5 hover:bg-green-500/10 cursor-pointer flex items-start group transition-colors">
                           <span className="text-[10px] font-bold text-gray-400 group-hover:text-green-600 transition-colors">{time}</span>
                         </div>
                       );
@@ -449,10 +449,10 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
       {/* View: Mensal */}
       {viewMode === 'mensal' && (
-        <div className="bg-white rounded-2xl border border-[#DED4C8] shadow-sm overflow-hidden">
-          <div className="grid grid-cols-7 border-b border-[#DED4C8] bg-[#F5EBE6]">
+        <div className="bg-white rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
+          <div className="grid grid-cols-7 border-b border-clinic-border bg-clinic-bg">
             {['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB'].map(d => (
-              <div key={d} className="py-2 text-center text-[10px] font-bold text-[#5D4037] tracking-widest">{d}</div>
+              <div key={d} className="py-2 text-center text-[10px] font-bold text-clinic-primary tracking-widest">{d}</div>
             ))}
           </div>
           <div className="grid grid-cols-7">
@@ -462,9 +462,9 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               const appts = getOccurrences(day, day);
 
               return (
-                <div key={day.toISOString()} onClick={() => openNew(day, "08:00")} className={cn("min-h-[100px] border-b border-r border-[#DED4C8]/50 p-1 cursor-pointer hover:bg-gray-50", !isCurrentMonth ? "bg-gray-200 opacity-70" : '')}>
+                <div key={day.toISOString()} onClick={() => openNew(day, "08:00")} className={cn("min-h-[100px] border-b border-r border-clinic-border/50 p-1 cursor-pointer hover:bg-gray-50", !isCurrentMonth ? "bg-gray-200 opacity-70" : '')}>
                   <div className="flex justify-between items-start">
-                    <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-[#5D4037] text-white" : "text-gray-500")}>
+                    <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-clinic-primary text-white" : "text-gray-500")}>
                       {format(day, 'd')}
                     </span>
                   </div>
@@ -485,12 +485,12 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
       {/* View: Lista */}
       {viewMode === 'lista' && (
-        <div className="bg-white rounded-2xl border border-[#DED4C8] shadow-sm p-6 min-h-[400px]">
-          <h3 className="font-serif text-xl font-bold text-[#5D4037] mb-4 flex items-center gap-2">
+        <div className="bg-white rounded-2xl border border-clinic-border shadow-sm p-6 min-h-[400px]">
+          <h3 className="text-xl font-bold text-clinic-primary mb-4 flex items-center gap-2">
             <List size={20} /> {listTitle}
           </h3>
 
-          <div className="flex bg-white rounded-xl p-1 border border-[#DED4C8] shadow-sm mb-6 w-fit">
+          <div className="flex bg-white rounded-xl p-1 border border-clinic-border shadow-sm mb-6 w-fit">
             {[
               { id: 'hoje' as const, label: 'Hoje' },
               { id: 'semana' as const, label: 'Esta Semana' },
@@ -501,7 +501,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                 onClick={() => setListFilter(filter.id)}
                 className={cn(
                   "px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
-                  listFilter === filter.id ? "bg-[#5D4037] text-white shadow-sm" : "text-[#8D6E63] hover:bg-[#F5EBE6]"
+                  listFilter === filter.id ? "bg-clinic-primary text-white shadow-sm" : "text-clinic-text-muted hover:bg-clinic-bg"
                 )}
               >
                 {filter.label}
@@ -557,7 +557,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               ) : (
                 <div className='text-center text-gray-500 py-12 font-bold bg-gray-50 rounded-xl border border-dashed border-gray-200'>
                   Nenhum compromisso para este período.
-                  <button onClick={() => openNew(currentDate, '08:00')} className='block mx-auto mt-4 px-4 py-2 bg-[#5D4037] text-white rounded-lg hover:bg-[#4E342E] transition-colors'>
+                  <button onClick={() => openNew(currentDate, '08:00')} className='block mx-auto mt-4 px-4 py-2 bg-clinic-primary text-white rounded-lg hover:bg-clinic-primary-hover transition-colors'>
                     Adicionar Compromisso
                   </button>
                 </div>
@@ -569,8 +569,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
       {/* View: Próximos */}
       {viewMode === 'proximos' && (
-        <div className="bg-white rounded-2xl border border-[#DED4C8] shadow-sm p-6 min-h-[400px]">
-          <h3 className="font-serif text-xl font-bold text-[#5D4037] mb-6 flex items-center gap-2">
+        <div className="bg-white rounded-2xl border border-clinic-border shadow-sm p-6 min-h-[400px]">
+          <h3 className="text-xl font-bold text-clinic-primary mb-6 flex items-center gap-2">
             <FastForward size={20} /> Próximos Compromissos
           </h3>
           <div className="space-y-4">
@@ -646,7 +646,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
             <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Observações</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full p-2 border rounded-lg h-20" placeholder="Detalhes opcionais..." />
           </div>
-          <div className="flex items-center gap-3 p-3 bg-[#F7F1ED] rounded-xl border border-[#DED4C8] shadow-sm">
+          <div className="flex items-center gap-3 p-3 bg-clinic-bg rounded-xl border border-clinic-border shadow-sm">
             <input
               type="checkbox"
               checked={alarmEnabled}
@@ -655,13 +655,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                 setAlarmEnabled(checked);
                 if (checked) await prepareAlarmAudio();
               }}
-              className="w-4 h-4 rounded text-[#5D4037]"
+              className="w-4 h-4 rounded text-clinic-primary"
             />
             <div className="flex-1">
-              <span className="text-sm font-black text-[#3F2A23]">Ativar Alarme Sonoro</span>
+              <span className="text-sm font-black text-clinic-text">Ativar Alarme Sonoro</span>
               <p className="text-[10px] text-gray-600">Prepara o áudio do navegador e emite um alerta no horário configurado.</p>
             </div>
-            <span className="hidden sm:inline-flex px-2 py-1 rounded-full bg-[#5D4037] text-white text-[9px] font-black uppercase tracking-wider">Novo</span>
+            <span className="hidden sm:inline-flex px-2 py-1 rounded-full bg-clinic-primary text-white text-[9px] font-black uppercase tracking-wider">Novo</span>
           </div>
           {alarmEnabled && (
              <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
@@ -686,23 +686,23 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                     step="5"
                     value={alarmVolume}
                     onChange={e => setAlarmVolume(Number(e.target.value))}
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-[#5D4037]"
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-clinic-primary"
                   />
                 </div>
 
                 <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
-                  <input type="checkbox" checked={alarmFadeIn} onChange={e => setAlarmFadeIn(e.target.checked)} className="w-4 h-4 rounded text-[#5D4037]" />
+                  <input type="checkbox" checked={alarmFadeIn} onChange={e => setAlarmFadeIn(e.target.checked)} className="w-4 h-4 rounded text-clinic-primary" />
                   <div className="flex-1">
                     <span className="text-sm font-bold text-gray-700">Som crescente (fade-in)</span>
                     <p className="text-[10px] text-gray-500">Começa em 20% e aumenta gradualmente até 100% em 30 segundos</p>
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-[#DED4C8] bg-[#FFF9F6] p-3 shadow-sm">
+                <div className="rounded-2xl border border-clinic-border bg-clinic-surface p-3 shadow-sm">
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
                     <div>
-                      <label className="block text-[10px] font-black text-[#5D4037] uppercase tracking-widest">Som selecionado</label>
-                      <p className="text-sm font-black text-[#2F211D]">
+                      <label className="block text-[10px] font-black text-clinic-primary uppercase tracking-widest">Som selecionado</label>
+                      <p className="text-sm font-black text-clinic-text">
                         {alarmSoundsList.find(s => s.id === alarmSound)?.name || alarmSoundsList[0]?.name || 'Alarme Celular Forte'}
                       </p>
                     </div>
@@ -713,7 +713,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                         e.preventDefault();
                         previewSound(getFallbackAlarmSoundId(alarmSound), alarmVolume);
                       }}
-                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-[#5D4037] text-white text-xs font-black hover:bg-[#4E342E] transition-all shadow-sm"
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-clinic-primary text-white text-xs font-black hover:bg-clinic-primary-hover transition-all shadow-sm"
                     >
                       🔊 Testar selecionado
                     </button>
@@ -729,7 +729,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                         return (
                           <div
                             key={s.id}
-                            className={`rounded-2xl border p-3 transition-all ${isSelected ? 'border-[#5D4037] bg-[#F1E3DC] shadow-md' : 'border-[#E7DDD5] bg-white hover:border-[#BCA79B]'}`}
+                            className={`rounded-2xl border p-3 transition-all ${isSelected ? 'border-clinic-primary bg-clinic-nav-bg shadow-md' : 'border-clinic-border bg-white hover:border-clinic-border-dark'}`}
                           >
                             <div className="flex items-start justify-between gap-2">
                               <button
@@ -744,7 +744,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                               >
                                 <div className="flex items-center gap-2 mb-1">
                                   <span className="text-lg">{isSelected ? '🔊' : isVeryStrong ? '🚨' : '⏰'}</span>
-                                  <span className="text-xs font-black text-[#3F2A23] uppercase tracking-wide">{s.name}</span>
+                                  <span className="text-xs font-black text-clinic-text uppercase tracking-wide">{s.name}</span>
                                 </div>
                                 <p className="text-[10px] leading-snug text-gray-600">{s.description}</p>
                               </button>
@@ -760,7 +760,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                                   e.preventDefault();
                                   setAlarmSound(s.id);
                                 }}
-                                className={`flex-1 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${isSelected ? 'bg-[#5D4037] text-white' : 'bg-[#F7F1ED] text-[#5D4037] hover:bg-[#E9D8CF]'}`}
+                                className={`flex-1 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${isSelected ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-primary hover:bg-clinic-border'}`}
                               >
                                 {isSelected ? 'Selecionado' : 'Selecionar'}
                               </button>
@@ -771,7 +771,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                                   e.preventDefault();
                                   previewSound(s.id, alarmVolume);
                                 }}
-                                className="px-3 py-2 rounded-xl border border-[#DED4C8] text-[#5D4037] text-[10px] font-black uppercase tracking-wider hover:bg-[#F7F1ED] transition-all"
+                                className="px-3 py-2 rounded-xl border border-clinic-border text-clinic-primary text-[10px] font-black uppercase tracking-wider hover:bg-clinic-bg transition-all"
                               >
                                 ▶ Testar
                               </button>
@@ -785,7 +785,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
              </div>
           )}
           <div className="pt-2">
-            <button onClick={handleSave} className="w-full py-3 bg-[#5D4037] text-white font-bold rounded-xl hover:bg-[#4E342E] transition-all shadow-md active:scale-[0.98]">
+            <button onClick={handleSave} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98]">
               {selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
             </button>
           </div>

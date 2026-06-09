@@ -286,7 +286,7 @@ export default function Reports({ state }: ReportsProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-sm">
            <div className="flex items-center justify-between mb-4">
-             <h3 className="font-serif text-lg font-bold flex items-center gap-2">
+             <h3 className="text-lg font-bold flex items-center gap-2">
               <Clock size={18} className="text-clinic-primary" />
               Sessões Restantes (Pacote atual)
              </h3>
@@ -392,7 +392,7 @@ export default function Reports({ state }: ReportsProps) {
         </div>
 
         <div className="bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-sm">
-           <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2">
+           <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
             <Plus size={18} className="text-clinic-primary" />
             Renovações Próximas
            </h3>
@@ -419,7 +419,7 @@ export default function Reports({ state }: ReportsProps) {
       {/* PDF Generators Section */}
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-clinic-border bg-clinic-bg/10 flex items-center justify-between">
-          <h2 className="font-serif text-xl font-bold flex items-center gap-2">
+          <h2 className="text-xl font-bold flex items-center gap-2">
             <Printer size={20} /> Relatórios em PDF
           </h2>
         </div>
@@ -506,7 +506,7 @@ export default function Reports({ state }: ReportsProps) {
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">
          <div className="px-6 py-4 border-b border-clinic-border flex items-center gap-2">
             <Database size={20} className="text-clinic-text-faint" />
-            <h2 className="font-serif text-xl font-bold">Gerenciamento de Dados e Backup</h2>
+            <h2 className="text-xl font-bold">Gerenciamento de Dados e Backup</h2>
           </div>
           <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
             <button 

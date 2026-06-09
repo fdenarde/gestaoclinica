@@ -1,6 +1,6 @@
 # Gestão Clínica Fábio Denarde — Documentação do Projeto
 
-> Última atualização: 05/06/2026
+> Última atualização: 09/06/2026
 >
 > Use este documento para orientar qualquer IA ou desenvolvedor que for trabalhar neste projeto.
 
@@ -15,6 +15,7 @@ Sistema completo de gestão clínica para atendimento especializado (neuropsicop
 | Item | Detalhe |
 |---|---|
 | Nome | Gestão Clínica Fábio Denarde |
+| Versão | 1.7.0 – Personalização Visual |
 | Stack | React 19 + TypeScript + Vite + Tailwind CSS 4 |
 | Banco | Firebase Firestore (banco nomeado `ai-studio-587970e5-0653-44a5-93a3-be1a74301eda`) |
 | Auth | Firebase Auth (Google) |
@@ -23,6 +24,15 @@ Sistema completo de gestão clínica para atendimento especializado (neuropsicop
 | Deploy principal | **Vercel** — `https://gestaoclinica-solucoes.vercel.app/` |
 | Deploy reserva | GitHub Pages — `https://fdenarde.github.io/gestaoclinica/` |
 | Repositório | `https://github.com/fdenarde/gestaoclinica` |
+
+### 1.1 Versão 1.7.0 – Personalização Visual
+
+- Sistema profissional de temas visuais com as opções Atual, Calm & Tech, Saúde & Equilíbrio e Acolhimento Suave.
+- O tema Atual permanece como padrão para configurações antigas e usuários sem preferência salva.
+- A escolha é aplicada por variáveis CSS globais, persistida em `settings/config.visualTheme` e espelhada no `localStorage`.
+- O carregamento inicial aplica o último tema local antes da renderização e depois prioriza a preferência válida do Firestore.
+- A troca de tema salva somente `visualTheme`, sem regravar campos ainda não confirmados na tela de Ajustes.
+- Cores funcionais de status, alertas, agenda, exportação e relatórios PDF permanecem independentes dos temas.
 
 ---
 
@@ -66,6 +76,7 @@ D:\Backup Projeto Clinica completo\
     │   │       ├── Modal.tsx     # Componente modal reutilizável
     │   │       └── Toast.tsx     # Notificações toast
     │   └── lib\
+    │       ├── theme.ts          # Tipos, validação, aplicação e persistência local dos temas
     │       ├── utils.ts          # LÓGICA CENTRAL do frontend: getSessionsForDate,
     │       │                     #   getWhatsappReminderPlan, feriados, vigência
     │       │                     #   do horário fixo e agenda visual
@@ -351,7 +362,7 @@ users/{userId}/
 
 **Session:** `id, patientId, date, time, type (SIMPLES|DUPLA), status, notes?, packageNumber, isBlocked?, blockName?, ...`
 
-**ClinicSettings:** `name, specialty, title, email, whatsapp, address, holidays: [{id, date, name}], ...`
+**ClinicSettings:** `name, specialty, title, email, whatsapp, address, holidays: [{id, date, name}], visualTheme?: AppTheme, ...`
 
 **ProcessedSession** (extends Session): `isVirtual: boolean, isValid: boolean, blockedReason?: string`
 
