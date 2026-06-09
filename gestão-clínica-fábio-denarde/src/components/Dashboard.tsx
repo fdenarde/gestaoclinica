@@ -1,13 +1,13 @@
 import React, { useMemo } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
 import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, MessageCircle } from 'lucide-react';
-import { formatCurrency, getStatusColor, cn, calculateAge } from '../lib/utils';
+import { formatCurrency, getStatusColor, cn, calculateAge, getSessionsForDate, normalizeTime, ProcessedSession } from '../lib/utils';
 import { format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
 import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
-import { getSessionCycleLabel } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
 import { isPendingExternalRegistrationStatus } from '../lib/externalRegistration';
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
 
@@ -75,6 +75,104 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       repositions: [...state.repositions, newReposition]
     });
     showToast(`Sua falta registrada. Reposição pendente criada.`);
+  };
+
+  const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
+    const patient = state.patients.find(p => p.id === virtualSession.patientId);
+    if (!patient || patient.status !== 'Ativo' || virtualSession.isBlocked) return null;
+
+    const alreadyExists = state.sessions.some(s =>
+      s.patientId === virtualSession.patientId &&
+      s.date === virtualSession.date &&
+      normalizeTime(s.time) === normalizeTime(virtualSession.time)
+    );
+    if (alreadyExists) return null;
+
+    const previewSession: Session = {
+      id: virtualSession.id,
+      patientId: virtualSession.patientId,
+      date: virtualSession.date,
+      time: normalizeTime(virtualSession.time),
+      type: virtualSession.type,
+      status: newStatus,
+      notes: virtualSession.notes || '',
+      packageNumber: 0,
+      isFixedSchedule: true,
+      source: 'fixed'
+    };
+
+    const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
+    const newReal: Session = {
+      ...previewSession,
+      id: Math.random().toString(36).substr(2, 9),
+      packageNumber: nextSessionNumber
+    };
+
+    let reposition: Reposition | undefined;
+    if (newStatus === SessionStatus.FALTA || newStatus === SessionStatus.FALTA_PROF) {
+      reposition = {
+        id: Math.random().toString(36).substr(2, 9),
+        patientId: patient.id,
+        originalSessionId: newReal.id,
+        status: 'Pendente'
+      };
+    }
+
+    return { session: newReal, reposition };
+  };
+
+  const handleMarkAsRealized = (session: ProcessedSession) => {
+    if (!session.isVirtual) {
+      markAsRealized(session);
+      return;
+    }
+
+    const result = createRealFromVirtual(session, SessionStatus.REALIZADA);
+    if (!result) {
+      showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+      return;
+    }
+
+    onUpdate({ sessions: [...state.sessions, result.session] });
+    showToast('Presença registrada.');
+  };
+
+  const handleMarkAsMissed = (session: ProcessedSession) => {
+    if (!session.isVirtual) {
+      markAsMissed(session);
+      return;
+    }
+
+    const result = createRealFromVirtual(session, SessionStatus.FALTA);
+    if (!result) {
+      showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+      return;
+    }
+
+    onUpdate({
+      sessions: [...state.sessions, result.session],
+      repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions
+    });
+    showToast('Falta registrada. Reposição pendente criada.');
+  };
+
+  const handleMarkAsMissedProf = (session: ProcessedSession) => {
+    if (!session.isVirtual) {
+      markAsMissedProf(session);
+      return;
+    }
+
+    const result = createRealFromVirtual(session, SessionStatus.FALTA_PROF);
+    if (!result) {
+      showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+      return;
+    }
+
+    onUpdate({
+      sessions: [...state.sessions, result.session],
+      repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions
+    });
+    showToast('Sua falta registrada. Reposição pendente criada.');
   };
 
   const attendanceRate = useMemo(() => {
@@ -214,15 +312,20 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
 
   const todaySessions = useMemo(() => {
     const today = format(new Date(), 'yyyy-MM-dd');
-    return state.sessions
-      .filter(s => s.date === today)
+    return getSessionsForDate({
+      dateStr: today,
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings
+    })
+      .filter(s => !s.isBlocked)
       .map(s => ({
         ...s,
         patient: state.patients.find(p => p.id === s.patientId)
       }))
       .filter(s => s.patient && s.patient.status !== 'Concluído')
       .sort((a, b) => a.time.localeCompare(b.time));
-  }, [state]);
+  }, [state.patients, state.sessions, state.settings]);
 
   const operationalPanel = useMemo(() => {
     const today = format(new Date(), 'yyyy-MM-dd');
@@ -527,21 +630,21 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
                   {session.status === SessionStatus.AGENDADA ? (
                     <div className="flex gap-1">
                       <button 
-                        onClick={() => markAsRealized(session as any)}
+                        onClick={() => handleMarkAsRealized(session)}
                         className="p-1.5 text-status-green-text bg-status-green-bg hover:bg-green-200 rounded-lg transition-colors"
                         title="Marcar Presença"
                       >
                         <Check size={16} />
                       </button>
                       <button 
-                        onClick={() => markAsMissed(session as any)}
+                        onClick={() => handleMarkAsMissed(session)}
                         className="p-1.5 text-status-red-text bg-status-red-bg hover:bg-red-200 rounded-lg transition-colors"
                         title="Marcar Falta Atendente"
                       >
                         <AlertTriangle size={16} />
                       </button>
                       <button 
-                        onClick={() => markAsMissedProf(session as any)}
+                        onClick={() => handleMarkAsMissedProf(session)}
                         className="p-1.5 text-status-orange-text bg-status-orange-bg hover:bg-orange-200 rounded-lg transition-colors"
                         title="Minha Falta"
                       >
