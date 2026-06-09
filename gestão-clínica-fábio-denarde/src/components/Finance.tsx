@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { AppState, Payment, Expense } from '../types';
+import { AppState, Payment, Expense, PaymentModal } from '../types';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Calendar as CalendarIcon, CheckCircle2, ChevronDown, CircleDollarSign, Clock3, DollarSign, HandCoins, History, Info, Link, Minus, Plus, Search, Sparkles, Trash2, TrendingUp, Wallet } from 'lucide-react';
 import { motion } from 'motion/react';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
@@ -7,7 +7,7 @@ import { format, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMo
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
-import { calculatePackageFinancialSummary, FinancialStatus, PACKAGE_GROSS_VALUE, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE } from '../lib/financePackages';
+import { calculatePackageFinancialSummary, FinancialStatus, PACKAGE_GROSS_VALUE, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE, type PackageFinancialSummary } from '../lib/financePackages';
 
 interface FinanceProps {
   state: AppState;
@@ -16,6 +16,12 @@ interface FinanceProps {
 
 type MetricBadgeTone = 'green' | 'orange' | 'red' | 'blue';
 type StatusFilter = 'Todos' | FinancialStatus | 'Com pagamento no período' | 'Sem pagamento no período';
+
+type PaymentContext = {
+  patientId: string;
+  packageNumber: number;
+  pendingGross: number;
+} | null;
 
 const badgeToneClasses: Record<MetricBadgeTone, string> = {
   green: 'bg-status-green-bg text-status-green-text border border-status-green-text/15',
@@ -162,6 +168,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('Todos');
   const [paymentToDelete, setPaymentToDelete] = useState<string | null>(null);
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
+  const [paymentContext, setPaymentContext] = useState<PaymentContext>(null);
 
   // Period Filter State
   const [periodFilter, setPeriodFilter] = useState<'Semanal' | 'Mensal' | 'Anual' | 'Personalizado'>('Mensal');
@@ -402,21 +409,91 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     return groups;
   }, [state.expenses, interval]);
 
+  const closePaymentModal = () => {
+    setIsPaymentModalOpen(false);
+    setPaymentContext(null);
+    resetPaymentForm();
+  };
+
+  const openPaymentModal = (summary?: PackageFinancialSummary) => {
+    resetPaymentForm();
+
+    if (summary) {
+      const isInstallmentPlan = summary.patient.paymentModal === PaymentModal.PARCELADO;
+      const firstInstallmentTarget = PACKAGE_GROSS_VALUE / 2;
+      const suggestedInstallment = isInstallmentPlan
+        ? summary.paidGross < firstInstallmentTarget ? '1ª parcela' : '2ª parcela'
+        : 'Pagamento integral';
+      const suggestedAmount = isInstallmentPlan
+        ? summary.paidGross < firstInstallmentTarget
+          ? Math.max(firstInstallmentTarget - summary.paidGross, 0)
+          : Math.max(PACKAGE_GROSS_VALUE - summary.paidGross, 0)
+        : summary.pendingGross;
+
+      setPaymentContext({
+        patientId: summary.patient.id,
+        packageNumber: summary.packageNumber,
+        pendingGross: summary.pendingGross,
+      });
+      setPatientId(summary.patient.id);
+      setAmount(suggestedAmount);
+      setInstallment(suggestedInstallment);
+    } else {
+      setPaymentContext(null);
+    }
+
+    setIsPaymentModalOpen(true);
+  };
+
   const handleSavePayment = () => {
     if (!patientId || amount <= 0) {
       showToast('Preencha os dados corretamente.', 'error');
       return;
     }
 
-    const targetPackageNumber = patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1;
+    const selectedSummary = patientFinancials.find(summary => summary.patient.id === patientId);
+    const targetPackageNumber = paymentContext?.patientId === patientId
+      ? paymentContext.packageNumber
+      : selectedSummary?.packageNumber || 1;
+
+    if (paymentContext?.patientId === patientId) {
+      if (paymentContext.pendingGross <= 0) {
+        showToast('O pacote atual já está quitado. Nenhum pagamento foi registrado.', 'error');
+        return;
+      }
+      if (amount > paymentContext.pendingGross + 0.009) {
+        showToast(`O valor informado ultrapassa o saldo pendente de ${formatCurrency(paymentContext.pendingGross)}.`, 'error');
+        return;
+      }
+    }
+
+    const isDuplicate = state.payments.some(payment =>
+      payment.patientId === patientId &&
+      Number(payment.packageNumber || 1) === targetPackageNumber &&
+      payment.date === date &&
+      Number(payment.amount) === amount &&
+      payment.installment === installment &&
+      payment.method === method
+    );
+
+    if (isDuplicate) {
+      showToast('Este pagamento já está registrado com os mesmos dados. Nenhuma duplicação foi criada.', 'error');
+      return;
+    }
+
+    const patientName = state.patients.find(p => p.id === patientId)?.name || 'Atendente';
+    if (paymentContext && !window.confirm(
+      `Confirmar pagamento real de ${formatCurrency(amount)} para ${patientName}, Pacote ${targetPackageNumber}, em ${safeFormatDate(date, 'dd/MM/yyyy')} via ${method}?`
+    )) {
+      return;
+    }
 
     const newPayment: Payment = {
       id: Math.random().toString(36).substr(2, 9),
       patientId, amount, date, installment, method, packageNumber: targetPackageNumber
     };
 
-    const patientName = state.patients.find(p => p.id === patientId)?.name || 'Atendente';
-    const repasseAmount = amount * 0.2;
+    const repasseAmount = amount * PARTNER_SHARE_RATE;
     const novaDepesa: Expense = {
       id: Math.random().toString(36).substr(2, 9),
       description: `Repasse Sócia - ${patientName}`,
@@ -432,9 +509,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       expenses: [...(state.expenses || []), novaDepesa],
     });
 
-    showToast(`Pagamento registado! Repasse de ${formatCurrency(repasseAmount)} gerado automaticamente.`);
-    setIsPaymentModalOpen(false);
-    resetPaymentForm();
+    showToast(`Pagamento registrado! Repasse de ${formatCurrency(repasseAmount)} gerado automaticamente.`);
+    closePaymentModal();
   };
 
   const handleSaveExpense = () => {
@@ -697,7 +773,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                 className="w-full pl-9 pr-4 py-2.5 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm"
               />
             </div>
-            <button onClick={() => setIsPaymentModalOpen(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-clinic-primary text-white font-bold rounded-xl shadow-md hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm">
+            <button onClick={() => openPaymentModal()} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-clinic-primary text-white font-bold rounded-xl shadow-md hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm">
               <Plus size={16} /> Nova Receita
             </button>
           </div>
@@ -832,13 +908,32 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                               Este paciente tem pacote atual iniciado por sessão realizada/reposição sem pagamento vinculado ao pacote {item.packageNumber}. Se pacote anterior foi quitado, ele permanece apenas como histórico.
                             </p>
                           )}
+                          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-clinic-border bg-white px-3 py-3">
+                            <div>
+                              <p className="text-sm font-black text-clinic-text">Ações financeiras do pacote atual</p>
+                              <p className="text-xs text-clinic-text-muted">O registro será vinculado ao Pacote {item.packageNumber} e atualizará os saldos e avisos automaticamente.</p>
+                            </div>
+                            {item.pendingGross > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => openPaymentModal(item)}
+                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-clinic-primary-hover"
+                              >
+                                <HandCoins size={17} /> Registrar pagamento
+                              </button>
+                            ) : (
+                              <span className="inline-flex items-center gap-2 rounded-full border border-status-green-text/20 bg-status-green-bg px-3 py-2 text-xs font-black text-status-green-text">
+                                <CheckCircle2 size={15} /> Pacote atual quitado
+                              </span>
+                            )}
+                          </div>
                           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
                             <div>
                               <p className="mb-2 text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pagamentos do pacote atual</p>
                               <div className="space-y-2">
                                 {item.currentPackagePayments.length > 0 ? item.currentPackagePayments.map(payment => (
                                   <div key={payment.id} className="flex items-center justify-between gap-3 rounded-xl border border-clinic-border bg-white px-3 py-2 text-sm">
-                                    <span className="font-bold text-clinic-text">{safeFormatDate(payment.date, 'dd/MM/yyyy')} · {payment.installment}</span>
+                                    <span className="font-bold text-clinic-text">{safeFormatDate(payment.date, 'dd/MM/yyyy')} · {payment.installment} · {payment.method}</span>
                                     <span className="font-black text-status-green-text">{formatCurrency(payment.amount)}</span>
                                   </div>
                                 )) : <p className="rounded-xl border border-dashed border-clinic-border bg-white px-3 py-3 text-sm italic text-clinic-text-muted">Nenhum pagamento vinculado ao pacote atual.</p>}
@@ -880,7 +975,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   <p className="text-sm text-clinic-text-muted">Receitas reais registradas no período, com atendente, responsável, pacote, forma e valor.</p>
                 </div>
               </div>
-              <button onClick={() => setIsPaymentModalOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wider text-clinic-primary transition-colors hover:bg-clinic-bg">
+              <button onClick={() => openPaymentModal()} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wider text-clinic-primary transition-colors hover:bg-clinic-bg">
                 <Plus size={14} /> Registrar nova receita
               </button>
             </div>
@@ -935,7 +1030,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                 <div className="px-6 py-12 text-center">
                   <p className="font-black text-clinic-text">Nenhuma transação encontrada para o período selecionado.</p>
                   <p className="mx-auto mt-2 max-w-lg text-sm text-clinic-text-muted">Quando uma receita for registrada, ela aparecerá aqui com data, atendente, responsável, forma de pagamento, parcela, pacote e valor.</p>
-                  <button onClick={() => setIsPaymentModalOpen(true)} className="mt-5 inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-clinic-primary-hover">
+                  <button onClick={() => openPaymentModal()} className="mt-5 inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-clinic-primary-hover">
                     <Plus size={16} /> Registrar nova receita
                   </button>
                 </div>
@@ -1031,17 +1126,23 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         </div>
       </Modal>
 
-      <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Nova Receita">
+      <Modal isOpen={isPaymentModalOpen} onClose={closePaymentModal} title={paymentContext ? "Registrar pagamento" : "Nova Receita"}>
         <div className="space-y-5">
            <div className="flex flex-col gap-1">
             <label className="text-sm font-bold text-clinic-text-faint">Atendente</label>
-            <select value={patientId} onChange={(e) => setPatientId(e.target.value)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all">
+            <select
+              value={patientId}
+              disabled={!!paymentContext}
+              onChange={(e) => setPatientId(e.target.value)}
+              className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all disabled:cursor-not-allowed disabled:opacity-70"
+            >
               <option value="">Selecione o atendente...</option>
               {state.patients.filter(p => p.status === 'Ativo').sort((a,b) => a.name.localeCompare(b.name)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
             {patientId && (
               <p className="rounded-xl border border-clinic-border bg-clinic-bg/70 px-3 py-2 text-xs font-semibold text-clinic-text-muted">
-                Esta receita será vinculada ao pacote financeiro atual: <span className="font-black text-clinic-text">Pacote {patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1}</span>.
+                Esta receita será vinculada ao pacote financeiro atual: <span className="font-black text-clinic-text">Pacote {paymentContext?.packageNumber || patientFinancials.find(summary => summary.patient.id === patientId)?.packageNumber || 1}</span>.
+                {paymentContext && <> Saldo pendente antes deste registro: <span className="font-black text-status-orange-text">{formatCurrency(paymentContext.pendingGross)}</span>.</>}
               </p>
             )}
           </div>

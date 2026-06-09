@@ -9,6 +9,7 @@ import { showToast } from './Common/Toast';
 import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
 import { getSessionCycleLabel } from '../lib/sessionSequence';
 import { isPendingExternalRegistrationStatus } from '../lib/externalRegistration';
+import { calculatePackageFinancialSummary } from '../lib/financePackages';
 
 interface DashboardProps {
   state: AppState;
@@ -135,17 +136,25 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
     const low: AlertItem[] = [];
 
     state.patients.forEach(patient => {
-      const patientSessions = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO));
-      const count = patientSessions.length % 10 || (patientSessions.length > 0 ? 10 : 0);
-      const patientPayments = state.payments.filter(p => p.patientId === patient.id);
+      const financialSummary = calculatePackageFinancialSummary(patient, state.sessions, state.payments, new Date());
+      const count = financialSummary.completedSessionsInCurrentPackage;
 
-      // Rule: Parcelado - check 2nd payment after session 6
-      if (patient.paymentModal === PaymentModal.PARCELADO) {
-        const hasSecondPayment = patientPayments.some(p => p.installment === '2ª parcela');
-        if (count >= 6 && !hasSecondPayment) {
-          high.push({ message: `Pagamento em atraso: ${patient.name} - 2ª parcela não paga após a 6ª sessão.`, patientId: patient.id });
+      // Regra financeira: o aviso usa o mesmo pacote e os mesmos pagamentos exibidos na aba Pagamentos.
+      // O rótulo da parcela não é usado isoladamente, porque pagamentos antigos ou cadastrados com
+      // outra descrição não podem gerar uma cobrança falsa no pacote atual.
+      if (patient.paymentModal === PaymentModal.PARCELADO && financialSummary.pendingGross > 0) {
+        const firstInstallmentCovered = financialSummary.paidGross >= 500;
+
+        if (count >= 6) {
+          const message = firstInstallmentCovered
+            ? `Pagamento em atraso: ${patient.name} - 2ª parcela ainda pendente após a ${count}ª sessão.`
+            : `Pagamento em atraso: ${patient.name} possui ${formatCurrency(financialSummary.pendingGross)} pendentes no pacote atual após a ${count}ª sessão.`;
+          high.push({ message, patientId: patient.id });
         } else if (count === 4 || count === 5) {
-          medium.push({ message: `${patient.name} chegando à sessão ${count} - lembrar de cobrar 2ª parcela na sessão 5.`, patientId: patient.id });
+          const message = firstInstallmentCovered
+            ? `${patient.name} chegou à sessão ${count} - lembrar de cobrar 2ª parcela na sessão 5.`
+            : `${patient.name} chegou à sessão ${count} com ${formatCurrency(financialSummary.pendingGross)} pendentes no pacote atual.`;
+          medium.push({ message, patientId: patient.id });
         }
       }
 
