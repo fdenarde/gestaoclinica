@@ -6,7 +6,12 @@ interface BrandLogoProps {
   className?: string;
   showSubtitle?: boolean;
   theme?: AppTheme;
+  name?: string;
+  subtitle?: string;
 }
+
+const DEFAULT_BRAND_NAME = 'Denarde Soluções';
+const DEFAULT_BRAND_SUBTITLE = 'Gestão Clínica e Acompanhamento';
 
 const BRAIN_ASSET_BY_THEME: Record<AppTheme, string> = {
   current: 'brain-current.webp',
@@ -23,21 +28,31 @@ function getActiveTheme(theme?: AppTheme): AppTheme {
   return DEFAULT_APP_THEME;
 }
 
+function withFallback(value: string | undefined, fallback: string): string {
+  const normalizedValue = value?.trim();
+  return normalizedValue || fallback;
+}
+
 export default function BrandLogo({
   variant = 'horizontal',
   className = '',
   showSubtitle = true,
   theme,
+  name,
+  subtitle,
 }: BrandLogoProps) {
   const isCompact = variant === 'compact';
   const activeTheme = getActiveTheme(theme);
   const brainSrc = `${import.meta.env.BASE_URL}brand/${BRAIN_ASSET_BY_THEME[activeTheme]}`;
+  const brandName = withFallback(name, DEFAULT_BRAND_NAME);
+  const brandSubtitle = withFallback(subtitle, DEFAULT_BRAND_SUBTITLE);
+  const accessibleLabel = showSubtitle ? `${brandName} – ${brandSubtitle}` : brandName;
 
   return (
     <div
-      className={`inline-flex max-w-full items-center text-left ${className}`}
+      className={`inline-flex max-w-full min-w-0 items-center text-left ${className}`}
       role="img"
-      aria-label="Denarde Soluções – Gestão Clínica e Acompanhamento"
+      aria-label={accessibleLabel}
     >
       <img
         src={brainSrc}
@@ -61,48 +76,29 @@ export default function BrandLogo({
         />
       )}
 
-      <div className="min-w-0" aria-hidden="true">
-        {isCompact ? (
-          <div className="flex items-baseline whitespace-nowrap leading-none">
-            <span
-              className="text-[14px] font-bold tracking-[-0.035em]"
-              style={{ color: 'var(--logo-text)' }}
-            >
-              Denarde
-            </span>
-            <span
-              className="ml-1 text-[13px] font-medium tracking-[-0.025em]"
-              style={{ color: 'var(--logo-accent)' }}
-            >
-              Soluções
-            </span>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-baseline whitespace-nowrap leading-[0.95]">
-              <span
-                className="text-[17px] font-bold tracking-[-0.045em] md:text-[19px] lg:text-[22px] xl:text-[24px] 2xl:text-[26px]"
-                style={{ color: 'var(--logo-text)' }}
-              >
-                Denarde
-              </span>
-              <span
-                className="ml-1.5 text-[15px] font-medium tracking-[-0.035em] md:text-[17px] lg:ml-1.5 lg:text-[20px] xl:text-[22px] 2xl:text-[24px]"
-                style={{ color: 'var(--logo-accent)' }}
-              >
-                Soluções
-              </span>
-            </div>
+      <div className="min-w-0 max-w-full" aria-hidden="true">
+        <span
+          className={
+            isCompact
+              ? 'block max-w-full break-words text-[14px] font-bold leading-[1.05] tracking-[-0.035em]'
+              : 'block max-w-full break-words text-[17px] font-bold leading-[0.95] tracking-[-0.045em] md:text-[19px] lg:text-[22px] xl:text-[24px] 2xl:text-[26px]'
+          }
+          style={{ color: 'var(--logo-text)' }}
+        >
+          {brandName}
+        </span>
 
-            {showSubtitle && (
-              <span
-                className="mt-1 block whitespace-nowrap text-[6px] font-medium uppercase leading-none tracking-[0.11em] md:text-[7px] lg:mt-1.5 lg:text-[8px] lg:tracking-[0.12em] xl:text-[8px] 2xl:text-[9px]"
-                style={{ color: 'var(--logo-subtitle)' }}
-              >
-                Gestão Clínica e Acompanhamento
-              </span>
-            )}
-          </>
+        {showSubtitle && (
+          <span
+            className={
+              isCompact
+                ? 'mt-0.5 block max-w-full break-words text-[5px] font-medium uppercase leading-tight tracking-[0.08em]'
+                : 'mt-1 block max-w-full break-words text-[6px] font-medium uppercase leading-tight tracking-[0.11em] md:text-[7px] lg:mt-1.5 lg:text-[8px] lg:tracking-[0.12em] xl:text-[8px] 2xl:text-[9px]'
+            }
+            style={{ color: 'var(--logo-subtitle)' }}
+          >
+            {brandSubtitle}
+          </span>
         )}
       </div>
     </div>

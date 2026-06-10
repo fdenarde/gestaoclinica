@@ -1,13 +1,14 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Camera } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
+import ActivityRecordModal from './ActivityRecords/ActivityRecordModal';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
@@ -89,11 +90,12 @@ const STATUS_LEGEND = [
 
 interface AgendaProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void;
+  onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (id: string) => void;
+  currentUserName: string;
 }
 
-export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaProps) {
+export default function Agenda({ state, onUpdate, onNavigateToPatient, currentUserName }: AgendaProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
@@ -110,6 +112,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
+  const [activitySession, setActivitySession] = useState<Session | null>(null);
+  const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
 // Reposition Modal State
   const [repoModal, setRepoModal] = useState<{ reposition: Reposition; patient: AppState['patients'][0]; originalSession: Session | null } | null>(null);
@@ -137,6 +141,18 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
     setActionGeneralNotesDraft(patient?.clinicalNotes || '');
     setIsEditingActionGeneralNotes(false);
   }, [actionSession?.id, actionSession?.patientId, state.patients]);
+
+  useEffect(() => {
+    for (const key of virtualActionLocksRef.current) {
+      const [patientId, date, time] = key.split('|');
+      const persisted = state.sessions.some(session =>
+        session.patientId === patientId &&
+        session.date === date &&
+        normalizeTime(session.time) === time
+      );
+      if (persisted) virtualActionLocksRef.current.delete(key);
+    }
+  }, [state.sessions]);
 
   const getPatientSessions = (targetPatientId: string) =>
     state.sessions
@@ -238,13 +254,31 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
   // ── Create real session from virtual ──────────────────────────
   const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
     const patient = state.patients.find(p => p.id === virtualSession.patientId);
-    if (!patient) return null;
-    const previewSession = { ...virtualSession, status: newStatus };
+    if (!patient || patient.status !== 'Ativo' || virtualSession.isBlocked) return null;
+
+    const alreadyExists = state.sessions.some(session =>
+      session.patientId === virtualSession.patientId &&
+      session.date === virtualSession.date &&
+      normalizeTime(session.time) === normalizeTime(virtualSession.time)
+    );
+    if (alreadyExists) return null;
+
+    const previewSession: Session = {
+      id: virtualSession.id,
+      patientId: virtualSession.patientId,
+      date: virtualSession.date,
+      time: normalizeTime(virtualSession.time),
+      type: virtualSession.type,
+      status: newStatus,
+      notes: virtualSession.notes || '',
+      packageNumber: 0,
+      isFixedSchedule: true,
+      source: 'fixed',
+    };
     const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
     const newReal: Session = {
-      ...virtualSession,
+      ...previewSession,
       id: Math.random().toString(36).substr(2, 9),
-      status: newStatus,
       packageNumber: nextSessionNumber,
     };
     let reposition: Reposition | undefined;
@@ -259,61 +293,129 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
     return { session: newReal, reposition };
   };
 
+  const getVirtualActionKey = (session: ProcessedSession) =>
+    `${session.patientId}|${session.date}|${normalizeTime(session.time)}`;
+
+  const persistVirtualAction = async (
+    session: ProcessedSession,
+    newStatus: SessionStatus,
+    successMessage: string,
+  ): Promise<boolean> => {
+    const actionKey = getVirtualActionKey(session);
+    if (virtualActionLocksRef.current.has(actionKey)) {
+      showToast('Este atendimento já está sendo registrado. Aguarde a atualização da Agenda.', 'error');
+      return false;
+    }
+
+    const result = createRealFromVirtual(session, newStatus);
+    if (!result) {
+      showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+      return false;
+    }
+
+    virtualActionLocksRef.current.add(actionKey);
+    try {
+      await onUpdate({
+        sessions: [...state.sessions, result.session],
+        ...(result.reposition
+          ? { repositions: [...state.repositions, result.reposition] }
+          : {}),
+      });
+      showToast(successMessage);
+      return true;
+    } catch (error) {
+      virtualActionLocksRef.current.delete(actionKey);
+      console.error('Falha ao registrar atendimento fixo/virtual:', error);
+      showToast('Não foi possível registrar o atendimento. Nenhuma confirmação foi gravada. Tente novamente.', 'error');
+      return false;
+    }
+  };
+
+  const handleRegisterActivity = async (session: ProcessedSession) => {
+    const patient = state.patients.find(item => item.id === session.patientId);
+    if (!patient) return showToast('Atendente não encontrado.', 'error');
+    const authorizationStatus = patient.activityMediaAuthorization?.internalRecordingStatus || 'pending';
+    if (authorizationStatus !== 'authorized') {
+      showToast(
+        authorizationStatus === 'not_authorized'
+          ? 'O responsável não autorizou o registro interno de imagens ou mídias para esta criança.'
+          : 'O registro de atividades está bloqueado porque a autorização para registro interno está pendente.',
+        'error'
+      );
+      return;
+    }
+
+    if (session.isVirtual) {
+      const actionKey = getVirtualActionKey(session);
+      if (virtualActionLocksRef.current.has(actionKey)) {
+        showToast('Esta sessão fixa já está sendo registrada. Aguarde a atualização da Agenda.', 'error');
+        return;
+      }
+      const result = createRealFromVirtual(session, SessionStatus.AGENDADA);
+      if (!result) {
+        showToast('A sessão fixa já foi materializada ou não está mais disponível. Atualize a Agenda.', 'error');
+        return;
+      }
+      virtualActionLocksRef.current.add(actionKey);
+      try {
+        await onUpdate({ sessions: [...state.sessions, result.session] });
+        setActivitySession(result.session);
+        setActionSession(null);
+      } catch (error) {
+        virtualActionLocksRef.current.delete(actionKey);
+        console.error('Falha ao preparar sessão fixa para registro de atividade:', error);
+        showToast('Não foi possível preparar a sessão. Nenhuma foto foi enviada.', 'error');
+      }
+      return;
+    }
+
+    setActivitySession(session);
+    setActionSession(null);
+  };
+
   // ── Action handlers for the modal ─────────────────────────────
-  const handleActionOk = (session: ProcessedSession) => {
+  const handleActionOk = async (session: ProcessedSession) => {
     if (session.isVirtual) {
-      const result = createRealFromVirtual(session, SessionStatus.REALIZADA);
-      if (result) onUpdate({ sessions: [...state.sessions, result.session] });
-      showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
+      const patientName = state.patients.find(p => p.id === session.patientId)?.name || 'Atendimento';
+      await persistVirtualAction(session, SessionStatus.REALIZADA, `${patientName} - Presença registrada.`);
     } else {
-      markAsRealized(session);
+      await markAsRealized(session);
     }
     setActionSession(null);
   };
 
-  const handleActionFalta = (session: ProcessedSession) => {
+  const handleActionFalta = async (session: ProcessedSession) => {
     if (session.isVirtual) {
-      const result = createRealFromVirtual(session, SessionStatus.FALTA);
-      if (result) {
-        onUpdate({
-          sessions: [...state.sessions, result.session],
-          repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions,
-        });
-      }
-      showToast(`Falta registrada. Reposição pendente criada.`);
+      await persistVirtualAction(session, SessionStatus.FALTA, 'Falta registrada. Reposição pendente criada.');
     } else {
-      markAsMissed(session);
+      await markAsMissed(session);
     }
     setActionSession(null);
   };
 
-  const handleActionFaltaProf = (session: ProcessedSession) => {
+  const handleActionFaltaProf = async (session: ProcessedSession) => {
     if (session.isVirtual) {
-      const result = createRealFromVirtual(session, SessionStatus.FALTA_PROF);
-      if (result) {
-        onUpdate({
-          sessions: [...state.sessions, result.session],
-          repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions,
-        });
-      }
-      showToast(`Sua falta registrada. Reposição pendente criada.`);
+      await persistVirtualAction(session, SessionStatus.FALTA_PROF, 'Sua falta registrada. Reposição pendente criada.');
     } else {
-      markAsMissedProf(session);
+      await markAsMissedProf(session);
     }
     setActionSession(null);
   };
 
-  const handleActionCancel = (session: ProcessedSession) => {
+  const handleActionCancel = async (session: ProcessedSession) => {
     if (session.isVirtual) {
-      const result = createRealFromVirtual(session, SessionStatus.CANCELADA);
-      if (result) onUpdate({ sessions: [...state.sessions, result.session] });
-      showToast('Sessão cancelada.');
+      await persistVirtualAction(session, SessionStatus.CANCELADA, 'Sessão cancelada.');
     } else {
       const updatedSessions = state.sessions.map(s =>
         s.id === session.id ? { ...s, status: SessionStatus.CANCELADA } : s
       );
-      onUpdate({ sessions: updatedSessions });
-      showToast('Sessão cancelada.');
+      try {
+        await onUpdate({ sessions: updatedSessions });
+        showToast('Sessão cancelada.');
+      } catch (error) {
+        console.error('Falha ao cancelar sessão:', error);
+        showToast('Não foi possível cancelar a sessão.', 'error');
+      }
     }
     setActionSession(null);
   };
@@ -475,16 +577,21 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
     resetForm();
   };
 
-  const markAsRealized = (session: Session) => {
+  const markAsRealized = async (session: Session) => {
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.REALIZADA } : s
     );
     const updatedRepositions = state.repositions.filter(r => !(r.originalSessionId === session.id && r.status === 'Pendente'));
-    onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
-    showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
+    try {
+      await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
+    } catch (error) {
+      console.error('Falha ao registrar presença:', error);
+      showToast('Não foi possível registrar a presença.', 'error');
+    }
   };
 
-  const markAsMissed = (session: Session) => {
+  const markAsMissed = async (session: Session) => {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
@@ -498,11 +605,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
       originalSessionId: session.id,
       status: 'Pendente'
     };
-    onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
-    showToast(`Falta registrada. Reposição pendente criada.`);
+    try {
+      await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
+      showToast('Falta registrada. Reposição pendente criada.');
+    } catch (error) {
+      console.error('Falha ao registrar falta:', error);
+      showToast('Não foi possível registrar a falta.', 'error');
+    }
   };
 
-  const markAsMissedProf = (session: Session) => {
+  const markAsMissedProf = async (session: Session) => {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
@@ -516,8 +628,13 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
       originalSessionId: session.id,
       status: 'Pendente'
     };
-    onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
-    showToast(`Sua falta registrada. Reposição pendente criada.`);
+    try {
+      await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
+      showToast('Sua falta registrada. Reposição pendente criada.');
+    } catch (error) {
+      console.error('Falha ao registrar falta do profissional:', error);
+      showToast('Não foi possível registrar a falta do profissional.', 'error');
+    }
   };
 
   const deleteSession = (id: string) => {
@@ -1052,6 +1169,22 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
                 </div>
               )}
 
+              {patient && !actionSession.isBlocked && ![SessionStatus.FALTA, SessionStatus.FALTA_PROF, SessionStatus.CANCELADA].includes(actionSession.status) && (
+                <button
+                  type="button"
+                  onClick={() => void handleRegisterActivity(actionSession)}
+                  className={cn(
+                    "w-full flex items-center justify-center gap-2 py-3 px-4 font-bold rounded-xl active:scale-95 transition-all",
+                    patient.activityMediaAuthorization?.internalRecordingStatus === 'authorized'
+                      ? "bg-clinic-primary text-white hover:bg-clinic-primary-hover"
+                      : "border border-status-orange-text/30 bg-status-orange-bg text-status-orange-text hover:brightness-95"
+                  )}
+                  title={patient.activityMediaAuthorization?.internalRecordingStatus === 'authorized' ? 'Registrar foto desta sessão' : 'Clique para ver o motivo do bloqueio'}
+                >
+                  <Camera size={17} /> Registrar atividade
+                </button>
+              )}
+
               {/* ── Botões de ação ── */}
               {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
                 <div className="space-y-2.5">
@@ -1134,6 +1267,21 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient }: AgendaP
               </button>
             </div>
           </Modal>
+        );
+      })()}
+
+      {activitySession && (() => {
+        const activityPatient = state.patients.find(item => item.id === activitySession.patientId);
+        if (!activityPatient) return null;
+        return (
+          <ActivityRecordModal
+            isOpen={true}
+            onClose={() => setActivitySession(null)}
+            patient={activityPatient}
+            sessions={[...state.sessions, ...(state.sessions.some(item => item.id === activitySession.id) ? [] : [activitySession])]}
+            initialSession={activitySession}
+            currentUserName={currentUserName}
+          />
         );
       })()}
 

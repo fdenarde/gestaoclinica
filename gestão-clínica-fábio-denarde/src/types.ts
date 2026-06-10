@@ -4,6 +4,7 @@
  */
 
 import type { AppTheme } from './lib/theme';
+import type { ActivityMediaAuthorization } from './types/activityRecords';
 
 export enum PaymentModal {
   PIX_FULL = 'PADRÃO: Pix integral — R$1.000 antes da 1ª sessão',
@@ -54,6 +55,7 @@ export interface Patient {
   shift?: string;
   doctorName?: string;
   medication?: string;
+  activityMediaAuthorization?: ActivityMediaAuthorization;
   lastExternalRegistrationUpdate?: string;
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;

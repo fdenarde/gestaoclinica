@@ -21,7 +21,8 @@
     "dev:frontend": "vite --port=3000 --host=0.0.0.0",
     "dev:drive-api": "node drive-api-server.js",
     "setup:drive": "node scripts/setup-google-drive.mjs",
-    "test:drive": "node scripts/test-google-drive-config.mjs"
+    "test:drive": "node scripts/test-google-drive-config.mjs",
+    "test:activity-records": "node --test tests/activity-records.test.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

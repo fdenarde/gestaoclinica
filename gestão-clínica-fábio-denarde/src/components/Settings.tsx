@@ -191,13 +191,13 @@ export default function Settings({ state, onUpdate, onThemeChange }: SettingsPro
         </h2>
 
         <div className="space-y-5">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Nome Profissional</label>
+              <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Nome Profissional / Empresa</label>
               <div className="relative">
                 <User className="absolute left-3 top-1/2 -translate-y-1/2 text-clinic-text-faint" size={16} />
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={settings.name}
                   onChange={(e) => setSettings({...settings, name: e.target.value})}
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
@@ -205,22 +205,13 @@ export default function Settings({ state, onUpdate, onThemeChange }: SettingsPro
               </div>
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Especialidade / Título</label>
-              <input 
-                type="text" 
-                value={settings.specialty}
-                onChange={(e) => setSettings({...settings, specialty: e.target.value})}
-                className="w-full px-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
-              />
-            </div>
-            <div className="space-y-1 md:col-span-2 xl:col-span-1">
               <label className="text-[10px] font-black uppercase text-clinic-text-faint ml-1">Descrição Curta (Header)</label>
               <input
                 type="text"
                 value={settings.title}
                 onChange={(e) => setSettings({...settings, title: e.target.value})}
                 className="w-full px-4 py-2.5 rounded-xl border border-clinic-border bg-white focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm font-bold"
-                placeholder="Ex: Neuropsicopedagogia"
+                placeholder="Ex: Gestão Clínica e Acompanhamento"
               />
             </div>
           </div>

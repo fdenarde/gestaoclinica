@@ -85,6 +85,11 @@ service cloud.firestore {
       }
       match /patients/{patientId} {
         allow read, write: if isOwner(userId);
+
+        match /activityRecords/{recordId} {
+          allow read: if isOwner(userId);
+          allow write: if false;
+        }
       }
       match /sessions/{sessionId} {
         allow read, write: if isOwner(userId);

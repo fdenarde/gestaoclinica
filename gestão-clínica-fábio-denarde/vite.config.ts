@@ -42,6 +42,10 @@ export default defineConfig(({mode}) => {
           target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
           changeOrigin: true,
         },
+        '/api/activity-records': {
+          target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
+          changeOrigin: true,
+        },
       },
       // Use polling on Windows and ignore problematic paths to avoid file‑watcher crashes
       watch: {

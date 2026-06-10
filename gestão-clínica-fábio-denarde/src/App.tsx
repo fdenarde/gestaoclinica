@@ -429,13 +429,24 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col pb-10">
       <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-1.5 md:py-2 lg:py-2 flex min-h-[56px] flex-col md:min-h-[64px] md:flex-row lg:min-h-[70px] xl:min-h-[74px] gap-2 md:gap-2.5 justify-between items-center shadow-lg shrink-0">
-        <div className="md:hidden">
-          <BrandLogo variant="compact" theme={state.settings.visualTheme} className="shrink-0" />
+        <div className="w-full min-w-0 md:hidden">
+          <BrandLogo
+            variant="compact"
+            theme={state.settings.visualTheme}
+            name={state.settings.name}
+            subtitle={state.settings.title}
+            className="w-full justify-center"
+          />
         </div>
-        <div className="hidden md:block">
-          <BrandLogo theme={state.settings.visualTheme} className="shrink-0" />
+        <div className="hidden min-w-0 flex-1 md:block">
+          <BrandLogo
+            theme={state.settings.visualTheme}
+            name={state.settings.name}
+            subtitle={state.settings.title}
+            className="max-w-full"
+          />
         </div>
-        <div className="flex flex-wrap items-center justify-center md:justify-end gap-3 sm:gap-4 xl:gap-6">
+        <div className="flex shrink-0 flex-wrap items-center justify-center gap-3 sm:gap-4 md:justify-end xl:gap-6">
           <div className="text-right hidden md:block">
             <p className="text-[10px] opacity-70 uppercase font-bold tracking-wider">{currentDateStr}</p>
             <p className="text-xs font-medium">Vila Velha, ES</p>

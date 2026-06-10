@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { cert, getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { getFirestore } from 'firebase-admin/firestore';
 
 function parseServiceAccountFromEnvironment() {
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
@@ -46,7 +47,7 @@ function parseLocalServiceAccount() {
 }
 
 function ensureFirebaseAdmin() {
-  if (getApps().length > 0) return;
+  if (getApps().length > 0) return getApp();
 
   const serviceAccount = parseServiceAccountFromEnvironment() || parseLocalServiceAccount();
   if (!serviceAccount) {
@@ -55,9 +56,33 @@ function ensureFirebaseAdmin() {
     );
   }
 
-  initializeApp({
+  return initializeApp({
     credential: cert(serviceAccount),
   });
+}
+
+function resolveFirestoreDatabaseId() {
+  const configured = process.env.FIRESTORE_DATABASE_ID?.trim();
+  if (configured) return configured;
+
+  try {
+    const firebaseConfigPath = path.resolve(process.cwd(), 'firebase.json');
+    if (fs.existsSync(firebaseConfigPath)) {
+      const config = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+      const firestoreEntry = Array.isArray(config.firestore) ? config.firestore[0] : config.firestore;
+      if (firestoreEntry?.database) return firestoreEntry.database;
+    }
+  } catch (error) {
+    console.warn('[FIREBASE ADMIN] Não foi possível ler o databaseId do firebase.json:', error?.message || error);
+  }
+
+  return undefined;
+}
+
+export function getAdminDb() {
+  const app = ensureFirebaseAdmin();
+  const databaseId = resolveFirestoreDatabaseId();
+  return databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 }
 
 export async function verifyFirebaseRequest(req) {

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution, ExternalRegistrationForm } from '../types';
-import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy } from 'lucide-react';
+import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import Modal from './Common/Modal';
 import PatientPhoto from './Common/PatientPhoto';
@@ -11,6 +11,10 @@ import { createStrongToken, getExternalRegistrationExpiry, getExternalRegistrati
 import { cancelPatientPhotoUpload, deletePatientPhoto, getPatientPhotoErrorMessage, uploadPatientPhoto, validatePatientPhoto } from '../lib/patientPhotoStorage';
 import { db } from '../firebase';
 import { doc, setDoc, Timestamp } from 'firebase/firestore';
+import ActivityRecordsTab from './ActivityRecords/ActivityRecordsTab';
+import ActivityRecordModal from './ActivityRecords/ActivityRecordModal';
+import { hasPatientActivityRecords } from '../lib/activityRecordsApi';
+import { getDefaultActivityAuthorization } from '../types/activityRecords';
 
 interface PatientsProps {
   state: AppState;
@@ -55,6 +59,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   const setSelectedPatientId = propSetSelectedId || setInternalSelectedId;
 
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
+  const [quickActivityPatientId, setQuickActivityPatientId] = useState<string | null>(null);
   
   // Registration Form State
   const [newPatient, setNewPatient] = useState<Partial<Patient>>({
@@ -110,6 +115,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       fixedTime: fixedTimeNormalized,
       anamnese: { ...newPatient.anamnese as any },
       clinicalNotes: '',
+      activityMediaAuthorization: newPatient.activityMediaAuthorization || getDefaultActivityAuthorization(),
     };
 
     // Auto-generate 1st package sessions and payments
@@ -253,6 +259,11 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
     const updatedRepositions = state.repositions.filter(r => r.patientId !== patientToDelete);
 
     try {
+      if (currentUserId && await hasPatientActivityRecords(patientToDelete)) {
+        showToast('Este atendente possui registros de atividades. Exclua as mídias pela aba Registros de Atividades antes de remover o cadastro.', 'error');
+        return;
+      }
+
       await Promise.resolve(onUpdate({
         patients: updatedPatients,
         sessions: updatedSessions,
@@ -276,6 +287,20 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   };
 
   const selectedPatient = state.patients.find(p => p.id === selectedPatientId);
+  const quickActivityPatient = state.patients.find(p => p.id === quickActivityPatientId) || null;
+
+  const handleQuickActivity = (patient: Patient) => {
+    const authorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
+    if (authorization.internalRecordingStatus !== 'authorized') {
+      const message = authorization.internalRecordingStatus === 'not_authorized'
+        ? 'O responsável não autorizou o registro interno de imagens ou mídias para esta criança.'
+        : 'O registro de atividades está bloqueado porque a autorização para registro interno está pendente.';
+      showToast(message, 'error');
+      setSelectedPatientId(patient.id);
+      return;
+    }
+    setQuickActivityPatientId(patient.id);
+  };
 
   const copyExternalRegistrationLink = async (link: string) => {
     try {
@@ -411,12 +436,16 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
               const displayRemaining = attendedInCycle === 0 && totalRealized > 0 ? 0 : 10 - attendedInCycle;
 
               const hasPendingReposition = state.repositions.some(r => r.patientId === patient.id && r.status === 'Pendente');
+              const activityAuthorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
+              const canRecordActivity = activityAuthorization.internalRecordingStatus === 'authorized';
               
               return (
                 <div key={patient.id} className="p-5 rounded-2xl border border-clinic-border hover:bg-clinic-bg/40 transition-all flex flex-col md:flex-row items-center gap-6">
                   <PatientPhoto
                     patient={patient}
-                    className="w-14 h-14 rounded-full object-cover border-2 border-clinic-primary/20 shrink-0 shadow-sm"
+                    expandable
+                    alt={`Foto de ${patient.name}`}
+                    className="w-14 h-14 rounded-full object-cover border-2 border-clinic-primary/20 shrink-0 shadow-sm transition-transform hover:scale-105"
                     fallbackClassName="w-14 h-14 rounded-full bg-clinic-primary/10 text-clinic-primary flex items-center justify-center text-xl font-bold border-2 border-clinic-primary/20 shrink-0"
                   />
                   
@@ -463,6 +492,20 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                     >
                       <MessageCircle size={20} />
                     </a>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickActivity(patient)}
+                      className={cn(
+                        "p-3 rounded-xl transition-all hover:scale-105",
+                        canRecordActivity
+                          ? "bg-status-blue-bg text-status-blue-text"
+                          : "bg-status-orange-bg text-status-orange-text"
+                      )}
+                      title={canRecordActivity ? 'Registrar atividade' : 'Verificar autorização de imagem e mídia'}
+                      aria-label={`Registrar atividade de ${patient.name}`}
+                    >
+                      <Camera size={20} />
+                    </button>
                     <button 
                       onClick={() => setSelectedPatientId(patient.id)}
                       className="flex items-center gap-2 px-5 py-3 bg-clinic-header text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:bg-clinic-text transition-colors shadow-md"
@@ -799,6 +842,16 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         </div>
       </Modal>
 
+      {quickActivityPatient && (
+        <ActivityRecordModal
+          isOpen={true}
+          onClose={() => setQuickActivityPatientId(null)}
+          patient={quickActivityPatient}
+          sessions={state.sessions}
+          currentUserName={currentUserName || 'Usuário'}
+        />
+      )}
+
       {/* Modal Detalhes do Atendente */}
       {selectedPatientId && selectedPatient && (
         <PatientDetailsModal 
@@ -861,6 +914,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [newEvoNotes, setNewEvoNotes] = useState('');
   const [lastGeneratedExternalLink, setLastGeneratedExternalLink] = useState('');
+  const openActivityAuthorization = () => {
+    setEditForm(patient);
+    setActiveSubTab('dados');
+    setIsEditingData(true);
+    window.setTimeout(() => {
+      document.querySelector('[data-activity-authorization]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  };
 
   useEffect(() => {
     return () => {
@@ -1553,6 +1614,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     { id: 'financeiro', label: 'Financeiro', icon: DollarSign },
     { id: 'anotacoes', label: 'Anotações Gerais', icon: Edit3 },
     { id: 'evolucao', label: 'Evolução Clínica', icon: FileText },
+    { id: 'atividades', label: 'Registros de Atividades', icon: Images },
   ];
 
   const updateNotes = (notes: string) => {
@@ -2022,6 +2084,29 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                           <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Medicação em Uso</label>
                           <input type="text" value={editForm.medication || ''} onChange={e => setEditForm({...editForm, medication: e.target.value})} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full" />
                         </div>
+                        <div data-activity-authorization className="rounded-xl border border-clinic-border bg-clinic-bg/60 p-3 space-y-3">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-clinic-text-faint">Autorização de imagem e mídia</p>
+                            <p className="text-xs text-clinic-text-muted">Controle separado para registro interno e compartilhamento com o responsável.</p>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label className="text-[10px] font-bold uppercase text-clinic-text-faint">Registro interno
+                              <select value={editForm.activityMediaAuthorization?.internalRecordingStatus || 'pending'} onChange={e => setEditForm({ ...editForm, activityMediaAuthorization: { ...(editForm.activityMediaAuthorization || getDefaultActivityAuthorization()), internalRecordingStatus: e.target.value as any } })} className="mt-1 w-full rounded-lg border border-clinic-border bg-white p-2.5 text-sm normal-case">
+                                <option value="pending">Autorização pendente</option>
+                                <option value="authorized">Autorizado</option>
+                                <option value="not_authorized">Não autorizado</option>
+                              </select>
+                            </label>
+                            <label className="text-[10px] font-bold uppercase text-clinic-text-faint">Compartilhar com responsável
+                              <select value={editForm.activityMediaAuthorization?.guardianSharingStatus || 'pending'} onChange={e => setEditForm({ ...editForm, activityMediaAuthorization: { ...(editForm.activityMediaAuthorization || getDefaultActivityAuthorization()), guardianSharingStatus: e.target.value as any } })} className="mt-1 w-full rounded-lg border border-clinic-border bg-white p-2.5 text-sm normal-case">
+                                <option value="pending">Autorização pendente</option>
+                                <option value="authorized">Autorizado</option>
+                                <option value="not_authorized">Não autorizado</option>
+                              </select>
+                            </label>
+                          </div>
+                          <textarea value={editForm.activityMediaAuthorization?.notes || ''} onChange={e => setEditForm({ ...editForm, activityMediaAuthorization: { ...(editForm.activityMediaAuthorization || getDefaultActivityAuthorization()), notes: e.target.value } })} placeholder="Observação da autorização (opcional)" className="w-full rounded-lg border border-clinic-border bg-white p-2.5 text-sm" />
+                        </div>
                         <div className="space-y-4 pt-2">
                           <div>
                             <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Upload Relatório (PDF)</label>
@@ -2341,6 +2426,16 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                    )}
                 </div>
               </div>
+            )}
+
+            {activeSubTab === 'atividades' && (
+              <ActivityRecordsTab
+                patient={patient}
+                sessions={state.sessions}
+                currentUserId={currentUserId}
+                currentUserName={currentUserName}
+                onOpenAuthorization={openActivityAuthorization}
+              />
             )}
 
             {activeSubTab === 'anotacoes' && (

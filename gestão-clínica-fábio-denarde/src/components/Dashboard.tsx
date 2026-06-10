@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
 import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, MessageCircle } from 'lucide-react';
 import { formatCurrency, getStatusColor, cn, calculateAge, getSessionsForDate, normalizeTime, ProcessedSession } from '../lib/utils';
@@ -13,23 +13,41 @@ import { calculatePackageFinancialSummary } from '../lib/financePackages';
 
 interface DashboardProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void;
+  onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (patientId: string) => void;
 }
 
 export default function Dashboard({ state, onUpdate, onNavigateToPatient }: DashboardProps) {
+  const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
-  const markAsRealized = (session: Session) => {
+  useEffect(() => {
+    for (const key of virtualActionLocksRef.current) {
+      const [patientId, date, time] = key.split('|');
+      const persisted = state.sessions.some(session =>
+        session.patientId === patientId &&
+        session.date === date &&
+        normalizeTime(session.time) === time
+      );
+      if (persisted) virtualActionLocksRef.current.delete(key);
+    }
+  }, [state.sessions]);
+
+  const markAsRealized = async (session: Session) => {
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.REALIZADA } : s
     );
     const updatedRepositions = state.repositions.filter(r => !(r.originalSessionId === session.id && r.status === 'Pendente'));
-    
-    onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
-    showToast(`Presença registrada.`);
+
+    try {
+      await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      showToast('Presença registrada.');
+    } catch (error) {
+      console.error('Falha ao registrar presença pelo Dashboard:', error);
+      showToast('Não foi possível registrar a presença.', 'error');
+    }
   };
 
-  const markAsMissed = (session: Session) => {
+  const markAsMissed = async (session: Session) => {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
@@ -46,14 +64,19 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       status: 'Pendente'
     };
 
-    onUpdate({ 
-      sessions: updatedSessions,
-      repositions: [...state.repositions, newReposition]
-    });
-    showToast(`Falta registrada. Reposição pendente criada.`);
+    try {
+      await onUpdate({
+        sessions: updatedSessions,
+        repositions: [...state.repositions, newReposition]
+      });
+      showToast('Falta registrada. Reposição pendente criada.');
+    } catch (error) {
+      console.error('Falha ao registrar falta pelo Dashboard:', error);
+      showToast('Não foi possível registrar a falta.', 'error');
+    }
   };
 
-  const markAsMissedProf = (session: Session) => {
+  const markAsMissedProf = async (session: Session) => {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
@@ -70,11 +93,16 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
       status: 'Pendente'
     };
 
-    onUpdate({ 
-      sessions: updatedSessions,
-      repositions: [...state.repositions, newReposition]
-    });
-    showToast(`Sua falta registrada. Reposição pendente criada.`);
+    try {
+      await onUpdate({
+        sessions: updatedSessions,
+        repositions: [...state.repositions, newReposition]
+      });
+      showToast('Sua falta registrada. Reposição pendente criada.');
+    } catch (error) {
+      console.error('Falha ao registrar falta do profissional pelo Dashboard:', error);
+      showToast('Não foi possível registrar a falta do profissional.', 'error');
+    }
   };
 
   const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
@@ -121,58 +149,69 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
     return { session: newReal, reposition };
   };
 
-  const handleMarkAsRealized = (session: ProcessedSession) => {
-    if (!session.isVirtual) {
-      markAsRealized(session);
-      return;
+  const getVirtualActionKey = (session: ProcessedSession) =>
+    `${session.patientId}|${session.date}|${normalizeTime(session.time)}`;
+
+  const persistVirtualAction = async (
+    session: ProcessedSession,
+    newStatus: SessionStatus,
+    successMessage: string,
+  ): Promise<boolean> => {
+    const actionKey = getVirtualActionKey(session);
+    if (virtualActionLocksRef.current.has(actionKey)) {
+      showToast('Este atendimento já está sendo registrado. Aguarde a atualização da Agenda.', 'error');
+      return false;
     }
 
-    const result = createRealFromVirtual(session, SessionStatus.REALIZADA);
+    const result = createRealFromVirtual(session, newStatus);
     if (!result) {
       showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
-      return;
+      return false;
     }
 
-    onUpdate({ sessions: [...state.sessions, result.session] });
-    showToast('Presença registrada.');
+    virtualActionLocksRef.current.add(actionKey);
+    try {
+      await onUpdate({
+        sessions: [...state.sessions, result.session],
+        ...(result.reposition
+          ? { repositions: [...state.repositions, result.reposition] }
+          : {}),
+      });
+      showToast(successMessage);
+      return true;
+    } catch (error) {
+      virtualActionLocksRef.current.delete(actionKey);
+      console.error('Falha ao registrar atendimento fixo/virtual pelo Dashboard:', error);
+      showToast('Não foi possível registrar o atendimento. Nenhuma confirmação foi gravada. Tente novamente.', 'error');
+      return false;
+    }
   };
 
-  const handleMarkAsMissed = (session: ProcessedSession) => {
+  const handleMarkAsRealized = async (session: ProcessedSession) => {
     if (!session.isVirtual) {
-      markAsMissed(session);
+      await markAsRealized(session);
       return;
     }
 
-    const result = createRealFromVirtual(session, SessionStatus.FALTA);
-    if (!result) {
-      showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
-      return;
-    }
-
-    onUpdate({
-      sessions: [...state.sessions, result.session],
-      repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions
-    });
-    showToast('Falta registrada. Reposição pendente criada.');
+    await persistVirtualAction(session, SessionStatus.REALIZADA, 'Presença registrada.');
   };
 
-  const handleMarkAsMissedProf = (session: ProcessedSession) => {
+  const handleMarkAsMissed = async (session: ProcessedSession) => {
     if (!session.isVirtual) {
-      markAsMissedProf(session);
+      await markAsMissed(session);
       return;
     }
 
-    const result = createRealFromVirtual(session, SessionStatus.FALTA_PROF);
-    if (!result) {
-      showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+    await persistVirtualAction(session, SessionStatus.FALTA, 'Falta registrada. Reposição pendente criada.');
+  };
+
+  const handleMarkAsMissedProf = async (session: ProcessedSession) => {
+    if (!session.isVirtual) {
+      await markAsMissedProf(session);
       return;
     }
 
-    onUpdate({
-      sessions: [...state.sessions, result.session],
-      repositions: result.reposition ? [...state.repositions, result.reposition] : state.repositions
-    });
-    showToast('Sua falta registrada. Reposição pendente criada.');
+    await persistVirtualAction(session, SessionStatus.FALTA_PROF, 'Sua falta registrada. Reposição pendente criada.');
   };
 
   const attendanceRate = useMemo(() => {
