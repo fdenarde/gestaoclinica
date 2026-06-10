@@ -43,7 +43,12 @@ export interface Patient {
   }[];
   paymentModal: PaymentModal;
   startDate: string;
-  photoUrl?: string;
+  photoUrl?: string; // legado: base64 ou URL antiga
+  photoStoragePath?: string; // legado ou identificador google-drive:<fileId>
+  photoStorageProvider?: 'google-drive' | 'firebase-storage';
+  photoDriveFileId?: string;
+  photoDriveFileName?: string;
+  photoMimeType?: string;
   school?: string;
   grade?: string;
   shift?: string;

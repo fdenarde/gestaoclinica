@@ -19,3 +19,5 @@ responsive-backups/
 !firebase-applet-config.json
 !tsconfig.json
 .vercel
+
+client_secret*.json

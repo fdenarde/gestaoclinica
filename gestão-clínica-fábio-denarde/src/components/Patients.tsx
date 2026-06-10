@@ -1,18 +1,20 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution, ExternalRegistrationForm } from '../types';
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import Modal from './Common/Modal';
+import PatientPhoto from './Common/PatientPhoto';
 import { showToast } from './Common/Toast';
 import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
 import { format, differenceInDays, parseISO, getDay, addDays } from 'date-fns';
 import { createStrongToken, getExternalRegistrationExpiry, getExternalRegistrationExpiryMs, patientToExternalRegistrationData, sanitizeForFirestore } from '../lib/externalRegistration';
+import { cancelPatientPhotoUpload, deletePatientPhoto, getPatientPhotoErrorMessage, uploadPatientPhoto, validatePatientPhoto } from '../lib/patientPhotoStorage';
 import { db } from '../firebase';
 import { doc, setDoc, Timestamp } from 'firebase/firestore';
 
 interface PatientsProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void;
+  onUpdate: (newState: Partial<AppState>) => void | Promise<void>;
   selectedPatientId?: string | null;
   setSelectedPatientId?: (id: string | null) => void;
   currentUserId?: string;
@@ -35,11 +37,18 @@ function getFieldLabelForPatient(field: string) {
   return PATIENT_FIELD_LABELS[field] || field;
 }
 
+function hasPatientPhoto(patient: Pick<Patient, 'photoUrl' | 'photoDriveFileId'>): boolean {
+  return Boolean(patient.photoDriveFileId || patient.photoUrl);
+}
+
 export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId, currentUserId, currentUserName }: PatientsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showInactive, setShowInactive] = useState(false);
   const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
   const [lastGeneratedPreRegistrationLink, setLastGeneratedPreRegistrationLink] = useState('');
+  const [newPatientPhotoFile, setNewPatientPhotoFile] = useState<File | null>(null);
+  const [newPatientPhotoPreviewUrl, setNewPatientPhotoPreviewUrl] = useState<string | null>(null);
+  const [isCreatingPatient, setIsCreatingPatient] = useState(false);
   
   const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
   const selectedPatientId = propSelectedId !== undefined ? propSelectedId : internalSelectedId;
@@ -64,6 +73,14 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
     }
   });
 
+  useEffect(() => {
+    return () => {
+      if (newPatientPhotoPreviewUrl) {
+        URL.revokeObjectURL(newPatientPhotoPreviewUrl);
+      }
+    };
+  }, [newPatientPhotoPreviewUrl]);
+
   const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
   const filteredPatients = state.patients.filter(p => {
@@ -72,7 +89,9 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
            normalize(p.guardianName).includes(normalize(searchTerm));
   }).sort((a,b) => a.name.localeCompare(b.name));
 
-  const handleCreatePatient = () => {
+  const handleCreatePatient = async () => {
+    if (isCreatingPatient) return;
+
     if (!newPatient.name || !newPatient.birthDate || !newPatient.guardianName || !newPatient.whatsapp) {
       showToast('Preencha os campos obrigatórios!', 'error');
       return;
@@ -156,14 +175,46 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       });
     }
 
-    onUpdate({ 
-      patients: [...state.patients, patient],
-      sessions: [...state.sessions, ...generatedSessions],
-      payments: [...state.payments, ...generatedPayments]
-    });
-    showToast('Atendente e ciclo inicial cadastrados com sucesso!');
-    setIsNewPatientModalOpen(false);
-    resetNewPatientForm();
+    let uploadedPhotoPath: string | undefined;
+    setIsCreatingPatient(true);
+
+    try {
+      if (newPatientPhotoFile) {
+        if (!currentUserId) {
+          throw new Error('Usuário não identificado para enviar a foto.');
+        }
+
+        const uploadedPhoto = await uploadPatientPhoto(currentUserId, id, newPatientPhotoFile);
+        patient.photoUrl = '';
+        patient.photoStorageProvider = 'google-drive';
+        patient.photoDriveFileId = uploadedPhoto.driveFileId;
+        patient.photoDriveFileName = uploadedPhoto.fileName;
+        patient.photoMimeType = uploadedPhoto.mimeType;
+        patient.photoStoragePath = uploadedPhoto.storagePath;
+        uploadedPhotoPath = uploadedPhoto.storagePath;
+      }
+
+      await Promise.resolve(onUpdate({
+        patients: [...state.patients, patient],
+        sessions: [...state.sessions, ...generatedSessions],
+        payments: [...state.payments, ...generatedPayments]
+      }));
+
+      showToast('Atendente e ciclo inicial cadastrados com sucesso!');
+      setIsNewPatientModalOpen(false);
+      resetNewPatientForm();
+    } catch (error) {
+      if (uploadedPhotoPath) {
+        await deletePatientPhoto(uploadedPhotoPath).catch(cleanupError => {
+          console.error('Não foi possível remover a foto após a falha do cadastro:', cleanupError);
+        });
+      }
+
+      console.error('Erro ao cadastrar atendente:', error);
+      showToast(getPatientPhotoErrorMessage(error), 'error');
+    } finally {
+      setIsCreatingPatient(false);
+    }
   };
 
   const resetNewPatientForm = () => {
@@ -182,23 +233,45 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         initialNotes: ''
       }
     });
+    setNewPatientPhotoFile(null);
+    setNewPatientPhotoPreviewUrl(null);
   };
 
-  const confirmDelete = () => {
-    if (patientToDelete) {
-      const updatedPatients = state.patients.filter(p => p.id !== patientToDelete);
-      const updatedSessions = state.sessions.filter(s => s.patientId !== patientToDelete);
-      const updatedPayments = state.payments.filter(p => p.patientId !== patientToDelete);
-      const updatedRepositions = state.repositions.filter(r => r.patientId !== patientToDelete);
-      
-      onUpdate({ 
-        patients: updatedPatients, 
+  const closeNewPatientModal = () => {
+    if (isCreatingPatient) return;
+    setIsNewPatientModalOpen(false);
+    resetNewPatientForm();
+  };
+
+  const confirmDelete = async () => {
+    if (!patientToDelete) return;
+
+    const patientBeingDeleted = state.patients.find(item => item.id === patientToDelete);
+    const updatedPatients = state.patients.filter(p => p.id !== patientToDelete);
+    const updatedSessions = state.sessions.filter(s => s.patientId !== patientToDelete);
+    const updatedPayments = state.payments.filter(p => p.patientId !== patientToDelete);
+    const updatedRepositions = state.repositions.filter(r => r.patientId !== patientToDelete);
+
+    try {
+      await Promise.resolve(onUpdate({
+        patients: updatedPatients,
         sessions: updatedSessions,
         payments: updatedPayments,
         repositions: updatedRepositions
-      });
+      }));
+
+      const photoReference = patientBeingDeleted?.photoDriveFileId || patientBeingDeleted?.photoStoragePath;
+      if (photoReference) {
+        await deletePatientPhoto(photoReference).catch(cleanupError => {
+          console.error('O cadastro foi excluído, mas a foto não pôde ser removida do Google Drive:', cleanupError);
+        });
+      }
+
       showToast('Atendente excluído.');
       setPatientToDelete(null);
+    } catch (error) {
+      console.error('Erro ao excluir atendente:', error);
+      showToast('Não foi possível excluir o atendente. Nenhum dado foi dado como removido.', 'error');
     }
   };
 
@@ -341,9 +414,11 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
               
               return (
                 <div key={patient.id} className="p-5 rounded-2xl border border-clinic-border hover:bg-clinic-bg/40 transition-all flex flex-col md:flex-row items-center gap-6">
-                  <div className="w-14 h-14 rounded-full bg-clinic-primary/10 text-clinic-primary flex items-center justify-center text-xl font-bold border-2 border-clinic-primary/20 shrink-0">
-                    {patient.name.split(' ').map(n => n[0]).slice(0, 2).join('')}
-                  </div>
+                  <PatientPhoto
+                    patient={patient}
+                    className="w-14 h-14 rounded-full object-cover border-2 border-clinic-primary/20 shrink-0 shadow-sm"
+                    fallbackClassName="w-14 h-14 rounded-full bg-clinic-primary/10 text-clinic-primary flex items-center justify-center text-xl font-bold border-2 border-clinic-primary/20 shrink-0"
+                  />
                   
                   <div className="flex-1 min-w-0 w-full text-center md:text-left">
                     <div className="flex flex-col md:flex-row items-center gap-2 mb-1">
@@ -417,7 +492,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       {/* Modal Novo Atendente */}
       <Modal 
         isOpen={isNewPatientModalOpen} 
-        onClose={() => setIsNewPatientModalOpen(false)} 
+        onClose={closeNewPatientModal} 
         title="Cadastrar Novo Atendente"
         width="max-w-6xl"
       >
@@ -477,17 +552,36 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                 <label className="text-[10px] font-bold text-clinic-text-faint uppercase">Foto</label>
                 <input 
                   type="file" 
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   onChange={e => {
                     const file = e.target.files?.[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onloadend = () => setNewPatient(prev => ({ ...prev, photoUrl: reader.result as string }));
-                      reader.readAsDataURL(file);
+                    if (!file) return;
+
+                    try {
+                      validatePatientPhoto(file);
+                      setNewPatientPhotoFile(file);
+                      setNewPatientPhotoPreviewUrl(URL.createObjectURL(file));
+                    } catch (error) {
+                      setNewPatientPhotoFile(null);
+                      setNewPatientPhotoPreviewUrl(null);
+                      e.currentTarget.value = '';
+                      showToast(getPatientPhotoErrorMessage(error), 'error');
                     }
                   }}
                   className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20"
                 />
+                {newPatientPhotoPreviewUrl && (
+                  <div className="mt-2 flex items-center gap-3 rounded-xl border border-clinic-border bg-clinic-bg/50 p-2">
+                    <img
+                      src={newPatientPhotoPreviewUrl}
+                      alt="Prévia da foto selecionada"
+                      className="h-14 w-14 rounded-full border border-clinic-border object-cover"
+                    />
+                    <p className="text-xs text-clinic-text-muted">
+                      A foto será enviada ao armazenamento quando o cadastro for salvo.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -669,9 +763,10 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
           <button 
             onClick={handleCreatePatient}
-            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest"
+            disabled={isCreatingPatient}
+            className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all uppercase tracking-widest disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Salvar Atendente
+            {isCreatingPatient ? 'Salvando atendente...' : 'Salvar Atendente'}
           </button>
         </div>
       </Modal>
@@ -723,11 +818,14 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   );
 }
 
-function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void> }) {
+function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void | Promise<void>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void> }) {
   const [activeSubTab, setActiveSubTab] = useState('dados');
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Patient>>(patient);
+  const [pendingPhotoFile, setPendingPhotoFile] = useState<File | null>(null);
+  const [pendingPhotoPreviewUrl, setPendingPhotoPreviewUrl] = useState<string | null>(null);
+  const [isSavingData, setIsSavingData] = useState(false);
   const [repositionModalSession, setRepositionModalSession] = useState<Session | null>(null);
   const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [repoTime, setRepoTime] = useState(patient?.fixedTime || '08:00');
@@ -763,6 +861,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [newEvoNotes, setNewEvoNotes] = useState('');
   const [lastGeneratedExternalLink, setLastGeneratedExternalLink] = useState('');
+
+  useEffect(() => {
+    return () => {
+      if (pendingPhotoPreviewUrl) {
+        URL.revokeObjectURL(pendingPhotoPreviewUrl);
+      }
+    };
+  }, [pendingPhotoPreviewUrl]);
 
   if (!patient) return null;
 
@@ -825,56 +931,169 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     daysLate = differenceInDays(new Date(), new Date(realizedSessionsChronological[5].date));
   }
 
-  const handleSavePatientData = () => {
+  const clearPendingPhoto = () => {
+    setPendingPhotoFile(null);
+    setPendingPhotoPreviewUrl(null);
+  };
+
+  const cancelEditingData = () => {
+    if (isSavingData) {
+      const canceled = cancelPatientPhotoUpload(patient.id);
+      showToast(
+        canceled
+          ? 'Cancelando o envio da foto...'
+          : 'A gravação do cadastro já está sendo confirmada. Aguarde alguns segundos.',
+        canceled ? 'success' : 'error',
+      );
+      return;
+    }
+
+    setEditForm(patient);
+    clearPendingPhoto();
+    setIsEditingData(false);
+  };
+
+  const requestClosePatientModal = () => {
+    if (isSavingData) {
+      const canceled = cancelPatientPhotoUpload(patient.id);
+      showToast(
+        canceled
+          ? 'Cancelando o envio da foto...'
+          : 'A gravação do cadastro já está sendo confirmada. Aguarde alguns segundos.',
+        canceled ? 'success' : 'error',
+      );
+      return;
+    }
+
+    onClose();
+  };
+
+  const persistPatientUpdate = async (
+    basePatient: Patient,
+    additionalState: Omit<Partial<AppState>, 'patients'>,
+    successMessage: string,
+    successType: 'success' | 'error' = 'success',
+  ): Promise<boolean> => {
+    if (isSavingData) return false;
+
+    setIsSavingData(true);
+    let uploadedPhotoPath: string | undefined;
+
+    try {
+      let patientToSave = basePatient;
+
+      if (pendingPhotoFile) {
+        const uploadedPhoto = await uploadPatientPhoto(currentUserId, patient.id, pendingPhotoFile);
+        uploadedPhotoPath = uploadedPhoto.storagePath;
+        patientToSave = {
+          ...basePatient,
+          photoUrl: '',
+          photoStorageProvider: 'google-drive',
+          photoDriveFileId: uploadedPhoto.driveFileId,
+          photoDriveFileName: uploadedPhoto.fileName,
+          photoMimeType: uploadedPhoto.mimeType,
+          photoStoragePath: uploadedPhoto.storagePath,
+        };
+      }
+
+      const updatedPatients = state.patients.map(currentPatient =>
+        currentPatient.id === patient.id ? patientToSave : currentPatient
+      );
+
+      await Promise.resolve(onUpdate({
+        ...additionalState,
+        patients: updatedPatients,
+      }));
+
+      const previousPhotoReference = patient.photoDriveFileId || patient.photoStoragePath;
+      if (
+        uploadedPhotoPath &&
+        previousPhotoReference &&
+        previousPhotoReference !== uploadedPhotoPath
+      ) {
+        await deletePatientPhoto(previousPhotoReference).catch(cleanupError => {
+          console.error('Não foi possível remover a foto anterior do atendente:', cleanupError);
+        });
+      }
+
+      setEditForm(patientToSave);
+      clearPendingPhoto();
+      setIsEditingData(false);
+      showToast(successMessage, successType);
+      return true;
+    } catch (error) {
+      if (uploadedPhotoPath) {
+        await deletePatientPhoto(uploadedPhotoPath).catch(cleanupError => {
+          console.error('Não foi possível remover a nova foto após a falha da gravação:', cleanupError);
+        });
+      }
+
+      console.error('Erro ao salvar dados do atendente:', error);
+      showToast(getPatientPhotoErrorMessage(error), 'error');
+      return false;
+    } finally {
+      setIsSavingData(false);
+    }
+  };
+
+  const handleSavePatientData = async () => {
+    if (isSavingData) return;
+
     if (editForm.fixedTime && !isValidTime(editForm.fixedTime)) {
       showToast('Por favor, insira um horário fixo válido no formato HH:00 ou HH:30 (ex: 17:30).', 'error');
       return;
     }
-    const normalized = editForm.fixedTime ? normalizeTime(editForm.fixedTime) : '';
-    setEditForm(prev => ({ ...prev, fixedTime: normalized }));
-    editForm.fixedTime = normalized;
 
-    const isBecomingInactive = editForm.status === 'Concluído' && patient.status !== 'Concluído';
-    
+    const normalized = editForm.fixedTime ? normalizeTime(editForm.fixedTime) : '';
+    const normalizedEditForm = { ...editForm, fixedTime: normalized };
+    setEditForm(normalizedEditForm);
+
+    const isBecomingInactive = normalizedEditForm.status === 'Concluído' && patient.status !== 'Concluído';
+
     if (isBecomingInactive) {
       setConfirmInactivate(true);
       return;
     }
 
-    const isFixedDayChanged = editForm.fixedDay !== patient.fixedDay;
-    const isFixedTimeChanged = editForm.fixedTime !== patient.fixedTime;
-    const isDoubleSessionChanged = !!editForm.doubleSession !== !!patient.doubleSession;
+    const isFixedDayChanged = normalizedEditForm.fixedDay !== patient.fixedDay;
+    const isFixedTimeChanged = normalizedEditForm.fixedTime !== patient.fixedTime;
+    const isDoubleSessionChanged = !!normalizedEditForm.doubleSession !== !!patient.doubleSession;
 
     if (isFixedDayChanged || isFixedTimeChanged || isDoubleSessionChanged) {
-      const conflicts = state.patients.filter(p => 
+      const conflicts = state.patients.filter(p =>
         p.id !== patient.id &&
         p.status === 'Ativo' &&
         schedulesOverlap(
           p.fixedDay || '',
           p.fixedTime || '',
           !!p.doubleSession,
-          editForm.fixedDay || '',
-          editForm.fixedTime || '',
-          !!editForm.doubleSession
+          normalizedEditForm.fixedDay || '',
+          normalizedEditForm.fixedTime || '',
+          !!normalizedEditForm.doubleSession
         )
       );
-      
+
       setConfirmScheduleChange({
         oldDay: patient.fixedDay || '',
         oldTime: patient.fixedTime || '',
         oldDouble: !!patient.doubleSession,
-        newDay: editForm.fixedDay || '',
-        newTime: editForm.fixedTime || '',
-        newDouble: !!editForm.doubleSession,
+        newDay: normalizedEditForm.fixedDay || '',
+        newTime: normalizedEditForm.fixedTime || '',
+        newDouble: !!normalizedEditForm.doubleSession,
         conflictingNames: conflicts.map(c => c.name)
       });
       return;
     }
 
-    executeSavePatientData(false);
+    await executeSavePatientData(false, normalizedEditForm);
   };
 
-  const executeSavePatientData = (deleteFutureSessions: boolean) => {
+  const executeSavePatientData = async (
+    deleteFutureSessions: boolean,
+    formToSave: Partial<Patient> = editForm,
+  ) => {
+    const basePatient = { ...patient, ...formToSave } as Patient;
+
     if (deleteFutureSessions) {
       const todayStr = format(new Date(), 'yyyy-MM-dd');
       const updatedSessions = state.sessions.filter(s => {
@@ -885,55 +1104,60 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
       const updatedRepositions = state.repositions.filter(r => {
         if (r.patientId !== patient.id) return true;
         if (r.status === 'Pendente') return false;
-        if (r.status === 'Agendada') return false; 
+        if (r.status === 'Agendada') return false;
         return true;
       });
-      
-      onUpdate({ 
-        patients: state.patients.map(p => p.id === patient.id ? { ...p, ...editForm } as Patient : p),
-        sessions: updatedSessions,
-        repositions: updatedRepositions
-      });
-      setIsEditingData(false);
-      showToast('Atendente desativado e sessões futuras removidas.', 'error');
-      setConfirmInactivate(false);
+
+      const saved = await persistPatientUpdate(
+        basePatient,
+        {
+          sessions: updatedSessions,
+          repositions: updatedRepositions,
+        },
+        'Atendente desativado e sessões futuras removidas.',
+        'error',
+      );
+
+      if (saved) setConfirmInactivate(false);
       return;
     }
 
-    const updatedPatients = state.patients.map(p => p.id === patient.id ? { ...p, ...editForm } as Patient : p);
-    onUpdate({ patients: updatedPatients });
-    setIsEditingData(false);
-    showToast('Dados atualizados com sucesso!', 'success');
-    setConfirmInactivate(false);
+    const saved = await persistPatientUpdate(
+      basePatient,
+      {},
+      'Dados atualizados com sucesso!',
+    );
+
+    if (saved) setConfirmInactivate(false);
   };
 
-  const executeSavePatientDataWithRealignment = (realign: boolean) => {
-    if (!confirmScheduleChange) return;
-    
+  const executeSavePatientDataWithRealignment = async (realign: boolean) => {
+    if (!confirmScheduleChange || isSavingData) return;
+
     let updatedSessions = [...state.sessions];
-    
+
     if (realign) {
       const todayStr = format(new Date(), 'yyyy-MM-dd');
       const holidays = state.settings.holidays || [];
-      
+
       const oldSessionsToRealign = state.sessions.filter(s => {
         if (s.patientId !== patient.id) return false;
         if (s.status !== SessionStatus.AGENDADA) return false;
         if (s.date < todayStr) return false;
         if (s.isBlocked) return false;
-        
+
         const dayOfWeekIndex = getDayOfWeekIndex(confirmScheduleChange.oldDay);
         const sessionDayOfWeek = getDay(parseISO(s.date));
         if (sessionDayOfWeek !== dayOfWeekIndex) return false;
-        
+
         const isOldTime = s.time === confirmScheduleChange.oldTime;
         const isOldSecondSlot = confirmScheduleChange.oldDouble && s.time === addOneHour(confirmScheduleChange.oldTime);
         if (!isOldTime && !isOldSecondSlot) return false;
-        
+
         if (s.packageNumber === 0) return false;
         const notesLower = (s.notes || '').toLowerCase();
         if (notesLower.includes('reposição') || notesLower.includes('reposicao') || notesLower.includes('extra') || notesLower.includes('manual')) return false;
-        
+
         return true;
       });
 
@@ -941,26 +1165,26 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         const uniqueDates = Array.from(new Set(oldSessionsToRealign.map(s => s.date))).sort();
         const numWeeks = uniqueDates.length;
         const newDates = getNextValidDates(confirmScheduleChange.newDay, todayStr, numWeeks, holidays);
-        
+
         const oldSessionsSorted = [...oldSessionsToRealign].sort((a, b) => {
           const dateDiff = a.date.localeCompare(b.date);
           if (dateDiff !== 0) return dateDiff;
           return a.time.localeCompare(b.time);
         });
-        
+
         const newSessionsToCreate: Session[] = [];
         let infoIndex = 0;
-        
+
         for (const newDate of newDates) {
           const times = [confirmScheduleChange.newTime];
           if (confirmScheduleChange.newDouble) {
             times.push(addOneHour(confirmScheduleChange.newTime));
           }
-          
+
           for (const time of times) {
             const info = oldSessionsSorted[infoIndex] || oldSessionsSorted[oldSessionsSorted.length - 1] || { packageNumber: 1, notes: '' };
             infoIndex++;
-            
+
             newSessionsToCreate.push({
               id: Math.random().toString(36).substr(2, 9),
               patientId: patient.id,
@@ -975,13 +1199,13 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
             });
           }
         }
-        
+
         const oldIds = new Set(oldSessionsToRealign.map(s => s.id));
         updatedSessions = state.sessions.filter(s => !oldIds.has(s.id));
         updatedSessions.push(...newSessionsToCreate);
       }
     }
-    
+
     const todayStr = format(new Date(), 'yyyy-MM-dd');
     const previousScheduleEnd = format(addDays(parseISO(todayStr), -1), 'yyyy-MM-dd');
     const previousScheduleStart = patient.fixedScheduleEffectiveFrom || patient.startDate || todayStr;
@@ -1010,27 +1234,39 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
       ]
     } as Patient;
 
-    const updatedPatients = state.patients.map(p => p.id === patient.id ? updatedPatient : p);
-    
-    onUpdate({ 
-      patients: updatedPatients,
-      sessions: updatedSessions
-    });
-    
-    setIsEditingData(false);
-    setConfirmScheduleChange(null);
-    showToast(realign ? 'Dados salvos e agenda futura realinhada com sucesso!' : 'Dados salvos com sucesso!', 'success');
+    const saved = await persistPatientUpdate(
+      updatedPatient,
+      { sessions: updatedSessions },
+      realign
+        ? 'Dados salvos e agenda futura realinhada com sucesso!'
+        : 'Dados salvos com sucesso!',
+    );
+
+    if (saved) setConfirmScheduleChange(null);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'photoUrl' | 'reportPdfUrl' | 'opinionPdfUrl') => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditForm(prev => ({ ...prev, [field]: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    if (field === 'photoUrl') {
+      try {
+        validatePatientPhoto(file);
+        setPendingPhotoFile(file);
+        setPendingPhotoPreviewUrl(URL.createObjectURL(file));
+      } catch (error) {
+        clearPendingPhoto();
+        e.currentTarget.value = '';
+        showToast(getPatientPhotoErrorMessage(error), 'error');
+      }
+      return;
     }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setEditForm(prev => ({ ...prev, [field]: reader.result as string }));
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleGenerateNewPackage = () => {
@@ -1259,7 +1495,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     ? { label: 'WhatsApp OK', detail: patient.whatsapp, tone: 'green' }
     : { label: 'Sem WhatsApp', detail: 'Cadastro incompleto', tone: 'red' };
   const documentItems = [
-    { label: 'Foto', ok: !!patient.photoUrl },
+    { label: 'Foto', ok: hasPatientPhoto(patient) },
     { label: 'Relatório', ok: !!patient.reportPdfUrl },
     { label: 'Parecer', ok: !!patient.opinionPdfUrl },
     { label: 'Escola', ok: !!patient.school },
@@ -1284,7 +1520,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     !!patient.medication,
     !!patient.reportPdfUrl,
     !!patient.opinionPdfUrl,
-    !!patient.photoUrl,
+    hasPatientPhoto(patient),
     !!patient.anamnese?.complaint,
     !!patient.anamnese?.diagnoses,
     !!patient.clinicalNotes,
@@ -1325,24 +1561,25 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={patient.name} width="max-w-5xl">
+    <Modal
+      isOpen={isOpen}
+      onClose={requestClosePatientModal}
+      title={patient.name}
+      width="max-w-5xl"
+    >
        <div className="flex flex-col gap-6">
           {/* Resumo inteligente */}
           <section className="border border-clinic-border bg-clinic-surface rounded-xl shadow-sm overflow-hidden">
             <div className="p-4 md:p-5 bg-clinic-bg/50 border-b border-clinic-border flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between">
               <div className="flex items-center gap-4 min-w-0">
-                {patient.photoUrl ? (
-                  <img
-                    src={patient.photoUrl}
-                    alt={patient.name}
-                    onClick={() => setIsPhotoExpanded(true)}
-                    className="w-20 h-20 rounded-xl object-cover border border-clinic-border shadow-sm cursor-pointer hover:opacity-90 transition"
-                  />
-                ) : (
-                  <div className="w-20 h-20 rounded-xl bg-white border border-clinic-border flex items-center justify-center text-3xl font-bold text-clinic-primary shadow-sm">
-                    {patient.name.charAt(0)}
-                  </div>
-                )}
+                <PatientPhoto
+                  patient={patient}
+                  alt={patient.name}
+                  onClick={hasPatientPhoto(patient) ? () => setIsPhotoExpanded(true) : undefined}
+                  className="w-20 h-20 rounded-xl object-cover border border-clinic-border shadow-sm cursor-pointer hover:opacity-90 transition"
+                  fallbackClassName="w-20 h-20 rounded-xl bg-white border border-clinic-border flex items-center justify-center text-3xl font-bold text-clinic-primary shadow-sm"
+                  fallbackText={patient.name.charAt(0)}
+                />
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-1">
                     <h3 className="text-2xl font-bold text-clinic-text truncate">{patient.name}</h3>
@@ -1552,18 +1789,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
                     <div className="col-span-1 md:col-span-2 flex items-center justify-between border-b border-clinic-border pb-2">
                       <div className="flex gap-4 items-center">
-                        {patient.photoUrl ? (
-                          <img 
-                            src={patient.photoUrl} 
-                            alt={patient.name} 
-                            onClick={() => setIsPhotoExpanded(true)}
-                            className="w-14 h-14 rounded-full object-cover border border-clinic-border/50 shadow-sm cursor-pointer hover:opacity-80 transition" 
-                          />
-                        ) : (
-                          <div className="w-14 h-14 rounded-full bg-clinic-bg flex items-center justify-center border border-clinic-border/50 text-clinic-text-faint text-xl shadow-sm">
-                            {patient.name.charAt(0)}
-                          </div>
-                        )}
+                        <PatientPhoto
+                          patient={patient}
+                          alt={patient.name}
+                          onClick={hasPatientPhoto(patient) ? () => setIsPhotoExpanded(true) : undefined}
+                          className="w-14 h-14 rounded-full object-cover border border-clinic-border/50 shadow-sm cursor-pointer hover:opacity-80 transition"
+                          fallbackClassName="w-14 h-14 rounded-full bg-clinic-bg flex items-center justify-center border border-clinic-border/50 text-clinic-text-faint text-xl shadow-sm"
+                          fallbackText={patient.name.charAt(0)}
+                        />
                         <div className="flex-1">
                            <p className="text-lg font-bold text-clinic-text leading-tight">{patient.name}</p>
                            <p className="text-xs font-medium text-clinic-text-muted">{calculateAge(patient.birthDate)} anos</p>
@@ -1575,9 +1808,14 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                     </div>
 
                     {/* Photo Lightbox */}
-                    {isPhotoExpanded && patient.photoUrl && (
+                    {isPhotoExpanded && hasPatientPhoto(patient) && (
                       <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm shadow-2xl" onClick={() => setIsPhotoExpanded(false)}>
-                        <img src={patient.photoUrl} className="max-w-full max-h-full rounded-2xl object-cover shadow-2xl animate-in zoom-in-95 cursor-pointer" alt="Expanded" />
+                        <PatientPhoto
+                          patient={patient}
+                          alt={`Foto ampliada de ${patient.name}`}
+                          className="max-w-full max-h-full rounded-2xl object-cover shadow-2xl animate-in zoom-in-95 cursor-pointer"
+                          fallbackClassName="hidden"
+                        />
                         <button className="absolute top-4 right-4 text-white bg-black/50 p-2 rounded-full hover:bg-black/80 transition-colors">
                           <X size={24} />
                         </button>
@@ -1665,8 +1903,19 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                         Editar Dados
                       </h5>
                       <div className="flex gap-2">
-                        <button onClick={() => setIsEditingData(false)} className="text-clinic-text-faint hover:text-clinic-text text-xs uppercase font-bold px-3 py-1.5 transition-colors">Cancelar</button>
-                        <button onClick={handleSavePatientData} className="bg-clinic-primary text-white text-xs uppercase font-bold px-4 py-1.5 rounded-lg hover:bg-clinic-primary/90 transition-colors">Salvar Alterações</button>
+                        <button
+                          onClick={cancelEditingData}
+                          className="text-clinic-text-faint hover:text-clinic-text text-xs uppercase font-bold px-3 py-1.5 transition-colors"
+                        >
+                          {isSavingData ? 'Cancelar envio' : 'Cancelar'}
+                        </button>
+                        <button
+                          onClick={handleSavePatientData}
+                          disabled={isSavingData}
+                          className="bg-clinic-primary text-white text-xs uppercase font-bold px-4 py-1.5 rounded-lg hover:bg-clinic-primary/90 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isSavingData ? 'Salvando...' : 'Salvar Alterações'}
+                        </button>
                       </div>
                     </div>
                     
@@ -1703,7 +1952,40 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                         </div>
                         <div>
                           <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Foto da Criança</label>
-                          <input type="file" accept="image/*" onChange={e => handleFileUpload(e, 'photoUrl')} className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20" />
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            disabled={isSavingData}
+                            onChange={e => handleFileUpload(e, 'photoUrl')}
+                            className="px-4 py-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm block w-full text-clinic-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-clinic-primary/10 file:text-clinic-primary hover:file:bg-clinic-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+                          />
+                          {(pendingPhotoPreviewUrl || hasPatientPhoto(editForm)) && (
+                            <div className="mt-2 flex items-center gap-3 rounded-xl border border-clinic-border bg-clinic-bg/50 p-2">
+                              {pendingPhotoPreviewUrl ? (
+                                <img
+                                  src={pendingPhotoPreviewUrl}
+                                  alt="Prévia da foto da criança"
+                                  className="h-14 w-14 rounded-full border border-clinic-border object-cover"
+                                />
+                              ) : (
+                                <PatientPhoto
+                                  patient={{
+                                    name: editForm.name || patient.name,
+                                    photoUrl: editForm.photoUrl,
+                                    photoDriveFileId: editForm.photoDriveFileId,
+                                  }}
+                                  alt="Foto atual da criança"
+                                  className="h-14 w-14 rounded-full border border-clinic-border object-cover"
+                                  fallbackClassName="h-14 w-14 rounded-full border border-clinic-border bg-clinic-bg flex items-center justify-center font-bold text-clinic-primary"
+                                />
+                              )}
+                              <p className="text-xs text-clinic-text-muted">
+                                {pendingPhotoPreviewUrl
+                                  ? 'Nova foto selecionada. O envio ao Google Drive será concluído ao salvar as alterações.'
+                                  : 'Foto atual salva de forma privada no Google Drive.'}
+                              </p>
+                            </div>
+                          )}
                         </div>
                       </div>
                       
@@ -2294,19 +2576,22 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
           <div className="flex flex-col gap-3">
             <button
               onClick={() => executeSavePatientData(true)}
-              className="px-4 py-3 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all text-sm w-full text-center"
+              disabled={isSavingData}
+              className="px-4 py-3 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all text-sm w-full text-center disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Sim, excluir agendamentos futuros
+              {isSavingData ? 'Salvando...' : 'Sim, excluir agendamentos futuros'}
             </button>
             <button
               onClick={() => executeSavePatientData(false)}
-              className="px-4 py-3 bg-clinic-bg border border-clinic-border text-clinic-text font-bold rounded-lg hover:bg-clinic-bg/80 transition-all text-sm w-full text-center"
+              disabled={isSavingData}
+              className="px-4 py-3 bg-clinic-bg border border-clinic-border text-clinic-text font-bold rounded-lg hover:bg-clinic-bg/80 transition-all text-sm w-full text-center disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Não, manter na agenda
+              {isSavingData ? 'Salvando...' : 'Não, manter na agenda'}
             </button>
             <button
               onClick={() => setConfirmInactivate(false)}
-              className="mt-2 text-xs text-clinic-text-muted hover:underline uppercase tracking-wide text-center"
+              disabled={isSavingData}
+              className="mt-2 text-xs text-clinic-text-muted hover:underline uppercase tracking-wide text-center disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancelar Edição
             </button>
@@ -2403,19 +2688,22 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
             <div className="flex flex-col gap-3">
               <button
                 onClick={() => executeSavePatientDataWithRealignment(true)}
-                className="px-4 py-3 bg-clinic-primary text-white font-bold rounded-lg shadow-md hover:bg-clinic-primary-hover transition-all text-sm w-full text-center uppercase tracking-wider"
+                disabled={isSavingData}
+                className="px-4 py-3 bg-clinic-primary text-white font-bold rounded-lg shadow-md hover:bg-clinic-primary-hover transition-all text-sm w-full text-center uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Sim, realinhar agenda futura (Recomendado)
+                {isSavingData ? 'Salvando...' : 'Sim, realinhar agenda futura (Recomendado)'}
               </button>
               <button
                 onClick={() => executeSavePatientDataWithRealignment(false)}
-                className="px-4 py-3 bg-clinic-bg border border-clinic-border text-clinic-text font-bold rounded-lg hover:bg-clinic-bg/80 transition-all text-sm w-full text-center uppercase tracking-wider"
+                disabled={isSavingData}
+                className="px-4 py-3 bg-clinic-bg border border-clinic-border text-clinic-text font-bold rounded-lg hover:bg-clinic-bg/80 transition-all text-sm w-full text-center uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Não, salvar apenas o cadastro
+                {isSavingData ? 'Salvando...' : 'Não, salvar apenas o cadastro'}
               </button>
               <button
                 onClick={() => setConfirmScheduleChange(null)}
-                className="mt-2 text-xs text-clinic-text-muted hover:underline uppercase tracking-wide text-center"
+                disabled={isSavingData}
+                className="mt-2 text-xs text-clinic-text-muted hover:underline uppercase tracking-wide text-center disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancelar Edição
               </button>

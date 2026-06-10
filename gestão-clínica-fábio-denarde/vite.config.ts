@@ -37,6 +37,12 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
+      proxy: {
+        '/api/drive': {
+          target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
+          changeOrigin: true,
+        },
+      },
       // Use polling on Windows and ignore problematic paths to avoid file‑watcher crashes
       watch: {
         ignored: [

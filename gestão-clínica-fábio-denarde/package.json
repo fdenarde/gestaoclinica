@@ -4,7 +4,7 @@
   "version": "1.7.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "node scripts/dev-with-drive.cjs",
     "dev-windows": "nodemon --watch . --exec \"npm run dev\"",
     "build": "vite build && node -e \"require('fs').writeFileSync('dist/.nojekyll', '')\" && node -e \"require('fs').copyFileSync('dist/index.html', 'dist/404.html')\"",
     "preview": "vite preview",
@@ -17,7 +17,11 @@
     "test-msg": "node test-messages.js",
     "test-wpp": "node send-test-whatsapp.js",
     "deploy": "node -e \"console.error('Deploy automatico desativado por seguranca. Use npm run safe-deploy.'); process.exit(1)\"",
-    "safe-deploy": "node safe-deploy.cjs"
+    "safe-deploy": "node safe-deploy.cjs",
+    "dev:frontend": "vite --port=3000 --host=0.0.0.0",
+    "dev:drive-api": "node drive-api-server.js",
+    "setup:drive": "node scripts/setup-google-drive.mjs",
+    "test:drive": "node scripts/test-google-drive-config.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
