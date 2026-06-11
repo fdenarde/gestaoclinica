@@ -1,28 +1,85 @@
-import React, { useEffect, useState } from 'react';
-import { Eye, Loader2, Pencil, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Clock3, Eye, Film, ImageIcon, Loader2, Pencil, PlayCircle, Trash2 } from 'lucide-react';
 import type { ActivityRecord } from '../../types/activityRecords';
 import { getActivityPhotoUrl } from '../../lib/activityRecordsApi';
 import { safeFormatDate } from '../../lib/utils';
 
+function formatDuration(seconds?: number): string | null {
+  if (!seconds || seconds <= 0) return null;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60).toString().padStart(2, '0');
+  return `${minutes}:${remainingSeconds}`;
+}
+
+function getMediaKind(record: ActivityRecord): 'photo' | 'video' {
+  if (record.mediaType === 'video' || record.mimeType?.startsWith('video/')) return 'video';
+  return 'photo';
+}
+
 export default function ActivityRecordCard({ record, onView, onEdit, onDelete }: { key?: React.Key; record: ActivityRecord; onView: () => void; onEdit: () => void; onDelete: () => void }) {
   const [url, setUrl] = useState('');
+  const [loadError, setLoadError] = useState(false);
+  const mediaKind = getMediaKind(record);
+  const duration = formatDuration(record.durationSeconds);
+  const visibility = record.visibility === 'share_allowed' ? 'Compartilhamento permitido' : record.visibility === 'do_not_share' ? 'Não compartilhar' : 'Somente interno';
+
   useEffect(() => {
     let active = true;
-    getActivityPhotoUrl(record.id, record.patientId).then(value => { if (active) setUrl(value); }).catch(() => undefined);
+    setUrl('');
+    setLoadError(false);
+    getActivityPhotoUrl(record.id, record.patientId)
+      .then(value => { if (active) setUrl(value); })
+      .catch(() => { if (active) setLoadError(true); });
     return () => { active = false; };
   }, [record.id, record.patientId]);
-  const visibility = record.visibility === 'share_allowed' ? 'Compartilhamento permitido' : record.visibility === 'do_not_share' ? 'Não compartilhar' : 'Somente interno';
+
+  const mediaLabel = useMemo(() => mediaKind === 'video' ? 'Vídeo' : 'Foto', [mediaKind]);
+  const mediaIcon = mediaKind === 'video' ? <Film size={12} /> : <ImageIcon size={12} />;
+
   return (
-    <article className="overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm">
-      <button type="button" onClick={onView} className="relative block aspect-[4/3] w-full bg-clinic-bg">
-        {url ? <img src={url} alt={record.description || record.category} className="h-full w-full object-cover" /> : <span className="absolute inset-0 flex items-center justify-center"><Loader2 className="animate-spin text-clinic-primary" /></span>}
-        {record.status === 'delete_failed' && <span className="absolute left-2 top-2 rounded-full bg-status-red-text px-2 py-1 text-[9px] font-black uppercase text-white">Exclusão pendente</span>}
+    <article className="group overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl">
+      <button type="button" onClick={onView} className="relative block aspect-video w-full overflow-hidden bg-slate-950 text-left">
+        {url && mediaKind === 'photo' && (
+          <img src={url} alt={record.description || record.category} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+        )}
+        {url && mediaKind === 'video' && (
+          <video src={url} preload="metadata" muted playsInline className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+        )}
+        {!url && !loadError && (
+          <span className="absolute inset-0 flex items-center justify-center bg-clinic-bg">
+            <Loader2 className="animate-spin text-clinic-primary" />
+          </span>
+        )}
+        {loadError && (
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-clinic-bg px-4 text-center text-xs font-bold text-clinic-text-muted">
+            {mediaKind === 'video' ? <Film size={24} /> : <ImageIcon size={24} />}
+            Prévia indisponível
+          </span>
+        )}
+        <span className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/80 via-black/35 to-transparent" />
+        <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/70 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white backdrop-blur-sm">
+          {mediaIcon} {mediaLabel}
+        </span>
+        {duration && (
+          <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-black/70 px-2 py-1 text-[10px] font-black text-white backdrop-blur-sm">
+            <Clock3 size={11} /> {duration}
+          </span>
+        )}
+        {mediaKind === 'video' && (
+          <span className="absolute inset-0 flex items-center justify-center">
+            <span className="rounded-full bg-white/90 p-2 text-clinic-primary shadow-lg transition-transform duration-200 group-hover:scale-110">
+              <PlayCircle size={34} fill="currentColor" className="text-clinic-primary" />
+            </span>
+          </span>
+        )}
+        {record.status === 'delete_failed' && <span className="absolute left-2 top-10 rounded-full bg-status-red-text px-2 py-1 text-[9px] font-black uppercase text-white">Exclusão pendente</span>}
+        <span className="absolute bottom-2 left-2 right-2">
+          <span className="line-clamp-1 text-xs font-black text-white drop-shadow-sm">{record.category}</span>
+          <span className="mt-0.5 block text-[10px] font-bold text-white/85">{safeFormatDate(record.sessionDate, 'dd/MM/yyyy')} às {record.sessionTime}</span>
+        </span>
       </button>
+
       <div className="space-y-2 p-3">
-        <div className="flex items-start justify-between gap-2">
-          <div><p className="text-sm font-black text-clinic-text">{record.category}</p><p className="text-[10px] font-bold uppercase tracking-wide text-clinic-text-faint">{safeFormatDate(record.sessionDate, 'dd/MM/yyyy')} às {record.sessionTime}</p></div>
-          <span className="rounded-full bg-clinic-bg px-2 py-1 text-[9px] font-black uppercase text-clinic-text-muted">Foto</span>
-        </div>
         <p className="line-clamp-2 min-h-8 text-xs text-clinic-text-muted">{record.description || 'Sem observação.'}</p>
         <div className="space-y-0.5 text-[10px] font-bold text-clinic-text-faint">
           <p>{record.sessionNumber ? `Sessão ${record.sessionNumber}` : 'Sessão relacionada'} • {record.sessionStatusSnapshot}</p>

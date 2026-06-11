@@ -46,7 +46,7 @@ export interface ActivityRecord {
   activityAt: string;
   category: ActivityRecordCategory;
   description: string;
-  mediaType: 'photo';
+  mediaType: 'photo' | 'video';
   visibility: ActivityRecordVisibility;
   storageProvider: 'google-drive';
   driveFileId: string;
@@ -56,6 +56,11 @@ export interface ActivityRecord {
   fileSize: number;
   width: number;
   height: number;
+  durationSeconds?: number;
+  thumbnailDriveFileId?: string;
+  thumbnailMimeType?: string;
+  thumbnailWidth?: number;
+  thumbnailHeight?: number;
   sha256: string;
   status: ActivityRecordStatus;
   uploadStatus: ActivityRecordStatus;
