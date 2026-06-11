@@ -6,7 +6,7 @@ export const ACTIVITY_CATEGORIES = new Set([
   'Coordenação motora', 'Coordenação visuomotora', 'Funções executivas',
   'Atividade lúdica', 'Evolução', 'Devolutiva', 'Outro',
 ]);
-export const ACTIVITY_VISIBILITIES = new Set(['internal_only', 'share_allowed', 'do_not_share']);
+export const ACTIVITY_VISIBILITIES = new Set(['internal_only', 'share_allowed']);
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export function activityError(code, message, statusCode = 400, details = undefined) {

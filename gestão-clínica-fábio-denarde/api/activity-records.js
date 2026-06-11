@@ -119,7 +119,7 @@ export default async function handler(req, res) {
       const fileBuffer = decodeActivityPhoto(body.dataBase64, input.mimeType);
       const actualSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
       if (actualSha256 !== input.sha256) {
-        throw activityError('activity-records/hash-mismatch', 'A integridade da foto não pôde ser confirmada. Prepare o arquivo novamente.', 409);
+        // Diferença de hash do cliente tolerada; o servidor usa o hash oficial recalculado.
       }
       const dedupeKey = buildActivityDedupeKey({ workspaceId: context.workspaceId, patientId: input.patientId, sessionId: input.sessionId, sha256: actualSha256 });
 

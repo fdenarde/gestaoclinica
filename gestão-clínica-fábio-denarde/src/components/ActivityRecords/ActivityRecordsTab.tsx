@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { CalendarDays, Camera, Filter, Film, Image, Images, LayoutGrid, Loader2, LockKeyhole, Plus, ShieldCheck } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CalendarDays, Camera, CheckSquare, Filter, Film, Image, Images, LayoutGrid, Loader2, LockKeyhole, Plus, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { Patient, Session } from '../../types';
 import { ACTIVITY_RECORD_CATEGORIES, getDefaultActivityAuthorization, type ActivityRecord, type ActivityRecordCategory, type ActivityRecordVisibility } from '../../types/activityRecords';
 import { useActivityRecords } from '../../lib/useActivityRecords';
@@ -56,6 +56,9 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
   const [editDescription, setEditDescription] = useState('');
   const [editVisibility, setEditVisibility] = useState<ActivityRecordVisibility>('internal_only');
   const [busy, setBusy] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const authorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
   const canRecord = authorization.internalRecordingStatus === 'authorized';
   const authorizationMessage = authorization.internalRecordingStatus === 'not_authorized'
@@ -103,8 +106,63 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       });
   }, [filtered]);
 
+
+  useEffect(() => {
+    setSelectedIds(current => {
+      const visibleIds = new Set(filtered.map(record => record.id));
+      const next = new Set(Array.from(current).filter(id => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [filtered]);
+
+  const selectedRecords = useMemo(() => filtered.filter(record => selectedIds.has(record.id)), [filtered, selectedIds]);
+  const allFilteredSelected = filtered.length > 0 && filtered.every(record => selectedIds.has(record.id));
+
+  const toggleRecordSelection = (recordId: string) => {
+    setSelectedIds(current => {
+      const next = new Set(current);
+      if (next.has(recordId)) next.delete(recordId);
+      else next.add(recordId);
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setSelectMode(false);
+  };
+
+  const toggleAllFiltered = () => {
+    setSelectedIds(current => {
+      if (allFilteredSelected) return new Set();
+      const next = new Set(current);
+      for (const record of filtered) next.add(record.id);
+      return next;
+    });
+  };
+
+  const confirmBulkDelete = async () => {
+    if (selectedRecords.length === 0) return;
+    setBusy(true);
+    try {
+      for (const record of selectedRecords) {
+        await deleteActivityRecord(record);
+      }
+      showToast(`${selectedRecords.length} ${selectedRecords.length === 1 ? 'mídia excluída' : 'mídias excluídas'} da galeria.`, 'success');
+      setBulkDeleteOpen(false);
+      clearSelection();
+    } catch (err) {
+      showToast(getActivityRecordErrorMessage(err), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openEdit = (record: ActivityRecord) => {
-    setEditRecord(record); setEditCategory(record.category); setEditDescription(record.description); setEditVisibility(record.visibility);
+    setEditRecord(record);
+    setEditCategory(record.category);
+    setEditDescription(record.description);
+    setEditVisibility(record.visibility === 'do_not_share' ? 'internal_only' : record.visibility);
   };
 
   const saveEdit = async () => {
@@ -147,9 +205,32 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       <label className="relative"><Filter size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" /><select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs"><option value="all">Todas as categorias</option>{ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item}>{item}</option>)}</select></label>
       <label className="relative"><LayoutGrid size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" /><select value={mediaFilter} onChange={e => setMediaFilter(e.target.value as MediaFilter)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs"><option value="all">Fotos e vídeos</option><option value="photo">Somente fotos</option><option value="video">Somente vídeos</option></select></label>
       <select value={sessionFilter} onChange={e => setSessionFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as sessões</option>{sessions.filter(s => s.patientId === patient.id).sort((a,b) => `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`)).map(s => <option key={s.id} value={s.id}>{s.date.split('-').reverse().join('/')} às {s.time}</option>)}</select>
-      <select value={visibilityFilter} onChange={e => setVisibilityFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as visibilidades</option><option value="internal_only">Somente interno</option><option value="share_allowed">Compartilhamento permitido</option><option value="do_not_share">Não compartilhar</option></select>
+      <select value={visibilityFilter} onChange={e => setVisibilityFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as visibilidades</option><option value="internal_only">Somente interno</option><option value="share_allowed">Compartilhamento permitido</option></select>
       <select value={shareFilter} onChange={e => setShareFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todos os compartilhamentos</option><option value="shared">Compartilhados</option><option value="not_shared">Não compartilhados</option></select>
     </div>
+
+
+    {!loading && !error && filtered.length > 0 && (
+      <div className={`rounded-xl border p-3 ${selectMode ? 'border-clinic-primary/30 bg-clinic-primary/5' : 'border-clinic-border bg-white'}`}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-clinic-text">Seleção múltipla</p>
+            <p className="text-xs text-clinic-text-muted">Use para excluir várias mídias da galeria de uma vez. Outras ações em lote entram depois.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {!selectMode ? (
+              <button type="button" onClick={() => setSelectMode(true)} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"><CheckSquare size={14} /> Selecionar mídias</button>
+            ) : (
+              <>
+                <button type="button" onClick={toggleAllFiltered} className="rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary">{allFilteredSelected ? 'Desmarcar todas' : 'Selecionar todas visíveis'}</button>
+                <button type="button" onClick={() => setBulkDeleteOpen(true)} disabled={selectedRecords.length === 0 || busy} className="flex items-center gap-2 rounded-lg bg-status-red-bg px-3 py-2 text-[10px] font-black uppercase text-status-red-text disabled:opacity-45"><Trash2 size={14} /> Excluir {selectedRecords.length > 0 ? `(${selectedRecords.length})` : ''}</button>
+                <button type="button" onClick={clearSelection} disabled={busy} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-text-muted"><X size={14} /> Cancelar seleção</button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
 
     {loading && <div className="flex min-h-48 items-center justify-center"><Loader2 className="animate-spin text-clinic-primary" /></div>}
     {error && <div className="rounded-xl bg-status-red-bg p-4 text-center font-bold text-status-red-text">{error}</div>}
@@ -173,7 +254,7 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
               </div>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-              {dateRecords.map(record => <ActivityRecordCard key={record.id} record={record} onView={() => setViewRecord(record)} onEdit={() => openEdit(record)} onDelete={() => setDeleteRecord(record)} />)}
+              {dateRecords.map(record => <ActivityRecordCard key={record.id} record={record} selectMode={selectMode} selected={selectedIds.has(record.id)} onToggleSelect={() => toggleRecordSelection(record.id)} onView={() => setViewRecord(record)} onEdit={() => openEdit(record)} onDelete={() => setDeleteRecord(record)} />)}
             </div>
           </section>
         );
@@ -198,7 +279,8 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       </div>
     </Modal>
 
-    <Modal isOpen={!!editRecord} onClose={() => !busy && setEditRecord(null)} title="Editar informações" width="max-w-lg"><div className="space-y-4"><select value={editCategory} onChange={e => setEditCategory(e.target.value as ActivityRecordCategory)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm">{ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item}>{item}</option>)}</select><textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} className="min-h-28 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" /><select value={editVisibility} onChange={e => setEditVisibility(e.target.value as ActivityRecordVisibility)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm"><option value="internal_only">Somente interno</option>{authorization.guardianSharingStatus === 'authorized' && <option value="share_allowed">Pode ser compartilhado</option>}<option value="do_not_share">Não compartilhar</option></select><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setEditRecord(null)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy} onClick={() => void saveEdit()} className="rounded-lg bg-clinic-primary px-4 py-2 text-xs font-bold text-white">{busy ? 'Salvando...' : 'Salvar'}</button></div></div></Modal>
+    <Modal isOpen={!!editRecord} onClose={() => !busy && setEditRecord(null)} title="Editar informações" width="max-w-lg"><div className="space-y-4"><select value={editCategory} onChange={e => setEditCategory(e.target.value as ActivityRecordCategory)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm">{ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item}>{item}</option>)}</select><textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} className="min-h-28 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" /><select value={editVisibility} onChange={e => setEditVisibility(e.target.value as ActivityRecordVisibility)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm"><option value="internal_only">Somente interno</option>{authorization.guardianSharingStatus === 'authorized' && <option value="share_allowed">Pode ser compartilhado</option>}</select><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setEditRecord(null)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy} onClick={() => void saveEdit()} className="rounded-lg bg-clinic-primary px-4 py-2 text-xs font-bold text-white">{busy ? 'Salvando...' : 'Salvar'}</button></div></div></Modal>
     <Modal isOpen={!!deleteRecord} onClose={() => !busy && setDeleteRecord(null)} title="Excluir registro" width="max-w-md"><div className="space-y-5"><p className="text-sm text-clinic-text">A mídia será removida do Google Drive e o registro será excluído. Esta ação não altera a sessão, presença ou pagamentos.</p><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setDeleteRecord(null)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy} onClick={() => void confirmDelete()} className="rounded-lg bg-status-red-text px-4 py-2 text-xs font-bold text-white">{busy ? 'Excluindo...' : 'Excluir'}</button></div></div></Modal>
+    <Modal isOpen={bulkDeleteOpen} onClose={() => !busy && setBulkDeleteOpen(false)} title="Excluir mídias selecionadas" width="max-w-md"><div className="space-y-5"><p className="text-sm text-clinic-text">Você selecionou <strong>{selectedRecords.length}</strong> {selectedRecords.length === 1 ? 'mídia' : 'mídias'}. Elas serão removidas do Google Drive e os registros serão excluídos. Esta ação não altera sessão, presença ou pagamentos.</p><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setBulkDeleteOpen(false)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy || selectedRecords.length === 0} onClick={() => void confirmBulkDelete()} className="rounded-lg bg-status-red-text px-4 py-2 text-xs font-bold text-white">{busy ? 'Excluindo...' : `Excluir ${selectedRecords.length}`}</button></div></div></Modal>
   </div>;
 }

@@ -150,12 +150,43 @@ export async function cancelActivityUpload(patientId: string, uploadAttemptId: s
   await post({ action: 'cancelUpload', patientId, uploadAttemptId });
 }
 
+function normalizeActivityPhotoUrl(url: string): string {
+  if (typeof window === 'undefined' || !url) return url;
+
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const currentHost = window.location.hostname;
+    const returnedHost = parsed.hostname;
+    const isReturnedLocalApi = returnedHost === '127.0.0.1' || returnedHost === 'localhost' || returnedHost === '[::1]';
+    const isCurrentLanOrHttps = currentHost !== '127.0.0.1' && currentHost !== 'localhost' && currentHost !== '[::1]';
+
+    // Em testes pelo celular, o frontend abre em http://192.168.x.x:3000, mas a API local pode
+    // assinar a foto como http://127.0.0.1:3002 por causa do proxy do Vite. No celular, 127.0.0.1
+    // aponta para o próprio telefone, então a imagem nunca carrega. A URL precisa usar a mesma
+    // origem da tela para passar pelo proxy local corretamente. Em produção, mantemos a URL da API.
+    if (isReturnedLocalApi && isCurrentLanOrHttps) {
+      return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    // Mesmo no desktop, usar a mesma origem evita depender da porta privada 3002 na interface.
+    if (isReturnedLocalApi && window.location.port === '3000') {
+      return `${window.location.origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 export async function getActivityPhotoUrl(recordId: string, patientId: string, forceRefresh = false): Promise<string> {
   const cached = SIGNED_URL_CACHE.get(recordId);
   if (!forceRefresh && cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
   const result = await post<{ url: string; expiresAt: number }>({ action: 'getFileUrl', recordId, patientId });
-  SIGNED_URL_CACHE.set(recordId, result);
-  return result.url;
+  const normalizedUrl = normalizeActivityPhotoUrl(result.url);
+  const normalizedResult = { ...result, url: normalizedUrl };
+  SIGNED_URL_CACHE.set(recordId, normalizedResult);
+  return normalizedUrl;
 }
 
 export async function listActivityRecords(patientId: string): Promise<ActivityRecord[]> {

@@ -29,27 +29,37 @@ export function validateActivityPhotoSource(file: File): void {
   }
 }
 
-async function loadBitmap(file: File): Promise<ImageBitmap | HTMLImageElement> {
-  if ('createImageBitmap' in window) {
-    try {
-      return await createImageBitmap(file, { imageOrientation: 'from-image' });
-    } catch {
-      // fallback below
-    }
-  }
-
+function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
+    const reader = new FileReader();
+    reader.onerror = () => reject(createImageError('activity-records/read-failed', 'Não foi possível ler a imagem selecionada.'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
+function waitForImageDecode(image: HTMLImageElement): Promise<void> {
+  if (image.decode) {
+    return image.decode().catch(() => undefined);
+  }
+  return Promise.resolve();
+}
+
+async function loadImageElement(file: File): Promise<HTMLImageElement> {
+  const dataUrl = await readFileAsDataUrl(file);
+  return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(url);
+    image.decoding = 'sync';
+    image.onload = async () => {
+      await waitForImageDecode(image);
+      if (!(image.naturalWidth || image.width) || !(image.naturalHeight || image.height)) {
+        reject(createImageError('activity-records/read-failed', 'Não foi possível identificar as dimensões da imagem.'));
+        return;
+      }
       resolve(image);
     };
-    image.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(createImageError('activity-records/read-failed', 'Não foi possível abrir a imagem selecionada.'));
-    };
-    image.src = url;
+    image.onerror = () => reject(createImageError('activity-records/read-failed', 'Não foi possível abrir a imagem selecionada.'));
+    image.src = dataUrl;
   });
 }
 
@@ -87,7 +97,7 @@ function sha256HexFallback(buffer: ArrayBuffer): string {
   ];
   const constants = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be6d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
     0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
     0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
@@ -157,25 +167,66 @@ async function sha256Hex(blob: Blob): Promise<string> {
   return sha256HexFallback(buffer);
 }
 
+function getSanitizedBaseName(file: File): string {
+  return file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'atividade';
+}
+
+function getTargetDimensions(originalWidth: number, originalHeight: number): { width: number; height: number } {
+  const ratio = Math.min(1, MAX_ACTIVITY_IMAGE_DIMENSION / Math.max(originalWidth, originalHeight));
+  return {
+    width: Math.max(1, Math.round(originalWidth * ratio)),
+    height: Math.max(1, Math.round(originalHeight * ratio)),
+  };
+}
+
+function assertCanvasHasVisibleContent(canvas: HTMLCanvasElement): void {
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return;
+  const width = canvas.width;
+  const height = canvas.height;
+  const stepX = Math.max(1, Math.floor(width / 16));
+  const stepY = Math.max(1, Math.floor(height / 16));
+  let sampled = 0;
+  let veryDark = 0;
+  let hasVisibleSignal = false;
+
+  for (let y = Math.floor(stepY / 2); y < height; y += stepY) {
+    for (let x = Math.floor(stepX / 2); x < width; x += stepX) {
+      const [red, green, blue, alpha] = context.getImageData(x, y, 1, 1).data;
+      sampled += 1;
+      const brightness = red + green + blue;
+      if (alpha > 0 && brightness > 45) hasVisibleSignal = true;
+      if (alpha === 0 || brightness < 18) veryDark += 1;
+    }
+  }
+
+  if (!hasVisibleSignal && sampled > 0 && veryDark / sampled > 0.96) {
+    throw createImageError('activity-records/black-preview', 'O navegador preparou a foto como imagem preta. Tire a foto novamente ou escolha a imagem pela galeria.');
+  }
+}
+
 export async function processActivityPhoto(file: File): Promise<ProcessedActivityPhoto> {
   validateActivityPhotoSource(file);
-  const bitmap = await loadBitmap(file);
-  const originalWidth = bitmap.width;
-  const originalHeight = bitmap.height;
-  const ratio = Math.min(1, MAX_ACTIVITY_IMAGE_DIMENSION / Math.max(originalWidth, originalHeight));
-  const width = Math.max(1, Math.round(originalWidth * ratio));
-  const height = Math.max(1, Math.round(originalHeight * ratio));
+
+  // Sempre normalizamos para JPEG padrão antes de enviar ao Drive.
+  // Isso evita fotos de câmera móvel com HDR/perfil exótico/variações do Android que aparecem bem na prévia local,
+  // mas podem voltar pretas quando servidas depois pela rota da API.
+  const image = await loadImageElement(file);
+  const originalWidth = image.naturalWidth || image.width;
+  const originalHeight = image.naturalHeight || image.height;
+  const { width, height } = getTargetDimensions(originalWidth, originalHeight);
+
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const context = canvas.getContext('2d', { alpha: false });
+  const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (!context) throw createImageError('activity-records/canvas-unavailable', 'O navegador não conseguiu preparar a imagem.');
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, width, height);
-  context.drawImage(bitmap, 0, 0, width, height);
-  if ('close' in bitmap && typeof bitmap.close === 'function') bitmap.close();
+  context.drawImage(image, 0, 0, width, height);
+  assertCanvasHasVisibleContent(canvas);
 
-  let quality = 0.88;
+  let quality = 0.9;
   let blob = await canvasToBlob(canvas, quality);
   while (blob.size > MAX_ACTIVITY_OUTPUT_BYTES && quality > 0.58) {
     quality -= 0.06;
@@ -185,8 +236,7 @@ export async function processActivityPhoto(file: File): Promise<ProcessedActivit
     throw createImageError('activity-records/output-too-large', 'A imagem continuou muito grande após a compressão. Selecione outra foto.');
   }
 
-  const baseName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'atividade';
-  const processedFile = new File([blob], `${baseName}.jpg`, { type: 'image/jpeg', lastModified: Date.now() });
+  const processedFile = new File([blob], `${getSanitizedBaseName(file)}.jpg`, { type: 'image/jpeg', lastModified: Date.now() });
   return {
     file: processedFile,
     previewUrl: URL.createObjectURL(processedFile),

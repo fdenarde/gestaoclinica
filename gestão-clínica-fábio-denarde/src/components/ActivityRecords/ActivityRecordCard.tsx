@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Clock3, Eye, Film, ImageIcon, Loader2, Pencil, PlayCircle, Trash2 } from 'lucide-react';
+import { Check, Clock3, Eye, Film, ImageIcon, Loader2, Pencil, PlayCircle, Trash2 } from 'lucide-react';
 import type { ActivityRecord } from '../../types/activityRecords';
 import { getActivityPhotoUrl } from '../../lib/activityRecordsApi';
 import { safeFormatDate } from '../../lib/utils';
@@ -16,17 +16,30 @@ function getMediaKind(record: ActivityRecord): 'photo' | 'video' {
   return 'photo';
 }
 
-export default function ActivityRecordCard({ record, onView, onEdit, onDelete }: { key?: React.Key; record: ActivityRecord; onView: () => void; onEdit: () => void; onDelete: () => void }) {
+interface ActivityRecordCardProps {
+  key?: React.Key;
+  record: ActivityRecord;
+  onView: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+}
+
+export default function ActivityRecordCard({ record, onView, onEdit, onDelete, selectMode = false, selected = false, onToggleSelect }: ActivityRecordCardProps) {
   const [url, setUrl] = useState('');
   const [loadError, setLoadError] = useState(false);
+  const [retriedUrl, setRetriedUrl] = useState(false);
   const mediaKind = getMediaKind(record);
   const duration = formatDuration(record.durationSeconds);
-  const visibility = record.visibility === 'share_allowed' ? 'Compartilhamento permitido' : record.visibility === 'do_not_share' ? 'Não compartilhar' : 'Somente interno';
+  const visibility = record.visibility === 'share_allowed' ? 'Compartilhamento permitido' : 'Somente interno';
 
   useEffect(() => {
     let active = true;
     setUrl('');
     setLoadError(false);
+    setRetriedUrl(false);
     getActivityPhotoUrl(record.id, record.patientId)
       .then(value => { if (active) setUrl(value); })
       .catch(() => { if (active) setLoadError(true); });
@@ -36,14 +49,25 @@ export default function ActivityRecordCard({ record, onView, onEdit, onDelete }:
   const mediaLabel = useMemo(() => mediaKind === 'video' ? 'Vídeo' : 'Foto', [mediaKind]);
   const mediaIcon = mediaKind === 'video' ? <Film size={12} /> : <ImageIcon size={12} />;
 
+  const handleMediaError = () => {
+    if (retriedUrl) {
+      setLoadError(true);
+      return;
+    }
+    setRetriedUrl(true);
+    getActivityPhotoUrl(record.id, record.patientId, true)
+      .then(value => setUrl(value))
+      .catch(() => setLoadError(true));
+  };
+
   return (
-    <article className="group overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl">
-      <button type="button" onClick={onView} className="relative block aspect-video w-full overflow-hidden bg-slate-950 text-left">
+    <article className={`group overflow-hidden rounded-2xl border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl ${selected ? 'border-clinic-primary ring-2 ring-clinic-primary/30' : 'border-clinic-border'}`}>
+      <button type="button" onClick={selectMode ? onToggleSelect : onView} className="relative block aspect-video w-full overflow-hidden bg-slate-950 text-left">
         {url && mediaKind === 'photo' && (
-          <img src={url} alt={record.description || record.category} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+          <img src={url} alt={record.description || record.category} onError={handleMediaError} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
         )}
         {url && mediaKind === 'video' && (
-          <video src={url} preload="metadata" muted playsInline className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+          <video src={url} preload="metadata" muted playsInline onError={handleMediaError} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
         )}
         {!url && !loadError && (
           <span className="absolute inset-0 flex items-center justify-center bg-clinic-bg">
@@ -60,6 +84,12 @@ export default function ActivityRecordCard({ record, onView, onEdit, onDelete }:
         <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/70 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white backdrop-blur-sm">
           {mediaIcon} {mediaLabel}
         </span>
+
+        {selectMode && (
+          <span className={`absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full border-2 shadow-lg ${selected ? 'border-white bg-clinic-primary text-white' : 'border-white/80 bg-black/55 text-white'}`}>
+            {selected ? <Check size={17} strokeWidth={3} /> : null}
+          </span>
+        )}
         {duration && (
           <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-black/70 px-2 py-1 text-[10px] font-black text-white backdrop-blur-sm">
             <Clock3 size={11} /> {duration}
@@ -87,9 +117,9 @@ export default function ActivityRecordCard({ record, onView, onEdit, onDelete }:
           <p>{visibility} • {record.shareStatus === 'shared_confirmed' ? 'Compartilhado' : 'Não compartilhado'}</p>
         </div>
         <div className="grid grid-cols-3 gap-2 border-t border-clinic-border pt-2">
-          <button type="button" onClick={onView} className="flex items-center justify-center gap-1 rounded-lg bg-clinic-bg py-2 text-[10px] font-black uppercase text-clinic-primary"><Eye size={13} /> Ver</button>
-          <button type="button" onClick={onEdit} className="flex items-center justify-center gap-1 rounded-lg bg-clinic-bg py-2 text-[10px] font-black uppercase text-clinic-primary"><Pencil size={13} /> Editar</button>
-          <button type="button" onClick={onDelete} className="flex items-center justify-center gap-1 rounded-lg bg-status-red-bg py-2 text-[10px] font-black uppercase text-status-red-text"><Trash2 size={13} /> Excluir</button>
+          <button type="button" onClick={onView} disabled={selectMode} className="flex items-center justify-center gap-1 rounded-lg bg-clinic-bg py-2 text-[10px] font-black uppercase text-clinic-primary disabled:opacity-45"><Eye size={13} /> Ver</button>
+          <button type="button" onClick={onEdit} disabled={selectMode} className="flex items-center justify-center gap-1 rounded-lg bg-clinic-bg py-2 text-[10px] font-black uppercase text-clinic-primary disabled:opacity-45"><Pencil size={13} /> Editar</button>
+          <button type="button" onClick={selectMode ? onToggleSelect : onDelete} className="flex items-center justify-center gap-1 rounded-lg bg-status-red-bg py-2 text-[10px] font-black uppercase text-status-red-text"><Trash2 size={13} /> {selectMode ? 'Marcar' : 'Excluir'}</button>
         </div>
       </div>
     </article>
