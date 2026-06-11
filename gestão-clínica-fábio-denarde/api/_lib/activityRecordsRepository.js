@@ -1,4 +1,4 @@
-import { Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAdminDb } from './firebaseAdmin.js';
 import { activityError } from './activityRecordsValidation.js';
 
@@ -41,8 +41,8 @@ export async function reserveActivityRecord(context, patientId, recordId, data) 
         throw activityError(
           existing.status === 'uploading' ? 'activity-records/upload-in-progress' : 'activity-records/duplicate',
           existing.status === 'uploading'
-            ? 'Esta foto já está sendo enviada para a sessão selecionada.'
-            : 'Esta mesma foto já foi registrada para a sessão selecionada.',
+            ? 'Esta mídia já está sendo enviada para a sessão selecionada.'
+            : 'Esta mesma mídia já foi registrada para a sessão selecionada.',
           409,
         );
       }
@@ -61,15 +61,61 @@ export async function finalizeActivityRecord(ref, values) {
   await getAdminDb().runTransaction(async transaction => {
     const snapshot = await transaction.get(ref);
     if (!snapshot.exists) throw activityError('activity-records/record-not-found', 'A reserva do registro não foi encontrada.', 409);
-    if (snapshot.data()?.status === 'cancelled') throw activityError('activity-records/upload-cancelled', 'O envio da foto foi cancelado.', 409);
-    transaction.set(ref, { ...values, status: 'active', uploadStatus: 'active', updatedAt: Timestamp.now() }, { merge: true });
+    if (snapshot.data()?.status === 'cancelled') throw activityError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.', 409);
+    transaction.set(ref, {
+      ...values,
+      status: 'active',
+      uploadStatus: 'active',
+      driveUploadSession: FieldValue.delete(),
+      uploadedBytes: FieldValue.delete(),
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
   });
   const snapshot = await ref.get();
   return { id: snapshot.id, ...serializeRecord(snapshot.data()) };
 }
 
 export async function markActivityFailure(ref, status, message) {
-  await ref.set({ status, uploadStatus: status, failureMessage: String(message || '').slice(0, 500), updatedAt: Timestamp.now() }, { merge: true }).catch(() => undefined);
+  await ref.set({
+    status,
+    uploadStatus: status,
+    failureMessage: String(message || '').slice(0, 500),
+    driveUploadSession: FieldValue.delete(),
+    uploadedBytes: FieldValue.delete(),
+    updatedAt: Timestamp.now(),
+  }, { merge: true }).catch(() => undefined);
+}
+
+export async function updateActivityUploadProgress(ref, uploadAttemptId, uploadedBytes) {
+  await getAdminDb().runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) throw activityError('activity-records/record-not-found', 'A reserva do registro não foi encontrada.', 409);
+    const data = snapshot.data() || {};
+    if (data.status === 'cancelled') throw activityError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.', 409);
+    if (data.status !== 'uploading' || data.uploadAttemptId !== uploadAttemptId) {
+      throw activityError('activity-records/invalid-upload-attempt', 'A tentativa de envio do vídeo não está mais ativa.', 409);
+    }
+    transaction.set(ref, { uploadedBytes, updatedAt: Timestamp.now() }, { merge: true });
+  });
+}
+
+export async function failActivityUpload(context, patientId, recordId, uploadAttemptId, message) {
+  const ref = activityRecordRef(context, patientId, recordId);
+  await getAdminDb().runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return;
+    const data = snapshot.data() || {};
+    if (data.status !== 'uploading' || data.uploadAttemptId !== uploadAttemptId) return;
+    transaction.set(ref, {
+      status: 'failed',
+      uploadStatus: 'failed',
+      failureMessage: String(message || '').slice(0, 500),
+      driveFileId: FieldValue.delete(),
+      driveUploadSession: FieldValue.delete(),
+      uploadedBytes: FieldValue.delete(),
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
+  });
 }
 
 export async function getActivityRecord(context, patientId, recordId) {
@@ -95,7 +141,13 @@ export async function cancelUploadAttempt(context, patientId, uploadAttemptId) {
       result = { id: current.id, ...data, cancellationIgnored: true };
       return;
     }
-    transaction.set(item.ref, { status: 'cancelled', uploadStatus: 'cancelled', updatedAt: Timestamp.now() }, { merge: true });
+    transaction.set(item.ref, {
+      status: 'cancelled',
+      uploadStatus: 'cancelled',
+      driveUploadSession: FieldValue.delete(),
+      uploadedBytes: FieldValue.delete(),
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
     result = { id: current.id, ...data, alreadyCompleted: false };
   });
   return result;

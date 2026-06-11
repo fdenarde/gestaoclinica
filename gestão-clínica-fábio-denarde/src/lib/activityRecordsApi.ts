@@ -3,7 +3,9 @@ import type { Patient, Session } from '../types';
 import type { ActivityRecord, ActivityRecordCategory, ActivityRecordVisibility } from '../types/activityRecords';
 
 export const ACTIVITY_UPLOAD_TIMEOUT_MS = 45_000;
-const ACTIVE_UPLOADS = new Map<string, { xhr: XMLHttpRequest; patientId: string }>();
+const VIDEO_CHUNK_REQUEST_TIMEOUT_MS = 90_000;
+const VIDEO_CHUNK_MAX_ATTEMPTS = 3;
+const ACTIVE_UPLOADS = new Map<string, { abort: () => void; patientId: string }>();
 const SIGNED_URL_CACHE = new Map<string, { url: string; expiresAt: number }>();
 export const ACTIVITY_RECORDS_CHANGED_EVENT = 'activity-records:changed';
 
@@ -37,16 +39,20 @@ async function readResponse<T>(response: Response): Promise<T> {
   return payload;
 }
 
-function fileToBase64(file: File): Promise<string> {
+function blobToBase64(blob: Blob, errorMessage: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(createApiError('activity-records/read-failed', 'Não foi possível ler a foto preparada.'));
+    reader.onerror = () => reject(createApiError('activity-records/read-failed', errorMessage));
     reader.onload = () => {
       const result = String(reader.result || '');
       resolve(result.slice(result.indexOf(',') + 1));
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
   });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return blobToBase64(file, 'Não foi possível ler a foto preparada.');
 }
 
 export interface UploadActivityPhotoInput {
@@ -56,6 +62,9 @@ export interface UploadActivityPhotoInput {
   width: number;
   height: number;
   sha256: string;
+  mediaType?: 'photo' | 'video';
+  durationSeconds?: number;
+  lastModified?: number;
   category: ActivityRecordCategory;
   description: string;
   visibility: ActivityRecordVisibility;
@@ -73,14 +82,159 @@ function createUploadAttemptId(): string {
   return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
 }
 
+interface VideoChunkResponse {
+  completed: boolean;
+  nextOffset: number;
+  record?: ActivityRecord;
+}
+
+function waitBeforeRetry(attempt: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, 600 * (2 ** attempt)));
+}
+
+function isRetryableVideoChunkError(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  return !code || [
+    'activity-records/network-error',
+    'activity-records/upload-chunk-failed',
+    'activity-records/upload-status-failed',
+    'activity-records/internal-error',
+    'activity-records/invalid-response',
+    'activity-records/request-failed',
+    'activity-records/chunk-timeout',
+  ].includes(code);
+}
+
+async function uploadActivityVideoInChunks(input: UploadActivityPhotoInput): Promise<ActivityRecord> {
+  const uploadAttemptId = createUploadAttemptId();
+  let cancelled = false;
+  let currentController: AbortController | null = null;
+  let prepared: { recordId: string; uploadAttemptId: string; chunkSize: number } | null = null;
+
+  ACTIVE_UPLOADS.set(uploadAttemptId, {
+    patientId: input.patient.id,
+    abort: () => {
+      cancelled = true;
+      currentController?.abort();
+    },
+  });
+
+  try {
+    currentController = new AbortController();
+    prepared = await post({
+      action: 'prepareVideoUpload',
+      uploadAttemptId,
+      patientId: input.patient.id,
+      sessionId: input.session.id,
+      fileName: input.file.name,
+      mimeType: input.file.type,
+      fileSize: input.file.size,
+      width: input.width,
+      height: input.height,
+      sha256: input.sha256,
+      mediaType: 'video',
+      durationSeconds: input.durationSeconds,
+      lastModified: input.lastModified || input.file.lastModified || Date.now(),
+      category: input.category,
+      description: input.description,
+      visibility: input.visibility,
+      createdByName: input.createdByName,
+    }, currentController.signal);
+
+    if (!Number.isSafeInteger(prepared.chunkSize) || prepared.chunkSize <= 0 || prepared.chunkSize > 2 * 1024 * 1024) {
+      throw createApiError('activity-records/invalid-response', 'O servidor retornou um tamanho de parte inválido.');
+    }
+
+    let offset = 0;
+    while (offset < input.file.size) {
+      if (cancelled) throw createApiError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.');
+
+      const chunk = input.file.slice(offset, Math.min(input.file.size, offset + prepared.chunkSize));
+      const dataBase64 = await blobToBase64(chunk, 'Não foi possível ler uma parte do vídeo.');
+      let result: VideoChunkResponse | null = null;
+      let lastError: unknown = null;
+
+      for (let attempt = 0; attempt < VIDEO_CHUNK_MAX_ATTEMPTS; attempt += 1) {
+        if (cancelled) throw createApiError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.');
+        currentController = new AbortController();
+        let timedOut = false;
+        const timeoutId = window.setTimeout(() => {
+          timedOut = true;
+          currentController?.abort();
+        }, VIDEO_CHUNK_REQUEST_TIMEOUT_MS);
+
+        try {
+          result = await post<VideoChunkResponse>({
+            action: 'uploadVideoChunk',
+            patientId: input.patient.id,
+            recordId: prepared.recordId,
+            uploadAttemptId,
+            start: offset,
+            totalSize: input.file.size,
+            dataBase64,
+          }, currentController.signal);
+          break;
+        } catch (error) {
+          if (cancelled) throw createApiError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.');
+          lastError = timedOut
+            ? createApiError('activity-records/chunk-timeout', 'Uma parte do vídeo excedeu o tempo limite de envio.')
+            : error;
+          if (attempt >= VIDEO_CHUNK_MAX_ATTEMPTS - 1 || !isRetryableVideoChunkError(lastError)) throw lastError;
+          await waitBeforeRetry(attempt);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      }
+
+      if (!result) throw lastError || createApiError('activity-records/upload-failed', 'Não foi possível enviar uma parte do vídeo.');
+      if (result.completed) {
+        if (!result.record) throw createApiError('activity-records/invalid-response', 'O servidor não confirmou o vídeo salvo.');
+        input.onProgress?.(100);
+        notifyActivityRecordsChanged(input.patient.id);
+        return result.record;
+      }
+      if (!Number.isSafeInteger(result.nextOffset) || result.nextOffset <= offset || result.nextOffset > input.file.size) {
+        throw createApiError('activity-records/invalid-response', 'O servidor retornou um progresso inválido para o vídeo.');
+      }
+
+      offset = result.nextOffset;
+      input.onProgress?.(Math.max(1, Math.min(99, Math.round((offset / input.file.size) * 100))));
+    }
+
+    throw createApiError('activity-records/upload-failed', 'O envio terminou sem a confirmação do vídeo salvo.');
+  } catch (error) {
+    if (prepared) {
+      if (cancelled) {
+        await cancelActivityUpload(input.patient.id, uploadAttemptId).catch(() => undefined);
+      } else {
+        await post({
+          action: 'failVideoUpload',
+          patientId: input.patient.id,
+          recordId: prepared.recordId,
+          uploadAttemptId,
+          message: error instanceof Error ? error.message : 'O envio do vídeo falhou.',
+        }).catch(() => undefined);
+      }
+    }
+    if (cancelled) throw createApiError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.');
+    throw error;
+  } finally {
+    ACTIVE_UPLOADS.delete(uploadAttemptId);
+    currentController = null;
+  }
+}
+
 export async function uploadActivityPhoto(input: UploadActivityPhotoInput): Promise<ActivityRecord> {
+  if ((input.mediaType || (input.file.type.startsWith('video/') ? 'video' : 'photo')) === 'video') {
+    return uploadActivityVideoInChunks(input);
+  }
   const uploadAttemptId = createUploadAttemptId();
   const dataBase64 = await fileToBase64(input.file);
   const token = await getToken();
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    ACTIVE_UPLOADS.set(uploadAttemptId, { xhr, patientId: input.patient.id });
+    ACTIVE_UPLOADS.set(uploadAttemptId, { abort: () => xhr.abort(), patientId: input.patient.id });
     let timedOut = false;
     const timeoutId = window.setTimeout(() => { timedOut = true; xhr.abort(); }, ACTIVITY_UPLOAD_TIMEOUT_MS);
     xhr.open('POST', API_ENDPOINT);
@@ -92,7 +246,7 @@ export async function uploadActivityPhoto(input: UploadActivityPhotoInput): Prom
     xhr.onerror = () => reject(createApiError('activity-records/network-error', 'A conexão falhou durante o envio da foto.'));
     xhr.onabort = () => {
       void cancelActivityUpload(input.patient.id, uploadAttemptId).catch(() => undefined);
-      reject(createApiError(timedOut ? 'activity-records/upload-timeout' : 'activity-records/upload-cancelled', timedOut ? 'O envio excedeu 45 segundos e foi interrompido.' : 'O envio da foto foi cancelado.'));
+      reject(createApiError(timedOut ? 'activity-records/upload-timeout' : 'activity-records/upload-cancelled', timedOut ? 'O envio excedeu o tempo limite e foi interrompido.' : 'O envio da foto foi cancelado.'));
     };
     xhr.onload = () => {
       try {
@@ -118,6 +272,8 @@ export async function uploadActivityPhoto(input: UploadActivityPhotoInput): Prom
       sessionId: input.session.id,
       fileName: input.file.name,
       mimeType: input.file.type,
+      mediaType: input.mediaType || (input.file.type.startsWith('video/') ? 'video' : 'photo'),
+      durationSeconds: input.durationSeconds,
       dataBase64,
       width: input.width,
       height: input.height,
@@ -133,17 +289,24 @@ export async function uploadActivityPhoto(input: UploadActivityPhotoInput): Prom
 export function cancelActiveActivityUpload(): boolean {
   const current = Array.from(ACTIVE_UPLOADS.values()).at(-1);
   if (!current) return false;
-  current.xhr.abort();
+  current.abort();
   return true;
 }
 
-async function post<T>(body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(API_ENDPOINT, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${await getToken()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return readResponse<T>(response);
+async function post<T>(body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  try {
+    const response = await fetch(API_ENDPOINT, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await getToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+    return readResponse<T>(response);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    if ((error as { code?: string } | null)?.code) throw error;
+    throw createApiError('activity-records/network-error', 'A conexão com o servidor falhou durante o envio.');
+  }
 }
 
 export async function cancelActivityUpload(patientId: string, uploadAttemptId: string): Promise<void> {
@@ -214,14 +377,14 @@ export function getActivityRecordErrorMessage(error: unknown): string {
   const code = (error as { code?: string } | null)?.code;
   const messages: Record<string, string> = {
     'activity-records/authorization-required': 'A autorização para registro interno está pendente ou não foi concedida.',
-    'activity-records/duplicate': 'Esta mesma foto já foi registrada para a sessão selecionada.',
-    'activity-records/upload-in-progress': 'Esta foto já está sendo enviada para a sessão selecionada.',
+    'activity-records/duplicate': 'Esta mesma mídia já foi registrada para a sessão selecionada.',
+    'activity-records/upload-in-progress': 'Esta mídia já está sendo enviada para a sessão selecionada.',
     'activity-records/sharing-not-authorized': 'O compartilhamento com o responsável não está autorizado.',
-    'activity-records/hash-mismatch': 'A integridade da foto não pôde ser confirmada. Prepare o arquivo novamente.',
-    'activity-records/invalid-file-signature': 'O conteúdo do arquivo não corresponde a uma imagem válida.',
-    'activity-records/upload-cancelled': 'O envio da foto foi cancelado.',
-    'activity-records/upload-timeout': 'O envio excedeu 45 segundos e foi interrompido.',
-    'activity-records/file-too-large': 'A foto preparada excedeu o limite permitido.',
+    'activity-records/hash-mismatch': 'A integridade da mídia não pôde ser confirmada. Prepare o arquivo novamente.',
+    'activity-records/invalid-file-signature': 'O conteúdo do arquivo não corresponde a uma mídia válida.',
+    'activity-records/upload-cancelled': 'O envio da mídia foi cancelado.',
+    'activity-records/upload-timeout': 'O envio excedeu o tempo limite e foi interrompido.',
+    'activity-records/file-too-large': 'A mídia excedeu o limite permitido.',
     'activity-records/session-mismatch': 'A sessão selecionada não pertence a esta criança.',
     'activity-records/patient-not-found': 'O cadastro da criança não foi encontrado.',
     'activity-records/session-not-found': 'A sessão selecionada não foi encontrada.',

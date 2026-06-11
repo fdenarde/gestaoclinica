@@ -167,6 +167,16 @@ async function sha256Hex(blob: Blob): Promise<string> {
   return sha256HexFallback(buffer);
 }
 
+async function sha256Text(value: string): Promise<string> {
+  const buffer = new TextEncoder().encode(value).buffer;
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle?.digest) {
+    const digest = await subtle.digest('SHA-256', buffer);
+    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  return sha256HexFallback(buffer);
+}
+
 function getSanitizedBaseName(file: File): string {
   return file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'atividade';
 }
@@ -244,4 +254,120 @@ export async function processActivityPhoto(file: File): Promise<ProcessedActivit
     height,
     sha256: await sha256Hex(processedFile),
   };
+}
+
+
+export const MAX_ACTIVITY_VIDEO_BYTES = 600 * 1024 * 1024;
+export const MAX_ACTIVITY_VIDEO_DURATION_SECONDS = 180;
+
+const ALLOWED_ACTIVITY_VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+
+export interface ProcessedActivityMedia {
+  file: File;
+  previewUrl: string;
+  width: number;
+  height: number;
+  sha256: string;
+  mediaType: 'photo' | 'video';
+  durationSeconds?: number;
+  lastModified?: number;
+}
+
+function getActivityVideoMimeType(file: File): string {
+  const directType = String(file.type || '').toLowerCase();
+  if (ALLOWED_ACTIVITY_VIDEO_TYPES.has(directType)) return directType;
+
+  if (/\.mp4$/i.test(file.name)) return 'video/mp4';
+  if (/\.webm$/i.test(file.name)) return 'video/webm';
+  if (/\.mov$/i.test(file.name)) return 'video/quicktime';
+
+  return directType;
+}
+
+function validateActivityVideoSource(file: File): string {
+  const mimeType = getActivityVideoMimeType(file);
+
+  if (!ALLOWED_ACTIVITY_VIDEO_TYPES.has(mimeType)) {
+    throw createImageError('activity-records/invalid-file-type', 'Selecione um vídeo MP4, WEBM ou MOV.');
+  }
+
+  if (file.size <= 0) throw createImageError('activity-records/empty-file', 'O vídeo selecionado está vazio.');
+
+  if (file.size > MAX_ACTIVITY_VIDEO_BYTES) {
+    throw createImageError('activity-records/source-too-large', 'O vídeo deve ter no máximo 600 MB. Grave em resolução comum, preferencialmente HD/Full HD.');
+  }
+
+  return mimeType;
+}
+
+function readVideoMetadata(file: File): Promise<{ width: number; height: number; durationSeconds: number }> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement('video');
+
+    const cleanup = () => {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+
+    video.onloadedmetadata = () => {
+      const width = Math.round(video.videoWidth || 0);
+      const height = Math.round(video.videoHeight || 0);
+      const durationSeconds = Math.round(video.duration || 0);
+      cleanup();
+
+      if (!width || !height || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        reject(createImageError('activity-records/invalid-video-metadata', 'Não foi possível identificar as dimensões ou a duração do vídeo.'));
+        return;
+      }
+
+      if (durationSeconds > MAX_ACTIVITY_VIDEO_DURATION_SECONDS) {
+        reject(createImageError('activity-records/video-too-long', 'O vídeo deve ter no máximo 3 minutos.'));
+        return;
+      }
+
+      resolve({ width, height, durationSeconds });
+    };
+
+    video.onerror = () => {
+      cleanup();
+      reject(createImageError('activity-records/read-failed', 'Não foi possível abrir o vídeo selecionado.'));
+    };
+
+    video.src = objectUrl;
+  });
+}
+
+async function processActivityVideo(file: File): Promise<ProcessedActivityMedia> {
+  const mimeType = validateActivityVideoSource(file);
+  const normalizedFile = file.type === mimeType
+    ? file
+    : new File([file], file.name || 'atividade-video.mp4', { type: mimeType, lastModified: file.lastModified || Date.now() });
+
+  const metadata = await readVideoMetadata(normalizedFile);
+
+  return {
+    file: normalizedFile,
+    previewUrl: URL.createObjectURL(normalizedFile),
+    width: metadata.width,
+    height: metadata.height,
+    durationSeconds: metadata.durationSeconds,
+    sha256: await sha256Text(['video', normalizedFile.name, normalizedFile.size, metadata.durationSeconds, normalizedFile.lastModified || file.lastModified || Date.now()].join('|')),
+    mediaType: 'video',
+    lastModified: normalizedFile.lastModified || file.lastModified || Date.now(),
+  };
+}
+
+export async function processActivityMedia(file: File): Promise<ProcessedActivityMedia> {
+  if (String(file.type || '').startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(file.name)) {
+    const photo = await processActivityPhoto(file);
+    return { ...photo, mediaType: 'photo' };
+  }
+
+  return processActivityVideo(file);
 }
