@@ -9,12 +9,28 @@ export const CLINIC_INFO = {
 
 export const AVAILABLE_DAYS = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'] as const;
 
+const WEEKDAY_TIMES = [
+  '07:00',
+  '08:00',
+  '09:00',
+  '10:00',
+  '11:00',
+  '13:00',
+  '14:00',
+  '15:00',
+  '16:00',
+  '17:00',
+  '18:00',
+  '19:00',
+  '20:00',
+];
+
 export const SCHEDULE_CONFIG: Record<string, string[]> = {
-  'segunda': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
-  'terça': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
-  'quarta': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
-  'quinta': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
-  'sexta': ['14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
+  'segunda': WEEKDAY_TIMES,
+  'terça': WEEKDAY_TIMES,
+  'quarta': WEEKDAY_TIMES,
+  'quinta': WEEKDAY_TIMES,
+  'sexta': WEEKDAY_TIMES,
   'sábado': ['07:00', '08:00', '09:00', '10:00', '11:00', '14:00'],
 };
 
