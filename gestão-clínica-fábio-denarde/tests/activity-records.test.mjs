@@ -7,6 +7,7 @@ import {
   buildActivityDedupeKey,
   buildActivityVideoDedupeKey,
   canRecordActivity,
+  canShareActivityWithGuardian,
   decodeActivityMedia,
   decodeActivityPhoto,
   decodeActivityVideoChunk,
@@ -89,6 +90,31 @@ test('video upload limit is configured for larger clinical recordings', () => {
   assert.equal(MAX_ACTIVITY_VIDEO_CHUNK_BYTES, 2 * 1024 * 1024);
   assert.equal(MAX_ACTIVITY_VIDEO_CHUNK_BYTES % ACTIVITY_VIDEO_CHUNK_ALIGNMENT_BYTES, 0);
   assert.ok(Math.ceil(MAX_ACTIVITY_VIDEO_CHUNK_BYTES / 3) * 4 < 4 * 1024 * 1024);
+});
+
+test('guardian media requires current authorization, share visibility and authorized snapshot', () => {
+  const patient = {
+    activityMediaAuthorization: {
+      guardianSharingStatus: 'authorized',
+    },
+  };
+  const record = {
+    status: 'active',
+    visibility: 'share_allowed',
+    authorizationSnapshot: {
+      guardianSharingStatus: 'authorized',
+    },
+  };
+  assert.equal(canShareActivityWithGuardian(patient, record), true);
+  assert.equal(canShareActivityWithGuardian(patient, { ...record, visibility: 'internal_only' }), false);
+  assert.equal(canShareActivityWithGuardian(patient, { ...record, status: 'uploading' }), false);
+  assert.equal(
+    canShareActivityWithGuardian(
+      { activityMediaAuthorization: { guardianSharingStatus: 'not_authorized' } },
+      record,
+    ),
+    false,
+  );
 });
 
 test('video dedupe key uses lightweight stable metadata', () => {

@@ -183,3 +183,10 @@ export function buildActivityVideoDedupeKey({ workspaceId, patientId, sessionId,
 export function canRecordActivity(patient) {
   return patient?.activityMediaAuthorization?.internalRecordingStatus === 'authorized';
 }
+
+export function canShareActivityWithGuardian(patient, record) {
+  return patient?.activityMediaAuthorization?.guardianSharingStatus === 'authorized'
+    && record?.visibility === 'share_allowed'
+    && record?.authorizationSnapshot?.guardianSharingStatus === 'authorized'
+    && ['active', 'delete_failed'].includes(record?.status);
+}

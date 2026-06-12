@@ -10,14 +10,16 @@ import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
 import { isPendingExternalRegistrationStatus } from '../lib/externalRegistration';
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
+import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
 
 interface DashboardProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (patientId: string) => void;
+  isPrimaryAdmin?: boolean;
 }
 
-export default function Dashboard({ state, onUpdate, onNavigateToPatient }: DashboardProps) {
+export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrimaryAdmin = false }: DashboardProps) {
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -438,6 +440,8 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient }: Dash
 
   return (
     <div className="flex flex-col gap-6 py-6">
+      {isPrimaryAdmin && <AccessRequestsAdminCard patients={state.patients} />}
+
       {/* Birthdays Alert */}
       {birthdays.length > 0 && (
         <div className="bg-status-blue-bg border-l-4 border-status-blue-text p-4 flex flex-col gap-3 rounded-r-lg shadow-sm">

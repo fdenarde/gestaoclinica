@@ -1,5 +1,7 @@
 import crypto from 'crypto';
+import { getAuth } from 'firebase-admin/auth';
 import { resolveAccessContext } from './_lib/accessContext.js';
+import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
 import {
   createSignedActivityUrl,
   deleteActivityPhotoFromDrive,
@@ -39,6 +41,7 @@ import {
   activityError,
   buildActivityDedupeKey,
   buildActivityVideoDedupeKey,
+  canShareActivityWithGuardian,
   canRecordActivity,
   decodeActivityPhoto,
   decodeActivityVideoChunk,
@@ -52,6 +55,7 @@ const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
   'http://localhost:3001',
 ]);
+const PRIMARY_ADMIN_EMAIL = 'fdenarde@gmail.com';
 
 function setSecurityHeaders(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -95,6 +99,68 @@ function normalizeSessionDate(session) {
   return parsed;
 }
 
+async function resolveResponsibleMediaContext(req, patientId) {
+  const decodedToken = await verifyFirebaseRequest(req);
+  const db = getAdminDb();
+  const profileSnapshot = await db.collection('accessProfiles').doc(decodedToken.uid).get();
+  if (!profileSnapshot.exists) {
+    throw activityError('activity-records/responsible-profile-required', 'Perfil de responsável não encontrado.', 403);
+  }
+
+  const profile = profileSnapshot.data();
+  const linkedPatientIds = Array.isArray(profile.linkedPatientIds)
+    ? profile.linkedPatientIds.filter(value => typeof value === 'string')
+    : [];
+  if (profile.status !== 'approved' || profile.role !== 'responsible') {
+    throw activityError(
+      'activity-records/responsible-approved-required',
+      'Esta mídia está disponível somente para responsáveis aprovados.',
+      403,
+    );
+  }
+  if (!linkedPatientIds.includes(patientId)) {
+    throw activityError(
+      'activity-records/patient-not-linked',
+      'Você não possui vínculo com o paciente desta mídia.',
+      403,
+    );
+  }
+
+  let ownerUserId;
+  try {
+    ownerUserId = (await getAuth().getUserByEmail(PRIMARY_ADMIN_EMAIL)).uid;
+  } catch {
+    throw activityError(
+      'activity-records/owner-unavailable',
+      'O workspace principal da clínica não está disponível.',
+      503,
+    );
+  }
+
+  const patientSnapshot = await db.doc(`users/${ownerUserId}/patients/${patientId}`).get();
+  if (!patientSnapshot.exists) {
+    throw activityError('activity-records/patient-not-found', 'O cadastro da criança não foi encontrado.', 404);
+  }
+  const patient = patientSnapshot.data();
+  if (patient.activityMediaAuthorization?.guardianSharingStatus !== 'authorized') {
+    throw activityError(
+      'activity-records/sharing-not-authorized',
+      'O compartilhamento de mídias não está autorizado para esta criança.',
+      403,
+    );
+  }
+
+  return {
+    patient,
+    context: {
+      userId: decodedToken.uid,
+      ownerUserId,
+      workspaceId: ownerUserId,
+      role: 'responsible',
+    },
+  };
+}
+
 export default async function handler(req, res) {
   setSecurityHeaders(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -119,6 +185,10 @@ export default async function handler(req, res) {
         res.setHeader('Vary', [vary, 'Range'].filter(Boolean).join(', '));
       }
       if (media.contentRange) res.setHeader('Content-Range', media.contentRange);
+      if (String(req.query.download || '') === '1') {
+        const fileName = sanitizeText(req.query.fileName, 180) || 'midia-clinica';
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+      }
       res.setHeader('Cache-Control', 'private, max-age=300, stale-while-revalidate=60');
       return res.status(media.statusCode).send(media.buffer);
     }
@@ -128,8 +198,45 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: { code: 'activity-records/method-not-allowed', message: 'Método não permitido.' } });
     }
 
-    const context = await resolveAccessContext(req);
     const body = parseBody(req);
+
+    if (body.action === 'getResponsibleFileUrl') {
+      const patientId = sanitizeText(body.patientId, 128);
+      const recordId = sanitizeText(body.recordId, 128);
+      if (!patientId || !recordId) {
+        throw activityError('activity-records/invalid-media-request', 'Não foi possível identificar a mídia.');
+      }
+      const { context, patient } = await resolveResponsibleMediaContext(req, patientId);
+      const { data } = await getActivityRecord(context, patientId, recordId);
+      if (data.status !== 'active' && data.status !== 'delete_failed') {
+        throw activityError('activity-records/record-unavailable', 'A mídia não está disponível.', 409);
+      }
+      if (data.patientId !== patientId || !canShareActivityWithGuardian(patient, data)) {
+        throw activityError(
+          'activity-records/sharing-not-authorized',
+          'Esta mídia não foi liberada para o responsável.',
+          403,
+        );
+      }
+      const metadata = await getActivityDriveMetadata(data.driveFileId);
+      assertOwnedActivityFile(metadata, {
+        ownerUserId: context.ownerUserId,
+        patientId,
+        recordId,
+      });
+      return res.status(200).json({
+        ...createSignedActivityUrl({
+          req,
+          fileId: data.driveFileId,
+          ownerUserId: context.ownerUserId,
+          patientId,
+          recordId,
+        }),
+        fileName: sanitizeText(data.fileName, 180) || 'mídia',
+      });
+    }
+
+    const context = await resolveAccessContext(req);
 
     if (body.action === 'prepareVideoUpload') {
       const input = validateUploadInput(body);

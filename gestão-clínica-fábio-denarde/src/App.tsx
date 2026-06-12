@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment, ExternalRegistrationForm } from './types';
-import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, LogIn, Loader2, BookOpen, ClipboardList } from 'lucide-react';
+import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
@@ -11,11 +11,15 @@ import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib
 import { applyTheme, resolveTheme, storeTheme, type AppTheme } from './lib/theme';
 import packageJson from '../package.json';
 
-import { auth, db, loginWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, onSnapshot, collection, writeBatch, type WriteBatch, query, where } from 'firebase/firestore';
 import ExternalRegistrationPage from './components/ExternalRegistrationPage';
 import BrandLogo from './components/Common/BrandLogo';
+import AccessPortal from './components/Auth/AccessPortal';
+import ResponsiblePortal from './components/Auth/ResponsiblePortal';
+import { getAccessProfile } from './lib/accessApi';
+import type { AccessProfile } from './types/access';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -53,6 +57,10 @@ export default function App() {
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [accessProfile, setAccessProfile] = useState<AccessProfile | null>(null);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessError, setAccessError] = useState('');
+  const [accessRetryKey, setAccessRetryKey] = useState(0);
   const [state, setState] = useState<AppState>(DEFAULT_STATE);
   const [dataLoading, setDataLoading] = useState(false);
   
@@ -75,14 +83,50 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
+      if (!currentUser) {
+        setAccessProfile(null);
+        setAccessLoading(false);
+        setAccessError('');
+      }
       setAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-
   useEffect(() => {
     if (!user) return;
+    let cancelled = false;
+
+    setAccessLoading(true);
+    setAccessError('');
+    void getAccessProfile(user)
+      .then(profile => {
+        if (!cancelled) setAccessProfile(profile);
+      })
+      .catch(error => {
+        if (!cancelled) {
+          setAccessProfile(null);
+          setAccessError(error instanceof Error ? error.message : 'Não foi possível validar seu acesso.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAccessLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessRetryKey, user]);
+
+  const canAccessInternalSystem =
+    accessProfile?.status === 'approved'
+    && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
+  const canAccessResponsiblePortal =
+    accessProfile?.status === 'approved'
+    && accessProfile.role === 'responsible';
+
+  useEffect(() => {
+    if (!user || !canAccessInternalSystem) return;
     
     setDataLoading(true);
     loadedCollectionsRef.current.clear();
@@ -213,10 +257,10 @@ export default function App() {
       clearTimeout(fallbackTimer);
       unsubscribers.forEach(unsub => unsub());
     };
-  }, [user]);
+  }, [canAccessInternalSystem, user]);
 
   const updateState = async (newState: Partial<AppState>) => {
-    if (!user) return;
+    if (!user || !canAccessInternalSystem) return;
     const userDocRef = doc(db, 'users', user.uid);
     
     try {
@@ -358,7 +402,7 @@ export default function App() {
       settings: { ...prev.settings, visualTheme },
     }));
 
-    if (!user || !loadedCollectionsRef.current.has('settings')) return false;
+    if (!user || !canAccessInternalSystem || !loadedCollectionsRef.current.has('settings')) return false;
 
     try {
       const batch = writeBatch(db);
@@ -383,29 +427,24 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-clinic-bg p-4 relative overflow-hidden">
-        <div className="absolute w-[600px] h-[600px] bg-clinic-primary opacity-5 rounded-full blur-3xl -top-20 -left-20 pointer-events-none"></div>
-        <div className="absolute w-[400px] h-[400px] bg-clinic-text-faint/10 rounded-full blur-3xl bottom-0 -right-20 pointer-events-none"></div>
+  if (user && canAccessResponsiblePortal) {
+    return <ResponsiblePortal user={user} />;
+  }
 
-        <div className="bg-clinic-surface p-12 rounded-3xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] border border-clinic-border max-w-sm w-full text-center relative z-10 flex flex-col items-center">
-          <div className="bg-clinic-bg p-4 rounded-2xl shadow-sm mb-6 border border-clinic-border">
-            <Users size={32} className="text-clinic-primary" />
-          </div>
-          <h1 className="text-3xl font-bold text-clinic-text mb-2 tracking-tight">Gestão Clínica</h1>
-          <p className="text-sm text-clinic-text-muted mb-8 px-4 font-medium leading-relaxed">
-            Acesse o sistema com sua conta do Google para visualizar seus pacientes, agendas e relatórios.
-          </p>
-          <button 
-            onClick={loginWithGoogle}
-            className="bg-clinic-primary text-white w-full py-3.5 rounded-xl font-bold uppercase tracking-wider flex items-center justify-center gap-3 transition-colors hover:bg-clinic-primary-hover shadow-md hover:shadow-lg active:scale-95"
-          >
-            <LogIn size={20} />
-            Entrar com Google
-          </button>
-        </div>
-      </div>
+  if (!user || !canAccessInternalSystem) {
+    return (
+      <AccessPortal
+        user={user}
+        profile={accessProfile}
+        profileLoading={accessLoading}
+        profileError={accessError}
+        onAccessRequestSubmitted={profile => {
+          setAccessProfile(profile);
+          setAccessLoading(false);
+          setAccessError('');
+        }}
+        onRetryProfile={() => setAccessRetryKey(current => current + 1)}
+      />
     );
   }
 
@@ -539,7 +578,14 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.3 }}
             >
-              {activeTab === 'dashboard' && <Dashboard state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
+              {activeTab === 'dashboard' && (
+                <Dashboard
+                  state={state}
+                  onUpdate={updateState}
+                  onNavigateToPatient={navigateToPatient}
+                  isPrimaryAdmin={accessProfile?.role === 'admin' && accessProfile.email === 'fdenarde@gmail.com'}
+                />
+              )}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
