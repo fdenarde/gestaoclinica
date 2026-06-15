@@ -48,13 +48,17 @@ async function ensureFolder(accessToken, parentId, name, appProperties) {
   return (await findFolder(accessToken, parentId, name)) || createFolder(accessToken, parentId, name, appProperties);
 }
 
-export async function ensureActivityMediaFolder({ workspaceId, patientId, sessionDate, mediaType = 'photo' }) {
+export async function ensureActivityMediaFolders({
+  workspaceId,
+  patientId,
+  sessionDate,
+  mediaTypes = ['photo'],
+}) {
   const accessToken = await getGoogleDriveAccessToken();
   const root = requireEnv('GOOGLE_DRIVE_ROOT_FOLDER_ID');
   const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sessionDate || ''));
   if (!dateMatch) throw activityError('activity-records/invalid-session-date', 'A data da sessão é inválida.', 409);
   const [, year, month] = dateMatch;
-  const folderName = mediaType === 'video' ? 'Vídeos' : 'Fotos';
   const workspaces = await ensureFolder(accessToken, root, 'Workspaces', { category: 'activity-root' });
   const workspace = await ensureFolder(accessToken, workspaces, workspaceId, { category: 'workspace', workspaceId });
   const patients = await ensureFolder(accessToken, workspace, 'Pacientes', { category: 'patients-root', workspaceId });
@@ -62,8 +66,31 @@ export async function ensureActivityMediaFolder({ workspaceId, patientId, sessio
   const records = await ensureFolder(accessToken, patient, 'Registros de atividades', { category: 'activity-records-root', workspaceId, patientId });
   const yearFolder = await ensureFolder(accessToken, records, year, { category: 'activity-year', workspaceId, patientId, year });
   const monthFolder = await ensureFolder(accessToken, yearFolder, month, { category: 'activity-month', workspaceId, patientId, year, month });
-  const mediaFolder = await ensureFolder(accessToken, monthFolder, folderName, { category: mediaType === 'video' ? 'activity-videos' : 'activity-photos', workspaceId, patientId, year, month });
-  return { accessToken, folderId: mediaFolder };
+  const normalizedTypes = Array.from(new Set(
+    Array.from(mediaTypes || []).map(type => (type === 'video' ? 'video' : 'photo')),
+  ));
+  const folders = {};
+  for (const mediaType of normalizedTypes) {
+    const folderName = mediaType === 'video' ? 'Vídeos' : 'Fotos';
+    folders[mediaType] = await ensureFolder(accessToken, monthFolder, folderName, {
+      category: mediaType === 'video' ? 'activity-videos' : 'activity-photos',
+      workspaceId,
+      patientId,
+      year,
+      month,
+    });
+  }
+  return { accessToken, folders };
+}
+
+export async function ensureActivityMediaFolder({ workspaceId, patientId, sessionDate, mediaType = 'photo' }) {
+  const { accessToken, folders } = await ensureActivityMediaFolders({
+    workspaceId,
+    patientId,
+    sessionDate,
+    mediaTypes: [mediaType],
+  });
+  return { accessToken, folderId: folders[mediaType === 'video' ? 'video' : 'photo'] };
 }
 
 export async function ensureActivityPhotoFolder(args) {
@@ -109,7 +136,7 @@ export async function uploadActivityPhotoToDrive({ context, patientId, sessionId
     },
   };
   const multipart = makeMultipartBody(metadata, fileBuffer, mimeType);
-  const response = await fetch(`${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,size,parents,appProperties`, {
+  const response = await fetch(`${DRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,size,parents,appProperties,md5Checksum,sha1Checksum,sha256Checksum`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': `multipart/related; boundary=${multipart.boundary}`, 'Content-Length': String(multipart.body.length) },
     body: multipart.body,
@@ -119,9 +146,25 @@ export async function uploadActivityPhotoToDrive({ context, patientId, sessionId
   return { ...file, folderId };
 }
 
-export async function createActivityResumableUpload({ context, patientId, sessionId, recordId, fileName, mimeType, fileSize, sessionDate, mediaType }) {
+export async function createActivityResumableUpload({
+  context,
+  patientId,
+  sessionId,
+  recordId,
+  fileName,
+  mimeType,
+  fileSize,
+  sessionDate,
+  mediaType,
+  accessToken: preparedAccessToken,
+  folderId: preparedFolderId,
+  browserOrigin = '',
+}) {
   const resolvedMediaType = mediaType || (String(mimeType || '').startsWith('video/') ? 'video' : 'photo');
-  const { accessToken, folderId } = await ensureActivityMediaFolder({ workspaceId: context.workspaceId, patientId, sessionDate, mediaType: resolvedMediaType });
+  const preparedFolder = preparedAccessToken && preparedFolderId
+    ? { accessToken: preparedAccessToken, folderId: preparedFolderId }
+    : await ensureActivityMediaFolder({ workspaceId: context.workspaceId, patientId, sessionDate, mediaType: resolvedMediaType });
+  const { accessToken, folderId } = preparedFolder;
   const extension = extensionFromMime(mimeType);
   const driveName = `atividade-${sanitizeName(patientId)}-${sanitizeName(sessionId)}-${Date.now()}-${sanitizeName(fileName).replace(/\.[^.]+$/, '')}${extension}`;
   const metadata = {
@@ -138,13 +181,14 @@ export async function createActivityResumableUpload({ context, patientId, sessio
     },
   };
 
-  const response = await fetch(`${DRIVE_UPLOAD_BASE}/files?uploadType=resumable&fields=id,name,mimeType,size,parents,appProperties`, {
+  const response = await fetch(`${DRIVE_UPLOAD_BASE}/files?uploadType=resumable&fields=id,name,mimeType,size,parents,appProperties,md5Checksum,sha1Checksum,sha256Checksum`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json; charset=UTF-8',
       'X-Upload-Content-Type': mimeType,
       'X-Upload-Content-Length': String(fileSize),
+      ...(browserOrigin ? { Origin: browserOrigin } : {}),
     },
     body: JSON.stringify(metadata),
   });
@@ -249,10 +293,126 @@ export async function uploadActivityResumableChunk({ uploadUrl, chunkBuffer, sta
 
 export async function getActivityDriveMetadata(fileId) {
   const accessToken = await getGoogleDriveAccessToken();
-  const response = await fetch(`${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,parents,trashed,appProperties`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const response = await fetch(`${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,size,parents,trashed,appProperties,md5Checksum,sha1Checksum,sha256Checksum`, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (response.status === 404) throw activityError('activity-records/file-not-found', 'A mídia não foi encontrada no Google Drive.', 404);
   if (!response.ok) throw activityError('activity-records/metadata-failed', 'Não foi possível confirmar a mídia no Google Drive.', 502, await readGoogleError(response));
   return response.json();
+}
+
+export async function calculateActivityDriveFingerprint({
+  fileId,
+  ownership,
+  timeoutMs = 30_000,
+  fetchImpl = globalThis.fetch,
+  metadataLoader = getActivityDriveMetadata,
+  accessTokenLoader = getGoogleDriveAccessToken,
+}) {
+  const metadata = await metadataLoader(fileId);
+  assertOwnedActivityFile(metadata, ownership);
+  const driveSha256 = String(metadata.sha256Checksum || '').toLowerCase();
+  if (/^[a-f0-9]{64}$/.test(driveSha256)) {
+    return {
+      sha256: driveSha256,
+      byteSize: Number(metadata.size || 0),
+      source: 'drive-sha256',
+      streamed: false,
+      driveChecksums: {
+        md5: String(metadata.md5Checksum || ''),
+        sha1: String(metadata.sha1Checksum || ''),
+        sha256: driveSha256,
+      },
+    };
+  }
+
+  const accessToken = await accessTokenLoader();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?alt=media`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error?.name === 'AbortError') {
+      throw activityError(
+        'activity-records/hash-verification-timeout',
+        'A verificação da mídia antiga excedeu o tempo limite.',
+        504,
+      );
+    }
+    throw activityError(
+      'activity-records/hash-verification-download-failed',
+      'Não foi possível ler a mídia antiga para verificar duplicidade.',
+      502,
+      String(error?.message || error),
+    );
+  }
+
+  if (!response.ok || !response.body) {
+    clearTimeout(timeoutId);
+    throw activityError(
+      'activity-records/hash-verification-download-failed',
+      'Não foi possível ler a mídia antiga para verificar duplicidade.',
+      502,
+      response.body ? await readGoogleError(response) : undefined,
+    );
+  }
+
+  const hasher = crypto.createHash('sha256');
+  const reader = response.body.getReader();
+  let byteSize = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      hasher.update(bytes);
+      byteSize += bytes.byteLength;
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw activityError(
+        'activity-records/hash-verification-timeout',
+        'A verificação da mídia antiga excedeu o tempo limite.',
+        504,
+      );
+    }
+    throw activityError(
+      'activity-records/hash-verification-read-failed',
+      'A leitura da mídia antiga foi interrompida antes da verificação.',
+      502,
+      String(error?.message || error),
+    );
+  } finally {
+    clearTimeout(timeoutId);
+    reader.releaseLock();
+  }
+
+  const expectedSize = Number(metadata.size || 0);
+  if (expectedSize > 0 && byteSize !== expectedSize) {
+    throw activityError(
+      'activity-records/hash-verification-size-mismatch',
+      'A leitura da mídia antiga não retornou o tamanho completo esperado.',
+      502,
+    );
+  }
+
+  return {
+    sha256: hasher.digest('hex'),
+    byteSize,
+    source: 'server-stream',
+    streamed: true,
+    driveChecksums: {
+      md5: String(metadata.md5Checksum || ''),
+      sha1: String(metadata.sha1Checksum || ''),
+      sha256: '',
+    },
+  };
 }
 
 export function assertOwnedActivityFile(metadata, { ownerUserId, patientId, recordId, mediaType }) {
@@ -285,13 +445,35 @@ function signingSecret() { return requireEnv('DRIVE_FILE_SIGNING_SECRET'); }
 function signingPayload({ fileId, ownerUserId, patientId, recordId, expires }) { return `${fileId}:${ownerUserId}:${patientId}:${recordId}:${expires}`; }
 function sign(values) { return crypto.createHmac('sha256', signingSecret()).update(signingPayload(values)).digest('hex'); }
 
+function preferredSignedUrlOrigin(req) {
+  const forwardedProto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = forwardedProto || (req.socket?.encrypted ? 'https' : 'http');
+  const host = req.headers?.host || 'localhost:3000';
+  const fallback = `${protocol}://${host}`;
+  const origin = String(req.headers?.origin || '').trim();
+  if (!origin) return fallback;
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname;
+    const isPrivateLan = (
+      /^192\.168\./.test(hostname)
+      || /^10\./.test(hostname)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+    );
+    const isLoopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
+    const isPrimaryProduction = origin === 'https://gestaoclinica-solucoes.vercel.app';
+    if (isPrimaryProduction || (parsed.protocol === 'http:' && (isPrivateLan || isLoopback))) return origin;
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
 export function createSignedActivityUrl({ req, fileId, ownerUserId, patientId, recordId }) {
   const expires = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS;
   const signature = sign({ fileId, ownerUserId, patientId, recordId, expires });
-  const protocol = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim() || (req.socket?.encrypted ? 'https' : 'http');
-  const host = req.headers?.host || 'localhost:3000';
   const query = new URLSearchParams({ mode: 'file', fileId, owner: ownerUserId, patientId, recordId, expires: String(expires), signature });
-  return { url: `${protocol}://${host}/api/activity-records?${query}`, expiresAt: expires * 1000 };
+  return { url: `${preferredSignedUrlOrigin(req)}/api/activity-records?${query}`, expiresAt: expires * 1000 };
 }
 
 export function verifySignedActivityRequest(values) {

@@ -2,10 +2,12 @@ import { verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
 import {
   assertOwnedPatientPhoto,
   createSignedPhotoUrl,
+  fetchResponsibleDocumentFromDrive,
   deletePatientPhotoFromDrive,
   fetchPatientPhotoFromDrive,
   getDriveFileMetadata,
   uploadPatientPhotoToDrive,
+  verifySignedResponsibleDocumentRequest,
   verifySignedPhotoRequest,
 } from './_lib/googleDrive.js';
 
@@ -68,6 +70,25 @@ export default async function handler(req, res) {
   }
 
   try {
+    if (req.method === 'GET' && req.query?.mode === 'responsible-document') {
+      const fileId = String(req.query.fileId || '');
+      const ownerUserId = String(req.query.owner || '');
+      const expires = String(req.query.expires || '');
+      const signature = String(req.query.signature || '');
+
+      verifySignedResponsibleDocumentRequest({ fileId, ownerUserId, expires, signature });
+      const document = await fetchResponsibleDocumentFromDrive(fileId, ownerUserId);
+      const download = String(req.query.download || '') === '1';
+      res.setHeader('Content-Type', document.mimeType);
+      res.setHeader('Content-Length', String(document.buffer.length));
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      if (download) {
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(document.fileName)}`);
+      }
+      res.status(200).send(document.buffer);
+      return;
+    }
+
     if (req.method === 'GET' && req.query?.mode === 'file') {
       const fileId = String(req.query.fileId || '');
       const ownerUserId = String(req.query.owner || '');

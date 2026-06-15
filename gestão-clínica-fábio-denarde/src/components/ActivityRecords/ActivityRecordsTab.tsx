@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, Camera, CheckSquare, Filter, Film, Image, Images, LayoutGrid, Loader2, LockKeyhole, Plus, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { Patient, Session } from '../../types';
 import { ACTIVITY_RECORD_CATEGORIES, getDefaultActivityAuthorization, type ActivityRecord, type ActivityRecordCategory, type ActivityRecordVisibility } from '../../types/activityRecords';
@@ -59,6 +59,7 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const galleryRef = useRef<HTMLDivElement>(null);
   const authorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
   const canRecord = authorization.internalRecordingStatus === 'authorized';
   const authorizationMessage = authorization.internalRecordingStatus === 'not_authorized'
@@ -71,6 +72,13 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       return;
     }
     setAuthorizationHelpOpen(true);
+  };
+
+
+  const returnToGallery = () => {
+    setNewOpen(false);
+    setViewRecord(null);
+    window.setTimeout(() => galleryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
 
   const filtered = useMemo(() => records.filter(record => {
@@ -187,7 +195,7 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
     finally { setBusy(false); }
   };
 
-  return <div className="space-y-5 animate-in fade-in slide-in-from-top-2">
+  return <div ref={galleryRef} className="space-y-5 animate-in fade-in slide-in-from-top-2 scroll-mt-4">
     <div className="flex flex-col gap-3 rounded-2xl border border-clinic-border bg-gradient-to-br from-clinic-bg to-white p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <div className="flex items-center gap-2"><Images size={19} className="text-clinic-primary" /><h4 className="font-black text-clinic-text">Galeria de atividades</h4></div>
@@ -261,8 +269,8 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       })}
     </div>
 
-    <ActivityRecordModal isOpen={newOpen} onClose={() => setNewOpen(false)} patient={patient} sessions={sessions} currentUserName={currentUserName} />
-    <ActivityRecordViewer record={viewRecord} onClose={() => setViewRecord(null)} />
+    <ActivityRecordModal isOpen={newOpen} onClose={() => setNewOpen(false)} onViewGallery={returnToGallery} patient={patient} sessions={sessions} currentUserName={currentUserName} />
+    <ActivityRecordViewer record={viewRecord} onClose={returnToGallery} />
 
 
     <Modal isOpen={authorizationHelpOpen} onClose={() => setAuthorizationHelpOpen(false)} title="Registro de atividade bloqueado" width="max-w-md">

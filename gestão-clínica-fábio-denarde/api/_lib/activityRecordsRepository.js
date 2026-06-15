@@ -1,6 +1,16 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAdminDb } from './firebaseAdmin.js';
-import { activityError } from './activityRecordsValidation.js';
+import {
+  ACTIVITY_UPLOAD_LEASE_MS,
+  activityError,
+  isActivityUploadLeaseExpired,
+  isSameCompletedActivityUpload,
+  isSameInProgressActivityUpload,
+} from './activityRecordsValidation.js';
+
+function createActivityUploadLease(now = Timestamp.now()) {
+  return Timestamp.fromMillis(now.toMillis() + ACTIVITY_UPLOAD_LEASE_MS);
+}
 
 function patientRef(context, patientId) {
   return getAdminDb().doc(`users/${context.ownerUserId}/patients/${patientId}`);
@@ -10,6 +20,64 @@ function sessionRef(context, sessionId) {
 }
 export function activityRecordRef(context, patientId, recordId) {
   return patientRef(context, patientId).collection('activityRecords').doc(recordId);
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+export function sanitizeFirestoreDocument(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter(item => item !== undefined)
+      .map(item => sanitizeFirestoreDocument(item));
+  }
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .map(([key, item]) => [key, sanitizeFirestoreDocument(item)]),
+  );
+}
+
+function setTransactionDocument(transaction, ref, data, options) {
+  const sanitized = sanitizeFirestoreDocument(data);
+  if (options) transaction.set(ref, sanitized, options);
+  else transaction.set(ref, sanitized);
+}
+
+export async function setActivityRecordDocument(ref, data, options) {
+  const sanitized = sanitizeFirestoreDocument(data);
+  return options ? ref.set(sanitized, options) : ref.set(sanitized);
+}
+
+export function hasVerifiedActivityContentHash(record, sha256) {
+  return (
+    record.originalContentHash === sha256
+    || record.preparedContentHash === sha256
+    || (
+      record.sha256 === sha256
+      && (
+        record.mediaType === 'photo'
+        || record.hashAlgorithm === 'SHA-256'
+        || Boolean(record.hashVerifiedAt)
+      )
+    )
+  );
+}
+
+export function needsLegacyActivityHashVerification(record) {
+  return (
+    !record.originalContentHash
+    && !record.preparedContentHash
+    && (
+      !record.sha256
+      || record.mediaType === 'video'
+      || (!record.hashAlgorithm && !record.hashVerifiedAt)
+    )
+  );
 }
 
 
@@ -31,12 +99,216 @@ export async function requirePatientAndSession(context, patientId, sessionId) {
   return { patient, session };
 }
 
-export async function reserveActivityRecord(context, patientId, recordId, data) {
+export async function findActivityRecordsBySha256(
+  context,
+  patientId,
+  sha256,
+  limit = 10,
+  mediaType = '',
+) {
+  const collection = patientRef(context, patientId).collection('activityRecords');
+  const snapshots = await Promise.all([
+    'sha256',
+    'originalContentHash',
+    'preparedContentHash',
+  ].map(field => collection.where(field, '==', sha256).limit(limit).get()));
+  const records = new Map();
+  for (const snapshot of snapshots) {
+    for (const doc of snapshot.docs) {
+      const record = { id: doc.id, ...serializeRecord(doc.data()) };
+      if (
+        record.status === 'active'
+        && hasVerifiedActivityContentHash(record, sha256)
+        && (!mediaType || record.mediaType === mediaType)
+      ) records.set(record.id, record);
+    }
+  }
+  return Array.from(records.values()).slice(0, limit);
+}
+
+export async function findLegacyActivityDuplicateCandidates(
+  context,
+  patientId,
+  { fileSize, mediaType, mimeType, limit = 12 },
+) {
+  const snapshot = await patientRef(context, patientId)
+    .collection('activityRecords')
+    .where('fileSize', '==', fileSize)
+    .limit(limit)
+    .get();
+  return snapshot.docs
+    .map(doc => ({ id: doc.id, ...serializeRecord(doc.data()) }))
+    .filter(record => (
+      record.status === 'active'
+      && record.driveFileId
+      && record.mediaType === mediaType
+      && (!mimeType || !record.mimeType || record.mimeType === mimeType)
+      && needsLegacyActivityHashVerification(record)
+    ));
+}
+
+export async function claimActivityHashVerification(
+  context,
+  patientId,
+  recordId,
+  verificationId,
+  leaseMs = 45_000,
+) {
+  const ref = activityRecordRef(context, patientId, recordId);
+  return getAdminDb().runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return { claimed: false, missing: true };
+    const data = snapshot.data() || {};
+    if (data.sha256 || data.originalContentHash || data.preparedContentHash) {
+      return { claimed: false, cached: true, record: { id: snapshot.id, ...serializeRecord(data) } };
+    }
+    const leaseUntil = data.hashVerificationLeaseUntil?.toMillis instanceof Function
+      ? data.hashVerificationLeaseUntil.toMillis()
+      : 0;
+    if (
+      data.hashVerificationStatus === 'verifying'
+      && data.hashVerificationId !== verificationId
+      && leaseUntil > Date.now()
+    ) {
+      return { claimed: false, inProgress: true };
+    }
+    setTransactionDocument(transaction, ref, {
+      hashVerificationStatus: 'verifying',
+      hashVerificationId: verificationId,
+      hashVerificationLeaseUntil: Timestamp.fromMillis(Date.now() + leaseMs),
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
+    return { claimed: true, record: { id: snapshot.id, ...serializeRecord(data) } };
+  });
+}
+
+export async function completeActivityHashVerification(
+  context,
+  patientId,
+  recordId,
+  verificationId,
+  fingerprint,
+) {
   const ref = activityRecordRef(context, patientId, recordId);
   await getAdminDb().runTransaction(async transaction => {
     const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return;
+    const data = snapshot.data() || {};
+    if (
+      data.hashVerificationStatus === 'verifying'
+      && data.hashVerificationId !== verificationId
+    ) return;
+    const hashFields = data.mediaType === 'photo'
+      ? { preparedContentHash: fingerprint.sha256 }
+      : { originalContentHash: fingerprint.sha256 };
+    setTransactionDocument(transaction, ref, {
+      ...hashFields,
+      sha256: fingerprint.sha256,
+      hashAlgorithm: 'SHA-256',
+      originalContentHashAlgorithm: data.mediaType === 'video' ? 'SHA-256' : FieldValue.delete(),
+      preparedContentHashAlgorithm: data.mediaType === 'photo' ? 'SHA-256' : FieldValue.delete(),
+      originalByteSize: Number(data.originalByteSize || fingerprint.byteSize || data.fileSize || 0),
+      driveChecksum: fingerprint.driveChecksums?.sha256
+        || fingerprint.driveChecksums?.md5
+        || fingerprint.driveChecksums?.sha1
+        || '',
+      driveChecksumAlgorithm: fingerprint.driveChecksums?.sha256
+        ? 'SHA-256'
+        : fingerprint.driveChecksums?.md5
+          ? 'MD5'
+          : fingerprint.driveChecksums?.sha1
+            ? 'SHA-1'
+            : '',
+      driveMd5Checksum: fingerprint.driveChecksums?.md5 || '',
+      driveSha1Checksum: fingerprint.driveChecksums?.sha1 || '',
+      driveSha256Checksum: fingerprint.driveChecksums?.sha256 || '',
+      hashVerifiedAt: Timestamp.now(),
+      hashSource: fingerprint.source,
+      hashVerificationStatus: 'verified',
+      hashVerificationId: FieldValue.delete(),
+      hashVerificationLeaseUntil: FieldValue.delete(),
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
+  });
+  const snapshot = await ref.get();
+  return snapshot.exists ? { id: snapshot.id, ...serializeRecord(snapshot.data()) } : null;
+}
+
+export async function failActivityHashVerification(
+  context,
+  patientId,
+  recordId,
+  verificationId,
+  code,
+) {
+  const ref = activityRecordRef(context, patientId, recordId);
+  await getAdminDb().runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return;
+    const data = snapshot.data() || {};
+    if (data.hashVerificationId !== verificationId) return;
+    setTransactionDocument(transaction, ref, {
+      hashVerificationStatus: 'inconclusive',
+      hashVerificationFailureCode: String(code || 'unknown').slice(0, 120),
+      hashVerificationId: FieldValue.delete(),
+      hashVerificationLeaseUntil: FieldValue.delete(),
+      hashVerificationLastAttemptAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
+  });
+}
+
+export async function reserveActivityRecord(context, patientId, recordId, data) {
+  const ref = activityRecordRef(context, patientId, recordId);
+  const existingRecord = await getAdminDb().runTransaction(async transaction => {
+    const now = Timestamp.now();
+    const uploadLeaseUntil = createActivityUploadLease(now);
+    const snapshot = await transaction.get(ref);
     if (snapshot.exists) {
       const existing = snapshot.data() || {};
+      if (isSameCompletedActivityUpload(existing, data)) {
+        return { id: snapshot.id, ...serializeRecord(existing) };
+      }
+      if (isSameInProgressActivityUpload(existing, data)) {
+        setTransactionDocument(transaction, ref, {
+          uploadLeaseUntil,
+          updatedAt: now,
+        }, { merge: true });
+        return {
+          id: snapshot.id,
+          ...serializeRecord({
+            ...existing,
+            uploadLeaseUntil,
+            updatedAt: now,
+          }),
+        };
+      }
+      if (existing.status === 'uploading' && isActivityUploadLeaseExpired(existing, now.toMillis())) {
+        const resumed = {
+          ...data,
+          status: 'uploading',
+          uploadStatus: 'uploading',
+          uploadAttemptId: data.uploadAttemptId,
+          uploadLeaseUntil,
+          failureMessage: FieldValue.delete(),
+          updatedAt: now,
+          activityAt: Timestamp.fromDate(new Date(data.activityAt)),
+        };
+        setTransactionDocument(transaction, ref, resumed, { merge: true });
+        return {
+          id: snapshot.id,
+          ...serializeRecord({
+            ...existing,
+            ...data,
+            status: 'uploading',
+            uploadStatus: 'uploading',
+            uploadAttemptId: data.uploadAttemptId,
+            uploadLeaseUntil,
+            updatedAt: now,
+            activityAt: resumed.activityAt,
+          }),
+        };
+      }
       if (existing.driveFileId || ['active', 'uploading', 'deleting', 'delete_failed'].includes(existing.status)) {
         throw activityError(
           existing.status === 'uploading' ? 'activity-records/upload-in-progress' : 'activity-records/duplicate',
@@ -47,14 +319,16 @@ export async function reserveActivityRecord(context, patientId, recordId, data) 
         );
       }
     }
-    transaction.set(ref, {
+    setTransactionDocument(transaction, ref, {
       ...data,
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+      uploadLeaseUntil,
+      createdAt: now,
+      updatedAt: now,
       activityAt: Timestamp.fromDate(new Date(data.activityAt)),
     });
+    return null;
   });
-  return ref;
+  return { ref, existingRecord };
 }
 
 export async function finalizeActivityRecord(ref, values) {
@@ -62,12 +336,13 @@ export async function finalizeActivityRecord(ref, values) {
     const snapshot = await transaction.get(ref);
     if (!snapshot.exists) throw activityError('activity-records/record-not-found', 'A reserva do registro não foi encontrada.', 409);
     if (snapshot.data()?.status === 'cancelled') throw activityError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.', 409);
-    transaction.set(ref, {
+    setTransactionDocument(transaction, ref, {
       ...values,
       status: 'active',
       uploadStatus: 'active',
       driveUploadSession: FieldValue.delete(),
       uploadedBytes: FieldValue.delete(),
+      uploadLeaseUntil: FieldValue.delete(),
       updatedAt: Timestamp.now(),
     }, { merge: true });
   });
@@ -76,12 +351,13 @@ export async function finalizeActivityRecord(ref, values) {
 }
 
 export async function markActivityFailure(ref, status, message) {
-  await ref.set({
+  await setActivityRecordDocument(ref, {
     status,
     uploadStatus: status,
     failureMessage: String(message || '').slice(0, 500),
     driveUploadSession: FieldValue.delete(),
     uploadedBytes: FieldValue.delete(),
+    uploadLeaseUntil: FieldValue.delete(),
     updatedAt: Timestamp.now(),
   }, { merge: true }).catch(() => undefined);
 }
@@ -95,7 +371,12 @@ export async function updateActivityUploadProgress(ref, uploadAttemptId, uploade
     if (data.status !== 'uploading' || data.uploadAttemptId !== uploadAttemptId) {
       throw activityError('activity-records/invalid-upload-attempt', 'A tentativa de envio do vídeo não está mais ativa.', 409);
     }
-    transaction.set(ref, { uploadedBytes, updatedAt: Timestamp.now() }, { merge: true });
+    const now = Timestamp.now();
+    setTransactionDocument(transaction, ref, {
+      uploadedBytes,
+      uploadLeaseUntil: createActivityUploadLease(now),
+      updatedAt: now,
+    }, { merge: true });
   });
 }
 
@@ -106,13 +387,14 @@ export async function failActivityUpload(context, patientId, recordId, uploadAtt
     if (!snapshot.exists) return;
     const data = snapshot.data() || {};
     if (data.status !== 'uploading' || data.uploadAttemptId !== uploadAttemptId) return;
-    transaction.set(ref, {
+    setTransactionDocument(transaction, ref, {
       status: 'failed',
       uploadStatus: 'failed',
       failureMessage: String(message || '').slice(0, 500),
       driveFileId: FieldValue.delete(),
       driveUploadSession: FieldValue.delete(),
       uploadedBytes: FieldValue.delete(),
+      uploadLeaseUntil: FieldValue.delete(),
       updatedAt: Timestamp.now(),
     }, { merge: true });
   });
@@ -141,11 +423,12 @@ export async function cancelUploadAttempt(context, patientId, uploadAttemptId) {
       result = { id: current.id, ...data, cancellationIgnored: true };
       return;
     }
-    transaction.set(item.ref, {
+    setTransactionDocument(transaction, item.ref, {
       status: 'cancelled',
       uploadStatus: 'cancelled',
       driveUploadSession: FieldValue.delete(),
       uploadedBytes: FieldValue.delete(),
+      uploadLeaseUntil: FieldValue.delete(),
       updatedAt: Timestamp.now(),
     }, { merge: true });
     result = { id: current.id, ...data, alreadyCompleted: false };
@@ -156,7 +439,7 @@ export async function cancelUploadAttempt(context, patientId, uploadAttemptId) {
 export async function updateActivityMetadata(context, patientId, recordId, values) {
   const { ref, data } = await getActivityRecord(context, patientId, recordId);
   if (data.status !== 'active' && data.status !== 'delete_failed') throw activityError('activity-records/record-unavailable', 'Este registro não está disponível para edição.', 409);
-  await ref.set({ ...values, updatedAt: Timestamp.now() }, { merge: true });
+  await setActivityRecordDocument(ref, { ...values, updatedAt: Timestamp.now() }, { merge: true });
 }
 
 

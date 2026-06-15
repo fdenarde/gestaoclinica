@@ -46,6 +46,10 @@ export default defineConfig(({mode}) => {
           target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
           changeOrigin: true,
         },
+        '/api/activity-upload-chunk': {
+          target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
+          changeOrigin: true,
+        },
         '/api/access': {
           target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
           changeOrigin: true,

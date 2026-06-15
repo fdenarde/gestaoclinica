@@ -22,7 +22,8 @@
     "dev:drive-api": "node drive-api-server.js",
     "setup:drive": "node scripts/setup-google-drive.mjs",
     "test:drive": "node scripts/test-google-drive-config.mjs",
-    "test:activity-records": "node --test tests/activity-records.test.mjs"
+    "test:activity-records": "node --test tests/activity-records.test.mjs",
+    "test:responsible-portal": "node --test tests/responsible-portal-packages.test.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

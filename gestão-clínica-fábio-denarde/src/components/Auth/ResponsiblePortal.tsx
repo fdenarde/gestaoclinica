@@ -1,24 +1,61 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { User } from 'firebase/auth';
 import {
+  BarChart3,
   CalendarDays,
+  Check,
+  CheckSquare,
+  ClipboardList,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
+  Expand,
+  FileText,
+  Film,
+  Filter,
+  Heart,
   Image as ImageIcon,
+  Instagram,
+  LayoutGrid,
+  List,
   Loader2,
   LogOut,
-  Play,
+  MessageCircle,
   RefreshCw,
+  Send,
   ShieldCheck,
   UserRound,
+  WalletCards,
   X,
 } from 'lucide-react';
 import { logout } from '../../firebase';
-import { getResponsibleMediaUrl, getResponsiblePortalData } from '../../lib/accessApi';
+import {
+  updateResponsiblePatient,
+  uploadResponsibleDocument,
+  getResponsibleDocumentUrl,
+  getResponsibleMediaUrl,
+  getResponsiblePatientPhotoUrl,
+  getResponsiblePortalData,
+  recordResponsiblePortalAction,
+} from '../../lib/accessApi';
 import { applyTheme } from '../../lib/theme';
 import type {
   ResponsiblePortalData,
   ResponsiblePortalMedia,
+  ResponsiblePortalPackage,
+  ResponsiblePortalPatientData,
+  ResponsiblePortalPatientUpdateInput,
+  ResponsiblePortalClientContext,
+  ResponsiblePortalPlaybackSummary,
   ResponsiblePortalSession,
 } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
@@ -27,71 +64,457 @@ interface ResponsiblePortalProps {
   user: User;
 }
 
-function sessionTimestamp(session: ResponsiblePortalSession): number {
-  const time = /^\d{2}:\d{2}$/.test(session.time) ? session.time : '00:00';
-  const timestamp = new Date(`${session.date}T${time}:00`).getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
+type MediaFilter = 'all' | 'photo' | 'video';
+type ViewMode = 'grid' | 'list';
+type PortalTab = 'dashboard' | 'sessions' | 'gallery' | 'profile';
+type BusyAction = { id: string; type: 'open' | 'download' | 'share' | 'like' | 'comment' } | null;
+type SessionGroupState = Record<string, boolean>;
+type MediaViewSession = {
+  interactionSessionId: string;
+  recordId: string;
+  patientId: string;
+  mediaType: 'photo' | 'video';
+  startedAt: string;
+  startedAtMs: number;
+  lastObservedPositionSeconds: number | null;
+  seeking: boolean;
+  totalPlayedSeconds: number;
+  maxPositionSeconds: number;
+  durationSeconds: number;
+  playCount: number;
+  pauseCount: number;
+  seekCount: number;
+  completed: boolean;
+  finalized: boolean;
+};
+
+const PAGE_SIZE = 12;
+
+
+const GRADE_OPTIONS = [
+  '1º Ano - Ensino Fundamental',
+  '2º Ano - Ensino Fundamental',
+  '3º Ano - Ensino Fundamental',
+  '4º Ano - Ensino Fundamental',
+  '5º Ano - Ensino Fundamental',
+  '6º Ano - Ensino Fundamental',
+  '7º Ano - Ensino Fundamental',
+  '8º Ano - Ensino Fundamental',
+  '9º Ano - Ensino Fundamental',
+  '1º Ano - Ensino Médio',
+  '2º Ano - Ensino Médio',
+  '3º Ano - Ensino Médio',
+] as const;
+
+const SHIFT_OPTIONS = ['Manhã', 'Tarde', 'Integral'] as const;
+
+function isDesktopEnvironment(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 }
 
-function formatDate(value: string): string {
+function buildPortalClientContext(portalTab: PortalTab, actionLocation: string): ResponsiblePortalClientContext {
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') {
+    return { portalTab, actionLocation };
+  }
+  const userAgent = navigator.userAgent || '';
+  let deviceType = 'Computador';
+  if (/iPad|Tablet/i.test(userAgent)) deviceType = 'Tablet';
+  else if (/Android|iPhone|iPod|Mobile/i.test(userAgent)) deviceType = 'Celular';
+
+  let browser = 'Navegador não identificado';
+  if (/Edg\//i.test(userAgent)) browser = 'Microsoft Edge';
+  else if (/OPR\//i.test(userAgent)) browser = 'Opera';
+  else if (/Chrome\//i.test(userAgent)) browser = 'Google Chrome';
+  else if (/Firefox\//i.test(userAgent)) browser = 'Mozilla Firefox';
+  else if (/Safari\//i.test(userAgent)) browser = 'Safari';
+
+  const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return {
+    portalTab,
+    actionLocation,
+    deviceType,
+    browser,
+    platform: userAgentData?.platform || navigator.platform || 'Sistema não identificado',
+    viewport: `${window.innerWidth}x${window.innerHeight}`,
+    language: navigator.language || '',
+  };
+}
+
+function extensionFromFileName(fileName: string): string {
+  const match = /\.([a-zA-Z0-9]{1,8})$/.exec(fileName || '');
+  return match ? `.${match[1]}` : '';
+}
+
+function formatDate(value: string, withWeekday = true): string {
+  if (!value) return 'Aguardando definição';
   const date = new Date(`${value}T12:00:00`);
-  if (Number.isNaN(date.getTime())) return value || 'Não informada';
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat('pt-BR', {
-    weekday: 'short',
+    ...(withWeekday ? { weekday: 'short' } : {}),
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
   }).format(date);
 }
 
+function formatDateTime(value: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(value || 0);
+}
+
+function formatFileSize(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return 'Tamanho não informado';
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+}
+
 function statusClass(status: string): string {
   if (status === 'Realizada') return 'bg-status-green-bg text-status-green-text';
-  if (['Falta', 'Falta.Prof', 'Cancelada'].includes(status)) {
-    return 'bg-status-red-bg text-status-red-text';
-  }
   if (status === 'Reposição') return 'bg-status-orange-bg text-status-orange-text';
+  if (status === 'Falta') return 'bg-status-red-bg text-status-red-text';
+  if (status === 'Falta.Prof') return 'bg-orange-100 text-orange-700';
   return 'bg-status-blue-bg text-status-blue-text';
 }
 
-function SessionList({
-  title,
-  sessions,
-  emptyMessage,
-}: {
-  title: string;
-  sessions: ResponsiblePortalSession[];
-  emptyMessage: string;
-}) {
+function statusLabel(status: string): string {
+  if (status === 'Falta.Prof') return 'Falta do profissional';
+  return status || 'Agendada';
+}
+
+function packageLabel(pkg: ResponsiblePortalPackage): string {
+  const prefix = pkg.status === 'current' ? 'Pacote atual' : `Pacote ${pkg.number}`;
+  if (!pkg.startDate) return `${prefix} — aguardando primeira sessão`;
+  const end = pkg.endDate ? formatDate(pkg.endDate, false) : 'em andamento';
+  return `${prefix} — ${formatDate(pkg.startDate, false)} a ${end}`;
+}
+
+function mediaGroupKey(record: ResponsiblePortalMedia): string {
+  return `${record.sessionDate}|${record.sessionTime}|${record.sessionId}`;
+}
+
+function sessionGroupTitle(records: ResponsiblePortalMedia[]): string {
+  const first = records[0];
+  return `${formatDate(first.sessionDate, false)} às ${first.sessionTime || 'horário não informado'}`;
+}
+
+function sessionGroupSubtitle(records: ResponsiblePortalMedia[]): string {
+  const photos = records.filter(record => record.mediaType === 'photo').length;
+  const videos = records.filter(record => record.mediaType === 'video').length;
+  const parts = [`Sessão ${records[0]?.sessionNumber || 'relacionada'}`];
+  if (photos > 0) parts.push(`${photos} ${photos === 1 ? 'foto' : 'fotos'}`);
+  if (videos > 0) parts.push(`${videos} ${videos === 1 ? 'vídeo' : 'vídeos'}`);
+  return parts.join(' • ');
+}
+
+function firstName(value: string): string {
+  return value.trim().split(/\s+/)[0] || value;
+}
+
+function updateMediaInData(
+  current: ResponsiblePortalData | null,
+  patientId: string,
+  recordId: string,
+  updater: (record: ResponsiblePortalMedia) => ResponsiblePortalMedia,
+): ResponsiblePortalData | null {
+  if (!current) return current;
+  return {
+    ...current,
+    patients: current.patients.map(patientData => (
+      patientData.patient.id !== patientId
+        ? patientData
+        : {
+          ...patientData,
+          media: patientData.media.map(record => record.id === recordId ? updater(record) : record),
+        }
+    )),
+  };
+}
+
+
+function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
+  const sessionsByNumber = useMemo(() => {
+    const map = new Map<number, ResponsiblePortalSession[]>();
+    for (const session of pkg.sessions) {
+      const items = map.get(session.sessionNumber) || [];
+      items.push(session);
+      map.set(session.sessionNumber, items);
+    }
+    return map;
+  }, [pkg.sessions]);
+
   return (
     <section className="overflow-hidden rounded-2xl border border-clinic-border bg-clinic-surface shadow-clinic">
-      <header className="flex items-center gap-3 border-b border-clinic-border bg-clinic-bg px-5 py-4">
-        <CalendarDays size={20} className="text-clinic-primary" />
-        <h2 className="font-bold text-clinic-text">{title}</h2>
-      </header>
-      <div className="divide-y divide-clinic-border">
-        {sessions.length === 0 && (
-          <p className="px-5 py-6 text-sm text-clinic-text-muted">{emptyMessage}</p>
-        )}
-        {sessions.map(session => (
-          <article key={session.id} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="font-bold capitalize text-clinic-text">{formatDate(session.date)}</p>
-              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-clinic-text-muted">
-                <span className="flex items-center gap-1.5">
-                  <Clock3 size={15} />
-                  {session.time || 'Horário não informado'}
-                </span>
-                {session.type && <span>{session.type}</span>}
-                {session.professionalName && <span>Profissional: {session.professionalName}</span>}
-              </div>
+      <header className="border-b border-clinic-border bg-clinic-bg px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-clinic-primary shadow-sm">
+              <CalendarDays size={20} />
             </div>
-            <span className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${statusClass(session.status)}`}>
-              {session.status}
+            <div>
+              <h2 className="font-bold text-clinic-text">Andamento das 10 sessões</h2>
+              <p className="text-xs text-clinic-text-muted">Visualização organizada do pacote selecionado, com foco nas sessões já consumidas e no que ainda falta concluir.</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+            <span className="rounded-2xl bg-status-green-bg px-3 py-2 text-center text-xs font-black text-status-green-text">
+              {pkg.consumedCount}/10 concluídas
             </span>
-          </article>
-        ))}
+            <span className="rounded-2xl bg-white px-3 py-2 text-center text-xs font-black text-clinic-primary shadow-sm">
+              {pkg.remainingCount} restantes
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-2">
+        {Array.from({ length: 10 }, (_, index) => index + 1).map(number => {
+          const events = sessionsByNumber.get(number) || [];
+          const hasEvents = events.length > 0;
+          return (
+            <article
+              key={number}
+              className={`rounded-2xl border p-4 transition-colors ${hasEvents ? 'border-clinic-border bg-white shadow-sm' : 'border-dashed border-clinic-border bg-clinic-bg/50'}`}
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-sm font-black ${hasEvents ? 'bg-clinic-primary text-white' : 'bg-white text-clinic-primary border border-clinic-border'}`}>
+                    {number}/10
+                  </div>
+                  <div>
+                    <p className="text-sm font-black text-clinic-text">Sessão {number}</p>
+                    <p className="text-xs text-clinic-text-muted">
+                      {hasEvents ? (events.length > 1 ? 'Sessão com reposição vinculada.' : 'Sessão vinculada ao pacote atual.') : 'Aguardando agendamento desta sessão.'}
+                    </p>
+                  </div>
+                </div>
+                {hasEvents && events[0] ? (
+                  <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${statusClass(events[0].status)}`}>
+                    {statusLabel(events[0].status)}
+                  </span>
+                ) : (
+                  <span className="inline-flex rounded-full bg-white px-3 py-1 text-xs font-bold text-clinic-text-muted border border-clinic-border">
+                    Pendente
+                  </span>
+                )}
+              </div>
+
+              {hasEvents ? (
+                <div className="mt-4 space-y-3">
+                  {events.map((session, eventIndex) => (
+                    <div key={session.id} className="rounded-xl border border-clinic-border bg-clinic-bg/45 p-3">
+                      {eventIndex > 0 && (
+                        <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-status-orange-text">Reposição vinculada</p>
+                      )}
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Data e horário</p>
+                          <p className="mt-1 font-bold capitalize text-clinic-text">{formatDate(session.date)}</p>
+                          <p className="mt-1 flex items-center gap-1 text-xs text-clinic-text-muted"><Clock3 size={13} /> {session.time || 'Horário não informado'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo</p>
+                          <p className="mt-1 text-sm font-semibold text-clinic-text">{session.type || 'Intervenção'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Profissional</p>
+                          <p className="mt-1 text-sm font-semibold text-clinic-text">{session.professionalName || 'Fábio Denarde'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Consome o pacote</p>
+                          <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${session.consumesPackage ? 'bg-status-green-bg text-status-green-text' : 'bg-white text-clinic-text-muted border border-clinic-border'}`}>
+                            {session.consumesPackage ? <Check size={13} /> : <X size={13} />}
+                            {session.consumesPackage ? 'Sim' : 'Não'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-xl border border-dashed border-clinic-border bg-white px-4 py-5 text-sm text-clinic-text-muted">
+                  Esta posição do pacote ainda não possui data agendada.
+                </div>
+              )}
+            </article>
+          );
+        })}
       </div>
     </section>
+  );
+}
+
+
+interface MediaCardProps {
+  key?: React.Key;
+  record: ResponsiblePortalMedia;
+  url: string;
+  previewLoading: boolean;
+  openLoading: boolean;
+  downloadLoading: boolean;
+  likeLoading: boolean;
+  selected: boolean;
+  selectMode: boolean;
+  viewMode: ViewMode;
+  onEnsureUrl: () => void;
+  onOpen: () => void;
+  onDownload: () => void;
+  onToggleSelect: () => void;
+  onLike: () => void;
+}
+
+function MediaCard({
+  record,
+  url,
+  previewLoading,
+  openLoading,
+  downloadLoading,
+  likeLoading,
+  selected,
+  selectMode,
+  viewMode,
+  onEnsureUrl,
+  onOpen,
+  onDownload,
+  onToggleSelect,
+  onLike,
+}: MediaCardProps) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const rootRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const target = rootRef.current;
+    if (!target || isVisible) return undefined;
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting) {
+        setIsVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '180px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [isVisible]);
+
+  useEffect(() => {
+    if (!isVisible || url || previewLoading) return;
+    onEnsureUrl();
+  }, [isVisible, onEnsureUrl, previewLoading, url]);
+
+  useEffect(() => {
+    if (url) setPreviewFailed(false);
+  }, [url]);
+
+  const showPlaceholder = !url || previewFailed;
+
+  return (
+    <article ref={rootRef} className={`group overflow-hidden rounded-2xl border bg-white shadow-sm transition-all ${selected ? 'border-clinic-primary ring-2 ring-clinic-primary/25' : 'border-clinic-border'} ${viewMode === 'list' ? 'sm:flex' : ''}`}>
+      <button
+        type="button"
+        onClick={selectMode ? onToggleSelect : onOpen}
+        className={`relative block overflow-hidden bg-slate-900 text-left ${viewMode === 'list' ? 'aspect-video w-full sm:w-64 sm:shrink-0' : 'aspect-video w-full'}`}
+      >
+        {!showPlaceholder && record.mediaType === 'photo' && (
+          <img
+            src={url}
+            alt={record.description || record.category}
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            loading="lazy"
+            onError={() => setPreviewFailed(true)}
+          />
+        )}
+        {!showPlaceholder && record.mediaType === 'video' && (
+          <video
+            src={url}
+            muted
+            playsInline
+            preload="metadata"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            onError={() => setPreviewFailed(true)}
+          />
+        )}
+        {showPlaceholder && (
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700 text-center text-white">
+            {previewLoading ? <Loader2 className="animate-spin text-white" /> : record.mediaType === 'video' ? <Film size={28} /> : <ImageIcon size={28} />}
+            <span className="px-4 text-[11px] font-bold text-white/90">
+              {previewLoading ? 'Carregando prévia...' : previewFailed ? 'Prévia indisponível. Toque em VER para abrir a mídia.' : 'Prévia protegida. Toque em VER para abrir a mídia.'}
+            </span>
+          </span>
+        )}
+        <span className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
+        <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/70 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white">
+          {record.mediaType === 'video' ? <Film size={12} /> : <ImageIcon size={12} />}
+          {record.mediaType === 'video' ? 'Vídeo' : 'Foto'}
+        </span>
+        {selectMode && (
+          <span className={`absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full border-2 border-white shadow-lg ${selected ? 'bg-clinic-primary text-white' : 'bg-black/55 text-white'}`}>
+            {selected ? <Check size={17} strokeWidth={3} /> : null}
+          </span>
+        )}
+        <span className="absolute bottom-2 left-2 right-2">
+          <span className="line-clamp-1 text-xs font-black text-white">{record.category}</span>
+          <span className="mt-0.5 block text-[10px] font-bold text-white/85">
+            {formatDate(record.sessionDate, false)} às {record.sessionTime}
+          </span>
+        </span>
+      </button>
+
+      <div className="flex min-w-0 flex-1 flex-col justify-between space-y-3 p-3">
+        <div>
+          <p className="line-clamp-2 min-h-8 text-xs text-clinic-text-muted">{record.description || 'Sem observação.'}</p>
+          <div className="mt-2 space-y-0.5 text-[10px] font-bold text-clinic-text-faint">
+            <p>Sessão {record.sessionNumber || 'relacionada'} • {statusLabel(record.sessionStatus)}</p>
+            <p>Profissional: {record.professionalName || 'Fábio Denarde'}</p>
+            <p>Compartilhamento permitido</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-t border-clinic-border pt-2">
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onOpen(); }}
+            disabled={selectMode || openLoading}
+            className="flex items-center justify-center gap-1 rounded-lg bg-clinic-primary py-2 text-[10px] font-black uppercase text-white disabled:opacity-45"
+          >
+            {openLoading ? <Loader2 size={13} className="animate-spin" /> : record.mediaType === 'video' ? <Film size={13} /> : <ImageIcon size={13} />}
+            Ver
+          </button>
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onLike(); }}
+            disabled={selectMode || likeLoading}
+            className={`flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-[10px] font-black ${record.likedByCurrentResponsible ? 'bg-red-50 text-red-600' : 'bg-clinic-bg text-clinic-text-muted'}`}
+            aria-label={record.likedByCurrentResponsible ? 'Remover curtida' : 'Curtir'}
+          >
+            {likeLoading ? <Loader2 size={14} className="animate-spin" /> : <Heart size={14} fill={record.likedByCurrentResponsible ? 'currentColor' : 'none'} />}
+            {record.likeCount}
+          </button>
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onDownload(); }}
+            disabled={selectMode || downloadLoading}
+            className="rounded-lg bg-clinic-bg px-3 py-2 text-clinic-primary disabled:opacity-45"
+            aria-label={`Baixar ${record.fileName}`}
+          >
+            <Download size={15} />
+          </button>
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -100,11 +523,54 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionError, setActionError] = useState('');
-  const [mediaLoadingId, setMediaLoadingId] = useState('');
-  const [selectedMedia, setSelectedMedia] = useState<{
-    record: ResponsiblePortalMedia;
-    url: string;
-  } | null>(null);
+  const [selectedPatientId, setSelectedPatientId] = useState('');
+  const [selectedPackageNumber, setSelectedPackageNumber] = useState<number | null>(null);
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [selectedMediaId, setSelectedMediaId] = useState('');
+  const [comment, setComment] = useState('');
+  const [periodFilter, setPeriodFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all');
+  const [sessionFilter, setSessionFilter] = useState('all');
+  const [visibilityFilter, setVisibilityFilter] = useState('all');
+  const [shareFilter, setShareFilter] = useState('all');
+  const [professionalFilter, setProfessionalFilter] = useState('all');
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [activePortalTab, setActivePortalTab] = useState<PortalTab>('dashboard');
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+  const [mediaUrlLoadingIds, setMediaUrlLoadingIds] = useState<Set<string>>(new Set());
+  const [expandedSessionGroups, setExpandedSessionGroups] = useState<SessionGroupState>({});
+  const [patientPhotoUrl, setPatientPhotoUrl] = useState('');
+  const [patientPhotoLoading, setPatientPhotoLoading] = useState(false);
+  const [patientPhotoExpanded, setPatientPhotoExpanded] = useState(false);
+  const [profileEditOpen, setProfileEditOpen] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState('');
+  const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [documentCategory, setDocumentCategory] = useState('Receita médica');
+  const [documentNote, setDocumentNote] = useState('');
+  const [documentUploading, setDocumentUploading] = useState(false);
+  const [documentMessage, setDocumentMessage] = useState('');
+  const [profileForm, setProfileForm] = useState<ResponsiblePortalPatientUpdateInput>({
+    name: '',
+    birthDate: '',
+    guardianName: '',
+    whatsapp: '',
+    school: '',
+    grade: '',
+    shift: '',
+    doctorName: '',
+    medication: '',
+    emergencyContact: '',
+    allergies: '',
+  });
+  const mediaElementRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
+  const mediaUrlCacheRef = useRef<Record<string, string>>({});
+  const mediaViewSessionRef = useRef<MediaViewSession | null>(null);
 
   useLayoutEffect(() => {
     applyTheme('calm-tech');
@@ -114,7 +580,15 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     setLoading(true);
     setError('');
     try {
-      setData(await getResponsiblePortalData(user));
+      const result = await getResponsiblePortalData(user);
+      setData(result);
+      applyTheme(result.settings.visualTheme);
+      const initialPatient = result.patients[0];
+      setSelectedPatientId(current => (
+        current && result.patients.some(item => item.patient.id === current)
+          ? current
+          : initialPatient?.patient.id || ''
+      ));
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível carregar o portal.');
     } finally {
@@ -126,64 +600,702 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     void loadPortal();
   }, [loadPortal]);
 
-  const sessions = useMemo(() => {
-    const now = Date.now();
-    const all = data?.sessions || [];
-    return {
-      upcoming: all
-        .filter(session => sessionTimestamp(session) >= now)
-        .sort((a, b) => sessionTimestamp(a) - sessionTimestamp(b)),
-      previous: all
-        .filter(session => sessionTimestamp(session) < now)
-        .sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a)),
-    };
-  }, [data?.sessions]);
+  const patientData = useMemo<ResponsiblePortalPatientData | null>(() => (
+    data?.patients.find(item => item.patient.id === selectedPatientId) || data?.patients[0] || null
+  ), [data?.patients, selectedPatientId]);
 
-  const openMedia = async (record: ResponsiblePortalMedia) => {
-    setMediaLoadingId(record.id);
-    setActionError('');
+  useEffect(() => {
+    if (!patientData) {
+      setSelectedPackageNumber(null);
+      return;
+    }
+    const availablePackages = patientData.packages.filter(pkg => pkg.status !== 'future');
+    const fallbackPackage = availablePackages.find(pkg => pkg.number === patientData.currentPackageNumber) || availablePackages[0] || patientData.packages[0] || null;
+    setSelectedPackageNumber(current => (
+      current && availablePackages.some(pkg => pkg.number === current)
+        ? current
+        : fallbackPackage?.number ?? null
+    ));
+    setSelectedIds(new Set());
+    setSelectMode(false);
+    setVisibleCount(PAGE_SIZE);
+    setExpandedSessionGroups({});
+  }, [patientData?.patient.id, patientData?.currentPackageNumber, patientData?.packages]);
+
+  const visiblePackages = useMemo(() => {
+    if (!patientData?.packages?.length) return [];
+    const nonFuture = patientData.packages.filter(pkg => pkg.status !== 'future');
+    return nonFuture.length > 0 ? nonFuture : patientData.packages.slice(0, 1);
+  }, [patientData?.packages]);
+
+  const selectedPackage = useMemo(() => (
+    visiblePackages.find(pkg => pkg.number === selectedPackageNumber)
+    || visiblePackages[0]
+    || null
+  ), [selectedPackageNumber, visiblePackages]);
+
+  const selectedMedia = useMemo(() => (
+    patientData?.media.find(record => record.id === selectedMediaId) || null
+  ), [patientData?.media, selectedMediaId]);
+
+  const packageMedia = useMemo(() => (
+    patientData?.media.filter(record => record.packageNumber === selectedPackage?.number) || []
+  ), [patientData?.media, selectedPackage?.number]);
+
+  const categories = useMemo(() => [...new Set(packageMedia.map(record => record.category))].sort(), [packageMedia]);
+  const professionals = useMemo(() => [...new Set(packageMedia.map(record => record.professionalName).filter(Boolean) as string[])].sort(), [packageMedia]);
+  const sessionsForFilter = useMemo(() => {
+    const seen = new Map<string, ResponsiblePortalMedia>();
+    for (const record of packageMedia) if (!seen.has(record.sessionId)) seen.set(record.sessionId, record);
+    return [...seen.values()].sort((a, b) => `${b.sessionDate}T${b.sessionTime}`.localeCompare(`${a.sessionDate}T${a.sessionTime}`));
+  }, [packageMedia]);
+
+  const filteredMedia = useMemo(() => {
+    const today = new Date();
+    const threshold = new Date(today);
+    if (periodFilter === '30') threshold.setDate(today.getDate() - 30);
+    if (periodFilter === '90') threshold.setDate(today.getDate() - 90);
+    return packageMedia.filter(record => {
+      if (mediaFilter !== 'all' && record.mediaType !== mediaFilter) return false;
+      if (categoryFilter !== 'all' && record.category !== categoryFilter) return false;
+      if (sessionFilter !== 'all' && record.sessionId !== sessionFilter) return false;
+      if (visibilityFilter !== 'all' && record.visibility !== visibilityFilter) return false;
+      if (shareFilter !== 'all') {
+        const shared = record.shareStatus === 'shared_confirmed';
+        if (shareFilter === 'shared' && !shared) return false;
+        if (shareFilter === 'not_shared' && shared) return false;
+      }
+      if (professionalFilter !== 'all' && record.professionalName !== professionalFilter) return false;
+      if (periodFilter === 'year' && !record.sessionDate.startsWith(String(today.getFullYear()))) return false;
+      if (periodFilter === '30' || periodFilter === '90') {
+        const date = new Date(`${record.sessionDate}T12:00:00`);
+        if (date < threshold) return false;
+      }
+      return true;
+    });
+  }, [categoryFilter, mediaFilter, packageMedia, periodFilter, professionalFilter, sessionFilter, shareFilter, visibilityFilter]);
+
+  const visibleMedia = useMemo(() => filteredMedia.slice(0, visibleCount), [filteredMedia, visibleCount]);
+
+  const groupedMedia = useMemo(() => {
+    const groups = new Map<string, ResponsiblePortalMedia[]>();
+    for (const record of visibleMedia) {
+      const key = mediaGroupKey(record);
+      const current = groups.get(key) || [];
+      current.push(record);
+      groups.set(key, current);
+    }
+    return [...groups.values()];
+  }, [visibleMedia]);
+
+
+  useEffect(() => {
+    setExpandedSessionGroups({});
+  }, [selectedPackage?.number, sessionFilter, categoryFilter, mediaFilter, periodFilter, professionalFilter, shareFilter, visibilityFilter]);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [categoryFilter, mediaFilter, periodFilter, professionalFilter, selectedPackageNumber, sessionFilter, shareFilter, visibilityFilter]);
+
+  useEffect(() => {
+    let active = true;
+    setPatientPhotoExpanded(false);
+    setPatientPhotoUrl('');
+    if (!patientData?.patient.hasPhoto) {
+      setPatientPhotoLoading(false);
+      return () => { active = false; };
+    }
+    setPatientPhotoLoading(true);
+    void getResponsiblePatientPhotoUrl(patientData.patient.id)
+      .then(result => {
+        if (active) setPatientPhotoUrl(result.url || '');
+      })
+      .catch(() => {
+        if (active) setPatientPhotoUrl('');
+      })
+      .finally(() => {
+        if (active) setPatientPhotoLoading(false);
+      });
+    return () => { active = false; };
+  }, [patientData?.patient.hasPhoto, patientData?.patient.id]);
+
+  useEffect(() => {
+    if (!patientData) return;
+    const patient = patientData.patient;
+    setProfileForm({
+      name: patient.name,
+      birthDate: patient.birthDate,
+      guardianName: patient.guardianName,
+      whatsapp: patient.whatsapp,
+      school: patient.school,
+      grade: patient.grade,
+      shift: patient.shift,
+      doctorName: patient.doctorName,
+      medication: patient.medication,
+      emergencyContact: patient.emergencyContact,
+      allergies: patient.allergies,
+    });
+    setProfileMessage('');
+    setProfileEditOpen(false);
+    setDocumentFile(null);
+    setDocumentNote('');
+    setDocumentMessage('');
+  }, [patientData?.patient.id]);
+
+  const finalizeCurrentMediaView = useCallback(async () => {
+    mediaViewSessionRef.current = null;
+  }, []);
+
+  const closeSelectedMedia = useCallback(async () => {
+    setSelectedMediaId('');
+    await finalizeCurrentMediaView();
+  }, [finalizeCurrentMediaView]);
+
+  const handleVideoPlay = useCallback((element: HTMLVideoElement) => {
+    let session = mediaViewSessionRef.current;
+    if (!session && selectedMedia?.mediaType === 'video') {
+      const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      session = {
+        recordId: selectedMedia.id,
+        patientId: selectedMedia.patientId,
+        mediaType: 'video',
+        startedAt: new Date().toISOString(),
+        startedAtMs: nowMs,
+        lastObservedPositionSeconds: null,
+        seeking: false,
+        totalPlayedSeconds: 0,
+        maxPositionSeconds: Number.isFinite(element.currentTime) ? element.currentTime : 0,
+        durationSeconds: Number.isFinite(element.duration) && element.duration > 0
+          ? element.duration
+          : (selectedMedia.durationSeconds || 0),
+        playCount: 0,
+        pauseCount: 0,
+        seekCount: 0,
+        completed: false,
+        finalized: false,
+      };
+      mediaViewSessionRef.current = session;
+    }
+    if (!session || session.mediaType !== 'video' || session.finalized) return;
+    session.playCount += 1;
+    session.seeking = false;
+    session.lastObservedPositionSeconds = Number.isFinite(element.currentTime) ? element.currentTime : null;
+  }, [selectedMedia]);
+
+  const handleVideoPause = useCallback((element?: HTMLVideoElement) => {
+    const session = mediaViewSessionRef.current;
+    if (!session || session.mediaType !== 'video' || session.finalized) return;
+    session.lastObservedPositionSeconds = null;
+    if (!element?.ended) session.pauseCount += 1;
+  }, []);
+
+  const handleVideoTimeUpdate = useCallback((element: HTMLVideoElement) => {
+    const session = mediaViewSessionRef.current;
+    if (!session || session.mediaType !== 'video' || session.finalized) return;
+    if (Number.isFinite(element.currentTime)) {
+      const currentPosition = element.currentTime;
+      if (!session.seeking && session.lastObservedPositionSeconds !== null && !element.paused) {
+        const delta = currentPosition - session.lastObservedPositionSeconds;
+        if (delta > 0 && delta <= 5) session.totalPlayedSeconds += delta;
+      }
+      session.lastObservedPositionSeconds = currentPosition;
+      session.maxPositionSeconds = Math.max(session.maxPositionSeconds, currentPosition);
+    }
+    if (Number.isFinite(element.duration) && element.duration > 0) session.durationSeconds = element.duration;
+  }, []);
+
+  const handleVideoSeeking = useCallback(() => {
+    const session = mediaViewSessionRef.current;
+    if (!session || session.mediaType !== 'video' || session.finalized) return;
+    session.seekCount += 1;
+    session.seeking = true;
+    session.lastObservedPositionSeconds = null;
+  }, []);
+
+  const handleVideoSeeked = useCallback((element: HTMLVideoElement) => {
+    const session = mediaViewSessionRef.current;
+    if (!session || session.mediaType !== 'video' || session.finalized) return;
+    session.seeking = false;
+    session.lastObservedPositionSeconds = Number.isFinite(element.currentTime) ? element.currentTime : null;
+  }, []);
+
+  const handleVideoEnded = useCallback(async () => {
+    const session = mediaViewSessionRef.current;
+    if (!session || session.mediaType !== 'video' || session.finalized) return;
+    session.lastObservedPositionSeconds = null;
+    session.seeking = false;
+    session.completed = true;
+    if (session.durationSeconds > 0) session.maxPositionSeconds = Math.max(session.maxPositionSeconds, session.durationSeconds);
+    await finalizeCurrentMediaView();
+  }, [finalizeCurrentMediaView]);
+
+  useEffect(() => () => {
+    void finalizeCurrentMediaView();
+  }, [finalizeCurrentMediaView]);
+
+  useEffect(() => {
+    if (activePortalTab !== 'gallery' || groupedMedia.length === 0) return;
+    const firstGroupKey = mediaGroupKey(groupedMedia[0][0]);
+    setExpandedSessionGroups(current => (
+      Object.keys(current).length > 0
+        ? current
+        : { [firstGroupKey]: true }
+    ));
+  }, [activePortalTab, groupedMedia]);
+
+  useEffect(() => {
+    if (activePortalTab !== 'gallery' || !patientData || !selectedPackage) return;
+    const storageKey = `responsible-gallery-notified:${user.uid}:${patientData.patient.id}`;
+    try {
+      if (window.sessionStorage.getItem(storageKey) === '1') return;
+    } catch {
+      // O servidor também deduplica por sessão autenticada.
+    }
+    void recordResponsiblePortalAction({
+      eventType: 'gallery_access',
+      patientId: patientData.patient.id,
+      patientName: patientData.patient.name,
+      clientContext: buildPortalClientContext(
+        'gallery',
+        `Portal do Responsável / Galeria de atividades / Pacote ${selectedPackage.number}`,
+      ),
+    }).then(() => {
+      try {
+        window.sessionStorage.setItem(storageKey, '1');
+      } catch {
+        // Sem armazenamento de sessão, a deduplicação do servidor permanece ativa.
+      }
+    }).catch(error => {
+      console.error('Falha ao registrar acesso à galeria:', error);
+    });
+  }, [activePortalTab, patientData?.patient.id, patientData?.patient.name, selectedPackage?.number, user.uid]);
+
+
+  const ensureMediaUrl = useCallback(async (record: ResponsiblePortalMedia): Promise<string> => {
+    const cached = mediaUrlCacheRef.current[record.id];
+    if (cached) return cached;
+    setMediaUrlLoadingIds(current => new Set(current).add(record.id));
     try {
       const result = await getResponsibleMediaUrl(record.patientId, record.id);
-      setSelectedMedia({ record, url: result.url });
+      mediaUrlCacheRef.current[record.id] = result.url;
+      setMediaUrls(current => ({ ...current, [record.id]: result.url }));
+      return result.url;
+    } finally {
+      setMediaUrlLoadingIds(current => {
+        const next = new Set(current);
+        next.delete(record.id);
+        return next;
+      });
+    }
+  }, []);
+
+  const openMedia = useCallback(async (record: ResponsiblePortalMedia) => {
+    setBusyAction({ id: record.id, type: 'open' });
+    setActionError('');
+    try {
+      if (mediaViewSessionRef.current && mediaViewSessionRef.current.recordId !== record.id) {
+        await finalizeCurrentMediaView();
+      }
+      await ensureMediaUrl(record);
+      const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const interactionSessionId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${record.id}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      mediaViewSessionRef.current = {
+        interactionSessionId,
+        recordId: record.id,
+        patientId: record.patientId,
+        mediaType: record.mediaType,
+        startedAt: new Date().toISOString(),
+        startedAtMs: nowMs,
+        lastObservedPositionSeconds: null,
+        seeking: false,
+        totalPlayedSeconds: 0,
+        maxPositionSeconds: 0,
+        durationSeconds: record.durationSeconds || 0,
+        playCount: 0,
+        pauseCount: 0,
+        seekCount: 0,
+        completed: false,
+        finalized: false,
+      };
+      setSelectedMediaId(record.id);
     } catch (caughtError) {
       setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível abrir a mídia.');
     } finally {
-      setMediaLoadingId('');
+      setBusyAction(null);
     }
-  };
+  }, [ensureMediaUrl, finalizeCurrentMediaView]);
 
-  const downloadMedia = async (record: ResponsiblePortalMedia) => {
-    setMediaLoadingId(record.id);
+  const fetchMediaFile = useCallback(async (record: ResponsiblePortalMedia) => {
+    const result = await getResponsibleMediaUrl(record.patientId, record.id);
+    const response = await fetch(result.url);
+    if (!response.ok) throw new Error('Não foi possível preparar o arquivo para download.');
+    const blob = await response.blob();
+    return {
+      blob,
+      fileName: result.fileName || record.fileName,
+      url: result.url,
+    };
+  }, []);
+
+  const requestDesktopSaveHandle = useCallback(async (fileName: string, mimeType = 'application/octet-stream') => {
+    if (!isDesktopEnvironment()) return null;
+    const picker = (window as typeof window & {
+      showSaveFilePicker?: (options: unknown) => Promise<{
+        createWritable: () => Promise<{ write: (value: Blob) => Promise<void>; close: () => Promise<void> }>;
+      }>;
+    }).showSaveFilePicker;
+    if (typeof picker !== 'function') return null;
+    const extension = extensionFromFileName(fileName);
+    return picker({
+      suggestedName: fileName,
+      types: [{
+        description: 'Arquivo',
+        accept: { [mimeType || 'application/octet-stream']: extension ? [extension] : [] },
+      }],
+    });
+  }, []);
+
+  const writeBlobToSaveHandle = useCallback(async (
+    handle: { createWritable: () => Promise<{ write: (value: Blob) => Promise<void>; close: () => Promise<void> }> },
+    blob: Blob,
+  ) => {
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }, []);
+
+  const fallbackBrowserDownload = useCallback((blob: Blob, fileName: string) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    anchor.rel = 'noopener noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+  }, []);
+
+  const triggerDownload = useCallback(async (record: ResponsiblePortalMedia) => {
+    const saveHandle = await requestDesktopSaveHandle(record.fileName, record.mimeType);
+    const { blob, fileName } = await fetchMediaFile(record);
+    if (saveHandle) await writeBlobToSaveHandle(saveHandle, blob);
+    else fallbackBrowserDownload(blob, fileName);
+  }, [fallbackBrowserDownload, fetchMediaFile, requestDesktopSaveHandle, writeBlobToSaveHandle]);
+
+  const downloadMedia = useCallback(async (record: ResponsiblePortalMedia) => {
+    setBusyAction({ id: record.id, type: 'download' });
     setActionError('');
     try {
-      const result = await getResponsibleMediaUrl(record.patientId, record.id);
-      const downloadUrl = new URL(result.url, window.location.origin);
-      downloadUrl.searchParams.set('download', '1');
-      downloadUrl.searchParams.set('fileName', result.fileName || record.fileName);
-      const anchor = document.createElement('a');
-      anchor.href = downloadUrl.toString();
-      anchor.download = result.fileName || record.fileName;
-      anchor.target = '_blank';
-      anchor.rel = 'noopener noreferrer';
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
+      await triggerDownload(record);
     } catch (caughtError) {
-      setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível baixar a mídia.');
+      if ((caughtError as DOMException)?.name !== 'AbortError') {
+        setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível baixar a mídia.');
+      }
     } finally {
-      setMediaLoadingId('');
+      setBusyAction(null);
     }
+  }, [triggerDownload]);
+
+  const downloadMany = useCallback(async (records: ResponsiblePortalMedia[]) => {
+    if (records.length === 0) return;
+    setBulkBusy(true);
+    setActionError('');
+    try {
+      const directoryPicker = (window as typeof window & {
+        showDirectoryPicker?: () => Promise<{
+          getFileHandle: (name: string, options: { create: boolean }) => Promise<{
+            createWritable: () => Promise<{ write: (value: Blob) => Promise<void>; close: () => Promise<void> }>;
+          }>;
+        }>;
+      }).showDirectoryPicker;
+
+      if (isDesktopEnvironment() && typeof directoryPicker === 'function') {
+        const directory = await directoryPicker();
+        for (const record of records) {
+          const { blob, fileName } = await fetchMediaFile(record);
+          const handle = await directory.getFileHandle(fileName, { create: true });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        }
+      } else {
+        for (const record of records) {
+          await triggerDownload(record);
+          await new Promise(resolve => window.setTimeout(resolve, 250));
+        }
+      }
+    } catch (caughtError) {
+      if ((caughtError as DOMException)?.name !== 'AbortError') {
+        setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível concluir todos os downloads.');
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [fetchMediaFile, triggerDownload]);
+
+  const shareMedia = useCallback(async (record: ResponsiblePortalMedia, target: 'instagram' | 'whatsapp') => {
+    setBusyAction({ id: record.id, type: 'share' });
+    setActionError('');
+    try {
+      const { blob, fileName } = await fetchMediaFile(record);
+      const caption = `${patientData?.patient.firstName || 'Atividade'} — ${formatDate(record.sessionDate, false)}`;
+      const file = new File([blob], fileName, { type: record.mimeType || blob.type });
+      const canNativeShareFile = typeof navigator.share === 'function' && navigator.canShare?.({ files: [file] });
+
+      if (target === 'instagram') {
+        if (canNativeShareFile) {
+          await navigator.share({ title: caption, text: caption, files: [file] });
+        } else {
+          fallbackBrowserDownload(blob, fileName);
+          window.open('https://www.instagram.com/', '_blank', 'noopener,noreferrer');
+        }
+      } else if (canNativeShareFile && !isDesktopEnvironment()) {
+        await navigator.share({ title: caption, text: caption, files: [file] });
+      } else {
+        const text = encodeURIComponent(`${caption}
+Arquivo preparado para compartilhamento.`);
+        fallbackBrowserDownload(blob, fileName);
+        window.open(`https://wa.me/?text=${text}`, '_blank', 'noopener,noreferrer');
+      }
+
+    } catch (caughtError) {
+      if ((caughtError as DOMException)?.name !== 'AbortError') {
+        setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível compartilhar a mídia.');
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  }, [fallbackBrowserDownload, fetchMediaFile, patientData?.patient.firstName]);
+
+  const toggleLike = useCallback(async (record: ResponsiblePortalMedia) => {
+    setBusyAction({ id: record.id, type: 'like' });
+    setActionError('');
+    try {
+      const nextLiked = !record.likedByCurrentResponsible;
+      await recordResponsiblePortalAction({
+        eventType: nextLiked ? 'media_like' : 'media_unlike',
+        patientId: record.patientId,
+        recordId: record.id,
+        clientContext: buildPortalClientContext(
+          'gallery',
+          'Portal do Responsável / Galeria de atividades / Botão Curtir',
+        ),
+      });
+      setData(current => updateMediaInData(current, record.patientId, record.id, item => ({
+        ...item,
+        likedByCurrentResponsible: nextLiked,
+        likeCount: Math.max(item.likeCount + (nextLiked ? 1 : -1), 0),
+      })));
+    } catch (caughtError) {
+      setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível registrar a curtida.');
+    } finally {
+      setBusyAction(null);
+    }
+  }, []);
+
+  const submitComment = useCallback(async () => {
+    if (!selectedMedia || !comment.trim()) return;
+    setBusyAction({ id: selectedMedia.id, type: 'comment' });
+    setActionError('');
+    try {
+      const result = await recordResponsiblePortalAction({
+        eventType: 'media_comment',
+        patientId: selectedMedia.patientId,
+        recordId: selectedMedia.id,
+        comment: comment.trim(),
+        clientContext: buildPortalClientContext(
+          'gallery',
+          'Portal do Responsável / Galeria de atividades / Visualizador / Comentários',
+        ),
+      });
+      if (result.comment) {
+        setData(current => updateMediaInData(current, selectedMedia.patientId, selectedMedia.id, item => ({
+          ...item,
+          comments: [...item.comments, result.comment!],
+        })));
+      }
+      setComment('');
+    } catch (caughtError) {
+      setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível enviar o comentário.');
+    } finally {
+      setBusyAction(null);
+    }
+  }, [comment, selectedMedia]);
+
+  const navigateMedia = useCallback((direction: -1 | 1) => {
+    if (!selectedMedia) return;
+    const index = filteredMedia.findIndex(record => record.id === selectedMedia.id);
+    if (index < 0) return;
+    const next = filteredMedia[index + direction];
+    if (next) void openMedia(next);
+  }, [filteredMedia, openMedia, selectedMedia]);
+
+  const toggleSelection = useCallback((recordId: string) => {
+    setSelectedIds(current => {
+      const next = new Set(current);
+      if (next.has(recordId)) next.delete(recordId);
+      else next.add(recordId);
+      return next;
+    });
+  }, []);
+
+  const selectedRecords = useMemo(() => filteredMedia.filter(record => selectedIds.has(record.id)), [filteredMedia, selectedIds]);
+
+  const toggleSessionGroup = useCallback((groupKey: string) => {
+    setExpandedSessionGroups(current => ({
+      ...current,
+      [groupKey]: !current[groupKey],
+    }));
+  }, []);
+
+  const saveResponsibleProfile = useCallback(async () => {
+    if (!patientData) return;
+    setProfileSaving(true);
+    setActionError('');
+    setProfileMessage('');
+    try {
+      const result = await updateResponsiblePatient(
+        patientData.patient.id,
+        profileForm,
+        buildPortalClientContext(
+          'profile',
+          'Portal do Responsável / Atualização cadastral / Botão Salvar atualização',
+        ),
+      );
+      setData(current => {
+        if (!current) return current;
+        return {
+          ...current,
+          patients: current.patients.map(item => (
+            item.patient.id === patientData.patient.id
+              ? { ...item, patient: result.patient }
+              : item
+          )),
+        };
+      });
+      setProfileMessage(result.updated ? 'Cadastro atualizado com sucesso. O profissional foi notificado.' : 'Nenhuma alteração foi necessária.');
+      if (result.updated) window.setTimeout(() => setProfileEditOpen(false), 900);
+    } catch (caughtError) {
+      setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível atualizar o cadastro.');
+    } finally {
+      setProfileSaving(false);
+    }
+  }, [patientData, profileForm]);
+
+  const submitResponsibleDocument = useCallback(async () => {
+    if (!patientData || !documentFile) return;
+    setDocumentUploading(true);
+    setDocumentMessage('');
+    setActionError('');
+    try {
+      const uploaded = await uploadResponsibleDocument({
+        patientId: patientData.patient.id,
+        file: documentFile,
+        category: documentCategory,
+        note: documentNote.trim(),
+        clientContext: buildPortalClientContext(
+          'profile',
+          'Portal do Responsável / Atualização cadastral / Enviar documento',
+        ),
+      });
+      setData(current => {
+        if (!current) return current;
+        return {
+          ...current,
+          patients: current.patients.map(item => (
+            item.patient.id === patientData.patient.id
+              ? { ...item, documents: [uploaded, ...(item.documents || [])] }
+              : item
+          )),
+        };
+      });
+      setDocumentFile(null);
+      setDocumentNote('');
+      setDocumentMessage('Documento enviado com sucesso. O profissional foi notificado pelo sino.');
+    } catch (caughtError) {
+      setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível enviar o documento.');
+    } finally {
+      setDocumentUploading(false);
+    }
+  }, [documentCategory, documentFile, documentNote, patientData]);
+
+  const downloadResponsibleDocument = useCallback(async (document: { id: string; fileName: string }) => {
+    if (!patientData) return;
+    setActionError('');
+    try {
+      const saveHandle = await requestDesktopSaveHandle(document.fileName);
+      const result = await getResponsibleDocumentUrl(patientData.patient.id, document.id);
+      const response = await fetch(result.url);
+      if (!response.ok) throw new Error('Não foi possível carregar o documento.');
+      const blob = await response.blob();
+      if (saveHandle) await writeBlobToSaveHandle(saveHandle, blob);
+      else fallbackBrowserDownload(blob, result.fileName || document.fileName);
+    } catch (caughtError) {
+      if ((caughtError as DOMException)?.name !== 'AbortError') {
+        setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível baixar o documento.');
+      }
+    }
+  }, [fallbackBrowserDownload, patientData, requestDesktopSaveHandle, writeBlobToSaveHandle]);
+
+  const resetFilters = () => {
+    setPeriodFilter('all');
+    setCategoryFilter('all');
+    setMediaFilter('all');
+    setSessionFilter('all');
+    setVisibilityFilter('all');
+    setShareFilter('all');
+    setProfessionalFilter('all');
   };
+
+  const sessionSummary = useMemo(() => {
+    const summary = {
+      realizada: 0,
+      reposicao: 0,
+      agendada: 0,
+      falta: 0,
+      faltaProfissional: 0,
+    };
+    for (const session of selectedPackage?.sessions || []) {
+      if (session.status === 'Realizada') summary.realizada += 1;
+      else if (session.status === 'Reposição') summary.reposicao += 1;
+      else if (session.status === 'Falta') summary.falta += 1;
+      else if (session.status === 'Falta.Prof') summary.faltaProfissional += 1;
+      else summary.agendada += 1;
+    }
+    return summary;
+  }, [selectedPackage?.sessions]);
+
+  const portalTabs: Array<{ id: PortalTab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
+    { id: 'dashboard', label: 'Resumo geral', icon: BarChart3 },
+    { id: 'sessions', label: 'Sessões agendadas', icon: CalendarDays },
+    { id: 'gallery', label: 'Galeria de atividades', icon: ImageIcon },
+    { id: 'profile', label: 'Atualização cadastral', icon: ClipboardList },
+  ];
 
   return (
     <div className="min-h-screen bg-clinic-bg">
       <header className="bg-clinic-header text-white shadow-lg">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between">
-          <BrandLogo
-            variant="compact"
-            name="Denarde Soluções"
-            subtitle="Portal do Responsável"
-          />
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-2 sm:px-6 md:flex-row md:items-center md:justify-between">
+          <div className="w-full min-w-0 md:hidden">
+            <BrandLogo
+              variant="compact"
+              theme={data?.settings.visualTheme}
+              name={data?.settings.name}
+              subtitle={data?.settings.title}
+              className="w-full justify-center"
+            />
+          </div>
+          <div className="hidden min-w-0 flex-1 md:block">
+            <BrandLogo
+              theme={data?.settings.visualTheme}
+              name={data?.settings.name}
+              subtitle={data?.settings.title}
+              className="max-w-full"
+            />
+          </div>
           <button
             type="button"
             onClick={() => void logout()}
@@ -229,132 +1341,718 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
           </div>
         )}
 
-        {!loading && !error && data && !data.patient && (
+        {!loading && !error && data && data.patients.length === 0 && (
           <section className="rounded-2xl border border-status-orange-text/25 bg-status-orange-bg p-6 text-center">
             <ShieldCheck className="mx-auto text-status-orange-text" size={36} />
             <p className="mx-auto mt-4 max-w-2xl font-bold text-clinic-text">
-              Seu acesso foi aprovado, mas ainda não há paciente vinculado ao seu perfil. Entre em contato com a clínica.
+              Seu acesso foi aprovado, mas ainda não há atendente vinculado ao seu perfil. Favor entrar em contato com a clínica responsável.
             </p>
           </section>
         )}
 
-        {!loading && !error && data?.patient && (
+        {!loading && !error && patientData && selectedPackage && (
           <>
             {actionError && (
               <div className="rounded-xl border border-status-red-text/20 bg-status-red-bg px-4 py-3 text-sm font-bold text-status-red-text">
                 {actionError}
               </div>
             )}
+
             <section className="rounded-2xl border border-clinic-primary/20 bg-clinic-surface p-5 shadow-clinic">
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-clinic-primary">Paciente vinculado</p>
-              <h2 className="mt-2 text-2xl font-bold text-clinic-text">{data.patient.name}</h2>
-              <p className="mt-2 text-sm text-clinic-text-muted">
-                Este portal permite somente visualização das informações autorizadas pela clínica.
-              </p>
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                  <button
+                    type="button"
+                    onClick={() => patientPhotoUrl && setPatientPhotoExpanded(true)}
+                    disabled={!patientPhotoUrl}
+                    className="relative flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-clinic-border bg-clinic-bg text-2xl font-black text-clinic-primary shadow-sm transition-transform hover:scale-[1.02] disabled:cursor-default sm:h-32 sm:w-32"
+                    aria-label={patientPhotoUrl ? `Ampliar foto de ${patientData.patient.name}` : `Sem foto de ${patientData.patient.name}`}
+                  >
+                    {patientPhotoLoading ? (
+                      <Loader2 size={24} className="animate-spin" />
+                    ) : patientPhotoUrl ? (
+                      <img src={patientPhotoUrl} alt={patientData.patient.name} className="h-full w-full object-cover" />
+                    ) : (
+                      patientData.patient.name.split(/\s+/).map(part => part[0]).slice(0, 2).join('')
+                    )}
+                  </button>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold uppercase tracking-[0.16em] text-clinic-primary">Atendente vinculado</p>
+                    <h2 className="mt-2 break-words text-2xl font-bold text-clinic-text">{patientData.patient.name}</h2>
+                    <p className="mt-2 text-sm text-clinic-text-muted">
+                      Visualização de sessões, atividades e informações autorizadas pela clínica.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setActivePortalTab('profile')}
+                      className="mt-3 inline-flex items-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white shadow-sm transition hover:brightness-95 disabled:opacity-50"
+                    >
+                      <RefreshCw size={15} />
+                      Ir para atualização cadastral
+                    </button>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[580px]">
+                  {data && data.patients.length > 1 && (
+                    <label>
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Selecionar atendente</span>
+                      <select
+                        value={patientData.patient.id}
+                        onChange={event => setSelectedPatientId(event.target.value)}
+                        className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm font-bold text-clinic-text"
+                      >
+                        {data.patients.map(item => <option key={item.patient.id} value={item.patient.id}>{item.patient.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <label className={data && data.patients.length > 1 ? '' : 'sm:col-span-2'}>
+                    <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Pacote de sessões</span>
+                    <select
+                      value={selectedPackage.number}
+                      onChange={event => setSelectedPackageNumber(Number(event.target.value))}
+                      className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm font-bold text-clinic-text"
+                    >
+                      {visiblePackages.map(pkg => <option key={pkg.number} value={pkg.number}>{packageLabel(pkg)}</option>)}
+                    </select>
+                  </label>
+                </div>
+              </div>
             </section>
 
-            <div className="grid gap-6 xl:grid-cols-2">
-              <SessionList
-                title="Próximas sessões"
-                sessions={sessions.upcoming}
-                emptyMessage="Não há próximas sessões cadastradas."
-              />
-              <SessionList
-                title="Sessões anteriores"
-                sessions={sessions.previous}
-                emptyMessage="Não há sessões anteriores cadastradas."
-              />
-            </div>
+            <nav className="overflow-x-auto rounded-2xl border border-clinic-border bg-clinic-surface p-2 shadow-clinic" aria-label="Seções do Portal do Responsável">
+              <div className="flex min-w-max gap-2 sm:min-w-0 sm:grid sm:grid-cols-4">
+                {portalTabs.map(tab => {
+                  const Icon = tab.icon;
+                  const active = activePortalTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActivePortalTab(tab.id)}
+                      className={`flex min-w-[190px] items-center justify-center gap-2 rounded-xl px-4 py-3 text-xs font-black uppercase tracking-wide transition sm:min-w-0 ${active ? 'bg-clinic-primary text-white shadow-sm' : 'bg-clinic-bg text-clinic-text-muted hover:text-clinic-primary'}`}
+                      aria-current={active ? 'page' : undefined}
+                    >
+                      <Icon size={17} />
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </nav>
 
-            <section className="overflow-hidden rounded-2xl border border-clinic-border bg-clinic-surface shadow-clinic">
-              <header className="flex items-center gap-3 border-b border-clinic-border bg-clinic-bg px-5 py-4">
-                <ImageIcon size={20} className="text-clinic-primary" />
-                <div>
-                  <h2 className="font-bold text-clinic-text">Mídias liberadas</h2>
-                  <p className="text-xs text-clinic-text-muted">Somente arquivos autorizados para compartilhamento.</p>
+            {activePortalTab === 'dashboard' && (
+              <div className="space-y-6">
+                <section className="grid gap-4 md:grid-cols-3">
+              <article className="rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic">
+                <p className="text-xs font-black uppercase tracking-wide text-clinic-text-faint">Progresso do pacote</p>
+                <p className="mt-2 text-3xl font-black text-clinic-primary">{selectedPackage.consumedCount}/10</p>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-clinic-bg">
+                  <div className="h-full rounded-full bg-clinic-primary" style={{ width: `${Math.min(selectedPackage.consumedCount * 10, 100)}%` }} />
+                </div>
+                <p className="mt-2 text-xs font-bold text-clinic-text-muted">{selectedPackage.remainingCount} sessões restantes</p>
+              </article>
+              <article className="rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic md:row-span-2">
+                <p className="text-xs font-black uppercase tracking-wide text-clinic-text-faint">Situação financeira</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <WalletCards className="text-clinic-primary" size={24} />
+                  <p className="text-2xl font-black capitalize text-clinic-text">{selectedPackage.financialStatus}</p>
+                </div>
+                <p className="mt-2 text-xs font-bold text-clinic-text-muted">
+                  Pago: {formatCurrency(selectedPackage.paidAmount)} • Pendente: {formatCurrency(selectedPackage.pendingAmount)}
+                </p>
+                {selectedPackage.installments.length > 0 && (
+                  <div className="mt-4 space-y-2 border-t border-clinic-border pt-4">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Pagamentos registrados</p>
+                    {selectedPackage.installments.map(payment => (
+                      <div key={payment.id} className="rounded-xl bg-clinic-bg px-3 py-3">
+                        <p className="text-sm font-black text-clinic-text">
+                          {payment.installment || 'Pagamento'} — {formatCurrency(payment.amount)}
+                        </p>
+                        <p className="mt-1 text-xs text-clinic-text-muted">
+                          {formatDate(payment.date, false)} • {payment.method || 'Forma não informada'}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+              <article className={`rounded-2xl border p-5 shadow-clinic ${selectedPackage.consumedCount >= 9 ? 'border-status-orange-text/30 bg-status-orange-bg' : 'border-clinic-border bg-clinic-surface'}`}>
+                <p className="text-xs font-black uppercase tracking-wide text-clinic-text-faint">Renovação</p>
+                <p className="mt-2 text-lg font-black text-clinic-text">
+                  {selectedPackage.consumedCount >= 9 ? 'Pacote próximo do encerramento' : 'Acompanhamento em andamento'}
+                </p>
+                <p className="mt-2 text-xs font-bold text-clinic-text-muted">
+                  {selectedPackage.consumedCount >= 9
+                    ? 'A clínica poderá entrar em contato para organizar a continuidade.'
+                    : 'O aviso de renovação aparecerá a partir da 9ª sessão.'}
+                </p>
+              </article>
+                </section>
+
+                <section className="rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wide text-clinic-text-faint">Resumo das sessões</p>
+                      <h2 className="mt-1 text-lg font-black text-clinic-text">Visão rápida do pacote atual</h2>
+                      <p className="mt-1 text-xs text-clinic-text-muted">Acompanhe os principais estados sem precisar abrir toda a lista de sessões.</p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div
+                        className="relative flex h-24 w-24 items-center justify-center rounded-full"
+                        style={{ background: `conic-gradient(var(--color-clinic-primary) ${Math.min(selectedPackage.consumedCount * 10, 100)}%, color-mix(in srgb, var(--color-clinic-primary) 12%, white) 0)` }}
+                        aria-label={`${selectedPackage.consumedCount} de 10 sessões concluídas`}
+                      >
+                        <div className="flex h-16 w-16 flex-col items-center justify-center rounded-full bg-white shadow-sm">
+                          <span className="text-xl font-black text-clinic-primary">{selectedPackage.consumedCount}/10</span>
+                          <span className="text-[9px] font-black uppercase text-clinic-text-faint">concluídas</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                    {[
+                      ['Realizadas', sessionSummary.realizada, 'bg-status-green-bg text-status-green-text'],
+                      ['Reposições', sessionSummary.reposicao, 'bg-status-orange-bg text-status-orange-text'],
+                      ['Agendadas', sessionSummary.agendada, 'bg-status-blue-bg text-status-blue-text'],
+                      ['Faltas', sessionSummary.falta, 'bg-status-red-bg text-status-red-text'],
+                      ['Falta profissional', sessionSummary.faltaProfissional, 'bg-orange-100 text-orange-700'],
+                    ].map(([label, value, tone]) => (
+                      <article key={String(label)} className={`rounded-xl px-4 py-3 ${String(tone)}`}>
+                        <p className="text-2xl font-black">{String(value)}</p>
+                        <p className="text-[10px] font-black uppercase tracking-wide">{String(label)}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activePortalTab === 'sessions' && (
+              <PackageSessionsTable pkg={selectedPackage} />
+            )}
+
+            {activePortalTab === 'gallery' && (
+              <section className="space-y-5 rounded-2xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
+              <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <ImageIcon size={20} className="text-clinic-primary" />
+                  <div>
+                    <h2 className="font-bold text-clinic-text">Galeria de atividades</h2>
+                    <p className="text-xs text-clinic-text-muted">Mídias do pacote selecionado, da primeira sessão até a data atual.</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setViewMode('grid')} className={`rounded-lg p-2 ${viewMode === 'grid' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-text-muted'}`} aria-label="Visualização em grade"><LayoutGrid size={17} /></button>
+                  <button type="button" onClick={() => setViewMode('list')} className={`rounded-lg p-2 ${viewMode === 'list' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-text-muted'}`} aria-label="Visualização em lista"><List size={17} /></button>
                 </div>
               </header>
-              {data.media.length === 0 ? (
-                <p className="px-5 py-6 text-sm text-clinic-text-muted">
-                  Nenhuma mídia foi liberada para visualização.
-                </p>
+
+              <div className="grid grid-cols-1 gap-2 rounded-xl border border-clinic-border bg-white p-3 sm:grid-cols-2 xl:grid-cols-4">
+                <label className="relative">
+                  <CalendarDays size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" />
+                  <select value={periodFilter} onChange={event => setPeriodFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs">
+                    <option value="all">Todo o período</option>
+                    <option value="30">Últimos 30 dias</option>
+                    <option value="90">Últimos 90 dias</option>
+                    <option value="year">Ano atual</option>
+                  </select>
+                </label>
+                <label className="relative">
+                  <Filter size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" />
+                  <select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs">
+                    <option value="all">Todas as categorias</option>
+                    {categories.map(category => <option key={category}>{category}</option>)}
+                  </select>
+                </label>
+                <select value={mediaFilter} onChange={event => setMediaFilter(event.target.value as MediaFilter)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
+                  <option value="all">Fotos e vídeos</option>
+                  <option value="photo">Somente fotos</option>
+                  <option value="video">Somente vídeos</option>
+                </select>
+                <select value={sessionFilter} onChange={event => setSessionFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
+                  <option value="all">Todas as sessões</option>
+                  {sessionsForFilter.map(record => <option key={record.sessionId} value={record.sessionId}>{formatDate(record.sessionDate, false)} às {record.sessionTime}</option>)}
+                </select>
+                <select value={visibilityFilter} onChange={event => setVisibilityFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
+                  <option value="all">Todas as visibilidades</option>
+                  <option value="share_allowed">Compartilhamento permitido</option>
+                </select>
+                <select value={shareFilter} onChange={event => setShareFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
+                  <option value="all">Todos os compartilhamentos</option>
+                  <option value="shared">Já compartilhados</option>
+                  <option value="not_shared">Ainda não compartilhados</option>
+                </select>
+                <select value={professionalFilter} onChange={event => setProfessionalFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
+                  <option value="all">Todos os profissionais</option>
+                  {professionals.map(name => <option key={name}>{name}</option>)}
+                </select>
+                <button type="button" onClick={resetFilters} className="rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs font-black uppercase text-clinic-primary">Limpar filtros</button>
+              </div>
+
+              {filteredMedia.length > 0 && (
+                <div className={`rounded-xl border p-3 ${selectMode ? 'border-clinic-primary/30 bg-clinic-primary/5' : 'border-clinic-border bg-white'}`}>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wide text-clinic-text">Seleção múltipla</p>
+                      <p className="text-xs text-clinic-text-muted">Baixe mídias escolhidas, todas de uma sessão ou todo o pacote.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {!selectMode ? (
+                        <button type="button" onClick={() => setSelectMode(true)} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"><CheckSquare size={14} /> Selecionar mídias</button>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => setSelectedIds(new Set(filteredMedia.map(record => record.id)))} className="rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary">Selecionar visíveis</button>
+                          <button type="button" onClick={() => void downloadMany(selectedRecords)} disabled={selectedRecords.length === 0 || bulkBusy} className="flex items-center gap-2 rounded-lg bg-clinic-primary px-3 py-2 text-[10px] font-black uppercase text-white disabled:opacity-45"><Download size={14} /> Baixar selecionadas ({selectedRecords.length})</button>
+                          {sessionFilter !== 'all' && <button type="button" onClick={() => void downloadMany(filteredMedia)} disabled={bulkBusy} className="rounded-lg bg-status-blue-bg px-3 py-2 text-[10px] font-black uppercase text-status-blue-text">Baixar sessão</button>}
+                          <button type="button" onClick={() => void downloadMany(packageMedia)} disabled={bulkBusy} className="rounded-lg bg-status-green-bg px-3 py-2 text-[10px] font-black uppercase text-status-green-text">Baixar pacote</button>
+                          <button type="button" onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-text-muted"><X size={14} /> Cancelar</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {filteredMedia.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-clinic-border bg-clinic-bg/40 p-10 text-center">
+                  <ImageIcon className="mx-auto mb-3 text-clinic-text-faint" />
+                  <p className="font-bold text-clinic-text">Nenhuma mídia encontrada</p>
+                  <p className="text-xs text-clinic-text-muted">As mídias autorizadas aparecerão aqui após o vínculo com uma sessão do pacote.</p>
+                </div>
               ) : (
-                <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-3">
-                  {data.media.map(record => (
-                    <article key={record.id} className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="rounded-xl bg-status-blue-bg p-2 text-status-blue-text">
-                          {record.mediaType === 'video' ? <Play size={20} /> : <ImageIcon size={20} />}
-                        </div>
-                        <span className="text-xs text-clinic-text-muted">
-                          {formatDate(record.sessionDate)}
-                        </span>
-                      </div>
-                      <h3 className="mt-3 font-bold text-clinic-text">{record.category}</h3>
-                      <p className="mt-1 truncate text-xs text-clinic-text-muted">{record.fileName}</p>
-                      <div className="mt-4 flex gap-2">
+                <div className="space-y-7">
+                  {groupedMedia.map(records => {
+                    const groupKey = mediaGroupKey(records[0]);
+                    const isExpanded = Boolean(expandedSessionGroups[groupKey]);
+                    return (
+                      <section key={groupKey} className="overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm">
                         <button
                           type="button"
-                          onClick={() => void openMedia(record)}
-                          disabled={!!mediaLoadingId}
-                          className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-clinic-primary px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+                          onClick={() => toggleSessionGroup(groupKey)}
+                          className="flex w-full flex-col gap-3 px-4 py-4 text-left transition hover:bg-clinic-bg/35 sm:flex-row sm:items-center sm:justify-between"
+                          aria-expanded={isExpanded}
                         >
-                          {mediaLoadingId === record.id
-                            ? <Loader2 size={14} className="animate-spin" />
-                            : record.mediaType === 'video' ? <Play size={14} /> : <ImageIcon size={14} />}
-                          Visualizar
+                          <div className="flex items-center gap-3">
+                            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-clinic-bg text-clinic-primary">
+                              <CalendarDays size={17} />
+                            </span>
+                            <div>
+                              <h3 className="text-sm font-black text-clinic-text">{sessionGroupTitle(records)}</h3>
+                              <p className="text-xs font-bold text-clinic-text-faint">{sessionGroupSubtitle(records)}</p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                            <span className="rounded-full bg-clinic-bg px-3 py-1 text-[11px] font-black text-clinic-primary">
+                              {records.length} mídias
+                            </span>
+                            <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-clinic-border bg-white text-clinic-primary">
+                              <ChevronDown size={18} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                            </span>
+                          </div>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => void downloadMedia(record)}
-                          disabled={!!mediaLoadingId}
-                          className="flex items-center justify-center rounded-lg border border-clinic-border bg-white px-3 py-2 text-clinic-primary disabled:opacity-50"
-                          aria-label={`Baixar ${record.fileName}`}
-                        >
-                          <Download size={16} />
-                        </button>
-                      </div>
+
+                        {isExpanded && (
+                          <div className="space-y-4 border-t border-clinic-border px-4 py-4">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                              <p className="text-xs text-clinic-text-muted">Mídias organizadas por sessão para evitar mistura entre datas diferentes.</p>
+                              <button type="button" onClick={() => void downloadMany(records)} disabled={bulkBusy} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"><Download size={13} /> Baixar sessão</button>
+                            </div>
+                            <div className={viewMode === 'grid' ? 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3' : 'space-y-3'}>
+                              {records.map(record => (
+                                <MediaCard
+                                  key={record.id}
+                                  record={record}
+                                  url={mediaUrls[record.id] || ''}
+                                  previewLoading={mediaUrlLoadingIds.has(record.id)}
+                                  openLoading={busyAction?.id === record.id && busyAction.type === 'open'}
+                                  downloadLoading={busyAction?.id === record.id && busyAction.type === 'download'}
+                                  likeLoading={busyAction?.id === record.id && busyAction.type === 'like'}
+                                  selected={selectedIds.has(record.id)}
+                                  selectMode={selectMode}
+                                  viewMode={viewMode}
+                                  onEnsureUrl={() => { void ensureMediaUrl(record).catch(() => undefined); }}
+                                  onOpen={() => void openMedia(record)}
+                                  onDownload={() => void downloadMedia(record)}
+                                  onToggleSelect={() => toggleSelection(record.id)}
+                                  onLike={() => void toggleLike(record)}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })}
+                  <div className="flex min-h-12 items-center justify-center">
+                    {visibleCount < filteredMedia.length ? (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleCount(current => Math.min(current + PAGE_SIZE, filteredMedia.length))}
+                        className="inline-flex items-center gap-2 rounded-xl border border-clinic-border bg-white px-5 py-3 text-xs font-black uppercase tracking-wide text-clinic-primary shadow-sm transition hover:bg-clinic-bg"
+                      >
+                        <ChevronDown size={16} />
+                        Carregar mais mídias ({filteredMedia.length - visibleCount} restantes)
+                      </button>
+                    ) : (
+                      <span className="text-xs font-bold text-clinic-text-muted">{filteredMedia.length} mídias exibidas</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              </section>
+            )}
+
+            {activePortalTab === 'profile' && (
+              <section className="space-y-5 rounded-2xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-6">
+                <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-clinic-primary">Atualização cadastral</p>
+                    <h2 className="mt-1 text-xl font-black text-clinic-text">Dados detalhados de {patientData.patient.firstName}</h2>
+                    <p className="mt-1 text-xs text-clinic-text-muted">As alterações ficam registradas no histórico e geram notificação no sino da área profissional.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setProfileMessage(''); setProfileEditOpen(true); }}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase tracking-wide text-white"
+                  >
+                    <RefreshCw size={16} />
+                    Editar cadastro
+                  </button>
+                </header>
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {[
+                    ['Nome completo', patientData.patient.name],
+                    ['Data de nascimento', patientData.patient.birthDate ? formatDate(patientData.patient.birthDate, false) : 'Não informado'],
+                    ['Responsável principal', patientData.patient.guardianName || 'Não informado'],
+                    ['WhatsApp', patientData.patient.whatsapp || 'Não informado'],
+                    ['Escola', patientData.patient.school || 'Não informado'],
+                    ['Ano/Série', patientData.patient.grade || 'Não informado'],
+                    ['Turno', patientData.patient.shift || 'Não informado'],
+                    ['Médico responsável', patientData.patient.doctorName || 'Não informado'],
+                    ['Contato de emergência', patientData.patient.emergencyContact || 'Não informado'],
+                  ].map(([label, value]) => (
+                    <article key={label} className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{label}</p>
+                      <p className="mt-2 break-words text-sm font-bold text-clinic-text">{value}</p>
                     </article>
                   ))}
                 </div>
-              )}
-            </section>
+
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <article className="rounded-xl border border-clinic-border bg-white p-4">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Medicações em uso</p>
+                    <p className="mt-2 whitespace-pre-wrap text-sm text-clinic-text-muted">{patientData.patient.medication || 'Nenhuma informação registrada.'}</p>
+                  </article>
+                  <article className="rounded-xl border border-clinic-border bg-white p-4">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Alergias e restrições</p>
+                    <p className="mt-2 whitespace-pre-wrap text-sm text-clinic-text-muted">{patientData.patient.allergies || 'Nenhuma informação registrada.'}</p>
+                  </article>
+                </div>
+
+                <section className="rounded-2xl border border-clinic-border bg-clinic-bg/50 p-4 sm:p-5">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <div className="flex items-center gap-2 text-clinic-primary">
+                        <FileText size={18} />
+                        <h3 className="font-black text-clinic-text">Documentos e anexos</h3>
+                      </div>
+                      <p className="mt-1 text-xs text-clinic-text-muted">Envie receitas, laudos, exames e relatórios. O arquivo será armazenado no Google Drive da clínica e aparecerá no cadastro profissional.</p>
+                    </div>
+                    <span className="rounded-full bg-white px-3 py-1 text-[10px] font-black uppercase text-clinic-primary shadow-sm">Máximo de 20 MB</span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)_auto]">
+                    <label>
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo de documento</span>
+                      <select
+                        value={documentCategory}
+                        onChange={event => setDocumentCategory(event.target.value)}
+                        className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                      >
+                        {[
+                          'Receita médica',
+                          'Laudo',
+                          'Exame',
+                          'Relatório escolar',
+                          'Atestado',
+                          'Encaminhamento',
+                          'Carteira de vacinação',
+                          'Comprovante de pagamento',
+                          'Outro',
+                        ].map(option => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Arquivo</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
+                        onChange={event => {
+                          const nextFile = event.target.files?.[0] || null;
+                          setDocumentFile(nextFile);
+                          setDocumentMessage('');
+                        }}
+                        className="block w-full rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-sm text-clinic-text file:mr-3 file:rounded-lg file:border-0 file:bg-clinic-primary file:px-3 file:py-2 file:text-xs file:font-black file:uppercase file:text-white"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void submitResponsibleDocument()}
+                      disabled={!documentFile || documentUploading}
+                      className="mt-auto flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-xs font-black uppercase text-white disabled:opacity-45"
+                    >
+                      {documentUploading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                      Enviar documento
+                    </button>
+                  </div>
+
+                  <label className="mt-3 block">
+                    <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Observação opcional</span>
+                    <textarea
+                      rows={3}
+                      maxLength={1000}
+                      value={documentNote}
+                      onChange={event => setDocumentNote(event.target.value)}
+                      className="w-full rounded-xl border border-clinic-border bg-white p-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                      placeholder="Ex.: receita atualizada pelo neurologista em junho de 2026."
+                    />
+                  </label>
+
+                  {documentFile && (
+                    <p className="mt-2 text-xs font-bold text-clinic-text-muted">
+                      Selecionado: {documentFile.name} • {formatFileSize(documentFile.size)}
+                    </p>
+                  )}
+                  {documentMessage && <p className="mt-3 rounded-xl bg-status-green-bg p-3 text-sm font-bold text-status-green-text">{documentMessage}</p>}
+
+                  <div className="mt-5 space-y-2">
+                    <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Documentos já enviados</p>
+                    {(patientData.documents || []).length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-clinic-border bg-white p-5 text-center text-sm text-clinic-text-muted">Nenhum documento enviado pelo portal.</div>
+                    ) : (
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {(patientData.documents || []).map(document => (
+                          <article key={document.id} className="flex items-start justify-between gap-3 rounded-xl border border-clinic-border bg-white p-4">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-clinic-text">{document.category}</p>
+                              <p className="mt-1 truncate text-xs text-clinic-text-muted">{document.fileName}</p>
+                              <p className="mt-1 text-[10px] font-bold text-clinic-text-faint">
+                                {formatFileSize(document.sizeBytes)} • {formatDateTime(document.createdAt)}
+                              </p>
+                              {document.note && <p className="mt-2 line-clamp-2 text-xs text-clinic-text-muted">{document.note}</p>}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void downloadResponsibleDocument(document)}
+                              className="shrink-0 rounded-lg bg-clinic-bg p-2.5 text-clinic-primary"
+                              aria-label={`Baixar ${document.fileName}`}
+                            >
+                              <Download size={16} />
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </section>
+            )}
           </>
         )}
       </main>
 
-      {selectedMedia && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4">
-          <div className="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-2xl bg-clinic-surface p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between gap-3">
+      {profileEditOpen && patientData && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-2 sm:p-4" role="dialog" aria-modal="true" aria-label="Atualizar cadastro do atendente">
+          <div className="max-h-[96vh] w-full max-w-4xl overflow-auto rounded-2xl bg-clinic-surface shadow-2xl">
+            <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-clinic-border bg-clinic-surface/95 px-4 py-4 backdrop-blur sm:px-6">
               <div>
-                <p className="font-bold text-clinic-text">{selectedMedia.record.category}</p>
-                <p className="text-xs text-clinic-text-muted">{selectedMedia.record.fileName}</p>
+                <h2 className="text-lg font-black text-clinic-text">Atualizar cadastro</h2>
+                <p className="text-xs text-clinic-text-muted">As alterações serão registradas no histórico e o profissional será notificado.</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedMedia(null)}
-                className="rounded-full bg-clinic-bg p-2 text-clinic-text-muted hover:text-clinic-primary"
-                aria-label="Fechar mídia"
-              >
-                <X size={20} />
-              </button>
+              <button type="button" onClick={() => setProfileEditOpen(false)} className="rounded-full bg-clinic-bg p-2 text-clinic-text-muted" aria-label="Fechar atualização cadastral"><X size={20} /></button>
+            </header>
+            <div className="space-y-5 p-4 sm:p-6">
+              <div className="grid gap-4 sm:grid-cols-2">
+                {([
+                  ['name', 'Nome completo', 'text'],
+                  ['birthDate', 'Data de nascimento', 'date'],
+                  ['guardianName', 'Responsável principal', 'text'],
+                  ['whatsapp', 'WhatsApp', 'tel'],
+                  ['school', 'Escola', 'text'],
+                  ['doctorName', 'Médico responsável', 'text'],
+                ] as const).map(([field, label, type]) => (
+                  <label key={field}>
+                    <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{label}</span>
+                    <input
+                      type={type}
+                      value={profileForm[field]}
+                      onChange={event => setProfileForm(current => ({ ...current, [field]: event.target.value }))}
+                      className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                    />
+                  </label>
+                ))}
+                <label>
+                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Ano/Série</span>
+                  <select
+                    value={profileForm.grade}
+                    onChange={event => setProfileForm(current => ({ ...current, grade: event.target.value }))}
+                    className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                  >
+                    <option value="">Selecione o ano/série</option>
+                    {GRADE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Turno</span>
+                  <select
+                    value={profileForm.shift}
+                    onChange={event => setProfileForm(current => ({ ...current, shift: event.target.value }))}
+                    className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                  >
+                    <option value="">Selecione o turno</option>
+                    {SHIFT_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="grid gap-4 lg:grid-cols-3">
+                {([
+                  ['medication', 'Medicações em uso'],
+                  ['emergencyContact', 'Contato de emergência'],
+                  ['allergies', 'Alergias e restrições'],
+                ] as const).map(([field, label]) => (
+                  <label key={field}>
+                    <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{label}</span>
+                    <textarea
+                      rows={5}
+                      value={profileForm[field]}
+                      onChange={event => setProfileForm(current => ({ ...current, [field]: event.target.value }))}
+                      className="w-full rounded-xl border border-clinic-border bg-white p-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                    />
+                  </label>
+                ))}
+              </div>
+              <p className="rounded-xl border border-clinic-border bg-clinic-bg p-3 text-xs text-clinic-text-muted">
+                Declaro que as informações fornecidas são verdadeiras e não substituem orientação ou prescrição médica.
+              </p>
+              {profileMessage && <p className="rounded-xl bg-status-green-bg p-3 text-sm font-bold text-status-green-text">{profileMessage}</p>}
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button type="button" onClick={() => setProfileEditOpen(false)} disabled={profileSaving} className="rounded-xl border border-clinic-border px-4 py-3 text-xs font-black uppercase text-clinic-text-muted">Cancelar</button>
+                <button type="button" onClick={() => void saveResponsibleProfile()} disabled={profileSaving || !profileForm.name.trim()} className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-xs font-black uppercase text-white disabled:opacity-45">
+                  {profileSaving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                  Salvar atualização
+                </button>
+              </div>
             </div>
-            {selectedMedia.record.mediaType === 'video' ? (
-              <video
-                src={selectedMedia.url}
-                controls
-                playsInline
-                preload="metadata"
-                className="max-h-[75vh] w-full rounded-xl bg-black"
-              />
-            ) : (
-              <img
-                src={selectedMedia.url}
-                alt={selectedMedia.record.category}
-                className="max-h-[75vh] w-full rounded-xl bg-black/5 object-contain"
-              />
-            )}
+          </div>
+        </div>
+      )}
+
+      {patientPhotoExpanded && patientPhotoUrl && patientData && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Foto ampliada de ${patientData.patient.name}`}
+          onClick={() => setPatientPhotoExpanded(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setPatientPhotoExpanded(false)}
+            className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-black/65 text-white shadow-lg"
+            aria-label="Fechar foto ampliada"
+          >
+            <X size={24} />
+          </button>
+          <div className="flex max-h-[94vh] max-w-[96vw] flex-col items-center gap-3" onClick={event => event.stopPropagation()}>
+            <img src={patientPhotoUrl} alt={`Foto ampliada de ${patientData.patient.name}`} className="max-h-[84vh] max-w-[94vw] rounded-2xl object-contain shadow-2xl" />
+            <p className="max-w-[90vw] truncate rounded-full bg-black/55 px-4 py-2 text-sm font-semibold text-white">{patientData.patient.name}</p>
+          </div>
+        </div>
+      )}
+
+      {selectedMedia && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-2 sm:p-4">
+          <div className="max-h-[96vh] w-full max-w-6xl overflow-auto rounded-2xl bg-clinic-surface shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-clinic-border bg-clinic-surface/95 px-4 py-3 backdrop-blur">
+              <div className="min-w-0">
+                <p className="truncate font-bold text-clinic-text">{selectedMedia.category}</p>
+                <p className="truncate text-xs text-clinic-text-muted">{formatDate(selectedMedia.sessionDate, false)} às {selectedMedia.sessionTime} • Sessão {selectedMedia.sessionNumber || 'relacionada'}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => void navigateMedia(-1)} className="rounded-full bg-clinic-bg p-2 text-clinic-primary" aria-label="Mídia anterior"><ChevronLeft size={20} /></button>
+                <button type="button" onClick={() => void navigateMedia(1)} className="rounded-full bg-clinic-bg p-2 text-clinic-primary" aria-label="Próxima mídia"><ChevronRight size={20} /></button>
+                <button type="button" onClick={() => void mediaElementRef.current?.requestFullscreen?.()} className="rounded-full bg-clinic-bg p-2 text-clinic-primary" aria-label="Tela cheia"><Expand size={19} /></button>
+                <button type="button" onClick={() => void closeSelectedMedia()} className="rounded-full bg-clinic-bg p-2 text-clinic-text-muted hover:text-clinic-primary" aria-label="Fechar mídia"><X size={20} /></button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+              <div className="space-y-3">
+                {selectedMedia.mediaType === 'video' ? (
+                  <video
+                    ref={element => { mediaElementRef.current = element; }}
+                    src={mediaUrls[selectedMedia.id]}
+                    controls
+                    playsInline
+                    preload="metadata"
+                    onPlay={event => handleVideoPlay(event.currentTarget)}
+                    onPause={event => handleVideoPause(event.currentTarget)}
+                    onSeeking={handleVideoSeeking}
+                    onSeeked={event => handleVideoSeeked(event.currentTarget)}
+                    onTimeUpdate={event => handleVideoTimeUpdate(event.currentTarget)}
+                    onLoadedMetadata={event => handleVideoTimeUpdate(event.currentTarget)}
+                    onEnded={() => void handleVideoEnded()}
+                    className="max-h-[72vh] w-full rounded-xl bg-black"
+                  />
+                ) : (
+                  <img
+                    ref={element => { mediaElementRef.current = element; }}
+                    src={mediaUrls[selectedMedia.id]}
+                    alt={selectedMedia.description || selectedMedia.category}
+                    className="max-h-[72vh] w-full rounded-xl bg-black/5 object-contain"
+                  />
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => void downloadMedia(selectedMedia)} className="flex items-center gap-2 rounded-lg bg-clinic-primary px-4 py-2 text-xs font-black uppercase text-white"><Download size={15} /> Baixar</button>
+                  <button type="button" onClick={() => void shareMedia(selectedMedia, 'instagram')} className="flex items-center gap-2 rounded-lg bg-pink-50 px-4 py-2 text-xs font-black uppercase text-pink-700"><Instagram size={15} /> Compartilhar mídia no Instagram</button>
+                  <button type="button" onClick={() => void shareMedia(selectedMedia, 'whatsapp')} className="flex items-center gap-2 rounded-lg bg-status-green-bg px-4 py-2 text-xs font-black uppercase text-status-green-text"><MessageCircle size={15} /> Compartilhar mídia no WhatsApp</button>
+                  <button type="button" onClick={() => void toggleLike(selectedMedia)} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-black uppercase ${selectedMedia.likedByCurrentResponsible ? 'bg-red-50 text-red-600' : 'bg-clinic-bg text-clinic-text-muted'}`}><Heart size={15} fill={selectedMedia.likedByCurrentResponsible ? 'currentColor' : 'none'} /> {selectedMedia.likeCount}</button>
+                </div>
+                <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4 text-sm">
+                  <p className="font-bold text-clinic-text">{selectedMedia.category}</p>
+                  <p className="mt-1 whitespace-pre-wrap text-clinic-text-muted">{selectedMedia.description || 'Sem observação.'}</p>
+                  <p className="mt-3 text-xs font-bold text-clinic-text-faint">Profissional: {selectedMedia.professionalName || 'Fábio Denarde'}</p>
+                </div>
+              </div>
+
+              <aside className="space-y-3 rounded-xl border border-clinic-border bg-clinic-bg p-4">
+                <div>
+                  <h3 className="font-bold text-clinic-text">Comentários</h3>
+                  <p className="text-xs text-clinic-text-muted">O profissional será notificado quando um comentário for enviado.</p>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-auto pr-1">
+                  {selectedMedia.comments.length === 0 && <p className="rounded-lg bg-white p-3 text-xs text-clinic-text-muted">Nenhum comentário ainda.</p>}
+                  {selectedMedia.comments.map(item => (
+                    <article key={item.id} className="rounded-lg bg-white p-3 shadow-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-black text-clinic-text">{item.responsibleName}</p>
+                        <span className="text-[10px] text-clinic-text-faint">{formatDateTime(item.createdAt)}</span>
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-xs text-clinic-text-muted">{item.comment}</p>
+                    </article>
+                  ))}
+                </div>
+                <label>
+                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Adicionar comentário</span>
+                  <textarea value={comment} onChange={event => setComment(event.target.value)} maxLength={1000} rows={4} className="w-full rounded-xl border border-clinic-border bg-white p-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary" placeholder="Escreva uma observação sobre esta atividade..." />
+                </label>
+                <button type="button" onClick={() => void submitComment()} disabled={!comment.trim() || busyAction?.type === 'comment'} className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase text-white disabled:opacity-45">
+                  {busyAction?.type === 'comment' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                  Enviar comentário
+                </button>
+              </aside>
+            </div>
           </div>
         </div>
       )}

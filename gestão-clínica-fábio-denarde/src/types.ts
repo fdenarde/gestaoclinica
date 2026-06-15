@@ -25,6 +25,17 @@ export enum SessionType {
   DUPLA = 'Sessão dupla (2 × 50 min)'
 }
 
+export interface ResponsibleDocumentSummary {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  category: string;
+  note: string;
+  uploadedByName: string;
+  createdAt: string;
+}
+
 export interface Patient {
   id: string;
   name: string;
@@ -60,6 +71,7 @@ export interface Patient {
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;
   opinionPdfUrl?: string;
+  responsibleDocuments?: ResponsibleDocumentSummary[];
   emergencyContact?: string;
   allergies?: string;
   anamnese: {
@@ -147,6 +159,7 @@ export interface Session {
   blockName?: string; // name of the personal commitment when isBlocked is true
   isFixedSchedule?: boolean; // true if this is an automatic/fixed session
   source?: 'fixed' | 'manual' | 'reposition' | 'blocked';
+  consumesPackage?: boolean; // decisão do profissional para faltas que devem consumir sessão
 }
 
 export interface Reposition {

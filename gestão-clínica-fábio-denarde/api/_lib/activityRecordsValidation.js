@@ -1,9 +1,46 @@
 import crypto from 'crypto';
+import {
+  ACTIVITY_VIDEO_CHUNK_ALIGNMENT_BYTES,
+  MAX_ACTIVITY_PHOTO_UPLOAD_BYTES,
+  MAX_ACTIVITY_VIDEO_BYTES,
+  MAX_ACTIVITY_VIDEO_CHUNK_BYTES,
+  MAX_ACTIVITY_VIDEO_DURATION_SECONDS,
+} from '../../shared/activityMediaLimits.js';
 
-export const MAX_ACTIVITY_PHOTO_BYTES = 1_800_000;
-export const MAX_ACTIVITY_VIDEO_BYTES = 600 * 1024 * 1024;
-export const MAX_ACTIVITY_VIDEO_CHUNK_BYTES = 2 * 1024 * 1024;
-export const ACTIVITY_VIDEO_CHUNK_ALIGNMENT_BYTES = 256 * 1024;
+export const MAX_ACTIVITY_PHOTO_BYTES = MAX_ACTIVITY_PHOTO_UPLOAD_BYTES;
+export const ACTIVITY_UPLOAD_LEASE_MS = 5 * 60 * 1000;
+export {
+  ACTIVITY_VIDEO_CHUNK_ALIGNMENT_BYTES,
+  MAX_ACTIVITY_VIDEO_BYTES,
+  MAX_ACTIVITY_VIDEO_CHUNK_BYTES,
+  MAX_ACTIVITY_VIDEO_DURATION_SECONDS,
+};
+
+function activityTimestampToMillis(value) {
+  if (value?.toMillis instanceof Function) return Number(value.toMillis());
+  if (value?.toDate instanceof Function) return Number(value.toDate().getTime());
+  if (value instanceof Date) return Number(value.getTime());
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (Number.isFinite(Number(value))) return Number(value);
+  return 0;
+}
+
+export function getActivityUploadLeaseExpiryMillis(record) {
+  const explicitLease = activityTimestampToMillis(record?.uploadLeaseUntil);
+  if (explicitLease > 0) return explicitLease;
+  const lastActivity = activityTimestampToMillis(record?.updatedAt)
+    || activityTimestampToMillis(record?.createdAt);
+  return lastActivity > 0 ? lastActivity + ACTIVITY_UPLOAD_LEASE_MS : 0;
+}
+
+export function isActivityUploadLeaseExpired(record, nowMillis = Date.now()) {
+  if (record?.status !== 'uploading') return false;
+  const expiry = getActivityUploadLeaseExpiryMillis(record);
+  return expiry <= 0 || expiry <= Number(nowMillis);
+}
 
 export const ACTIVITY_CATEGORIES = new Set([
   'Atividade pedagógica', 'Atenção', 'Memória', 'Linguagem', 'Raciocínio lógico',
@@ -130,6 +167,8 @@ export function validateUploadInput(body) {
   const category = sanitizeText(body.category, 80);
   const visibility = sanitizeText(body.visibility, 40);
   const sha256 = sanitizeText(body.sha256, 64).toLowerCase();
+  const originalContentHash = sanitizeText(body.originalContentHash, 64).toLowerCase();
+  const preparedContentHash = sanitizeText(body.preparedContentHash, 64).toLowerCase();
   const mimeType = sanitizeText(body.mimeType, 80);
   const mediaType = getMediaTypeFromMime(mimeType);
 
@@ -139,6 +178,8 @@ export function validateUploadInput(body) {
   if (!ACTIVITY_CATEGORIES.has(category)) throw activityError('activity-records/invalid-category', 'Selecione uma categoria válida.');
   if (!ACTIVITY_VISIBILITIES.has(visibility)) throw activityError('activity-records/invalid-visibility', 'Selecione uma visibilidade válida.');
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw activityError('activity-records/invalid-hash', 'A assinatura da mídia é inválida.');
+  if (originalContentHash && !/^[a-f0-9]{64}$/.test(originalContentHash)) throw activityError('activity-records/invalid-hash', 'A assinatura original da mídia é inválida.');
+  if (preparedContentHash && !/^[a-f0-9]{64}$/.test(preparedContentHash)) throw activityError('activity-records/invalid-hash', 'A assinatura preparada da mídia é inválida.');
   if (!ALLOWED_TYPES.has(mimeType)) throw activityError('activity-records/invalid-file-type', 'Selecione uma mídia JPG, PNG, WEBP, MP4, WEBM ou MOV.');
 
   const width = Number(body.width);
@@ -148,8 +189,13 @@ export function validateUploadInput(body) {
   }
 
   const durationSeconds = Number(body.durationSeconds || 0);
-  if (mediaType === 'video' && (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 180)) {
-    throw activityError('activity-records/invalid-duration', 'A duração do vídeo é inválida.');
+  if (mediaType === 'video' && (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > MAX_ACTIVITY_VIDEO_DURATION_SECONDS)) {
+    throw activityError('activity-records/invalid-duration', 'O vídeo deve ter no máximo 4 minutos.');
+  }
+
+  const originalByteSize = Number(body.originalByteSize || 0);
+  if (originalByteSize && (!Number.isSafeInteger(originalByteSize) || originalByteSize <= 0)) {
+    throw activityError('activity-records/invalid-file-size', 'O tamanho original da mídia é inválido.');
   }
 
   return {
@@ -159,6 +205,9 @@ export function validateUploadInput(body) {
     category,
     visibility,
     sha256,
+    originalContentHash: originalContentHash || undefined,
+    preparedContentHash: preparedContentHash || undefined,
+    originalByteSize: originalByteSize || undefined,
     width,
     height,
     mediaType,
@@ -174,10 +223,32 @@ export function buildActivityDedupeKey({ workspaceId, patientId, sessionId, sha2
   return crypto.createHash('sha256').update(`${workspaceId}:${patientId}:${sessionId}:${sha256}`).digest('hex');
 }
 
-export function buildActivityVideoDedupeKey({ workspaceId, patientId, sessionId, fileName, fileSize, durationSeconds, lastModified }) {
+export function buildActivityVideoDedupeKey({ workspaceId, patientId, sessionId, sha256, fileName, fileSize, durationSeconds, lastModified }) {
+  if (/^[a-f0-9]{64}$/.test(String(sha256 || '').toLowerCase())) {
+    return buildActivityDedupeKey({
+      workspaceId,
+      patientId,
+      sessionId,
+      sha256: String(sha256).toLowerCase(),
+    });
+  }
   return crypto.createHash('sha256')
     .update(`${workspaceId}:${patientId}:${sessionId}:${fileName}:${fileSize}:${durationSeconds}:${lastModified}`)
     .digest('hex');
+}
+
+export function isSameCompletedActivityUpload(existing, incoming) {
+  return existing?.status === 'active'
+    && existing.uploadAttemptId === incoming.uploadAttemptId
+    && existing.sha256 === incoming.sha256
+    && existing.mediaType === incoming.mediaType;
+}
+
+export function isSameInProgressActivityUpload(existing, incoming) {
+  return existing?.status === 'uploading'
+    && existing.uploadAttemptId === incoming.uploadAttemptId
+    && existing.sha256 === incoming.sha256
+    && existing.mediaType === incoming.mediaType;
 }
 
 export function canRecordActivity(patient) {

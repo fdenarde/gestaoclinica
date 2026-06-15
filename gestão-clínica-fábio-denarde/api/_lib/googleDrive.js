@@ -4,12 +4,23 @@ const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const MAX_PHOTO_BYTES = 2_500_000;
+const MAX_RESPONSIBLE_DOCUMENT_BYTES = 20 * 1024 * 1024;
 const SIGNED_URL_TTL_SECONDS = 10 * 60;
 
 const ALLOWED_PHOTO_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/webp',
+]);
+
+const ALLOWED_RESPONSIBLE_DOCUMENT_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ]);
 
 let accessTokenCache = null;
@@ -195,6 +206,99 @@ export async function uploadPatientPhotoToDrive({ ownerUserId, patientId, fileNa
   return response.json();
 }
 
+
+export async function createResponsibleDocumentUploadSession({
+  ownerUserId,
+  patientId,
+  responsibleUid,
+  documentId,
+  fileName,
+  mimeType,
+  fileSize,
+  browserOrigin = '',
+}) {
+  const normalizedType = String(mimeType || '').trim().toLowerCase();
+  const normalizedSize = Number(fileSize || 0);
+  if (!ALLOWED_RESPONSIBLE_DOCUMENT_TYPES.has(normalizedType)) {
+    throw createDriveError(
+      'drive-api/invalid-document-type',
+      'Envie um documento PDF, DOCX, JPG, PNG, WEBP ou HEIC.',
+      400,
+    );
+  }
+  if (!Number.isFinite(normalizedSize) || normalizedSize <= 0) {
+    throw createDriveError('drive-api/empty-document', 'O documento selecionado está vazio.', 400);
+  }
+  if (normalizedSize > MAX_RESPONSIBLE_DOCUMENT_BYTES) {
+    throw createDriveError('drive-api/document-too-large', 'O documento deve ter no máximo 20 MB.', 413);
+  }
+
+  const rootFolderId = requireEnv('GOOGLE_DRIVE_ROOT_FOLDER_ID');
+  const accessToken = await getGoogleDriveAccessToken();
+  const safeOriginalName = sanitizeFileName(fileName || 'documento');
+  const driveName = `documento-responsavel-${sanitizeFileName(patientId)}-${Date.now()}-${safeOriginalName}`;
+  const metadata = {
+    name: driveName,
+    parents: [rootFolderId],
+    appProperties: {
+      category: 'responsible-portal-document',
+      ownerUserId,
+      patientId,
+      responsibleUid,
+      documentId,
+      originalFileName: safeOriginalName.slice(0, 100),
+    },
+  };
+
+  const response = await fetch(
+    `${DRIVE_UPLOAD_BASE}/files?uploadType=resumable&fields=id,name,mimeType,size,appProperties`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': normalizedType,
+        'X-Upload-Content-Length': String(normalizedSize),
+        ...(browserOrigin ? { Origin: browserOrigin } : {}),
+      },
+      body: JSON.stringify(metadata),
+    },
+  );
+
+  if (!response.ok) {
+    const googleError = await readGoogleError(response);
+    throw createDriveError(
+      'drive-api/document-upload-session-failed',
+      'Não foi possível preparar o envio do documento ao Google Drive.',
+      502,
+      googleError,
+    );
+  }
+
+  const uploadUrl = response.headers.get('location');
+  if (!uploadUrl) {
+    throw createDriveError(
+      'drive-api/document-upload-session-missing',
+      'O Google Drive não retornou o endereço temporário para o documento.',
+      502,
+    );
+  }
+
+  return { uploadUrl, driveName };
+}
+
+export function assertOwnedResponsibleDocument(metadata, ownerUserId, patientId = '') {
+  const app = metadata?.appProperties || {};
+  if (
+    metadata?.trashed
+    || app.category !== 'responsible-portal-document'
+    || app.ownerUserId !== ownerUserId
+    || (patientId && app.patientId !== patientId)
+  ) {
+    throw createDriveError('drive-api/forbidden-document', 'Você não tem permissão para acessar este documento.', 403);
+  }
+}
+
 export async function getDriveFileMetadata(fileId) {
   const accessToken = await getGoogleDriveAccessToken();
   const response = await fetch(
@@ -253,12 +357,33 @@ function signPayload(payload) {
   return crypto.createHmac('sha256', getSigningSecret()).update(payload).digest('hex');
 }
 
-export function createSignedPhotoUrl({ req, fileId, ownerUserId }) {
-  const expires = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS;
-  const signature = signPayload(signaturePayload({ fileId, ownerUserId, expires }));
+function preferredSignedUrlOrigin(req) {
   const forwardedProto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim();
   const protocol = forwardedProto || (req.socket?.encrypted ? 'https' : 'http');
   const host = req.headers?.host || 'localhost:3000';
+  const fallback = `${protocol}://${host}`;
+  const origin = String(req.headers?.origin || '').trim();
+  if (!origin) return fallback;
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname;
+    const isPrivateLan = (
+      /^192\.168\./.test(hostname)
+      || /^10\./.test(hostname)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+    );
+    const isLoopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
+    const isPrimaryProduction = origin === 'https://gestaoclinica-solucoes.vercel.app';
+    if (isPrimaryProduction || (parsed.protocol === 'http:' && (isPrivateLan || isLoopback))) return origin;
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}
+
+export function createSignedPhotoUrl({ req, fileId, ownerUserId }) {
+  const expires = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS;
+  const signature = signPayload(signaturePayload({ fileId, ownerUserId, expires }));
   const query = new URLSearchParams({
     mode: 'file',
     fileId,
@@ -268,7 +393,7 @@ export function createSignedPhotoUrl({ req, fileId, ownerUserId }) {
   });
 
   return {
-    url: `${protocol}://${host}/api/drive?${query.toString()}`,
+    url: `${preferredSignedUrlOrigin(req)}/api/drive?${query.toString()}`,
     expiresAt: expires * 1000,
   };
 }
@@ -290,6 +415,70 @@ export function verifySignedPhotoRequest({ fileId, ownerUserId, expires, signatu
   if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
     throw createDriveError('drive-api/invalid-signature', 'A assinatura da foto é inválida.', 403);
   }
+}
+
+
+function responsibleDocumentSignaturePayload({ fileId, ownerUserId, expires }) {
+  return `responsible-document:${fileId}:${ownerUserId}:${expires}`;
+}
+
+export function createSignedResponsibleDocumentUrl({ req, fileId, ownerUserId }) {
+  const expires = Math.floor(Date.now() / 1000) + SIGNED_URL_TTL_SECONDS;
+  const signature = signPayload(responsibleDocumentSignaturePayload({ fileId, ownerUserId, expires }));
+  const query = new URLSearchParams({
+    mode: 'responsible-document',
+    fileId,
+    owner: ownerUserId,
+    expires: String(expires),
+    signature,
+  });
+  return {
+    url: `${preferredSignedUrlOrigin(req)}/api/drive?${query.toString()}`,
+    expiresAt: expires * 1000,
+  };
+}
+
+export function verifySignedResponsibleDocumentRequest({ fileId, ownerUserId, expires, signature }) {
+  const expiresNumber = Number(expires);
+  if (!fileId || !ownerUserId || !Number.isFinite(expiresNumber) || !signature) {
+    throw createDriveError('drive-api/invalid-document-url', 'O endereço temporário do documento é inválido.', 403);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (expiresNumber < now || expiresNumber > now + SIGNED_URL_TTL_SECONDS + 60) {
+    throw createDriveError('drive-api/expired-document-url', 'O endereço temporário do documento expirou.', 403);
+  }
+  const expected = signPayload(responsibleDocumentSignaturePayload({
+    fileId,
+    ownerUserId,
+    expires: expiresNumber,
+  }));
+  const actualBuffer = Buffer.from(String(signature), 'hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
+    throw createDriveError('drive-api/invalid-document-signature', 'A assinatura do documento é inválida.', 403);
+  }
+}
+
+export async function fetchResponsibleDocumentFromDrive(fileId, ownerUserId) {
+  const metadata = await getDriveFileMetadata(fileId);
+  assertOwnedResponsibleDocument(metadata, ownerUserId);
+  const accessToken = await getGoogleDriveAccessToken();
+  const response = await fetch(`${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?alt=media`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) {
+    const googleError = await readGoogleError(response);
+    throw createDriveError('drive-api/document-download-failed', 'Não foi possível carregar o documento do Google Drive.', 502, googleError);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > MAX_RESPONSIBLE_DOCUMENT_BYTES) {
+    throw createDriveError('drive-api/document-too-large', 'O documento excede o limite permitido para download.', 413);
+  }
+  return {
+    buffer,
+    mimeType: metadata.mimeType || 'application/octet-stream',
+    fileName: metadata.appProperties?.originalFileName || metadata.name || 'documento',
+  };
 }
 
 export async function fetchPatientPhotoFromDrive(fileId, ownerUserId) {

@@ -4,7 +4,17 @@ import type {
   AccessProfile,
   AccessRequestInput,
   AccessRequestRecord,
+  ResponsiblePortalActionResult,
+  ResponsiblePortalClientContext,
+  ResponsiblePortalPlaybackSummary,
   ResponsiblePortalData,
+  ResponsiblePortalDocument,
+  ResponsiblePortalEventType,
+  ResponsiblePortalPatient,
+  ResponsiblePortalPatientUpdateInput,
+  ProfessionalPortalNotification,
+  ProfessionalNotificationAction,
+  ProfessionalNotificationBulkScope,
 } from '../types/access';
 
 const API_ENDPOINT =
@@ -37,10 +47,91 @@ interface AccessRequestsResponse {
   requests: AccessRequestRecord[];
 }
 
+export interface ProfessionalPortalNotificationsResponse {
+  notifications: ProfessionalPortalNotification[];
+  cursor: string | null;
+  nextPageCursor: string | null;
+  incremental: boolean;
+  hasMore: boolean;
+}
+
+export interface ProfessionalNotificationManageResponse {
+  updated: number;
+  deleted: number;
+  affectedIds: string[];
+  deletedIds: string[];
+  skippedIds: string[];
+  hasMore: boolean;
+}
+
 interface ResponsibleMediaUrlResponse {
   url: string;
   expiresAt: number;
   fileName: string;
+}
+
+interface ResponsiblePatientPhotoUrlResponse {
+  url: string;
+  expiresAt: number;
+}
+
+interface ResponsiblePatientUpdateResponse {
+  updated: boolean;
+  patient: ResponsiblePortalPatient;
+  changedFields: string[];
+}
+
+interface ResponsibleDocumentPrepareResponse {
+  documentId: string;
+  uploadUrl: string;
+}
+
+interface ResponsibleDocumentFinalizeResponse {
+  document: ResponsiblePortalDocument;
+}
+
+interface ResponsibleDocumentUrlResponse {
+  url: string;
+  expiresAt: number;
+  fileName: string;
+}
+
+
+const accessProfileRequests = new Map<string, Promise<AccessProfile | null>>();
+const accessProfileBackoffByUid = new Map<string, {
+  until: number;
+  error: Error & { code: string };
+}>();
+const ACCESS_PROFILE_QUOTA_BACKOFF_MS = 60 * 1000;
+
+function getResponsiblePortalSessionId(user?: User): string {
+  const currentUser = user || auth.currentUser;
+  const uid = currentUser?.uid || 'anonymous';
+  const storageKey = `responsible-portal-session:${uid}`;
+  try {
+    const existing = window.sessionStorage.getItem(storageKey);
+    if (existing) return existing;
+    const generated = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    window.sessionStorage.setItem(storageKey, generated);
+    return generated;
+  } catch {
+    return `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+}
+
+function inferResponsibleDocumentMimeType(file: File): string {
+  if (file.type) return file.type;
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.pdf')) return 'application/pdf';
+  if (name.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.webp')) return 'image/webp';
+  if (name.endsWith('.heic')) return 'image/heic';
+  if (name.endsWith('.heif')) return 'image/heif';
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  return 'application/octet-stream';
 }
 
 function createApiError(code: string, message: string): Error & { code: string } {
@@ -101,8 +192,41 @@ async function request<T>(
 }
 
 export async function getAccessProfile(user?: User): Promise<AccessProfile | null> {
-  const result = await request<AccessProfileResponse>('GET', undefined, user);
-  return result.profile;
+  const currentUser = user || auth.currentUser;
+  const requestKey = currentUser?.uid || 'missing-user';
+  const backoff = accessProfileBackoffByUid.get(requestKey);
+  if (backoff && backoff.until > Date.now()) throw backoff.error;
+  if (backoff) accessProfileBackoffByUid.delete(requestKey);
+
+  const existingRequest = accessProfileRequests.get(requestKey);
+  if (existingRequest) return existingRequest;
+
+  let profileRequest: Promise<AccessProfile | null>;
+  profileRequest = request<AccessProfileResponse>('GET', undefined, user)
+    .then(result => {
+      accessProfileBackoffByUid.delete(requestKey);
+      return result.profile;
+    })
+    .catch(error => {
+      const apiError = error as Error & { code?: string };
+      if (apiError.code === 'access/quota-temporarily-unavailable') {
+        accessProfileBackoffByUid.set(requestKey, {
+          until: Date.now() + ACCESS_PROFILE_QUOTA_BACKOFF_MS,
+          error: createApiError(
+            'access/quota-temporarily-unavailable',
+            'O serviço de acesso está temporariamente indisponível. Aguarde um minuto e tente novamente.',
+          ),
+        });
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (accessProfileRequests.get(requestKey) === profileRequest) {
+        accessProfileRequests.delete(requestKey);
+      }
+    });
+  accessProfileRequests.set(requestKey, profileRequest);
+  return profileRequest;
 }
 
 export async function submitAccessRequest(
@@ -149,8 +273,66 @@ export async function linkResponsiblePatient(
   return result.request;
 }
 
+
+export async function getProfessionalPortalNotifications(options: {
+  updatedAfter?: string | null;
+  before?: string | null;
+  limit?: number;
+} = {}): Promise<ProfessionalPortalNotificationsResponse> {
+  const params = new URLSearchParams({ mode: 'professionalNotifications' });
+  if (options.updatedAfter) params.set('updatedAfter', options.updatedAfter);
+  if (options.before) params.set('before', options.before);
+  if (options.limit) params.set('limit', String(options.limit));
+  return request<ProfessionalPortalNotificationsResponse>(
+    'GET',
+    undefined,
+    undefined,
+    `?${params.toString()}`,
+  );
+}
+
+export async function manageProfessionalPortalNotifications(input: {
+  operation: ProfessionalNotificationAction;
+  notificationIds?: string[];
+  scope?: ProfessionalNotificationBulkScope;
+}): Promise<ProfessionalNotificationManageResponse> {
+  return request<ProfessionalNotificationManageResponse>('POST', {
+    action: 'manageProfessionalNotifications',
+    ...input,
+  });
+}
+
+export async function markProfessionalPortalNotificationsRead(notificationIds: string[]): Promise<void> {
+  if (notificationIds.length === 0) return;
+  await manageProfessionalPortalNotifications({
+    operation: 'mark_read',
+    notificationIds,
+  });
+}
+
 export async function getResponsiblePortalData(user?: User): Promise<ResponsiblePortalData> {
-  return request<ResponsiblePortalData>('GET', undefined, user, '?mode=responsiblePortal');
+  const params = new URLSearchParams({
+    mode: 'responsiblePortal',
+    portalSessionId: getResponsiblePortalSessionId(user),
+  });
+  return request<ResponsiblePortalData>('GET', undefined, user, `?${params.toString()}`);
+}
+
+export async function recordResponsiblePortalAction(input: {
+  eventType: ResponsiblePortalEventType;
+  patientId: string;
+  patientName?: string;
+  recordId?: string;
+  comment?: string;
+  clientContext?: ResponsiblePortalClientContext;
+  playback?: ResponsiblePortalPlaybackSummary;
+  interactionSessionId?: string;
+}): Promise<ResponsiblePortalActionResult> {
+  return request<ResponsiblePortalActionResult>('POST', {
+    action: 'recordResponsibleAction',
+    portalSessionId: getResponsiblePortalSessionId(),
+    ...input,
+  });
 }
 
 function normalizeMediaUrl(url: string): string {
@@ -168,6 +350,95 @@ function normalizeMediaUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+
+export async function getResponsiblePatientPhotoUrl(patientId: string): Promise<ResponsiblePatientPhotoUrlResponse> {
+  const result = await request<ResponsiblePatientPhotoUrlResponse>('POST', {
+    action: 'getResponsiblePatientPhotoUrl',
+    patientId,
+  });
+  return { ...result, url: normalizeMediaUrl(result.url) };
+}
+
+export async function updateResponsiblePatient(
+  patientId: string,
+  values: ResponsiblePortalPatientUpdateInput,
+  clientContext?: ResponsiblePortalClientContext,
+): Promise<ResponsiblePatientUpdateResponse> {
+  return request<ResponsiblePatientUpdateResponse>('POST', {
+    action: 'updateResponsiblePatient',
+    patientId,
+    values,
+    clientContext,
+  });
+}
+
+export async function uploadResponsibleDocument(input: {
+  patientId: string;
+  file: File;
+  category: string;
+  note: string;
+  clientContext?: ResponsiblePortalClientContext;
+}): Promise<ResponsiblePortalDocument> {
+  const prepared = await request<ResponsibleDocumentPrepareResponse>('POST', {
+    action: 'prepareResponsibleDocumentUpload',
+    patientId: input.patientId,
+    fileName: input.file.name,
+    mimeType: inferResponsibleDocumentMimeType(input.file),
+    sizeBytes: input.file.size,
+    category: input.category,
+    note: input.note,
+    clientContext: input.clientContext,
+  });
+
+  const uploadResponse = await fetch(prepared.uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': inferResponsibleDocumentMimeType(input.file),
+    },
+    body: input.file,
+  });
+  if (!uploadResponse.ok) {
+    throw createApiError('access/document-upload-failed', 'O Google Drive não confirmou o envio do documento.');
+  }
+  const driveFile = await uploadResponse.json().catch(() => null) as { id?: string } | null;
+  if (!driveFile?.id) {
+    throw createApiError('access/document-upload-incomplete', 'O documento foi enviado, mas não pôde ser confirmado.');
+  }
+
+  const finalized = await request<ResponsibleDocumentFinalizeResponse>('POST', {
+    action: 'finalizeResponsibleDocumentUpload',
+    patientId: input.patientId,
+    documentId: prepared.documentId,
+    driveFileId: driveFile.id,
+    clientContext: input.clientContext,
+  });
+  return finalized.document;
+}
+
+export async function getResponsibleDocumentUrl(
+  patientId: string,
+  documentId: string,
+): Promise<ResponsibleDocumentUrlResponse> {
+  const result = await request<ResponsibleDocumentUrlResponse>('POST', {
+    action: 'getResponsibleDocumentUrl',
+    patientId,
+    documentId,
+  });
+  return { ...result, url: normalizeMediaUrl(result.url) };
+}
+
+export async function getProfessionalResponsibleDocumentUrl(
+  patientId: string,
+  documentId: string,
+): Promise<ResponsibleDocumentUrlResponse> {
+  const result = await request<ResponsibleDocumentUrlResponse>('POST', {
+    action: 'getProfessionalResponsibleDocumentUrl',
+    patientId,
+    documentId,
+  });
+  return { ...result, url: normalizeMediaUrl(result.url) };
 }
 
 export async function getResponsibleMediaUrl(

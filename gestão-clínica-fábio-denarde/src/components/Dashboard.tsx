@@ -50,13 +50,16 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
   };
 
   const markAsMissed = async (session: Session) => {
+    const consumesPackage = window.confirm(
+      'Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim, consumir a sessão.\nCancelar = Não consumir a sessão.'
+    );
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
     }
 
     const updatedSessions = state.sessions.map(s => 
-      s.id === session.id ? { ...s, status: SessionStatus.FALTA } : s
+      s.id === session.id ? { ...s, status: SessionStatus.FALTA, consumesPackage } : s
     );
     
     const newReposition: Reposition = {
@@ -128,7 +131,10 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
       notes: virtualSession.notes || '',
       packageNumber: 0,
       isFixedSchedule: true,
-      source: 'fixed'
+      source: 'fixed',
+      consumesPackage: newStatus === SessionStatus.FALTA
+        ? window.confirm('Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim.\nCancelar = Não.')
+        : false
     };
 
     const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);

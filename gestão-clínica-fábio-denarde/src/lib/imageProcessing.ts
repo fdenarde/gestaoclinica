@@ -1,5 +1,11 @@
+import {
+  MAX_ACTIVITY_PHOTO_UPLOAD_BYTES,
+  MAX_ACTIVITY_VIDEO_BYTES,
+  MAX_ACTIVITY_VIDEO_DURATION_SECONDS,
+} from '../../shared/activityMediaLimits.js';
+
 export const MAX_ACTIVITY_SOURCE_BYTES = 20 * 1024 * 1024;
-export const MAX_ACTIVITY_OUTPUT_BYTES = 1_800_000;
+export const MAX_ACTIVITY_OUTPUT_BYTES = MAX_ACTIVITY_PHOTO_UPLOAD_BYTES;
 export const MAX_ACTIVITY_IMAGE_DIMENSION = 1920;
 
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -16,6 +22,36 @@ function createImageError(code: string, message: string): Error & { code: string
   return Object.assign(new Error(message), { code });
 }
 
+function readBlobProbe(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('Falha de leitura.'));
+    reader.onabort = () => reject(new Error('Leitura cancelada.'));
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+export async function assertActivityMediaSourceReadable(file: File): Promise<void> {
+  const probeSize = Math.min(file.size, 64 * 1024);
+  try {
+    const first = await readBlobProbe(file.slice(0, probeSize));
+    if (first.byteLength !== probeSize) throw new Error('Leitura inicial incompleta.');
+
+    if (file.size > probeSize) {
+      const tailStart = Math.max(probeSize, file.size - probeSize);
+      const last = await readBlobProbe(file.slice(tailStart, file.size));
+      if (last.byteLength !== file.size - tailStart) throw new Error('Leitura final incompleta.');
+    }
+  } catch {
+    throw createImageError(
+      'activity-records/probe-failed',
+      'A sondagem rápida do arquivo falhou. O processamento real ainda será tentado.',
+    );
+  }
+}
+
 export function validateActivityPhotoSource(file: File): void {
   if (!ALLOWED_TYPES.has(file.type)) {
     if (file.type === 'image/heic' || file.type === 'image/heif' || /\.hei[cf]$/i.test(file.name)) {
@@ -29,38 +65,70 @@ export function validateActivityPhotoSource(file: File): void {
   }
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(createImageError('activity-records/read-failed', 'Não foi possível ler a imagem selecionada.'));
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.readAsDataURL(file);
-  });
+interface LoadedActivityImage {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  cleanup: () => void;
 }
 
-function waitForImageDecode(image: HTMLImageElement): Promise<void> {
-  if (image.decode) {
-    return image.decode().catch(() => undefined);
-  }
-  return Promise.resolve();
-}
-
-async function loadImageElement(file: File): Promise<HTMLImageElement> {
-  const dataUrl = await readFileAsDataUrl(file);
+function loadImageElementFromObjectUrl(file: File): Promise<LoadedActivityImage> {
   return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
     const image = new Image();
-    image.decoding = 'sync';
-    image.onload = async () => {
-      await waitForImageDecode(image);
-      if (!(image.naturalWidth || image.width) || !(image.naturalHeight || image.height)) {
-        reject(createImageError('activity-records/read-failed', 'Não foi possível identificar as dimensões da imagem.'));
+    let settled = false;
+
+    const cleanup = () => {
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute('src');
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(createImageError('activity-records/local-file-unavailable', message));
+    };
+
+    image.decoding = 'async';
+    image.onload = () => {
+      if (settled) return;
+      const width = image.naturalWidth || image.width;
+      const height = image.naturalHeight || image.height;
+      if (!width || !height) {
+        fail('Não foi possível identificar as dimensões da imagem.');
         return;
       }
-      resolve(image);
+      settled = true;
+      resolve({ source: image, width, height, cleanup });
     };
-    image.onerror = () => reject(createImageError('activity-records/read-failed', 'Não foi possível abrir a imagem selecionada.'));
-    image.src = dataUrl;
+    image.onerror = () => fail('Não foi possível abrir a imagem selecionada.');
+    image.src = objectUrl;
   });
+}
+
+async function loadActivityImage(file: File): Promise<LoadedActivityImage> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      if (bitmap.width > 0 && bitmap.height > 0) {
+        return {
+          source: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          cleanup: () => bitmap.close(),
+        };
+      }
+      bitmap.close();
+    } catch {
+      // Alguns navegadores Android não decodificam certos JPGs pelo createImageBitmap.
+      // O fallback abaixo usa uma URL de objeto sem converter a foto inteira para base64.
+    }
+  }
+
+  return loadImageElementFromObjectUrl(file);
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
@@ -221,44 +289,51 @@ export async function processActivityPhoto(file: File): Promise<ProcessedActivit
   // Sempre normalizamos para JPEG padrão antes de enviar ao Drive.
   // Isso evita fotos de câmera móvel com HDR/perfil exótico/variações do Android que aparecem bem na prévia local,
   // mas podem voltar pretas quando servidas depois pela rota da API.
-  const image = await loadImageElement(file);
-  const originalWidth = image.naturalWidth || image.width;
-  const originalHeight = image.naturalHeight || image.height;
-  const { width, height } = getTargetDimensions(originalWidth, originalHeight);
-
+  const loadedImage = await loadActivityImage(file);
+  const { width, height } = getTargetDimensions(loadedImage.width, loadedImage.height);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
-  if (!context) throw createImageError('activity-records/canvas-unavailable', 'O navegador não conseguiu preparar a imagem.');
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, width, height);
-  context.drawImage(image, 0, 0, width, height);
-  assertCanvasHasVisibleContent(canvas);
 
-  let quality = 0.9;
-  let blob = await canvasToBlob(canvas, quality);
-  while (blob.size > MAX_ACTIVITY_OUTPUT_BYTES && quality > 0.58) {
-    quality -= 0.06;
-    blob = await canvasToBlob(canvas, quality);
-  }
-  if (blob.size > MAX_ACTIVITY_OUTPUT_BYTES) {
-    throw createImageError('activity-records/output-too-large', 'A imagem continuou muito grande após a compressão. Selecione outra foto.');
-  }
+  try {
+    const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!context) throw createImageError('activity-records/canvas-unavailable', 'O navegador não conseguiu preparar a imagem.');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, width, height);
+    context.drawImage(loadedImage.source, 0, 0, width, height);
+    assertCanvasHasVisibleContent(canvas);
 
-  const processedFile = new File([blob], `${getSanitizedBaseName(file)}.jpg`, { type: 'image/jpeg', lastModified: Date.now() });
-  return {
-    file: processedFile,
-    previewUrl: URL.createObjectURL(processedFile),
-    width,
-    height,
-    sha256: await sha256Hex(processedFile),
-  };
+    let quality = 0.9;
+    let blob = await canvasToBlob(canvas, quality);
+    while (blob.size > MAX_ACTIVITY_OUTPUT_BYTES && quality > 0.58) {
+      quality -= 0.06;
+      blob = await canvasToBlob(canvas, quality);
+    }
+    if (blob.size > MAX_ACTIVITY_OUTPUT_BYTES) {
+      throw createImageError('activity-records/output-too-large', 'A imagem continuou muito grande após a compressão. Selecione outra foto.');
+    }
+
+    const processedFile = new File([blob], `${getSanitizedBaseName(file)}.jpg`, { type: 'image/jpeg', lastModified: Date.now() });
+    return {
+      file: processedFile,
+      previewUrl: '',
+      width,
+      height,
+      sha256: await sha256Hex(processedFile),
+    };
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code) throw error;
+    throw createImageError('activity-records/compression-failed', 'Não foi possível concluir a preparação da imagem.');
+  } finally {
+    loadedImage.cleanup();
+    // Redimensionar libera imediatamente o buffer nativo do canvas em navegadores móveis.
+    canvas.width = 1;
+    canvas.height = 1;
+  }
 }
 
 
-export const MAX_ACTIVITY_VIDEO_BYTES = 600 * 1024 * 1024;
-export const MAX_ACTIVITY_VIDEO_DURATION_SECONDS = 180;
+export { MAX_ACTIVITY_VIDEO_BYTES, MAX_ACTIVITY_VIDEO_DURATION_SECONDS };
 
 const ALLOWED_ACTIVITY_VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
 
@@ -300,6 +375,20 @@ function validateActivityVideoSource(file: File): string {
   return mimeType;
 }
 
+export interface ActivityMediaSourceInfo {
+  mediaType: 'photo' | 'video';
+}
+
+export function inspectActivityMediaSource(file: File): ActivityMediaSourceInfo {
+  if (String(file.type || '').startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(file.name)) {
+    validateActivityPhotoSource(file);
+    return { mediaType: 'photo' };
+  }
+
+  validateActivityVideoSource(file);
+  return { mediaType: 'video' };
+}
+
 function readVideoMetadata(file: File): Promise<{ width: number; height: number; durationSeconds: number }> {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -327,7 +416,7 @@ function readVideoMetadata(file: File): Promise<{ width: number; height: number;
       }
 
       if (durationSeconds > MAX_ACTIVITY_VIDEO_DURATION_SECONDS) {
-        reject(createImageError('activity-records/video-too-long', 'O vídeo deve ter no máximo 3 minutos.'));
+        reject(createImageError('activity-records/video-too-long', 'O vídeo deve ter no máximo 4 minutos.'));
         return;
       }
 
@@ -336,7 +425,7 @@ function readVideoMetadata(file: File): Promise<{ width: number; height: number;
 
     video.onerror = () => {
       cleanup();
-      reject(createImageError('activity-records/read-failed', 'Não foi possível abrir o vídeo selecionado.'));
+      reject(createImageError('activity-records/local-file-unavailable', 'Não foi possível abrir o vídeo selecionado.'));
     };
 
     video.src = objectUrl;
@@ -353,7 +442,7 @@ async function processActivityVideo(file: File): Promise<ProcessedActivityMedia>
 
   return {
     file: normalizedFile,
-    previewUrl: URL.createObjectURL(normalizedFile),
+    previewUrl: '',
     width: metadata.width,
     height: metadata.height,
     durationSeconds: metadata.durationSeconds,

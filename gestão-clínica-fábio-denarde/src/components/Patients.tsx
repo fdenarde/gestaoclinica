@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution, ExternalRegistrationForm } from '../types';
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
+import { getPatientSessionsThroughDate } from '../lib/sessionVisibility';
 import Modal from './Common/Modal';
 import PatientPhoto from './Common/PatientPhoto';
 import { showToast } from './Common/Toast';
@@ -15,6 +16,7 @@ import ActivityRecordsTab from './ActivityRecords/ActivityRecordsTab';
 import ActivityRecordModal from './ActivityRecords/ActivityRecordModal';
 import { hasPatientActivityRecords } from '../lib/activityRecordsApi';
 import { getDefaultActivityAuthorization } from '../types/activityRecords';
+import { getProfessionalResponsibleDocumentUrl } from '../lib/accessApi';
 
 interface PatientsProps {
   state: AppState;
@@ -23,6 +25,8 @@ interface PatientsProps {
   setSelectedPatientId?: (id: string | null) => void;
   currentUserId?: string;
   currentUserName?: string;
+  initialPatientSubTab?: string | null;
+  onPatientSubTabConsumed?: () => void;
 }
 
 const PATIENT_FIELD_LABELS: Record<string, string> = {
@@ -45,7 +49,13 @@ function hasPatientPhoto(patient: Pick<Patient, 'photoUrl' | 'photoDriveFileId'>
   return Boolean(patient.photoDriveFileId || patient.photoUrl);
 }
 
-export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId, currentUserId, currentUserName }: PatientsProps) {
+function formatPortalDocumentSize(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return 'Tamanho não informado';
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+}
+
+export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId, currentUserId, currentUserName, initialPatientSubTab, onPatientSubTabConsumed }: PatientsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showInactive, setShowInactive] = useState(false);
   const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
@@ -60,6 +70,12 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
   const [quickActivityPatientId, setQuickActivityPatientId] = useState<string | null>(null);
+  const [requestedPatientSubTab, setRequestedPatientSubTab] = useState<string | null>(initialPatientSubTab || null);
+
+  useEffect(() => {
+    if (!initialPatientSubTab) return;
+    setRequestedPatientSubTab(initialPatientSubTab);
+  }, [initialPatientSubTab, selectedPatientId]);
   
   // Registration Form State
   const [newPatient, setNewPatient] = useState<Partial<Patient>>({
@@ -849,6 +865,11 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
           patient={quickActivityPatient}
           sessions={state.sessions}
           currentUserName={currentUserName || 'Usuário'}
+          onViewGallery={() => {
+            setQuickActivityPatientId(null);
+            setRequestedPatientSubTab('atividades');
+            setSelectedPatientId(quickActivityPatient.id);
+          }}
         />
       )}
 
@@ -865,14 +886,19 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
           currentUserName={currentUserName || 'Usuário'}
           createExternalRegistrationForm={createExternalRegistrationForm}
           copyExternalRegistrationLink={copyExternalRegistrationLink}
+          initialSubTab={requestedPatientSubTab}
+          onInitialSubTabApplied={() => {
+            setRequestedPatientSubTab(null);
+            onPatientSubTabConsumed?.();
+          }}
         />
       )}
     </div>
   );
 }
 
-function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void | Promise<void>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void> }) {
-  const [activeSubTab, setActiveSubTab] = useState('dados');
+function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink, initialSubTab, onInitialSubTabApplied }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void | Promise<void>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void>, initialSubTab?: string | null, onInitialSubTabApplied?: () => void }) {
+  const [activeSubTab, setActiveSubTab] = useState(initialSubTab || 'dados');
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Patient>>(patient);
@@ -914,6 +940,12 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [newEvoNotes, setNewEvoNotes] = useState('');
   const [lastGeneratedExternalLink, setLastGeneratedExternalLink] = useState('');
+
+  useEffect(() => {
+    if (!initialSubTab) return;
+    setActiveSubTab(initialSubTab);
+    onInitialSubTabApplied?.();
+  }, [initialSubTab, onInitialSubTabApplied]);
   const openActivityAuthorization = () => {
     setEditForm(patient);
     setActiveSubTab('dados');
@@ -934,6 +966,10 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   if (!patient) return null;
 
   const patientSessions = state.sessions.filter(s => s.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const visiblePatientSessions = getPatientSessionsThroughDate({
+    patient,
+    sessions: state.sessions,
+  }).sort((a, b) => `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`));
   const patientPayments = state.payments.filter(p => p.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const patientEvolutions = (state.evolutions || []).filter(e => e.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const latestExternalHistory = patient.externalRegistrationHistory?.[patient.externalRegistrationHistory.length - 1];
@@ -967,6 +1003,25 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     showToast('Evolução salva com sucesso!');
   };
 
+  const downloadResponsibleDocument = async (documentId: string, fileName: string) => {
+    try {
+      const result = await getProfessionalResponsibleDocumentUrl(patient.id, documentId);
+      const url = new URL(result.url, window.location.origin);
+      url.searchParams.set('download', '1');
+      const anchor = window.document.createElement('a');
+      anchor.href = url.toString();
+      anchor.download = result.fileName || fileName;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch (error) {
+      console.error('Falha ao abrir documento enviado pelo responsável:', error);
+      showToast(error instanceof Error ? error.message : 'Não foi possível abrir o documento.', 'error');
+    }
+  };
+
   const generateExternalRegistrationLink = async () => {
     try {
       const link = await createExternalRegistrationForm('update', patient);
@@ -980,7 +1035,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
   // Realized sessions sorted chronologically (ascending)
   const realizedSessionsChronological = patientSessions
-    .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
+    .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO || (s.status === SessionStatus.FALTA && s.consumesPackage === true))
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   const realizedCount = realizedSessionsChronological.length;
@@ -1384,11 +1439,16 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const updateSessionStatus = (sessionId: string, newStatus: SessionStatus) => {
     let finalStatus = newStatus;
     const session = state.sessions.find(s => s.id === sessionId);
+    const consumesPackage = newStatus === SessionStatus.FALTA
+      ? window.confirm(
+        'Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim, consumir a sessão.\nCancelar = Não consumir a sessão.'
+      )
+      : newStatus === SessionStatus.REALIZADA || newStatus === SessionStatus.REPOSICAO;
     if (newStatus === SessionStatus.REALIZADA && session?.notes?.includes('Reposição referente')) {
         finalStatus = SessionStatus.REPOSICAO;
     }
 
-    let updatedSessions = state.sessions.map(s => s.id === sessionId ? { ...s, status: finalStatus } : s);
+    let updatedSessions = state.sessions.map(s => s.id === sessionId ? { ...s, status: finalStatus, consumesPackage } : s);
     let updatedRepositions = state.repositions;
     if ((finalStatus === SessionStatus.FALTA || finalStatus === SessionStatus.FALTA_PROF)) {
        const existingRepo = state.repositions.find(r => r.originalSessionId === sessionId);
@@ -1939,6 +1999,45 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                           )}
                         </div>
                       </div>
+
+                      <div className="pt-3 border-t border-clinic-border/30">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <p className="text-[10px] font-bold text-clinic-text-faint uppercase">Enviados pelo responsável</p>
+                          {!!patient.responsibleDocuments?.length && (
+                            <span className="rounded-full bg-status-blue-bg px-2 py-0.5 text-[9px] font-black text-status-blue-text">
+                              {patient.responsibleDocuments.length}
+                            </span>
+                          )}
+                        </div>
+                        {!patient.responsibleDocuments?.length ? (
+                          <p className="text-xs text-clinic-text-faint/60 italic">Nenhum documento enviado pelo portal.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {[...patient.responsibleDocuments].reverse().map(document => (
+                              <article key={document.id} className="rounded-lg border border-clinic-border bg-clinic-bg/60 p-2.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-black text-clinic-text">{document.category || 'Documento'}</p>
+                                    <p className="truncate text-[10px] text-clinic-text-muted">{document.fileName}</p>
+                                    <p className="mt-1 text-[9px] font-bold text-clinic-text-faint">
+                                      {formatPortalDocumentSize(document.sizeBytes)} • {document.uploadedByName || 'Responsável'}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => void downloadResponsibleDocument(document.id, document.fileName)}
+                                    className="shrink-0 rounded-lg bg-white p-2 text-clinic-primary shadow-sm"
+                                    title={`Baixar ${document.fileName}`}
+                                  >
+                                    <FileText size={14} />
+                                  </button>
+                                </div>
+                                {document.note && <p className="mt-2 text-[10px] text-clinic-text-muted whitespace-pre-wrap">{document.note}</p>}
+                              </article>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="col-span-1 md:col-span-2 pt-2 border-t border-clinic-border space-y-2">
@@ -2221,8 +2320,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                     </div>
                  </div>
                  <div className="space-y-3">
-                   {patientSessions.length > 0 ? (
-                     patientSessions.map(session => (
+                   {visiblePatientSessions.length > 0 ? (
+                     visiblePatientSessions.map(session => (
                        <div key={session.id} className={cn(
                          "p-4 rounded-xl border flex items-center justify-between",
                          session.status === SessionStatus.REALIZADA ? 'bg-blue-500/10 border-blue-400 border-dashed' :

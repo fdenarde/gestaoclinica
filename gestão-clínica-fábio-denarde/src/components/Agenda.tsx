@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Camera } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Camera, Images } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
@@ -92,10 +92,11 @@ interface AgendaProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (id: string) => void;
+  onNavigateToPatientGallery?: (id: string) => void;
   currentUserName: string;
 }
 
-export default function Agenda({ state, onUpdate, onNavigateToPatient, currentUserName }: AgendaProps) {
+export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigateToPatientGallery, currentUserName }: AgendaProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
@@ -274,6 +275,9 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, currentUs
       packageNumber: 0,
       isFixedSchedule: true,
       source: 'fixed',
+      consumesPackage: newStatus === SessionStatus.FALTA
+        ? window.confirm('Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim.\nCancelar = Não.')
+        : false,
     };
     const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
     const newReal: Session = {
@@ -592,12 +596,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, currentUs
   };
 
   const markAsMissed = async (session: Session) => {
+    const consumesPackage = window.confirm(
+      'Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim, consumir a sessão.\nCancelar = Não consumir a sessão.'
+    );
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
     }
     const updatedSessions = state.sessions.map(s => 
-      s.id === session.id ? { ...s, status: SessionStatus.FALTA } : s
+      s.id === session.id ? { ...s, status: SessionStatus.FALTA, consumesPackage } : s
     );
     const newReposition: Reposition = {
       id: Math.random().toString(36).substr(2, 9),
@@ -1185,6 +1192,19 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, currentUs
                 </button>
               )}
 
+              {patient && onNavigateToPatientGallery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionSession(null);
+                    onNavigateToPatientGallery(patient.id);
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-clinic-primary/25 bg-clinic-primary/5 text-clinic-primary font-bold hover:bg-clinic-primary/10 active:scale-95 transition-all"
+                >
+                  <Images size={17} /> Ver Galeria de Mídias
+                </button>
+              )}
+
               {/* ── Botões de ação ── */}
               {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
                 <div className="space-y-2.5">
@@ -1281,6 +1301,10 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, currentUs
             sessions={[...state.sessions, ...(state.sessions.some(item => item.id === activitySession.id) ? [] : [activitySession])]}
             initialSession={activitySession}
             currentUserName={currentUserName}
+            onViewGallery={() => {
+              setActivitySession(null);
+              onNavigateToPatientGallery?.(activityPatient.id);
+            }}
           />
         );
       })()}

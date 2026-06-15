@@ -177,7 +177,7 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
   };
 
   const linkPatient = async (request: AccessRequestRecord) => {
-    const patientId = patientSelections[request.id] || request.linkedPatientIds[0] || '';
+    const patientId = patientSelections[request.id] || '';
     if (!patientId) {
       showToast('Selecione o paciente que será vinculado ao responsável.', 'error');
       return;
@@ -187,8 +187,8 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
     try {
       const linkedRequest = await linkResponsiblePatient(request.id, patientId);
       setRequests(current => current.map(item => item.id === request.id ? linkedRequest : item));
-      setPatientSelections(current => ({ ...current, [request.id]: patientId }));
-      showToast('Paciente vinculado ao responsável.');
+      setPatientSelections(current => ({ ...current, [request.id]: '' }));
+      showToast('Atendente vinculado ao responsável.');
     } catch (caughtError) {
       showToast(
         caughtError instanceof Error ? caughtError.message : 'Não foi possível vincular o paciente.',
@@ -348,11 +348,23 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                         <div className="rounded-xl border border-status-blue-text/20 bg-status-blue-bg p-3">
                           <div className="mb-2 flex items-center gap-2 text-xs font-bold text-status-blue-text">
                             <Link2 size={15} />
-                            Vínculo manual com paciente
+                            Vínculo manual com atendente ({request.linkedPatientIds.length}/3)
                           </div>
+                          {request.linkedPatientIds.length > 0 && (
+                            <div className="mb-3 flex flex-wrap gap-2">
+                              {request.linkedPatientIds.map(patientId => {
+                                const linked = selectablePatients.find(patient => patient.id === patientId);
+                                return (
+                                  <span key={patientId} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-black text-status-blue-text">
+                                    {linked?.name || patientId}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                           <div className="flex flex-col gap-2 sm:flex-row">
                             <select
-                              value={patientSelections[request.id] ?? request.linkedPatientIds[0] ?? ''}
+                              value={patientSelections[request.id] ?? ''}
                               onChange={event => setPatientSelections(current => ({
                                 ...current,
                                 [request.id]: event.target.value,
@@ -363,8 +375,8 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                             >
                               <option value="">Selecione manualmente</option>
                               {selectablePatients.map(patient => (
-                                <option key={patient.id} value={patient.id}>
-                                  {patient.name} ({patient.status})
+                                <option key={patient.id} value={patient.id} disabled={request.linkedPatientIds.includes(patient.id)}>
+                                  {patient.name} ({patient.status}){request.linkedPatientIds.includes(patient.id) ? ' — já vinculado' : ''}
                                 </option>
                               ))}
                             </select>
@@ -375,6 +387,8 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                                 linkingId === request.id
                                 || !!reviewingId
                                 || !selectablePatients.length
+                                || request.linkedPatientIds.length >= 3
+                                || !patientSelections[request.id]
                               }
                               className="flex items-center justify-center gap-2 rounded-lg bg-status-blue-text px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 disabled:opacity-50"
                             >

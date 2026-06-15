@@ -57,7 +57,8 @@ function clampCurrency(value: number) {
 }
 
 function isCountedSession(session: Session) {
-  return COUNTED_SESSION_STATUSES.has(session.status);
+  return COUNTED_SESSION_STATUSES.has(session.status)
+    || (session.status === SessionStatus.FALTA && session.consumesPackage === true);
 }
 
 function getExplicitPackageNumber(payment: Payment) {

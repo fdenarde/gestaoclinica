@@ -72,7 +72,7 @@ function statusCopy(profile: AccessProfile): { title: string; description: strin
   if (['revoked', 'disabled', 'canceled'].includes(profile.status)) {
     return {
       title: profile.status === 'revoked' ? 'Acesso revogado' : 'Acesso desativado',
-      description: 'Este acesso não está autorizado. Entre em contato com o administrador ou faça uma nova solicitação quando orientado.',
+      description: 'Favor entrar em contato com a clínica responsável.',
       tone: 'text-status-red-text bg-status-red-bg',
     };
   }

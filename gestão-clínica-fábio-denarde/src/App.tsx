@@ -1,8 +1,8 @@
-import React, { Suspense, lazy, useState, useEffect, useRef } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment, ExternalRegistrationForm } from './types';
-import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList } from 'lucide-react';
+import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList, X, ExternalLink, Monitor, MapPin, UserRound, Clock3, Check, CheckCheck, RefreshCw, Archive, Trash2, Mail, MailOpen } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
@@ -18,8 +18,19 @@ import ExternalRegistrationPage from './components/ExternalRegistrationPage';
 import BrandLogo from './components/Common/BrandLogo';
 import AccessPortal from './components/Auth/AccessPortal';
 import ResponsiblePortal from './components/Auth/ResponsiblePortal';
-import { getAccessProfile } from './lib/accessApi';
-import type { AccessProfile } from './types/access';
+import NotificationCenter from './components/Notifications/NotificationCenter';
+import {
+  getAccessProfile,
+  getProfessionalPortalNotifications,
+  manageProfessionalPortalNotifications,
+} from './lib/accessApi';
+import type {
+  AccessProfile,
+  ProfessionalNotificationAction,
+  ProfessionalNotificationBulkScope,
+  ProfessionalPortalNotification,
+} from './types/access';
+import { getActivityPhotoUrl } from './lib/activityRecordsApi';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -52,6 +63,44 @@ const DEFAULT_STATE: AppState = {
 };
 
 const APP_VERSION = `v${packageJson.version}`;
+const NOTIFICATION_MANUAL_MIN_INTERVAL_MS = 5 * 1000;
+
+type PortalNotification = ProfessionalPortalNotification;
+
+function mergePortalNotifications(
+  current: PortalNotification[],
+  incoming: PortalNotification[],
+): PortalNotification[] {
+  const byId = new Map(current.map(notification => [notification.id, notification]));
+  for (const notification of incoming) byId.set(notification.id, notification);
+  return [...byId.values()]
+    .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
+    .slice(0, 500);
+}
+
+function formatPortalNotificationDate(value: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
+}
+
+function formatAuditDuration(value?: number): string {
+  const totalSeconds = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}min ${seconds}s`;
+  if (minutes > 0) return `${minutes}min ${seconds}s`;
+  return `${seconds}s`;
+}
 
 export default function App() {
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
@@ -65,9 +114,23 @@ export default function App() {
   const [dataLoading, setDataLoading] = useState(false);
   
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [notifications, setNotifications] = useState<string[]>([]);
+  const [notifications, setNotifications] = useState<PortalNotification[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notificationHasMore, setNotificationHasMore] = useState(false);
+  const [selectedPortalNotification, setSelectedPortalNotification] = useState<PortalNotification | null>(null);
+  const [notificationMediaUrl, setNotificationMediaUrl] = useState('');
+  const [notificationMediaLoading, setNotificationMediaLoading] = useState(false);
+  const [notificationMediaError, setNotificationMediaError] = useState('');
+  const [notificationMediaReloadKey, setNotificationMediaReloadKey] = useState(0);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  const [selectedPatientSubTab, setSelectedPatientSubTab] = useState<string | null>(null);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
+  const notificationCursorRef = useRef<string | null>(null);
+  const notificationOldestCursorRef = useRef<string | null>(null);
+  const notificationLastLoadedAtRef = useRef(0);
+  const notificationInFlightRef = useRef<Promise<boolean> | null>(null);
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
 
@@ -75,9 +138,14 @@ export default function App() {
     return <ExternalRegistrationPage token={publicRegistrationMatch[1]} />;
   }
 
-  const navigateToPatient = (id: string) => {
+  const navigateToPatient = (id: string, subTab: string = 'dados') => {
+    setSelectedPatientSubTab(subTab);
     setSelectedPatientId(id);
     setActiveTab('atendentes');
+  };
+
+  const navigateToPatientGallery = (id: string) => {
+    navigateToPatient(id, 'atividades');
   };
 
   useEffect(() => {
@@ -124,6 +192,88 @@ export default function App() {
   const canAccessResponsiblePortal =
     accessProfile?.status === 'approved'
     && accessProfile.role === 'responsible';
+
+  const refreshPortalNotifications = useCallback(async (options?: {
+    initial?: boolean;
+    force?: boolean;
+  }): Promise<boolean> => {
+    if (!user || !canAccessInternalSystem) return false;
+    if (document.visibilityState === 'hidden' && !options?.force) return false;
+
+    const now = Date.now();
+    if (!options?.initial && now - notificationLastLoadedAtRef.current < NOTIFICATION_MANUAL_MIN_INTERVAL_MS) {
+      return true;
+    }
+    if (notificationInFlightRef.current) return notificationInFlightRef.current;
+
+    const requestPromise = (async () => {
+      setNotificationLoading(true);
+      try {
+        const result = await getProfessionalPortalNotifications({
+          updatedAfter: options?.initial ? null : notificationCursorRef.current,
+          limit: 20,
+        });
+        setNotifications(current => (
+          options?.initial
+            ? mergePortalNotifications([], result.notifications)
+            : mergePortalNotifications(current, result.notifications)
+        ));
+        if (result.cursor) notificationCursorRef.current = result.cursor;
+        if (options?.initial) {
+          notificationOldestCursorRef.current = result.nextPageCursor;
+          setNotificationHasMore(result.hasMore);
+        }
+        notificationLastLoadedAtRef.current = Date.now();
+        return true;
+      } catch (error) {
+        notificationLastLoadedAtRef.current = Date.now();
+        console.error('Falha ao carregar notificações do Portal do Responsável:', error);
+        return false;
+      } finally {
+        setNotificationLoading(false);
+        notificationInFlightRef.current = null;
+      }
+    })();
+
+    notificationInFlightRef.current = requestPromise;
+    return requestPromise;
+  }, [canAccessInternalSystem, user]);
+
+  const loadOlderPortalNotifications = useCallback(async (): Promise<void> => {
+    if (!user || !canAccessInternalSystem || !notificationHasMore || notificationLoading) return;
+    setNotificationLoading(true);
+    try {
+      const result = await getProfessionalPortalNotifications({
+        before: notificationOldestCursorRef.current,
+        limit: 20,
+      });
+      setNotifications(current => mergePortalNotifications(current, result.notifications));
+      notificationOldestCursorRef.current = result.nextPageCursor;
+      setNotificationHasMore(result.hasMore);
+    } catch (error) {
+      console.error('Falha ao carregar notificações anteriores:', error);
+    } finally {
+      setNotificationLoading(false);
+    }
+  }, [canAccessInternalSystem, notificationHasMore, notificationLoading, user]);
+
+
+  useEffect(() => {
+    if (!user || !canAccessInternalSystem) {
+      setNotifications([]);
+      setNotificationsOpen(false);
+      setSelectedPortalNotification(null);
+      notificationCursorRef.current = null;
+      notificationOldestCursorRef.current = null;
+      notificationLastLoadedAtRef.current = 0;
+      setNotificationHasMore(false);
+      setNotificationCenterOpen(false);
+      return;
+    }
+
+    void refreshPortalNotifications({ initial: true, force: true });
+  }, [canAccessInternalSystem, refreshPortalNotifications, user]);
+
 
   useEffect(() => {
     if (!user || !canAccessInternalSystem) return;
@@ -419,6 +569,45 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    let active = true;
+    setNotificationMediaUrl('');
+    setNotificationMediaError('');
+
+    const notification = selectedPortalNotification;
+    if (!notification?.patientId || !notification.recordId || !notification.mediaType) {
+      setNotificationMediaLoading(false);
+      return () => { active = false; };
+    }
+
+    setNotificationMediaLoading(true);
+    void getActivityPhotoUrl(
+      notification.recordId,
+      notification.patientId,
+      notificationMediaReloadKey > 0,
+    )
+      .then(url => {
+        if (active) setNotificationMediaUrl(url);
+      })
+      .catch(error => {
+        if (!active) return;
+        setNotificationMediaError(error instanceof Error
+          ? error.message
+          : 'Não foi possível carregar a mídia relacionada a esta notificação.');
+      })
+      .finally(() => {
+        if (active) setNotificationMediaLoading(false);
+      });
+
+    return () => { active = false; };
+  }, [
+    selectedPortalNotification?.id,
+    selectedPortalNotification?.patientId,
+    selectedPortalNotification?.recordId,
+    selectedPortalNotification?.mediaType,
+    notificationMediaReloadKey,
+  ]);
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-clinic-bg">
@@ -451,6 +640,153 @@ export default function App() {
   const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
     isPendingExternalRegistrationStatus(form.status)
   ).length;
+  const activePortalNotifications = notifications.filter(notification => !notification.archived);
+  const unreadPortalNotifications = activePortalNotifications.filter(notification => !notification.read);
+  const pendingPortalNotifications = activePortalNotifications.filter(notification => notification.pendingAction && !notification.completed);
+  const notificationAttentionCount = activePortalNotifications.filter(notification => (
+    !notification.read || (notification.pendingAction && !notification.completed)
+  )).length;
+
+  const togglePortalNotifications = async () => {
+    const opening = !notificationsOpen;
+    setNotificationsOpen(opening);
+    if (opening) await refreshPortalNotifications({ force: true });
+  };
+
+  const openPortalNotification = (notification: PortalNotification) => {
+    setNotificationsOpen(false);
+    setNotificationMediaReloadKey(0);
+    setSelectedPortalNotification(notification);
+  };
+
+  const updateNotificationStateLocally = (
+    notificationIds: string[],
+    operation: ProfessionalNotificationAction,
+  ) => {
+    const idSet = new Set(notificationIds);
+    setNotifications(current => current
+      .filter(item => !(operation === 'delete' && idSet.has(item.id)))
+      .map(item => {
+        if (!idSet.has(item.id)) return item;
+        if (operation === 'mark_read') return { ...item, read: true, readAt: new Date().toISOString() };
+        if (operation === 'mark_unread') return { ...item, read: false, readAt: null };
+        if (operation === 'complete') return { ...item, read: true, pendingAction: false, completed: true, status: 'completed', completedAt: new Date().toISOString() };
+        if (operation === 'archive') return { ...item, read: true, archived: true, status: 'archived', archivedAt: new Date().toISOString() };
+        if (operation === 'ignore') return { ...item, read: true, ignored: true, archived: true, status: 'ignored', archivedAt: new Date().toISOString() };
+        return item;
+      }));
+    setSelectedPortalNotification(current => {
+      if (!current || !idSet.has(current.id)) return current;
+      if (operation === 'delete') return null;
+      if (operation === 'mark_read') return { ...current, read: true, readAt: new Date().toISOString() };
+      if (operation === 'mark_unread') return { ...current, read: false, readAt: null };
+      if (operation === 'complete') return { ...current, read: true, pendingAction: false, completed: true, status: 'completed', completedAt: new Date().toISOString() };
+      if (operation === 'archive') return { ...current, read: true, archived: true, status: 'archived', archivedAt: new Date().toISOString() };
+      if (operation === 'ignore') return { ...current, read: true, ignored: true, archived: true, status: 'ignored', archivedAt: new Date().toISOString() };
+      return current;
+    });
+  };
+
+  const manageNotifications = async (
+    notificationIds: string[],
+    operation: ProfessionalNotificationAction,
+  ): Promise<void> => {
+    if (notificationIds.length === 0) return;
+    try {
+      const result = await manageProfessionalPortalNotifications({ operation, notificationIds });
+      updateNotificationStateLocally(
+        operation === 'delete' ? result.deletedIds : result.affectedIds,
+        operation,
+      );
+      if (result.skippedIds.length > 0) {
+        window.alert('Algumas notificações não puderam receber esta ação porque ainda possuem uma pendência ou precisam ser preservadas no histórico.');
+      }
+    } catch (error) {
+      console.error('Falha ao atualizar a notificação:', error);
+      window.alert(error instanceof Error ? error.message : 'Não foi possível atualizar a notificação.');
+    }
+  };
+
+  const manageQuickNotification = async (
+    event: React.MouseEvent<HTMLButtonElement>,
+    notification: PortalNotification,
+    operation: ProfessionalNotificationAction,
+  ): Promise<void> => {
+    event.stopPropagation();
+
+    if (operation !== 'delete') {
+      await manageNotifications([notification.id], operation);
+      return;
+    }
+
+    if (notification.protectedFromDeletion || (notification.pendingAction && !notification.completed)) {
+      window.alert('Esta notificação precisa ser preservada no histórico e não pode ser excluída.');
+      return;
+    }
+
+    if (!window.confirm('Excluir definitivamente esta notificação? Esta ação não poderá ser desfeita.')) return;
+
+    try {
+      if (!notification.archived) {
+        const archiveResult = await manageProfessionalPortalNotifications({
+          operation: 'archive',
+          notificationIds: [notification.id],
+        });
+        if (!archiveResult.affectedIds.includes(notification.id)) {
+          throw new Error('A notificação não pôde ser arquivada antes da exclusão.');
+        }
+        updateNotificationStateLocally(archiveResult.affectedIds, 'archive');
+      }
+
+      const deleteResult = await manageProfessionalPortalNotifications({
+        operation: 'delete',
+        notificationIds: [notification.id],
+      });
+      if (!deleteResult.deletedIds.includes(notification.id)) {
+        throw new Error('A notificação não pôde ser excluída.');
+      }
+      updateNotificationStateLocally(deleteResult.deletedIds, 'delete');
+    } catch (error) {
+      console.error('Falha ao excluir rapidamente a notificação:', error);
+      window.alert(error instanceof Error ? error.message : 'Não foi possível excluir a notificação.');
+    }
+  };
+
+  const bulkManageNotifications = async (
+    scope: ProfessionalNotificationBulkScope,
+    operation: ProfessionalNotificationAction,
+  ): Promise<void> => {
+    try {
+      const result = await manageProfessionalPortalNotifications({ operation, scope });
+      updateNotificationStateLocally(
+        operation === 'delete' ? result.deletedIds : result.affectedIds,
+        operation,
+      );
+      if (result.hasMore) {
+        window.alert('Foram processadas as primeiras 100 notificações. Repita a ação para continuar, se necessário.');
+      }
+    } catch (error) {
+      console.error('Falha ao atualizar notificações em lote:', error);
+      window.alert(error instanceof Error ? error.message : 'Não foi possível atualizar as notificações selecionadas.');
+    }
+  };
+
+  const openNotificationCenter = async () => {
+    setNotificationsOpen(false);
+    setNotificationCenterOpen(true);
+    await refreshPortalNotifications({ force: true });
+  };
+
+  const navigateFromPortalNotification = (notification: PortalNotification) => {
+    if (!notification.patientId) return;
+    setSelectedPortalNotification(null);
+    setNotificationCenterOpen(false);
+    if (notification.navigationTarget === 'patient_gallery') {
+      navigateToPatient(notification.patientId, 'atividades');
+      return;
+    }
+    navigateToPatient(notification.patientId, 'dados');
+  };
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -497,12 +833,122 @@ export default function App() {
              </div>
              <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} alt="User" className="w-10 h-10 rounded-full border-2 border-white/20 shadow-md" />
            </div>
-          <div className="relative bg-clinic-primary p-2 rounded-full cursor-pointer hover:bg-clinic-primary-hover shadow-md transition-all active:scale-95">
-            <Bell size={20} />
-            {(notifications.length + pendingExternalForms) > 0 && (
-              <span className="absolute -top-1 -right-1 bg-white text-clinic-primary text-[10px] font-bold px-1.5 rounded-full border border-clinic-primary">
-                {notifications.length + pendingExternalForms}
-              </span>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => void togglePortalNotifications()}
+              className="relative rounded-full bg-clinic-primary p-2 shadow-md transition-all hover:bg-clinic-primary-hover active:scale-95"
+              aria-label="Abrir notificações"
+            >
+              <Bell size={20} />
+              {(notificationAttentionCount + pendingExternalForms) > 0 && (
+                <span className="absolute -right-1 -top-1 rounded-full border border-clinic-primary bg-white px-1.5 text-[10px] font-bold text-clinic-primary">
+                  {notificationAttentionCount + pendingExternalForms}
+                </span>
+              )}
+            </button>
+            {notificationsOpen && (
+              <div className="absolute right-0 top-12 z-[90] w-[min(94vw,410px)] overflow-hidden rounded-2xl border border-clinic-border bg-white text-clinic-text shadow-2xl">
+                <div className="border-b border-clinic-border bg-clinic-bg px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wide text-clinic-primary">Notificações</p>
+                      <p className="mt-1 text-[11px] text-clinic-text-muted">{unreadPortalNotifications.length} não lida(s) • {pendingPortalNotifications.length} pendente(s)</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button type="button" onClick={() => void refreshPortalNotifications({ force: true })} disabled={notificationLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading ? 'animate-spin' : ''} /></button>
+                      <button type="button" onClick={() => setNotificationsOpen(false)} className="rounded-full bg-white p-2 text-clinic-text-muted" aria-label="Fechar notificações"><X size={15} /></button>
+                    </div>
+                  </div>
+                  {unreadPortalNotifications.length > 0 && (
+                    <button type="button" onClick={() => void bulkManageNotifications('all_unread', 'mark_read')} className="mt-3 flex items-center gap-1 text-[10px] font-black uppercase text-clinic-primary"><CheckCheck size={14} /> Marcar todas como lidas</button>
+                  )}
+                </div>
+                <div className="max-h-96 divide-y divide-clinic-border overflow-auto">
+                  {activePortalNotifications.length === 0 && (
+                    <p className="px-4 py-6 text-center text-sm text-clinic-text-muted">Nenhuma notificação ativa.</p>
+                  )}
+                  {activePortalNotifications.slice(0, 10).map(notification => {
+                    const canQuickArchive = !notification.pendingAction || notification.completed;
+                    const canQuickDelete = !notification.protectedFromDeletion && canQuickArchive;
+                    return (
+                      <div
+                        key={notification.id}
+                        className={`flex items-start gap-2 px-3 py-3 transition hover:bg-clinic-bg ${notification.read ? 'bg-white' : 'bg-status-blue-bg/40'}`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => openPortalNotification(notification)}
+                          className="min-w-0 flex-1 text-left"
+                          aria-label={`Abrir detalhes: ${notification.title || 'Notificação'}`}
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {notification.pendingAction && !notification.completed && <span className="rounded-full bg-status-orange-bg px-2 py-0.5 text-[9px] font-black uppercase text-status-orange-text">Pendente</span>}
+                            {!notification.read && <span className="rounded-full bg-status-blue-bg px-2 py-0.5 text-[9px] font-black uppercase text-status-blue-text">Não lida</span>}
+                          </div>
+                          <p className="mt-1 text-xs font-black text-clinic-text">{notification.title || 'Atividade no Portal do Responsável'}</p>
+                          <p className="mt-1 text-[11px] text-clinic-text-muted">{notification.message}</p>
+                          <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-clinic-text-faint">
+                            <span>{notification.patientName || 'Atendente'}</span>
+                            <span>{formatPortalNotificationDate(notification.updatedAt || notification.createdAt)}</span>
+                          </div>
+                        </button>
+
+                        <div className="flex shrink-0 flex-col gap-1 sm:flex-row" aria-label="Ações rápidas da notificação">
+                          <button
+                            type="button"
+                            onClick={event => void manageQuickNotification(event, notification, notification.read ? 'mark_unread' : 'mark_read')}
+                            className="rounded-lg border border-clinic-border bg-white p-2 text-clinic-primary transition hover:bg-status-blue-bg"
+                            title={notification.read ? 'Marcar como não lida' : 'Marcar como lida'}
+                            aria-label={notification.read ? 'Marcar como não lida' : 'Marcar como lida'}
+                          >
+                            {notification.read ? <Mail size={14} /> : <MailOpen size={14} />}
+                          </button>
+
+                          {notification.pendingAction && !notification.completed && (
+                            <button
+                              type="button"
+                              onClick={event => void manageQuickNotification(event, notification, 'complete')}
+                              className="rounded-lg border border-status-green-text/20 bg-status-green-bg p-2 text-status-green-text transition hover:brightness-95"
+                              title="Marcar como concluída"
+                              aria-label="Marcar como concluída"
+                            >
+                              <Check size={14} />
+                            </button>
+                          )}
+
+                          {canQuickArchive && (
+                            <button
+                              type="button"
+                              onClick={event => void manageQuickNotification(event, notification, 'archive')}
+                              className="rounded-lg border border-clinic-border bg-white p-2 text-clinic-text-muted transition hover:bg-clinic-bg"
+                              title="Arquivar notificação"
+                              aria-label="Arquivar notificação"
+                            >
+                              <Archive size={14} />
+                            </button>
+                          )}
+
+                          {canQuickDelete && (
+                            <button
+                              type="button"
+                              onClick={event => void manageQuickNotification(event, notification, 'delete')}
+                              className="rounded-lg border border-status-red-text/20 bg-status-red-bg p-2 text-status-red-text transition hover:brightness-95"
+                              title="Excluir definitivamente"
+                              aria-label="Excluir definitivamente"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="border-t border-clinic-border bg-clinic-bg px-4 py-3">
+                  <button type="button" onClick={() => void openNotificationCenter()} className="w-full rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase text-white">Ver todas</button>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -586,9 +1032,9 @@ export default function App() {
                   isPrimaryAdmin={accessProfile?.role === 'admin' && accessProfile.email === 'fdenarde@gmail.com'}
                 />
               )}
-              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} />}
+              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
-              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
+              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
@@ -598,8 +1044,260 @@ export default function App() {
         </Suspense>
       </main>
 
+      <NotificationCenter
+        open={notificationCenterOpen}
+        notifications={notifications}
+        loading={notificationLoading}
+        hasMore={notificationHasMore}
+        onClose={() => setNotificationCenterOpen(false)}
+        onOpenNotification={openPortalNotification}
+        onRefresh={async () => { await refreshPortalNotifications({ force: true }); }}
+        onLoadMore={loadOlderPortalNotifications}
+        onManage={manageNotifications}
+        onBulkManage={bulkManageNotifications}
+      />
+
+      {selectedPortalNotification && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm sm:p-5"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Detalhes da notificação"
+          onClick={() => setSelectedPortalNotification(null)}
+        >
+          <section
+            className="flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-clinic-border bg-clinic-surface shadow-2xl"
+            onClick={event => event.stopPropagation()}
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-clinic-border bg-clinic-bg px-5 py-4 sm:px-6">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-clinic-primary">Auditoria detalhada</p>
+                <h2 className="mt-1 break-words text-xl font-black text-clinic-text">
+                  {selectedPortalNotification.title || 'Atividade no Portal do Responsável'}
+                </h2>
+                <p className="mt-2 text-sm text-clinic-text-muted">{selectedPortalNotification.message}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {!selectedPortalNotification.read && <span className="rounded-full bg-status-blue-bg px-2.5 py-1 text-[9px] font-black uppercase text-status-blue-text">Não lida</span>}
+                  {selectedPortalNotification.pendingAction && !selectedPortalNotification.completed && <span className="rounded-full bg-status-orange-bg px-2.5 py-1 text-[9px] font-black uppercase text-status-orange-text">Pendente de ação</span>}
+                  {selectedPortalNotification.completed && <span className="rounded-full bg-status-green-bg px-2.5 py-1 text-[9px] font-black uppercase text-status-green-text">Concluída</span>}
+                  {selectedPortalNotification.archived && <span className="rounded-full bg-white px-2.5 py-1 text-[9px] font-black uppercase text-clinic-text-muted">Arquivada</span>}
+                </div>
+
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedPortalNotification(null)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-clinic-text-muted shadow-sm transition hover:text-clinic-primary"
+                aria-label="Fechar detalhes"
+              >
+                <X size={20} />
+              </button>
+            </header>
+
+            <div className="overflow-y-auto px-5 py-5 sm:px-6">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
+                  <div className="flex items-center gap-2 text-clinic-primary"><UserRound size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Responsável</span></div>
+                  <p className="mt-2 font-black text-clinic-text">{selectedPortalNotification.responsibleName || 'Não informado'}</p>
+                  <p className="mt-1 break-all text-xs text-clinic-text-muted">{selectedPortalNotification.responsibleEmail || 'E-mail não informado'}</p>
+                </div>
+                <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
+                  <div className="flex items-center gap-2 text-clinic-primary"><Users size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Atendente</span></div>
+                  <p className="mt-2 font-black text-clinic-text">{selectedPortalNotification.patientName || 'Não informado'}</p>
+                  <p className="mt-1 text-xs text-clinic-text-muted">{selectedPortalNotification.actionTarget || 'Ação geral do portal'}</p>
+                </div>
+                <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
+                  <div className="flex items-center gap-2 text-clinic-primary"><Clock3 size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Quando aconteceu</span></div>
+                  <p className="mt-2 font-black text-clinic-text">{formatPortalNotificationDate(selectedPortalNotification.updatedAt || selectedPortalNotification.createdAt) || 'Horário não informado'}</p>
+                </div>
+                <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
+                  <div className="flex items-center gap-2 text-clinic-primary"><MapPin size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Local exato no portal</span></div>
+                  <p className="mt-2 text-sm font-bold text-clinic-text">{selectedPortalNotification.actionLocation || 'Local não informado'}</p>
+                </div>
+              </div>
+
+              {selectedPortalNotification.recordId && selectedPortalNotification.mediaType && (
+                <div className="mt-5 overflow-hidden rounded-2xl border border-clinic-border bg-clinic-bg">
+                  <div className="flex flex-col gap-2 border-b border-clinic-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-wide text-clinic-primary">Mídia acessada pelo responsável</p>
+                      <p className="mt-1 break-all text-sm font-black text-clinic-text">
+                        {selectedPortalNotification.mediaFileName || selectedPortalNotification.actionTarget || 'Mídia relacionada'}
+                      </p>
+                      <p className="mt-1 text-xs text-clinic-text-muted">
+                        {selectedPortalNotification.mediaType === 'video' ? 'Vídeo' : 'Imagem'}
+                        {selectedPortalNotification.sessionNumber ? ` • Sessão ${selectedPortalNotification.sessionNumber}` : ''}
+                        {selectedPortalNotification.sessionDate ? ` • ${selectedPortalNotification.sessionDate}` : ''}
+                        {selectedPortalNotification.sessionTime ? ` às ${selectedPortalNotification.sessionTime}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setNotificationMediaReloadKey(current => current + 1)}
+                      className="rounded-xl border border-clinic-border bg-white px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"
+                    >
+                      Recarregar mídia
+                    </button>
+                  </div>
+
+                  <div className="bg-black p-2 sm:p-4">
+                    {notificationMediaLoading && (
+                      <div className="flex min-h-56 items-center justify-center text-white">
+                        <Loader2 className="h-8 w-8 animate-spin" />
+                      </div>
+                    )}
+                    {!notificationMediaLoading && notificationMediaError && (
+                      <div className="flex min-h-56 flex-col items-center justify-center gap-3 rounded-xl bg-white/10 p-5 text-center text-sm text-white">
+                        <p>{notificationMediaError}</p>
+                        <button
+                          type="button"
+                          onClick={() => setNotificationMediaReloadKey(current => current + 1)}
+                          className="rounded-xl bg-white px-4 py-2 text-xs font-black uppercase text-clinic-primary"
+                        >
+                          Tentar novamente
+                        </button>
+                      </div>
+                    )}
+                    {!notificationMediaLoading && !notificationMediaError && notificationMediaUrl && (
+                      selectedPortalNotification.mediaType === 'video' ? (
+                        <video
+                          src={notificationMediaUrl}
+                          controls
+                          preload="metadata"
+                          className="mx-auto max-h-[58vh] w-full rounded-xl bg-black object-contain"
+                        >
+                          Seu navegador não conseguiu reproduzir este vídeo.
+                        </video>
+                      ) : (
+                        <img
+                          src={notificationMediaUrl}
+                          alt={selectedPortalNotification.mediaFileName || 'Imagem acessada pelo responsável'}
+                          className="mx-auto max-h-[58vh] w-full rounded-xl object-contain"
+                        />
+                      )
+                    )}
+                  </div>
+
+                  {selectedPortalNotification.playback && (
+                    <div className="grid gap-3 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded-xl bg-white p-3 shadow-sm">
+                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Tempo na tela do player</p>
+                        <p className="mt-1 text-lg font-black text-clinic-text">{formatAuditDuration(selectedPortalNotification.playback.viewDurationSeconds)}</p>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 shadow-sm">
+                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Tempo reproduzido</p>
+                        <p className="mt-1 text-lg font-black text-clinic-text">{formatAuditDuration(selectedPortalNotification.playback.totalPlayedSeconds)}</p>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 shadow-sm">
+                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Maior ponto alcançado</p>
+                        <p className="mt-1 text-lg font-black text-clinic-text">{formatAuditDuration(selectedPortalNotification.playback.maxPositionSeconds)}</p>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 shadow-sm">
+                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Resultado</p>
+                        <p className="mt-1 text-lg font-black text-clinic-text">
+                          {selectedPortalNotification.playback.completed
+                            ? 'Assistiu até o final'
+                            : `${Math.round(selectedPortalNotification.playback.percentWatched || 0)}% alcançado`}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {!selectedPortalNotification.playback && selectedPortalNotification.mediaType === 'video' && (
+                    <p className="px-4 py-3 text-xs text-clinic-text-muted">
+                      Esta notificação registra a abertura do vídeo. Ao fechar o player, o mesmo registro será atualizado com o tempo na tela, o tempo reproduzido e o percentual alcançado.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-5">
+                <h3 className="text-sm font-black text-clinic-text">{selectedPortalNotification.type === 'patient_profile_update' ? 'Comparação visual do que foi alterado' : 'Detalhes completos da ação'}</h3>
+                <div className="mt-3 space-y-3">
+                  {selectedPortalNotification.details.length === 0 && (
+                    <p className="rounded-2xl border border-clinic-border bg-clinic-bg p-4 text-sm text-clinic-text-muted">
+                      Esta é uma notificação antiga, criada antes da auditoria detalhada. Novas ações mostrarão todos os dados disponíveis.
+                    </p>
+                  )}
+                  {selectedPortalNotification.details.map((detail, index) => (
+                    <article key={`${detail.label}-${index}`} className="rounded-2xl border border-clinic-border bg-white p-4 shadow-sm">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{detail.label}</p>
+                      {(detail.previousValue !== undefined || detail.newValue !== undefined) ? (
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <div className="rounded-xl bg-status-red-bg/55 p-3">
+                            <p className="text-[10px] font-black uppercase tracking-wide text-status-red-text">Antes</p>
+                            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-clinic-text">{detail.previousValue || 'Não informado'}</p>
+                          </div>
+                          <div className="rounded-xl bg-status-green-bg p-3">
+                            <p className="text-[10px] font-black uppercase tracking-wide text-status-green-text">Depois</p>
+                            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-clinic-text">{detail.newValue || 'Não informado'}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-2 whitespace-pre-wrap break-words text-sm font-semibold text-clinic-text">{detail.value || 'Não informado'}</p>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </div>
+
+              {selectedPortalNotification.clientContext && (
+                <div className="mt-5 rounded-2xl border border-clinic-border bg-clinic-bg p-4">
+                  <div className="flex items-center gap-2 text-clinic-primary"><Monitor size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Dispositivo utilizado</span></div>
+                  <div className="mt-3 grid gap-2 text-xs text-clinic-text-muted sm:grid-cols-2">
+                    <p><strong className="text-clinic-text">Tipo:</strong> {selectedPortalNotification.clientContext.deviceType || 'Não informado'}</p>
+                    <p><strong className="text-clinic-text">Navegador:</strong> {selectedPortalNotification.clientContext.browser || 'Não informado'}</p>
+                    <p><strong className="text-clinic-text">Sistema:</strong> {selectedPortalNotification.clientContext.platform || 'Não informado'}</p>
+                    <p><strong className="text-clinic-text">Tela:</strong> {selectedPortalNotification.clientContext.viewport || 'Não informado'}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <footer className="flex flex-col-reverse gap-2 border-t border-clinic-border bg-clinic-bg px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+              {!selectedPortalNotification.read && (
+                <button type="button" onClick={() => void manageNotifications([selectedPortalNotification.id], 'mark_read')} className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-xs font-black uppercase text-clinic-primary">Marcar como lida</button>
+              )}
+              {selectedPortalNotification.pendingAction && !selectedPortalNotification.completed && (
+                <button type="button" onClick={() => void manageNotifications([selectedPortalNotification.id], 'complete')} className="rounded-xl bg-status-green-bg px-4 py-3 text-xs font-black uppercase text-status-green-text">Marcar como concluída</button>
+              )}
+              {(!selectedPortalNotification.pendingAction || selectedPortalNotification.completed) && !selectedPortalNotification.archived && (
+                <button type="button" onClick={() => void manageNotifications([selectedPortalNotification.id], 'archive')} className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-xs font-black uppercase text-clinic-text-muted">Arquivar</button>
+              )}
+              {(!selectedPortalNotification.pendingAction || selectedPortalNotification.completed) && !selectedPortalNotification.archived && (
+                <button type="button" onClick={() => void manageNotifications([selectedPortalNotification.id], 'ignore')} className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-xs font-black uppercase text-clinic-text-muted">Ignorar</button>
+              )}
+              {selectedPortalNotification.archived && !selectedPortalNotification.protectedFromDeletion && (
+                <button type="button" onClick={() => { if (window.confirm('Excluir definitivamente esta notificação?')) void manageNotifications([selectedPortalNotification.id], 'delete'); }} className="rounded-xl bg-status-red-bg px-4 py-3 text-xs font-black uppercase text-status-red-text">Excluir</button>
+              )}
+              <button
+                type="button"
+                onClick={() => setSelectedPortalNotification(null)}
+                className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-xs font-black uppercase text-clinic-text-muted"
+              >
+                Fechar
+              </button>
+              {selectedPortalNotification.patientId && selectedPortalNotification.navigationTarget !== 'none' && (
+                <button
+                  type="button"
+                  onClick={() => navigateFromPortalNotification(selectedPortalNotification)}
+                  className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-xs font-black uppercase text-white"
+                >
+                  <ExternalLink size={16} />
+                  {selectedPortalNotification.navigationTarget === 'patient_gallery'
+                    ? 'Abrir galeria do atendente'
+                    : selectedPortalNotification.navigationTarget === 'patient_documents'
+                      ? 'Abrir documentos do atendente'
+                      : 'Abrir cadastro do atendente'}
+                </button>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
+
       {/* Toast Notification Container placeholder */}
-      <div id="toast-container" className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+      <div id="toast-container" className="pointer-events-none fixed bottom-24 left-4 right-4 z-[100] flex flex-col items-end gap-2 sm:bottom-6 sm:left-auto sm:right-6" aria-label="Notificações do sistema"></div>
 
       <footer className="p-4 flex flex-col md:flex-row justify-between items-center border-t border-clinic-border shrink-0 text-[10px] text-clinic-text-faint bg-clinic-surface uppercase tracking-wider font-bold gap-4 mt-auto">
         {state.settings.customFooter ? (

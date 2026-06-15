@@ -1,6 +1,6 @@
 import { Session, SessionStatus } from '../types';
 
-type SequencedSession = Pick<Session, 'id' | 'patientId' | 'date' | 'time' | 'status' | 'isBlocked'>;
+type SequencedSession = Pick<Session, 'id' | 'patientId' | 'date' | 'time' | 'status' | 'isBlocked' | 'consumesPackage'>;
 
 const COUNTED_STATUSES = new Set<string>([
   SessionStatus.REALIZADA,
@@ -31,8 +31,9 @@ export function getSessionCycleNumberFromPosition(position: number) {
   return ((position - 1) % 10) + 1;
 }
 
-export function isCompletedClinicalSession(session: Pick<Session, 'status'>) {
-  return COUNTED_STATUSES.has(session.status);
+export function isCompletedClinicalSession(session: Pick<Session, 'status' | 'consumesPackage'>) {
+  return COUNTED_STATUSES.has(session.status)
+    || (session.status === SessionStatus.FALTA && session.consumesPackage === true);
 }
 
 export function getCompletedSessions(sessions: SequencedSession[], patientId: string) {
