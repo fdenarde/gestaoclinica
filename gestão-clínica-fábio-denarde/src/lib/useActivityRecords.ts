@@ -1,40 +1,60 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityRecord } from '../types/activityRecords';
 import { ACTIVITY_RECORDS_CHANGED_EVENT, listActivityRecords } from './activityRecordsApi';
 
-export function useActivityRecords(ownerUserId: string, patientId: string) {
+const ACTIVITY_RECORDS_VISIBILITY_REFRESH_INTERVAL_MS = 2 * 60_000;
+
+export function useActivityRecords(
+  ownerUserId: string,
+  patientId: string,
+  sessionId?: string | null,
+  enabled = true,
+) {
   const [records, setRecords] = useState<ActivityRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastLoadedAtRef = useRef(0);
+  const inFlightRef = useRef<Promise<void> | null>(null);
 
-  const loadRecords = useCallback(async (showLoading = true) => {
-    if (!ownerUserId || !patientId) {
+  const loadRecords = useCallback(async (showLoading = true, force = false) => {
+    if (!enabled || !ownerUserId || !patientId) {
       setRecords([]);
       setLoading(false);
       setError(null);
+      lastLoadedAtRef.current = 0;
       return;
     }
-    if (showLoading) setLoading(true);
-    try {
-      setRecords(await listActivityRecords(patientId));
-      setError(null);
-    } catch (err) {
-      console.error('Falha ao carregar registros de atividades:', err);
-      setError('Não foi possível carregar os registros de atividades.');
-    } finally {
-      setLoading(false);
-    }
-  }, [ownerUserId, patientId]);
+    if (inFlightRef.current) return inFlightRef.current;
+
+    const request = (async () => {
+      if (showLoading) setLoading(true);
+      try {
+        setRecords(await listActivityRecords(patientId, sessionId || undefined, { force }));
+        setError(null);
+        lastLoadedAtRef.current = Date.now();
+      } catch (err) {
+        console.error('Falha ao carregar registros de atividades:', err);
+        setError('Não foi possível carregar os registros de atividades.');
+      } finally {
+        setLoading(false);
+        inFlightRef.current = null;
+      }
+    })();
+
+    inFlightRef.current = request;
+    return request;
+  }, [enabled, ownerUserId, patientId, sessionId]);
 
   useEffect(() => {
-    void loadRecords();
+    if (enabled) void loadRecords();
 
     const handleChange = (event: Event) => {
       const changedPatientId = (event as CustomEvent<{ patientId?: string }>).detail?.patientId;
-      if (!changedPatientId || changedPatientId === patientId) void loadRecords(false);
+      if (enabled && (!changedPatientId || changedPatientId === patientId)) void loadRecords(false, true);
     };
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') void loadRecords(false);
+      const stale = Date.now() - lastLoadedAtRef.current >= ACTIVITY_RECORDS_VISIBILITY_REFRESH_INTERVAL_MS;
+      if (enabled && stale && document.visibilityState === 'visible') void loadRecords(false);
     };
 
     window.addEventListener(ACTIVITY_RECORDS_CHANGED_EVENT, handleChange);
@@ -43,7 +63,12 @@ export function useActivityRecords(ownerUserId: string, patientId: string) {
       window.removeEventListener(ACTIVITY_RECORDS_CHANGED_EVENT, handleChange);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [loadRecords, patientId]);
+  }, [enabled, loadRecords, patientId]);
 
-  return { records, loading, error, refresh: loadRecords };
+  return {
+    records,
+    loading,
+    error,
+    refresh: () => loadRecords(true, true),
+  };
 }

@@ -12,6 +12,7 @@ import type {
   ResponsiblePortalEventType,
   ResponsiblePortalPatient,
   ResponsiblePortalPatientUpdateInput,
+  PatientProfileChangeRequest,
   ProfessionalPortalNotification,
   ProfessionalNotificationAction,
   ProfessionalNotificationBulkScope,
@@ -76,9 +77,20 @@ interface ResponsiblePatientPhotoUrlResponse {
 }
 
 interface ResponsiblePatientUpdateResponse {
-  updated: boolean;
+  submitted: boolean;
+  existingPending: boolean;
   patient: ResponsiblePortalPatient;
   changedFields: string[];
+  request: PatientProfileChangeRequest | null;
+}
+
+interface PatientProfileChangeRequestsResponse {
+  requests: PatientProfileChangeRequest[];
+}
+
+interface PatientProfileChangeReviewResponse {
+  request: PatientProfileChangeRequest;
+  patient: ResponsiblePortalPatient | null;
 }
 
 interface ResponsibleDocumentPrepareResponse {
@@ -94,6 +106,24 @@ interface ResponsibleDocumentUrlResponse {
   url: string;
   expiresAt: number;
   fileName: string;
+}
+
+export interface AdminResponsiblePreviewOption {
+  uid: string;
+  displayName: string;
+  email: string;
+}
+
+export interface AdminResponsiblePreviewMeta {
+  readOnly: true;
+  patientId: string;
+  selectedResponsibleUid: string;
+  responsibleOptions: AdminResponsiblePreviewOption[];
+  hasLinkedResponsible: boolean;
+}
+
+export interface AdminResponsiblePortalData extends ResponsiblePortalData {
+  adminPreview: AdminResponsiblePreviewMeta;
 }
 
 
@@ -318,6 +348,19 @@ export async function getResponsiblePortalData(user?: User): Promise<Responsible
   return request<ResponsiblePortalData>('GET', undefined, user, `?${params.toString()}`);
 }
 
+export async function getAdminResponsiblePortalData(
+  patientId: string,
+  responsibleUid = '',
+  user?: User,
+): Promise<AdminResponsiblePortalData> {
+  const params = new URLSearchParams({
+    mode: 'adminResponsiblePreview',
+    patientId,
+  });
+  if (responsibleUid) params.set('responsibleUid', responsibleUid);
+  return request<AdminResponsiblePortalData>('GET', undefined, user, `?${params.toString()}`);
+}
+
 export async function recordResponsiblePortalAction(input: {
   eventType: ResponsiblePortalEventType;
   patientId: string;
@@ -353,24 +396,55 @@ function normalizeMediaUrl(url: string): string {
 }
 
 
-export async function getResponsiblePatientPhotoUrl(patientId: string): Promise<ResponsiblePatientPhotoUrlResponse> {
+export async function getResponsiblePatientPhotoUrl(
+  patientId: string,
+  options: { adminPreview?: boolean } = {},
+): Promise<ResponsiblePatientPhotoUrlResponse> {
   const result = await request<ResponsiblePatientPhotoUrlResponse>('POST', {
-    action: 'getResponsiblePatientPhotoUrl',
+    action: options.adminPreview
+      ? 'getAdminResponsiblePatientPhotoUrl'
+      : 'getResponsiblePatientPhotoUrl',
     patientId,
   });
   return { ...result, url: normalizeMediaUrl(result.url) };
 }
 
-export async function updateResponsiblePatient(
+export async function requestResponsiblePatientUpdate(
   patientId: string,
   values: ResponsiblePortalPatientUpdateInput,
+  declarationAccepted: boolean,
   clientContext?: ResponsiblePortalClientContext,
 ): Promise<ResponsiblePatientUpdateResponse> {
   return request<ResponsiblePatientUpdateResponse>('POST', {
-    action: 'updateResponsiblePatient',
+    action: 'requestResponsiblePatientUpdate',
     patientId,
     values,
+    declarationAccepted,
     clientContext,
+  });
+}
+
+export async function getProfessionalPatientProfileChangeRequests(
+  patientId: string,
+): Promise<PatientProfileChangeRequest[]> {
+  const params = new URLSearchParams({
+    action: 'listPatientProfileChangeRequests',
+    patientId,
+  });
+  const result = await request<PatientProfileChangeRequestsResponse>('GET', undefined, undefined, `?${params.toString()}`);
+  return result.requests;
+}
+
+export async function reviewPatientProfileChangeRequest(
+  requestId: string,
+  decision: 'approved' | 'rejected',
+  rejectionReason = '',
+): Promise<PatientProfileChangeReviewResponse> {
+  return request<PatientProfileChangeReviewResponse>('POST', {
+    action: 'reviewPatientProfileChangeRequest',
+    requestId,
+    decision,
+    rejectionReason,
   });
 }
 
@@ -420,9 +494,12 @@ export async function uploadResponsibleDocument(input: {
 export async function getResponsibleDocumentUrl(
   patientId: string,
   documentId: string,
+  options: { adminPreview?: boolean } = {},
 ): Promise<ResponsibleDocumentUrlResponse> {
   const result = await request<ResponsibleDocumentUrlResponse>('POST', {
-    action: 'getResponsibleDocumentUrl',
+    action: options.adminPreview
+      ? 'getProfessionalResponsibleDocumentUrl'
+      : 'getResponsibleDocumentUrl',
     patientId,
     documentId,
   });
@@ -444,6 +521,7 @@ export async function getProfessionalResponsibleDocumentUrl(
 export async function getResponsibleMediaUrl(
   patientId: string,
   recordId: string,
+  options: { adminPreview?: boolean } = {},
 ): Promise<ResponsibleMediaUrlResponse> {
   try {
     const response = await fetch(ACTIVITY_RECORDS_API_ENDPOINT, {
@@ -453,7 +531,9 @@ export async function getResponsibleMediaUrl(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        action: 'getResponsibleFileUrl',
+        action: options.adminPreview
+          ? 'getAdminResponsiblePreviewFileUrl'
+          : 'getResponsibleFileUrl',
         patientId,
         recordId,
       }),

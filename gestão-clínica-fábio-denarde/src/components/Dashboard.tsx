@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
-import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, MessageCircle } from 'lucide-react';
+import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, MessageCircle, Images, ArrowRight } from 'lucide-react';
 import { formatCurrency, getStatusColor, cn, calculateAge, getSessionsForDate, normalizeTime, ProcessedSession } from '../lib/utils';
 import { format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -17,9 +17,11 @@ interface DashboardProps {
   onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (patientId: string) => void;
   isPrimaryAdmin?: boolean;
+  activityUploadLateSessionCount?: number;
+  onNavigateToActivityGallery?: () => void;
 }
 
-export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrimaryAdmin = false }: DashboardProps) {
+export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrimaryAdmin = false, activityUploadLateSessionCount = 0, onNavigateToActivityGallery }: DashboardProps) {
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -447,6 +449,24 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
   return (
     <div className="flex flex-col gap-6 py-6">
       {isPrimaryAdmin && <AccessRequestsAdminCard patients={state.patients} />}
+
+      {activityUploadLateSessionCount > 0 && (
+        <button
+          type="button"
+          onClick={onNavigateToActivityGallery}
+          className="flex w-full flex-col gap-3 rounded-2xl border border-status-red-text/30 bg-status-red-bg p-4 text-left shadow-sm transition hover:brightness-95 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex items-start gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white text-status-red-text"><Images size={21} /></span>
+            <div>
+              <p className="text-xs font-black uppercase tracking-wide text-status-red-text">Galeria de atividades</p>
+              <p className="mt-1 text-sm font-bold text-clinic-text">{activityUploadLateSessionCount} {activityUploadLateSessionCount === 1 ? 'sessão está' : 'sessões estão'} com upload de mídia atrasado.</p>
+              <p className="mt-1 text-xs text-clinic-text-muted">Abra a galeria profissional para registrar as mídias ou justificar uma sessão sem registro visual.</p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-2 self-end rounded-xl bg-status-red-text px-4 py-2.5 text-xs font-black uppercase text-white sm:self-center">Abrir galeria <ArrowRight size={15} /></span>
+        </button>
+      )}
 
       {/* Birthdays Alert */}
       {birthdays.length > 0 && (

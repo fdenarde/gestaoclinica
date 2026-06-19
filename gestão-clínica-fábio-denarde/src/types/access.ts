@@ -1,10 +1,95 @@
-export type AccessRole = 'admin' | 'professional' | 'responsible';
+import type { PatientRegistrationData } from '../types';
 
-export type AccessRequestRole = Exclude<AccessRole, 'admin'>;
+export type AccessRole = 'admin' | 'professional' | 'responsible' | 'monitoring';
+
+export type AccessRequestRole = Exclude<AccessRole, 'admin' | 'monitoring'>;
 
 export type AccessStatus = 'pending' | 'approved' | 'rejected' | 'revoked' | 'disabled' | 'canceled';
 
 export type AccessRequestStatus = AccessStatus;
+
+export type AccessContext = AccessRole;
+
+export type AccessPermissionKey =
+  | 'access.users.view'
+  | 'access.users.manage'
+  | 'access.permissions.manage'
+  | 'access.view_as_user'
+  | 'dashboard.global.view'
+  | 'dashboard.own.view'
+  | 'patients.list'
+  | 'patients.create'
+  | 'patients.edit'
+  | 'patients.delete'
+  | 'patients.clinical_notes.view'
+  | 'patients.photo.view'
+  | 'patients.photo.upload'
+  | 'patients.photo.delete'
+  | 'agenda.own.view'
+  | 'agenda.general.view'
+  | 'agenda.other_patient_identity'
+  | 'agenda.edit'
+  | 'sessions.status.manage'
+  | 'sessions.history.view'
+  | 'sessions.remaining.view'
+  | 'activities.create'
+  | 'activities.edit'
+  | 'activities.delete'
+  | 'activities.history.view'
+  | 'media.gallery.view'
+  | 'media.image.upload'
+  | 'media.video.upload'
+  | 'media.image.download'
+  | 'media.video.download'
+  | 'media.delete'
+  | 'media.share.authorize'
+  | 'media.duplicate.override'
+  | 'media.video.play'
+  | 'documents.view'
+  | 'documents.upload'
+  | 'documents.download'
+  | 'finance.global.view'
+  | 'finance.patient.view'
+  | 'finance.manage'
+  | 'reports.view'
+  | 'reports.export'
+  | 'settings.clinic.manage'
+  | 'settings.firebase.manage'
+  | 'settings.whatsapp.manage'
+  | 'uploads.limits.manage'
+  | 'uploads.exception.request'
+  | 'uploads.exception.approve'
+  | 'consumption.view'
+  | 'consumption.manage'
+  | 'audit.view'
+  | 'audit.export'
+  | 'emergency.controls'
+  | 'responsible.portal.view'
+  | 'responsible.profile.edit'
+  | 'responsible.media.interact'
+  | 'responsible.notifications'
+  | 'monitoring.panel.view'
+  | 'monitoring.search.local'
+  | 'monitoring.media.download'
+  | 'monitoring.any_write'
+  | 'notifications.manage'
+  | 'session.devices.view'
+  | 'session.revoke_all';
+
+export type AccessPermissionOverrides = Partial<Record<AccessPermissionKey, boolean>>;
+export type AccessEffectivePermissions = Readonly<Record<AccessPermissionKey, boolean>>;
+
+export interface AccessSuspension {
+  active: boolean;
+  reason?: string;
+  startedAt?: string | null;
+  endsAt?: string | null;
+}
+
+export interface AccessTemporaryWindow {
+  startsAt?: string | null;
+  endsAt?: string | null;
+}
 
 export interface AccessProfile {
   uid: string;
@@ -22,6 +107,16 @@ export interface AccessProfile {
   linkedPatientIds: string[];
   provider: string;
   requestId: string | null;
+  schemaVersion?: number;
+  workspaceId?: string;
+  enabledContexts?: AccessContext[];
+  activeContext?: AccessContext;
+  linkedProfessionalIds?: string[];
+  permissionOverrides?: AccessPermissionOverrides;
+  effectivePermissions?: AccessEffectivePermissions;
+  suspension?: AccessSuspension | null;
+  temporaryAccess?: AccessTemporaryWindow | null;
+  configurationVersion?: number;
 }
 
 export interface AccessRequestInput {
@@ -63,35 +158,39 @@ export interface ResponsiblePortalSettings {
   visualTheme: 'current' | 'calm-tech' | 'health-balance' | 'soft-welcome';
 }
 
-export interface ResponsiblePortalPatient {
+export interface ResponsiblePortalPatient extends PatientRegistrationData {
   id: string;
-  name: string;
   firstName: string;
-  birthDate: string;
-  guardianName: string;
-  whatsapp: string;
-  school: string;
-  grade: string;
-  shift: string;
-  doctorName: string;
-  medication: string;
-  emergencyContact: string;
-  allergies: string;
   hasPhoto: boolean;
 }
 
-export interface ResponsiblePortalPatientUpdateInput {
-  name: string;
-  birthDate: string;
-  guardianName: string;
-  whatsapp: string;
-  school: string;
-  grade: string;
-  shift: string;
-  doctorName: string;
-  medication: string;
-  emergencyContact: string;
-  allergies: string;
+export interface ResponsiblePortalPatientUpdateInput extends PatientRegistrationData {}
+
+export type PatientProfileChangeRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface PatientProfileChangeRequestSummary {
+  id: string;
+  status: PatientProfileChangeRequestStatus;
+  createdAt: string | null;
+  reviewedAt: string | null;
+}
+
+export interface PatientProfileChangeRequest {
+  id: string;
+  patientId: string;
+  patientName: string;
+  responsibleUid: string;
+  responsibleName: string;
+  responsibleEmail: string;
+  status: PatientProfileChangeRequestStatus;
+  changedFields: string[];
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  createdAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  reviewedByEmail: string | null;
+  rejectionReason: string | null;
 }
 
 export interface ResponsiblePortalSession {
@@ -187,6 +286,7 @@ export interface ResponsiblePortalPatientData {
   packages: ResponsiblePortalPackage[];
   media: ResponsiblePortalMedia[];
   documents: ResponsiblePortalDocument[];
+  latestProfileChangeRequest: PatientProfileChangeRequestSummary | null;
 }
 
 export interface ResponsiblePortalData {

@@ -54,11 +54,25 @@ function normalizePhone(value: string): string {
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
 }
 
+function accessRoleLabel(role: AccessProfile['role']): string {
+  if (role === 'admin') return 'Administrador';
+  if (role === 'professional') return 'Profissional';
+  if (role === 'responsible') return 'Responsável';
+  return 'Monitoramento';
+}
+
 function statusCopy(profile: AccessProfile): { title: string; description: string; tone: string } {
   if (profile.status === 'approved' && profile.role === 'responsible') {
     return {
       title: 'Acesso aprovado',
       description: 'Seu acesso ao Portal do Responsável está autorizado.',
+      tone: 'text-status-blue-text bg-status-blue-bg',
+    };
+  }
+  if (profile.status === 'approved' && profile.role === 'monitoring') {
+    return {
+      title: 'Perfil de Monitoramento configurado',
+      description: 'O painel de Monitoramento permanece indisponível até a conclusão e validação da etapa de segurança.',
       tone: 'text-status-blue-text bg-status-blue-bg',
     };
   }
@@ -480,7 +494,7 @@ export default function AccessPortal({
           <p className="font-bold text-clinic-text">{profile.displayName || user?.displayName || 'Usuário'}</p>
           <p className="mt-1 text-clinic-text-muted">{profile.email}</p>
           <p className="mt-2 text-xs font-bold uppercase tracking-wider text-clinic-text-faint">
-            Perfil: {profile.role === 'professional' ? 'Profissional' : profile.role === 'responsible' ? 'Responsável' : 'Administrador'}
+            Perfil: {accessRoleLabel(profile.role)}
           </p>
         </div>
         {message && (

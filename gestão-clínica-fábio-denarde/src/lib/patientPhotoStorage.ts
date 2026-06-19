@@ -233,6 +233,11 @@ export function getPatientPhotoErrorMessage(error: unknown): string {
     'drive-api/invalid-auth-token': 'Sua sessão expirou. Entre novamente no sistema.',
     'drive-api/file-not-found': 'A foto não foi encontrada no Google Drive.',
     'drive-api/forbidden-file': 'Você não tem permissão para acessar esta foto.',
+    'activity-records/internal-approved-required': 'Seu perfil precisa estar aprovado para acessar as fotos dos atendentes.',
+    'access/role-denied': 'Seu perfil não está autorizado a usar o armazenamento de fotos.',
+    'access/permission-denied': 'Seu perfil não possui permissão para esta operação com fotos.',
+    'access/patient-access-denied': 'Você não possui vínculo com este atendente.',
+    'access/account-suspended': 'Sua conta está temporariamente suspensa.',
   };
 
   if (code && mappedMessages[code]) return mappedMessages[code];

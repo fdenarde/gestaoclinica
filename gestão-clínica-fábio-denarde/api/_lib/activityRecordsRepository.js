@@ -1,5 +1,7 @@
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAdminDb } from './firebaseAdmin.js';
+import { assertActivityPatientAccess } from './accessContext.js';
+import { applyActivityRecordGallerySummary } from './activityGalleryRepository.js';
 import {
   ACTIVITY_UPLOAD_LEASE_MS,
   activityError,
@@ -13,6 +15,7 @@ function createActivityUploadLease(now = Timestamp.now()) {
 }
 
 function patientRef(context, patientId) {
+  assertActivityPatientAccess(context, patientId);
   return getAdminDb().doc(`users/${context.ownerUserId}/patients/${patientId}`);
 }
 function sessionRef(context, sessionId) {
@@ -87,16 +90,35 @@ export async function requirePatient(context, patientId) {
   return snapshot.data();
 }
 
-export async function requirePatientAndSession(context, patientId, sessionId) {
-  const [patientSnap, sessionSnap] = await Promise.all([patientRef(context, patientId).get(), sessionRef(context, sessionId).get()]);
+export async function requirePatientAndSessions(context, patientId, sessionIds) {
+  const normalizedSessionIds = [...new Set((Array.isArray(sessionIds) ? sessionIds : [sessionIds])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))].slice(0, 8);
+  if (normalizedSessionIds.length === 0) {
+    throw activityError('activity-records/missing-session-id', 'Sessão não identificada.');
+  }
+
+  const patientReference = patientRef(context, patientId);
+  const [patientSnap, ...sessionSnapshots] = await Promise.all([
+    patientReference.get(),
+    ...normalizedSessionIds.map(sessionId => sessionRef(context, sessionId).get()),
+  ]);
   if (!patientSnap.exists) throw activityError('activity-records/patient-not-found', 'O cadastro da criança não foi encontrado.', 404);
-  if (!sessionSnap.exists) throw activityError('activity-records/session-not-found', 'A sessão selecionada não foi encontrada.', 404);
-  const patient = patientSnap.data();
-  const session = sessionSnap.data();
-  if (session.patientId !== patientId) throw activityError('activity-records/session-mismatch', 'A sessão selecionada não pertence a esta criança.', 409);
-  if (session.isBlocked) throw activityError('activity-records/blocked-session', 'Não é possível registrar atividade em um bloqueio pessoal.', 409);
-  if (['Falta', 'Falta.Prof', 'Cancelada'].includes(session.status)) throw activityError('activity-records/invalid-session-status', 'Esta sessão não permite registro de atividade.', 409);
-  return { patient, session };
+
+  const sessions = sessionSnapshots.map((snapshot, index) => {
+    if (!snapshot.exists) throw activityError('activity-records/session-not-found', 'Uma das sessões selecionadas não foi encontrada.', 404);
+    const session = snapshot.data();
+    if (session.patientId !== patientId) throw activityError('activity-records/session-mismatch', 'Uma das sessões selecionadas não pertence a esta criança.', 409);
+    if (session.isBlocked) throw activityError('activity-records/blocked-session', 'Não é possível registrar atividade em um bloqueio pessoal.', 409);
+    if (['Falta', 'Falta.Prof', 'Cancelada'].includes(session.status)) throw activityError('activity-records/invalid-session-status', 'Uma das sessões selecionadas não permite registro de atividade.', 409);
+    return { id: normalizedSessionIds[index], ...session };
+  });
+
+  return { patient: patientSnap.data(), sessions, session: sessions[0] };
+}
+
+export async function requirePatientAndSession(context, patientId, sessionId) {
+  return requirePatientAndSessions(context, patientId, [sessionId]);
 }
 
 export async function findActivityRecordsBySha256(
@@ -331,11 +353,33 @@ export async function reserveActivityRecord(context, patientId, recordId, data) 
   return { ref, existingRecord };
 }
 
-export async function finalizeActivityRecord(ref, values) {
+export async function ensureActivityRecordGallerySummary(context, ref) {
+  await getAdminDb().runTransaction(async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return;
+    const current = snapshot.data() || {};
+    if (current.status !== 'active') return;
+    applyActivityRecordGallerySummary(transaction, context, ref, { id: snapshot.id, ...current }, Timestamp.now());
+  });
+  const snapshot = await ref.get();
+  return snapshot.exists ? { id: snapshot.id, ...serializeRecord(snapshot.data()) } : null;
+}
+
+export async function finalizeActivityRecord(context, ref, values) {
   await getAdminDb().runTransaction(async transaction => {
     const snapshot = await transaction.get(ref);
     if (!snapshot.exists) throw activityError('activity-records/record-not-found', 'A reserva do registro não foi encontrada.', 409);
-    if (snapshot.data()?.status === 'cancelled') throw activityError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.', 409);
+    const current = snapshot.data() || {};
+    if (current.status === 'cancelled') throw activityError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.', 409);
+    const now = Timestamp.now();
+    const finalized = {
+      id: snapshot.id,
+      ...current,
+      ...values,
+      status: 'active',
+      uploadStatus: 'active',
+      updatedAt: now,
+    };
     setTransactionDocument(transaction, ref, {
       ...values,
       status: 'active',
@@ -343,8 +387,9 @@ export async function finalizeActivityRecord(ref, values) {
       driveUploadSession: FieldValue.delete(),
       uploadedBytes: FieldValue.delete(),
       uploadLeaseUntil: FieldValue.delete(),
-      updatedAt: Timestamp.now(),
+      updatedAt: now,
     }, { merge: true });
+    applyActivityRecordGallerySummary(transaction, context, ref, finalized, now);
   });
   const snapshot = await ref.get();
   return { id: snapshot.id, ...serializeRecord(snapshot.data()) };
@@ -443,11 +488,29 @@ export async function updateActivityMetadata(context, patientId, recordId, value
 }
 
 
-export async function listActivityRecords(context, patientId) {
+export async function listActivityRecords(context, patientId, sessionId = '') {
   const patient = await patientRef(context, patientId).get();
   if (!patient.exists) throw activityError('activity-records/patient-not-found', 'O cadastro da criança não foi encontrado.', 404);
-  const snapshot = await patient.ref.collection('activityRecords').limit(250).get();
-  return snapshot.docs
+  const recordsRef = patient.ref.collection('activityRecords');
+  const normalizedSessionId = String(sessionId || '').trim();
+  let documents;
+
+  if (normalizedSessionId) {
+    const [multiSessionSnapshot, legacySessionSnapshot] = await Promise.all([
+      recordsRef.where('sessionIds', 'array-contains', normalizedSessionId).limit(250).get(),
+      recordsRef.where('sessionId', '==', normalizedSessionId).limit(250).get(),
+    ]);
+    const uniqueDocuments = new Map();
+    for (const item of [...multiSessionSnapshot.docs, ...legacySessionSnapshot.docs]) {
+      uniqueDocuments.set(item.id, item);
+    }
+    documents = [...uniqueDocuments.values()];
+  } else {
+    const snapshot = await recordsRef.limit(250).get();
+    documents = snapshot.docs;
+  }
+
+  return documents
     .map(item => ({ id: item.id, ...serializeRecord(item.data()) }))
     .filter(record => record.status === 'active' || record.status === 'delete_failed')
     .sort((a, b) => String(b.activityAt || '').localeCompare(String(a.activityAt || '')));

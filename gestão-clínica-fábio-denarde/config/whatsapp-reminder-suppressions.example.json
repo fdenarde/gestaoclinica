@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "suppressions": [
+    {
+      "id": "patient-test-2026-06-12-manual-message",
+      "active": true,
+      "patientId": "patient-test-01",
+      "patientName": "Paciente Teste",
+      "runDate": "2026-06-11",
+      "scheduledTime": "09:00",
+      "reminderType": "AMANHA",
+      "sessionDate": "2026-06-12",
+      "sessionTime": "14:00",
+      "reason": "Mensagem fictícia registrada como enviada manualmente. Não reenviar.",
+      "recordedAt": "2026-06-11T09:00:00-03:00",
+      "recordedBy": "teste automatizado",
+      "source": "fixture pública sem dados reais"
+    }
+  ]
+}

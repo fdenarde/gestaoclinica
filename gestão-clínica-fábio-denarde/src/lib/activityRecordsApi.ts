@@ -1,6 +1,7 @@
 import { auth } from '../firebase';
 import type { Patient, Session } from '../types';
 import type { ActivityRecord, ActivityRecordCategory, ActivityRecordVisibility } from '../types/activityRecords';
+import type { ActivityGalleryAuditEntry, ActivityGalleryJustificationReason, ActivityGalleryStatusRecord, ProfessionalActivityGalleryFilters, ProfessionalActivityGalleryResponse } from '../types/activityGallery';
 import {
   ACTIVITY_DIRECT_UPLOAD_CHUNK_BYTES,
   ACTIVITY_PROXY_UPLOAD_CHUNK_BYTES,
@@ -17,11 +18,47 @@ const PROXY_UPLOAD_MAX_ATTEMPTS = 3;
 const PROXY_UPLOAD_REQUEST_TIMEOUT_MS = 3 * 60_000;
 const ACTIVE_UPLOADS = new Map<string, { abort: () => void; patientId: string }>();
 const SIGNED_URL_CACHE = new Map<string, { url: string; expiresAt: number }>();
+const ACTIVITY_RECORD_LIST_CACHE_TTL_MS = 60_000;
+const ACTIVITY_GALLERY_CACHE_TTL_MS = 30_000;
+const ACTIVITY_GALLERY_SUMMARY_CACHE_TTL_MS = 5 * 60_000;
+
+type TimedCacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const activityRecordListCache = new Map<string, TimedCacheEntry<ActivityRecord[]>>();
+const activityRecordListInFlight = new Map<string, Promise<ActivityRecord[]>>();
+const activityGalleryCache = new Map<string, TimedCacheEntry<ProfessionalActivityGalleryResponse>>();
+const activityGalleryInFlight = new Map<string, Promise<ProfessionalActivityGalleryResponse>>();
+let activityGallerySummaryCache: (TimedCacheEntry<ProfessionalActivityGalleryResponse> & { scope: string }) | null = null;
+let activityGallerySummaryInFlight: { scope: string; request: Promise<ProfessionalActivityGalleryResponse> } | null = null;
+
 export const ACTIVITY_RECORDS_CHANGED_EVENT = 'activity-records:changed';
+export const ACTIVITY_GALLERY_CHANGED_EVENT = 'activity-gallery:changed';
+
+function currentActivityUserScope(): string {
+  return auth.currentUser?.uid || 'anonymous';
+}
+
+function invalidateActivityCaches(patientId?: string): void {
+  if (patientId) {
+    const marker = `:${patientId}:`;
+    for (const key of activityRecordListCache.keys()) {
+      if (key.includes(marker)) activityRecordListCache.delete(key);
+    }
+  } else {
+    activityRecordListCache.clear();
+  }
+  activityGalleryCache.clear();
+  activityGallerySummaryCache = null;
+}
 
 function notifyActivityRecordsChanged(patientId: string): void {
+  invalidateActivityCaches(patientId);
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent(ACTIVITY_RECORDS_CHANGED_EVENT, { detail: { patientId } }));
+  window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, { detail: { patientId } }));
 }
 
 const API_ENDPOINT =
@@ -129,6 +166,7 @@ function fileToBase64(file: File): Promise<string> {
 export interface UploadActivityPhotoInput {
   patient: Patient;
   session: Session;
+  sessions?: Session[];
   file: File;
   width: number;
   height: number;
@@ -241,6 +279,7 @@ function serializeDirectUploadInput(input: UploadActivityPhotoInput): Record<str
     uploadAttemptId: input.uploadAttemptId || createUploadAttemptId(),
     patientId: input.patient.id,
     sessionId: input.session.id,
+    sessionIds: (input.sessions?.length ? input.sessions : [input.session]).map(session => session.id),
     fileName: input.file.name,
     mimeType: input.file.type,
     fileSize: input.file.size,
@@ -704,6 +743,7 @@ async function uploadActivityVideoInChunks(input: UploadActivityPhotoInput): Pro
       uploadAttemptId,
       patientId: input.patient.id,
       sessionId: input.session.id,
+      sessionIds: (input.sessions?.length ? input.sessions : [input.session]).map(session => session.id),
       fileName: input.file.name,
       mimeType: input.file.type,
       fileSize: input.file.size,
@@ -881,6 +921,7 @@ export async function uploadActivityPhoto(input: UploadActivityPhotoInput): Prom
       uploadAttemptId,
       patientId: input.patient.id,
       sessionId: input.session.id,
+      sessionIds: (input.sessions?.length ? input.sessions : [input.session]).map(session => session.id),
       fileName: input.file.name,
       mimeType: input.file.type,
       mediaType: input.mediaType || (input.file.type.startsWith('video/') ? 'video' : 'photo'),
@@ -966,9 +1007,33 @@ export async function getActivityPhotoUrl(recordId: string, patientId: string, f
   return normalizedUrl;
 }
 
-export async function listActivityRecords(patientId: string): Promise<ActivityRecord[]> {
-  const result = await post<{ records: ActivityRecord[] }>({ action: 'listRecords', patientId });
-  return Array.isArray(result.records) ? result.records : [];
+export async function listActivityRecords(
+  patientId: string,
+  sessionId?: string,
+  options: { force?: boolean } = {},
+): Promise<ActivityRecord[]> {
+  const cacheKey = `${currentActivityUserScope()}:${patientId}:${sessionId || '*'}`;
+  const cached = activityRecordListCache.get(cacheKey);
+  if (!options.force && cached && cached.expiresAt > Date.now()) return cached.value;
+  const inFlight = activityRecordListInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const request = (async () => {
+    const result = await post<{ records: ActivityRecord[] }>({ action: 'listRecords', patientId, sessionId });
+    const records = Array.isArray(result.records) ? result.records : [];
+    activityRecordListCache.set(cacheKey, {
+      value: records,
+      expiresAt: Date.now() + ACTIVITY_RECORD_LIST_CACHE_TTL_MS,
+    });
+    return records;
+  })();
+
+  activityRecordListInFlight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    activityRecordListInFlight.delete(cacheKey);
+  }
 }
 
 export async function updateActivityRecordMetadata(record: ActivityRecord, values: { category: ActivityRecordCategory; description: string; visibility: ActivityRecordVisibility }): Promise<void> {
@@ -976,10 +1041,111 @@ export async function updateActivityRecordMetadata(record: ActivityRecord, value
   notifyActivityRecordsChanged(record.patientId);
 }
 
-export async function deleteActivityRecord(record: ActivityRecord): Promise<void> {
-  await post({ action: 'deleteRecord', recordId: record.id, patientId: record.patientId });
+export async function deleteActivityRecord(record: ActivityRecord, reason: string): Promise<void> {
+  await post({ action: 'deleteRecord', recordId: record.id, patientId: record.patientId, reason });
   SIGNED_URL_CACHE.delete(record.id);
   notifyActivityRecordsChanged(record.patientId);
+}
+
+export async function getProfessionalActivityGallery(
+  filters: ProfessionalActivityGalleryFilters = {},
+  options: { force?: boolean } = {},
+): Promise<ProfessionalActivityGalleryResponse> {
+  const cacheKey = `${currentActivityUserScope()}:${JSON.stringify(filters)}`;
+  const cached = activityGalleryCache.get(cacheKey);
+  if (!options.force && cached && cached.expiresAt > Date.now()) return cached.value;
+  const inFlight = activityGalleryInFlight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const request = post<ProfessionalActivityGalleryResponse>({
+    action: 'listProfessionalGallery',
+    filters,
+  }).then(result => {
+    activityGalleryCache.set(cacheKey, {
+      value: result,
+      expiresAt: Date.now() + ACTIVITY_GALLERY_CACHE_TTL_MS,
+    });
+    return result;
+  });
+
+  activityGalleryInFlight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    activityGalleryInFlight.delete(cacheKey);
+  }
+}
+
+export async function getProfessionalActivityGallerySummary(
+  options: { force?: boolean } = {},
+): Promise<ProfessionalActivityGalleryResponse> {
+  const scope = currentActivityUserScope();
+  if (
+    !options.force
+    && activityGallerySummaryCache
+    && activityGallerySummaryCache.scope === scope
+    && activityGallerySummaryCache.expiresAt > Date.now()
+  ) {
+    return activityGallerySummaryCache.value;
+  }
+  if (activityGallerySummaryInFlight?.scope === scope) return activityGallerySummaryInFlight.request;
+
+  const request = post<ProfessionalActivityGalleryResponse>({
+    action: 'getProfessionalGallerySummary',
+  }).then(result => {
+    activityGallerySummaryCache = {
+      scope,
+      value: result,
+      expiresAt: Date.now() + ACTIVITY_GALLERY_SUMMARY_CACHE_TTL_MS,
+    };
+    return result;
+  });
+
+  activityGallerySummaryInFlight = { scope, request };
+  try {
+    return await request;
+  } finally {
+    if (activityGallerySummaryInFlight?.request === request) {
+      activityGallerySummaryInFlight = null;
+    }
+  }
+}
+
+export async function saveActivitySessionNoMediaJustification(input: {
+  patientId: string;
+  sessionId: string;
+  reason: ActivityGalleryJustificationReason;
+  note?: string;
+}): Promise<ActivityGalleryStatusRecord> {
+  const result = await post<{ status: ActivityGalleryStatusRecord }>({
+    action: 'saveSessionNoMediaJustification',
+    ...input,
+  });
+  notifyActivityRecordsChanged(input.patientId);
+  return result.status;
+}
+
+export async function removeActivitySessionNoMediaJustification(input: {
+  patientId: string;
+  sessionId: string;
+}): Promise<ActivityGalleryStatusRecord> {
+  const result = await post<{ status: ActivityGalleryStatusRecord }>({
+    action: 'removeSessionNoMediaJustification',
+    ...input,
+  });
+  notifyActivityRecordsChanged(input.patientId);
+  return result.status;
+}
+
+export async function listActivitySessionAudit(input: {
+  patientId: string;
+  sessionId: string;
+}): Promise<ActivityGalleryAuditEntry[]> {
+  const result = await post<{ entries: ActivityGalleryAuditEntry[] }>({
+    action: 'listSessionActivityAudit',
+    ...input,
+  });
+  return Array.isArray(result.entries) ? result.entries : [];
 }
 
 export async function hasPatientActivityRecords(patientId: string): Promise<boolean> {
@@ -1027,6 +1193,10 @@ export function getActivityRecordErrorMessage(error: unknown): string {
     'activity-records/session-mismatch': 'A sessão selecionada não pertence a esta criança.',
     'activity-records/patient-not-found': 'O cadastro da criança não foi encontrado.',
     'activity-records/session-not-found': 'A sessão selecionada não foi encontrada.',
+    'activity-records/patient-access-denied': 'Você não possui autorização para acessar este atendente.',
+    'activity-records/justification-note-required': 'Descreva a justificativa selecionada como Outro.',
+    'activity-records/justification-access-denied': 'Somente o autor ou o administrador pode alterar esta justificativa.',
+    'activity-records/deletion-reason-required': 'Informe o motivo da exclusão da mídia.',
     'activity-records/internal-error': 'Não foi possível registrar esta mídia. O arquivo permanece disponível para nova tentativa.',
     'activity-records/request-failed': 'Não foi possível registrar esta mídia. O arquivo permanece disponível para nova tentativa.',
   };

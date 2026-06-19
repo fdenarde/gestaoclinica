@@ -1049,7 +1049,7 @@ test('activity notifications use simple severity colors and remain readable', ()
   const modalSource = fs.readFileSync(new URL('../src/components/ActivityRecords/ActivityRecordModal.tsx', import.meta.url), 'utf8');
   const toastSource = fs.readFileSync(new URL('../src/components/Common/Toast.tsx', import.meta.url), 'utf8');
 
-  assert.match(modalSource, /Repetidas ignoradas/);
+  assert.match(modalSource, /Repetidas identificadas/);
   assert.match(modalSource, /border-amber-300 bg-amber-50/);
   assert.match(modalSource, /border-status-red-text\/35 bg-status-red-bg/);
   assert.match(modalSource, /aria-label="Resumo do envio"/);
@@ -1163,6 +1163,24 @@ test('dedupe key is deterministic and scoped by workspace, patient and session',
   assert.notEqual(buildActivityDedupeKey(base), buildActivityDedupeKey({ ...base, sessionId: 's2' }));
 });
 
+test('dedupe key supports multiple sessions without depending on their order', () => {
+  const base = {
+    workspaceId: 'w1',
+    patientId: 'p1',
+    sessionId: 's1',
+    sessionIds: ['s1', 's2'],
+    sha256: 'a'.repeat(64),
+  };
+  assert.equal(
+    buildActivityDedupeKey(base),
+    buildActivityDedupeKey({ ...base, sessionIds: ['s2', 's1', 's2'] }),
+  );
+  assert.notEqual(
+    buildActivityDedupeKey(base),
+    buildActivityDedupeKey({ ...base, sessionIds: ['s1'] }),
+  );
+});
+
 test('internal recording requires explicit authorization', () => {
   assert.equal(canRecordActivity({ activityMediaAuthorization: { internalRecordingStatus: 'authorized' } }), true);
   assert.equal(canRecordActivity({ activityMediaAuthorization: { internalRecordingStatus: 'pending' } }), false);
@@ -1189,6 +1207,26 @@ test('upload validation accepts expected photo metadata', () => {
   assert.equal(result.mediaType, 'photo');
   assert.equal(result.originalContentHash, undefined);
   assert.equal(result.preparedContentHash, 'b'.repeat(64));
+  assert.deepEqual(result.sessionIds, ['session-1']);
+});
+
+test('upload validation normalizes a remessa vinculada a duas sessões', () => {
+  const result = validateUploadInput({
+    patientId: 'patient-1',
+    sessionId: 'session-1',
+    sessionIds: ['session-2', 'session-1', 'session-2'],
+    uploadAttemptId: 'attempt-multi-session',
+    category: 'Memória',
+    visibility: 'internal_only',
+    sha256: '9'.repeat(64),
+    preparedContentHash: '9'.repeat(64),
+    width: 1280,
+    height: 720,
+    fileName: 'foto.jpg',
+    mimeType: 'image/jpeg',
+  });
+  assert.deepEqual(result.sessionIds, ['session-2', 'session-1']);
+  assert.equal(result.sessionId, 'session-1');
 });
 
 test('upload validation accepts expected video metadata', () => {
@@ -1227,6 +1265,23 @@ test('video duration accepts up to four minutes and rejects longer files', () =>
   };
   assert.equal(validateUploadInput({ ...base, durationSeconds: 240 }).durationSeconds, 240);
   assert.throws(() => validateUploadInput({ ...base, durationSeconds: 241 }), /no máximo 4 minutos/i);
+});
+
+test('backend accepts the new default and intervention categories', () => {
+  const base = {
+    patientId: 'p', sessionId: 's', uploadAttemptId: 'a', visibility: 'internal_only',
+    sha256: 'c'.repeat(64), width: 100, height: 100, fileName: 'atividade.jpg', mimeType: 'image/jpeg',
+  };
+  assert.equal(validateUploadInput({ ...base, category: 'Atividade Neuropsicopedagógica' }).category, 'Atividade Neuropsicopedagógica');
+  assert.equal(validateUploadInput({ ...base, category: 'Atividade de Intervenção' }).category, 'Atividade de Intervenção');
+});
+
+test('backend keeps accepting the legacy category for historical compatibility', () => {
+  const result = validateUploadInput({
+    patientId: 'p', sessionId: 's', uploadAttemptId: 'legacy', category: 'Atividade pedagógica', visibility: 'internal_only',
+    sha256: 'd'.repeat(64), width: 100, height: 100, fileName: 'atividade.jpg', mimeType: 'image/jpeg',
+  });
+  assert.equal(result.category, 'Atividade pedagógica');
 });
 
 test('invalid category is rejected', () => {
@@ -1393,6 +1448,30 @@ test('new record with SHA-256 is detected without scanning legacy files', async 
   });
   assert.equal(result.scope, 'same-session');
   assert.equal(candidateQueries, 0);
+});
+
+test('duplicate linked to several sessions is recognized as same-session for any linked session', async () => {
+  const result = await checkPatientActivityMediaDuplicate({
+    context: { ownerUserId: 'owner-1' },
+    patientId: 'patient-1',
+    sessionId: 'session-2',
+    sha256: 'b'.repeat(64),
+    fileSize: 100,
+    mediaType: 'photo',
+    mimeType: 'image/jpeg',
+    dependencies: createLegacyDuplicateDependencies({
+      findByHash: async () => [{
+        id: 'record-multi-session',
+        sessionId: 'session-1',
+        sessionIds: ['session-1', 'session-2'],
+        sessionDate: '2026-06-13',
+        sessionTime: '14:00',
+      }],
+      findCandidates: async () => [],
+    }).dependencies,
+  });
+  assert.equal(result.scope, 'same-session');
+  assert.equal(result.existing.recordId, 'record-multi-session');
 });
 
 test('legacy video metadata hash is not accepted as a verified content hash', () => {

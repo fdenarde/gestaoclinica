@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useRef, useCallback } from 
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment, ExternalRegistrationForm } from './types';
-import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList, X, ExternalLink, Monitor, MapPin, UserRound, Clock3, Check, CheckCheck, RefreshCw, Archive, Trash2, Mail, MailOpen } from 'lucide-react';
+import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList, Images, X, ExternalLink, Monitor, MapPin, UserRound, Clock3, Check, CheckCheck, RefreshCw, Archive, Trash2, Mail, MailOpen, Menu } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
@@ -30,7 +30,16 @@ import type {
   ProfessionalNotificationBulkScope,
   ProfessionalPortalNotification,
 } from './types/access';
-import { getActivityPhotoUrl } from './lib/activityRecordsApi';
+import { ACTIVITY_GALLERY_CHANGED_EVENT, getActivityPhotoUrl, getProfessionalActivityGallerySummary } from './lib/activityRecordsApi';
+import type { ProfessionalActivityGalleryMetrics } from './types/activityGallery';
+import SidebarNavigation, { type AppNavigationItem } from './components/Navigation/SidebarNavigation';
+import {
+  loadNavigationMode,
+  loadSidebarCollapsed,
+  storeNavigationMode,
+  storeSidebarCollapsed,
+  type NavigationMode,
+} from './lib/navigationPreferences';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -40,6 +49,7 @@ const Finance = lazy(() => import('./components/Finance'));
 const Reports = lazy(() => import('./components/Reports'));
 const Settings = lazy(() => import('./components/Settings'));
 const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
+const ProfessionalActivityGallery = lazy(() => import('./components/ActivityRecords/ProfessionalActivityGallery'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -64,6 +74,13 @@ const DEFAULT_STATE: AppState = {
 
 const APP_VERSION = `v${packageJson.version}`;
 const NOTIFICATION_MANUAL_MIN_INTERVAL_MS = 5 * 1000;
+const EMPTY_ACTIVITY_GALLERY_METRICS: ProfessionalActivityGalleryMetrics = {
+  latePatientCount: 0,
+  waitingSessionCount: 0,
+  regularizedTodayCount: 0,
+  lateSessionCount: 0,
+  nextTransitionAt: null,
+};
 
 type PortalNotification = ProfessionalPortalNotification;
 
@@ -114,6 +131,9 @@ export default function App() {
   const [dataLoading, setDataLoading] = useState(false);
   
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [navigationMode, setNavigationMode] = useState<NavigationMode>(() => loadNavigationMode());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadSidebarCollapsed());
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<PortalNotification[]>([]);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
@@ -126,6 +146,7 @@ export default function App() {
   const [notificationMediaReloadKey, setNotificationMediaReloadKey] = useState(0);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [selectedPatientSubTab, setSelectedPatientSubTab] = useState<string | null>(null);
+  const [activityGalleryMetrics, setActivityGalleryMetrics] = useState<ProfessionalActivityGalleryMetrics>(EMPTY_ACTIVITY_GALLERY_METRICS);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
   const notificationCursorRef = useRef<string | null>(null);
   const notificationOldestCursorRef = useRef<string | null>(null);
@@ -146,6 +167,25 @@ export default function App() {
 
   const navigateToPatientGallery = (id: string) => {
     navigateToPatient(id, 'atividades');
+  };
+
+  const changeNavigationMode = (mode: NavigationMode) => {
+    setNavigationMode(mode);
+    storeNavigationMode(mode);
+    setMobileSidebarOpen(false);
+  };
+
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed(current => {
+      const next = !current;
+      storeSidebarCollapsed(next);
+      return next;
+    });
+  };
+
+  const selectNavigationItem = (id: string) => {
+    setActiveTab(id);
+    setMobileSidebarOpen(false);
   };
 
   useEffect(() => {
@@ -285,6 +325,7 @@ export default function App() {
     const unsubscribers: (() => void)[] = [];
     
     const userDocRef = doc(db, 'users', user.uid);
+    let hasReceivedAuthoritativeSessionsSnapshot = false;
     const markCollectionLoaded = (collectionName: string) => {
       loadedCollectionsRef.current.add(collectionName);
     };
@@ -317,10 +358,21 @@ export default function App() {
     
     // sessions
     unsubscribers.push(
-      onSnapshot(collection(userDocRef, 'sessions'), (snapshot) => {
+      onSnapshot(collection(userDocRef, 'sessions'), { includeMetadataChanges: true }, (snapshot) => {
         const sessions = snapshot.docs.map(doc => doc.data() as Session);
         markCollectionLoaded('sessions');
         setState(prev => ({ ...prev, sessions }));
+
+        if (snapshot.metadata.fromCache) return;
+        if (!hasReceivedAuthoritativeSessionsSnapshot) {
+          hasReceivedAuthoritativeSessionsSnapshot = true;
+          return;
+        }
+        if (snapshot.docChanges().length > 0 && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {
+            detail: { reason: 'sessions-updated' },
+          }));
+        }
       }, (error) => handleFirestoreError(error, OperationType.GET, 'sessions'))
     );
     
@@ -412,6 +464,10 @@ export default function App() {
   const updateState = async (newState: Partial<AppState>) => {
     if (!user || !canAccessInternalSystem) return;
     const userDocRef = doc(db, 'users', user.uid);
+    const activityGalleryRelevantChange = Boolean(
+      newState.settings
+      && newState.settings.activityMediaMonitoringStart !== state.settings.activityMediaMonitoringStart
+    );
     
     try {
       let batch = writeBatch(db);
@@ -539,6 +595,12 @@ export default function App() {
       }
 
       await commitBatch();
+
+      if (activityGalleryRelevantChange && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {
+          detail: { reason: 'clinic-data-updated' },
+        }));
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'users/' + user.uid);
     }
@@ -607,6 +669,47 @@ export default function App() {
     selectedPortalNotification?.mediaType,
     notificationMediaReloadKey,
   ]);
+
+  useEffect(() => {
+    if (!user || !canAccessInternalSystem) {
+      setActivityGalleryMetrics(EMPTY_ACTIVITY_GALLERY_METRICS);
+      return;
+    }
+
+    let active = true;
+    let transitionTimer: number | null = null;
+    const scheduleTransitionRefresh = (nextTransitionAt: string | null) => {
+      if (transitionTimer) window.clearTimeout(transitionTimer);
+      if (!nextTransitionAt) return;
+      const transitionAt = new Date(nextTransitionAt).getTime();
+      if (!Number.isFinite(transitionAt)) return;
+      const delay = Math.max(1000, Math.min(transitionAt - Date.now() + 1500, 2_147_000_000));
+      transitionTimer = window.setTimeout(() => void refresh(true), delay);
+    };
+    const refresh = async (force = false) => {
+      try {
+        const result = await getProfessionalActivityGallerySummary({ force });
+        if (!active) return;
+        setActivityGalleryMetrics(result.metrics || EMPTY_ACTIVITY_GALLERY_METRICS);
+        scheduleTransitionRefresh(result.metrics?.nextTransitionAt || null);
+      } catch (error) {
+        console.error('Falha ao atualizar resumo da Galeria de atividades:', error);
+      }
+    };
+    const handleChanged = () => void refresh(true);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void refresh(false);
+    };
+    window.addEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, handleChanged);
+    document.addEventListener('visibilitychange', handleVisibility);
+    void refresh(false);
+    return () => {
+      active = false;
+      if (transitionTimer) window.clearTimeout(transitionTimer);
+      window.removeEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, handleChanged);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [canAccessInternalSystem, user?.uid]);
 
   if (authLoading) {
     return (
@@ -788,56 +891,106 @@ export default function App() {
     navigateToPatient(notification.patientId, 'dados');
   };
 
-  const tabs = [
+  const tabs: AppNavigationItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'agenda', label: 'Agenda', icon: Calendar },
     { id: 'agenda-pessoal', label: 'Agenda Pessoal', icon: BookOpen },
     { id: 'atendentes', label: 'Atendentes', icon: Users },
+    { id: 'galeria-atividades', label: 'Galeria de atividades', icon: Images, badge: activityGalleryMetrics.lateSessionCount, badgeTone: 'danger' },
     { id: 'pre-cadastros', label: 'Pré-cadastros', icon: ClipboardList, badge: pendingExternalForms },
     { id: 'pagamentos', label: 'Pagamentos', icon: DollarSign },
     { id: 'relatorios', label: 'Relatórios', icon: BarChart3 },
     { id: 'ajustes', label: 'Ajustes', icon: SettingsIcon },
   ];
 
+  const activeNavigationItem = tabs.find(tab => tab.id === activeTab) || tabs[0];
   const currentDateStr = format(new Date(), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
 
   return (
-    <div className="min-h-screen flex flex-col pb-10">
-      <header className="bg-clinic-header text-white px-4 sm:px-6 xl:px-8 2xl:px-10 py-1.5 md:py-2 lg:py-2 flex min-h-[56px] flex-col md:min-h-[64px] md:flex-row lg:min-h-[70px] xl:min-h-[74px] gap-2 md:gap-2.5 justify-between items-center shadow-lg shrink-0">
-        <div className="w-full min-w-0 md:hidden">
-          <BrandLogo
-            variant="compact"
-            theme={state.settings.visualTheme}
-            name={state.settings.name}
-            subtitle={state.settings.title}
-            className="w-full justify-center"
-          />
-        </div>
-        <div className="hidden min-w-0 flex-1 md:block">
-          <BrandLogo
-            theme={state.settings.visualTheme}
-            name={state.settings.name}
-            subtitle={state.settings.title}
-            className="max-w-full"
-          />
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-center gap-3 sm:gap-4 md:justify-end xl:gap-6">
+    <div className="min-h-screen bg-clinic-bg">
+      {navigationMode === 'sidebar' && (
+        <SidebarNavigation
+          items={tabs}
+          activeId={activeTab}
+          collapsed={sidebarCollapsed}
+          mobileOpen={mobileSidebarOpen}
+          clinicName={state.settings.name}
+          clinicSubtitle={state.settings.title}
+          theme={state.settings.visualTheme}
+          userName={user.displayName}
+          userEmail={user.email}
+          userPhotoUrl={user.photoURL}
+          onSelect={selectNavigationItem}
+          onToggleCollapsed={toggleSidebarCollapsed}
+          onCloseMobile={() => setMobileSidebarOpen(false)}
+          onLogout={logout}
+        />
+      )}
+      <div className={cn(
+        'min-h-screen flex flex-col pb-10 transition-[padding] duration-200',
+        navigationMode === 'sidebar' && (sidebarCollapsed ? 'lg:pl-[76px]' : 'lg:pl-[380px]'),
+      )}>
+      <header className={cn(
+        'sticky top-0 z-50 flex shrink-0 items-center justify-between bg-clinic-header px-3 py-2 text-white shadow-lg sm:px-5 lg:min-h-[66px] xl:px-7',
+        navigationMode === 'top'
+          ? 'min-h-[64px] flex-nowrap gap-2 sm:gap-3'
+          : 'min-h-[58px] gap-3',
+      )}>
+        {navigationMode === 'top' ? (
+          <>
+            <div className="min-w-0 flex-1 md:hidden">
+              <BrandLogo
+                variant="horizontal"
+                theme={state.settings.visualTheme}
+                name={state.settings.name}
+                subtitle={state.settings.title}
+                className="max-w-[calc(100vw-116px)] whitespace-nowrap sm:max-w-full"
+              />
+            </div>
+            <div className="hidden min-w-0 flex-1 md:block">
+              <BrandLogo
+                theme={state.settings.visualTheme}
+                name={state.settings.name}
+                subtitle={state.settings.title}
+                className="max-w-full"
+              />
+            </div>
+          </>
+        ) : (
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen(true)}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white lg:hidden"
+              aria-label="Abrir menu lateral"
+            >
+              <Menu size={21} />
+            </button>
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.18em] text-white/65">Gestão Clínica</p>
+              <h1 className="truncate text-base font-black sm:text-lg">{activeNavigationItem.label}</h1>
+            </div>
+          </div>
+        )}
+        <div className="flex shrink-0 items-center justify-end gap-2 sm:gap-4 xl:gap-6">
           <div className="text-right hidden md:block">
             <p className="text-[10px] opacity-70 uppercase font-bold tracking-wider">{currentDateStr}</p>
             <p className="text-xs font-medium">Vila Velha, ES</p>
           </div>
-          <div className="flex items-center gap-3">
-             <div className="flex flex-col text-right hidden sm:flex">
-               <span className="text-[10px] uppercase tracking-wider opacity-80 font-bold whitespace-nowrap overflow-hidden text-ellipsis max-w-[120px]">{user.displayName}</span>
-               <button onClick={logout} className="text-xs text-clinic-nav-bg hover:text-white font-bold transition-colors">Sair</button>
-             </div>
-             <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} alt="User" className="w-10 h-10 rounded-full border-2 border-white/20 shadow-md" />
-           </div>
+          {navigationMode === 'top' && (
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="hidden flex-col text-right sm:flex">
+                <span className="max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-bold uppercase tracking-wider opacity-80">{user.displayName}</span>
+                <button onClick={logout} className="text-xs font-bold text-clinic-nav-bg transition-colors hover:text-white">Sair</button>
+              </div>
+              <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} alt="User" className="h-9 w-9 rounded-full border-2 border-white/20 shadow-md sm:h-10 sm:w-10" />
+            </div>
+          )}
           <div className="relative">
             <button
               type="button"
               onClick={() => void togglePortalNotifications()}
-              className="relative rounded-full bg-clinic-primary p-2 shadow-md transition-all hover:bg-clinic-primary-hover active:scale-95"
+              className="relative flex h-9 w-9 items-center justify-center rounded-full bg-clinic-primary shadow-md transition-all hover:bg-clinic-primary-hover active:scale-95 sm:h-auto sm:w-auto sm:p-2"
               aria-label="Abrir notificações"
             >
               <Bell size={20} />
@@ -976,30 +1129,32 @@ export default function App() {
       )}
 
       {/* Navigation Menu */}
-      <nav className="bg-clinic-nav-bg border-b border-clinic-border-dark flex justify-center sticky top-0 z-40 shrink-0">
-        <div className="flex w-full max-w-[100rem] overflow-x-auto custom-scrollbar px-1 sm:px-2">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`
-                flex-1 min-w-[76px] sm:min-w-[132px] xl:min-w-[150px] flex flex-row items-center justify-center gap-2 xl:gap-3 px-2 sm:px-3 xl:px-4 py-3 xl:py-4 text-[10px] sm:text-xs xl:text-sm font-bold uppercase tracking-wider transition-all touch-manipulation
-                ${activeTab === tab.id 
-                  ? 'text-clinic-header border-b-4 border-clinic-primary bg-clinic-surface' 
-                  : 'text-clinic-text-muted hover:bg-clinic-bg/60 border-b-4 border-transparent'}
-              `}
-            >
-              <tab.icon size={16} className={cn("shrink-0", activeTab === tab.id ? 'text-clinic-primary' : '')} />
-              <span className="hidden sm:inline whitespace-nowrap leading-none">{tab.label}</span>
-              {'badge' in tab && !!tab.badge && (
-                <span className="ml-1 min-w-5 h-5 px-1 rounded-full bg-status-orange-text text-white text-[10px] font-black flex items-center justify-center">
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </nav>
+      {navigationMode === 'top' && (
+        <nav className="sticky top-[58px] z-40 shrink-0 border-b border-clinic-border-dark bg-clinic-nav-bg lg:top-[66px]">
+          <div className="grid w-full grid-cols-3 gap-px px-1 sm:grid-cols-5 xl:grid-cols-9">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => selectNavigationItem(tab.id)}
+                className={`
+                  flex min-w-0 items-center justify-center gap-1.5 border-b-4 px-1.5 py-2.5 text-[9px] font-bold uppercase tracking-wide transition-all touch-manipulation sm:px-2 sm:text-[10px] 2xl:text-xs
+                  ${activeTab === tab.id
+                    ? 'border-clinic-primary bg-clinic-surface text-clinic-header'
+                    : 'border-transparent text-clinic-text-muted hover:bg-clinic-bg/60'}
+                `}
+              >
+                <tab.icon size={15} className={cn('shrink-0', activeTab === tab.id ? 'text-clinic-primary' : '')} />
+                <span className="min-w-0 truncate leading-none">{tab.label}</span>
+                {!!tab.badge && (
+                  <span className={`flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[8px] font-black text-white ${tab.badgeTone === 'danger' ? 'bg-status-red-text' : 'bg-status-orange-text'}`}>
+                    {tab.badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
 
       {/* Main Content */}
       <main className="app-main flex-1 w-full mx-auto px-3 sm:px-4 lg:px-5 xl:px-6 2xl:px-8 overflow-x-hidden relative">
@@ -1030,15 +1185,18 @@ export default function App() {
                   onUpdate={updateState}
                   onNavigateToPatient={navigateToPatient}
                   isPrimaryAdmin={accessProfile?.role === 'admin' && accessProfile.email === 'fdenarde@gmail.com'}
+                  activityUploadLateSessionCount={activityGalleryMetrics.lateSessionCount}
+                  onNavigateToActivityGallery={() => setActiveTab('galeria-atividades')}
                 />
               )}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
+              {activeTab === 'galeria-atividades' && <ProfessionalActivityGallery patients={state.patients} sessions={state.sessions} currentUserId={user.uid} currentUserName={user.displayName || user.email || 'Usuário'} accessRole={accessProfile?.role || 'professional'} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
-              {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} onThemeChange={updateVisualTheme} />}
+              {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} onThemeChange={updateVisualTheme} canManageActivityMonitoring={accessProfile?.role === 'admin'} navigationMode={navigationMode} onNavigationModeChange={changeNavigationMode} />}
             </motion.div>
           </AnimatePresence>
         </Suspense>
@@ -1315,6 +1473,7 @@ export default function App() {
           </>
         )}
       </footer>
+      </div>
     </div>
   );
 }

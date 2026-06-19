@@ -6,6 +6,7 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 import { formatPhoneNumber, getWhatsappReminderPlan } from './src/lib/whatsappReminderPlan.js';
+import { loadWhatsappReminderSuppressions } from './src/lib/whatsappReminderSuppressionStore.js';
 import {
     buildAdminTestMessage,
     buildDetailedReportMessage,
@@ -19,6 +20,15 @@ import {
     registerSendFailure,
     registerSuccessfulSend
 } from './src/lib/whatsappAdminMonitor.js';
+
+let reminderSuppressions;
+try {
+    reminderSuppressions = loadWhatsappReminderSuppressions();
+} catch (error) {
+    console.error('[BLOQUEIO] Não foi possível carregar as supressões obrigatórias de WhatsApp:', error.message);
+    console.error('[BLOQUEIO] O robô será encerrado sem inicializar o WhatsApp.');
+    process.exit(1);
+}
 
 // 0. Capturar rejeições não tratadas de promessas (como erros do Puppeteer/Chromium)
 process.on('unhandledRejection', (reason) => {
@@ -190,7 +200,8 @@ async function buildReminderPlanContexts(tipo) {
             tipo,
             patients,
             sessions,
-            settings
+            settings,
+            suppressions: reminderSuppressions
         });
 
         contexts.push({ userId, settings, plan });

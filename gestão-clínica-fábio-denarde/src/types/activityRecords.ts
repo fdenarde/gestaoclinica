@@ -1,3 +1,8 @@
+import {
+  activityRecordCategoryMatches as matchesNormalizedActivityRecordCategory,
+  getActivityRecordCategoryLabel as normalizeActivityRecordCategoryLabel,
+} from '../../shared/activityRecordUi.js';
+
 export type ActivityAuthorizationStatus = 'authorized' | 'not_authorized' | 'pending';
 
 export interface ActivityMediaAuthorization {
@@ -10,6 +15,8 @@ export interface ActivityMediaAuthorization {
 }
 
 export type ActivityRecordCategory =
+  | 'Atividade Neuropsicopedagógica'
+  | 'Atividade de Intervenção'
   | 'Atividade pedagógica'
   | 'Atenção'
   | 'Memória'
@@ -29,11 +36,12 @@ export type ActivityRecordShareStatus = 'not_shared' | 'share_started' | 'shared
 
 export interface ActivityRecord {
   id: string;
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   workspaceId: string;
   ownerUserId: string;
   patientId: string;
   sessionId: string;
+  sessionIds?: string[];
   sessionDate: string;
   sessionTime: string;
   sessionNumber: number | null;
@@ -70,10 +78,19 @@ export interface ActivityRecord {
   sharedAt?: string;
   sharedByUserId?: string;
   authorizationSnapshot: ActivityMediaAuthorization;
+  gallerySummaryAppliedAt?: string;
+  deletedAt?: string;
+  deletedByUserId?: string;
+  deletedByName?: string;
+  deletionReason?: string;
 }
 
+export const DEFAULT_ACTIVITY_RECORD_CATEGORY: ActivityRecordCategory = 'Atividade Neuropsicopedagógica';
+export const LEGACY_ACTIVITY_RECORD_CATEGORY: ActivityRecordCategory = 'Atividade pedagógica';
+
 export const ACTIVITY_RECORD_CATEGORIES: ActivityRecordCategory[] = [
-  'Atividade pedagógica',
+  DEFAULT_ACTIVITY_RECORD_CATEGORY,
+  'Atividade de Intervenção',
   'Atenção',
   'Memória',
   'Linguagem',
@@ -86,6 +103,15 @@ export const ACTIVITY_RECORD_CATEGORIES: ActivityRecordCategory[] = [
   'Devolutiva',
   'Outro',
 ];
+
+
+export function getActivityRecordCategoryLabel(category: string): string {
+  return normalizeActivityRecordCategoryLabel(category);
+}
+
+export function activityRecordCategoryMatches(recordCategory: string, selectedCategory: string): boolean {
+  return matchesNormalizedActivityRecordCategory(recordCategory, selectedCategory);
+}
 
 export function getDefaultActivityAuthorization(): ActivityMediaAuthorization {
   return {

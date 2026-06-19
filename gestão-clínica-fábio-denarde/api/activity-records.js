@@ -22,12 +22,14 @@ import {
   cancelUploadAttempt,
   failActivityUpload,
   finalizeActivityRecord,
+  ensureActivityRecordGallerySummary,
   getActivityRecord,
   hasActivityRecords,
   listActivityRecords,
   markActivityFailure,
   requirePatient,
   requirePatientAndSession,
+  requirePatientAndSessions,
   reserveActivityRecord,
   setActivityRecordDocument,
   serializeRecord,
@@ -51,6 +53,14 @@ import {
   validateUploadInput,
 } from './_lib/activityRecordsValidation.js';
 import { checkPatientActivityMediaDuplicate } from './_lib/activityRecordsDuplicateService.js';
+import {
+  listProfessionalActivityGallery,
+  listActivitySessionAudit,
+  reconcileActivitySessionMediaStatus,
+  removeActivitySessionJustification,
+  saveActivitySessionJustification,
+  writeActivityAudit,
+} from './_lib/activityGalleryRepository.js';
 import {
   MAX_ACTIVITY_MEDIA_ITEMS,
   MAX_ACTIVITY_PHOTO_UPLOAD_BYTES,
@@ -183,11 +193,12 @@ function buildDirectUploadReservation({
   const activityDate = normalizeSessionDate(session);
   return {
     id: recordId,
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: context.workspaceId,
     ownerUserId: context.ownerUserId,
     patientId: input.patientId,
     sessionId: input.sessionId,
+    sessionIds: input.sessionIds,
     sessionDate: session.date,
     sessionTime: session.time,
     sessionNumber: Number.isFinite(Number(session.packageNumber)) ? Number(session.packageNumber) : null,
@@ -279,7 +290,7 @@ async function finalizeDirectActivityUpload({ context, patientId, recordId, uplo
   };
   await setActivityRecordDocument(ref, finalValues, { merge: true });
   try {
-    const record = await finalizeActivityRecord(ref, finalValues);
+    const record = await finalizeActivityRecord(context, ref, finalValues);
     return { completed: true, record };
   } catch (error) {
     if (['activity-records/upload-cancelled', 'activity-records/record-not-found'].includes(error?.code)) {
@@ -354,6 +365,7 @@ async function resolveResponsibleMediaContext(req, patientId) {
       ownerUserId,
       workspaceId: ownerUserId,
       role: 'responsible',
+      allowedPatientIds: [patientId],
     },
   };
 }
@@ -397,6 +409,86 @@ export default async function handler(req, res) {
 
     const body = parseBody(req);
 
+    if (body.action === 'getAdminResponsiblePreviewFileUrl') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      if (String(decodedToken?.email || '').trim().toLowerCase() !== PRIMARY_ADMIN_EMAIL) {
+        throw activityError(
+          'activity-records/admin-required',
+          'Esta visualização é exclusiva do administrador principal.',
+          403,
+        );
+      }
+
+      const patientId = sanitizeText(body.patientId, 128);
+      const recordId = sanitizeText(body.recordId, 128);
+      if (!patientId || !recordId) {
+        throw activityError('activity-records/invalid-media-request', 'Não foi possível identificar a mídia.');
+      }
+
+      let ownerUserId;
+      try {
+        ownerUserId = (await getAuth().getUserByEmail(PRIMARY_ADMIN_EMAIL)).uid;
+      } catch {
+        throw activityError(
+          'activity-records/owner-unavailable',
+          'O workspace principal da clínica não está disponível.',
+          503,
+        );
+      }
+
+      const db = getAdminDb();
+      const patientSnapshot = await db.doc(`users/${ownerUserId}/patients/${patientId}`).get();
+      if (!patientSnapshot.exists) {
+        throw activityError('activity-records/patient-not-found', 'O cadastro do atendente não foi encontrado.', 404);
+      }
+
+      const patient = patientSnapshot.data();
+      if (patient.activityMediaAuthorization?.guardianSharingStatus !== 'authorized') {
+        throw activityError(
+          'activity-records/sharing-not-authorized',
+          'O compartilhamento desta mídia não está autorizado para o responsável.',
+          403,
+        );
+      }
+
+      const context = {
+        userId: decodedToken.uid,
+        ownerUserId,
+        workspaceId: ownerUserId,
+        role: 'admin',
+        allowedPatientIds: [patientId],
+      };
+      const { data } = await getActivityRecord(context, patientId, recordId);
+      if (data.status !== 'active' && data.status !== 'delete_failed') {
+        throw activityError('activity-records/record-unavailable', 'A mídia não está disponível.', 409);
+      }
+      if (data.patientId !== patientId || !canShareActivityWithGuardian(patient, data)) {
+        throw activityError(
+          'activity-records/sharing-not-authorized',
+          'Esta mídia não foi liberada para o responsável.',
+          403,
+        );
+      }
+
+      const metadata = await getActivityDriveMetadata(data.driveFileId);
+      assertOwnedActivityFile(metadata, {
+        ownerUserId,
+        patientId,
+        recordId,
+      });
+
+      return res.status(200).json({
+        ...createSignedActivityUrl({
+          req,
+          fileId: data.driveFileId,
+          ownerUserId,
+          patientId,
+          recordId,
+        }),
+        fileName: sanitizeText(data.fileName, 180) || 'mídia',
+      });
+    }
+
     if (body.action === 'getResponsibleFileUrl') {
       const patientId = sanitizeText(body.patientId, 128);
       const recordId = sanitizeText(body.recordId, 128);
@@ -434,6 +526,32 @@ export default async function handler(req, res) {
     }
 
     const context = await resolveAccessContext(req);
+
+    if (body.action === 'getProfessionalGallerySummary') {
+      return res.status(200).json(await listProfessionalActivityGallery(context, {}, { summaryOnly: true }));
+    }
+
+    if (body.action === 'listProfessionalGallery') {
+      return res.status(200).json(await listProfessionalActivityGallery(context, body.filters || {}));
+    }
+
+    if (body.action === 'saveSessionNoMediaJustification') {
+      return res.status(200).json({
+        status: await saveActivitySessionJustification(context, body),
+      });
+    }
+
+    if (body.action === 'removeSessionNoMediaJustification') {
+      return res.status(200).json({
+        status: await removeActivitySessionJustification(context, body),
+      });
+    }
+
+    if (body.action === 'listSessionActivityAudit') {
+      return res.status(200).json({
+        entries: await listActivitySessionAudit(context, body),
+      });
+    }
 
     if (body.action === 'checkMediaDuplicate') {
       const patientId = sanitizeText(body.patientId, 128);
@@ -480,17 +598,18 @@ export default async function handler(req, res) {
         return { input, ...file };
       });
       const first = parsedItems[0].input;
+      const firstSessionScope = [...first.sessionIds].sort().join('|');
       if (parsedItems.some(item => (
         item.input.patientId !== first.patientId
-        || item.input.sessionId !== first.sessionId
+        || [...item.input.sessionIds].sort().join('|') !== firstSessionScope
       ))) {
         throw activityError(
           'activity-records/mixed-upload-batch',
-          'Todas as mídias da remessa devem pertencer à mesma criança e à mesma sessão.',
+          'Todas as mídias da remessa devem pertencer à mesma criança e às mesmas sessões.',
         );
       }
 
-      const { patient, session } = await requirePatientAndSession(context, first.patientId, first.sessionId);
+      const { patient, session } = await requirePatientAndSessions(context, first.patientId, first.sessionIds);
       if (!canRecordActivity(patient)) {
         throw activityError(
           'activity-records/authorization-required',
@@ -524,6 +643,7 @@ export default async function handler(req, res) {
             workspaceId: context.workspaceId,
             patientId: input.patientId,
             sessionId: input.sessionId,
+            sessionIds: input.sessionIds,
             sha256: input.sha256,
           });
           const recordId = dedupeKey;
@@ -545,11 +665,12 @@ export default async function handler(req, res) {
           );
 
           if (reservation.existingRecord?.status === 'active') {
+            const existingRecord = await ensureActivityRecordGallerySummary(context, ref) || reservation.existingRecord;
             return {
               uploadAttemptId: input.uploadAttemptId,
               recordId,
               completed: true,
-              record: reservation.existingRecord,
+              record: existingRecord,
               nextOffset: fileSize,
             };
           }
@@ -724,7 +845,7 @@ export default async function handler(req, res) {
       if (fileSize > MAX_ACTIVITY_VIDEO_BYTES) throw activityError('activity-records/file-too-large', 'O vídeo deve ter no máximo 600 MB.', 413);
       if (!Number.isFinite(lastModified) || lastModified <= 0) throw activityError('activity-records/invalid-file-date', 'A data do arquivo de vídeo é inválida.');
 
-      const { patient, session } = await requirePatientAndSession(context, input.patientId, input.sessionId);
+      const { patient, session } = await requirePatientAndSessions(context, input.patientId, input.sessionIds);
       if (!canRecordActivity(patient)) throw activityError('activity-records/authorization-required', 'O registro interno de mídias não está autorizado para esta criança.', 409);
       if (input.visibility === 'share_allowed' && patient.activityMediaAuthorization?.guardianSharingStatus !== 'authorized') {
         throw activityError('activity-records/sharing-not-authorized', 'O compartilhamento com o responsável não está autorizado para esta criança.', 409);
@@ -734,6 +855,7 @@ export default async function handler(req, res) {
         workspaceId: context.workspaceId,
         patientId: input.patientId,
         sessionId: input.sessionId,
+        sessionIds: input.sessionIds,
         sha256: input.sha256,
         fileName: input.fileName,
         fileSize,
@@ -748,11 +870,12 @@ export default async function handler(req, res) {
 
       const reservation = await reserveActivityRecord(context, input.patientId, recordId, {
         id: recordId,
-        schemaVersion: 1,
+        schemaVersion: 2,
         workspaceId: context.workspaceId,
         ownerUserId: context.ownerUserId,
         patientId: input.patientId,
         sessionId: input.sessionId,
+        sessionIds: input.sessionIds,
         sessionDate: session.date,
         sessionTime: session.time,
         sessionNumber: Number.isFinite(Number(session.packageNumber)) ? Number(session.packageNumber) : null,
@@ -916,7 +1039,7 @@ export default async function handler(req, res) {
       };
       await setActivityRecordDocument(ref, finalValues, { merge: true });
       try {
-        const record = await finalizeActivityRecord(ref, finalValues);
+        const record = await finalizeActivityRecord(context, ref, finalValues);
         return res.status(201).json({ completed: true, nextOffset: totalSize, record });
       } catch (error) {
         if (['activity-records/upload-cancelled', 'activity-records/record-not-found'].includes(error?.code)) {
@@ -968,7 +1091,7 @@ export default async function handler(req, res) {
     if (body.action === 'uploadPhoto') {
       const input = validateUploadInput(body);
       if (input.mediaType !== 'photo') throw activityError('activity-records/invalid-file-type', 'Vídeos devem usar o envio resumível em partes.');
-      const { patient, session } = await requirePatientAndSession(context, input.patientId, input.sessionId);
+      const { patient, session } = await requirePatientAndSessions(context, input.patientId, input.sessionIds);
       if (!canRecordActivity(patient)) throw activityError('activity-records/authorization-required', 'O registro interno de mídias não está autorizado para esta criança.', 409);
       if (input.visibility === 'share_allowed' && patient.activityMediaAuthorization?.guardianSharingStatus !== 'authorized') {
         throw activityError('activity-records/sharing-not-authorized', 'O compartilhamento com o responsável não está autorizado para esta criança.', 409);
@@ -978,7 +1101,7 @@ export default async function handler(req, res) {
       if (actualSha256 !== input.sha256) {
         // Diferença de hash do cliente tolerada; o servidor usa o hash oficial recalculado.
       }
-      const dedupeKey = buildActivityDedupeKey({ workspaceId: context.workspaceId, patientId: input.patientId, sessionId: input.sessionId, sha256: actualSha256 });
+      const dedupeKey = buildActivityDedupeKey({ workspaceId: context.workspaceId, patientId: input.patientId, sessionId: input.sessionId, sessionIds: input.sessionIds, sha256: actualSha256 });
 
       const recordId = dedupeKey;
       const ref = activityRecordRef(context, input.patientId, recordId);
@@ -986,11 +1109,12 @@ export default async function handler(req, res) {
       const authorizationSnapshot = patient.activityMediaAuthorization;
       const reservation = await reserveActivityRecord(context, input.patientId, recordId, {
         id: recordId,
-        schemaVersion: 1,
+        schemaVersion: 2,
         workspaceId: context.workspaceId,
         ownerUserId: context.ownerUserId,
         patientId: input.patientId,
         sessionId: input.sessionId,
+        sessionIds: input.sessionIds,
         sessionDate: session.date,
         sessionTime: session.time,
         sessionNumber: Number.isFinite(Number(session.packageNumber)) ? Number(session.packageNumber) : null,
@@ -1046,7 +1170,7 @@ export default async function handler(req, res) {
           await deleteActivityPhotoFromDrive(uploaded.id, { ownerUserId: context.ownerUserId, patientId: input.patientId, recordId });
           throw activityError('activity-records/upload-cancelled', 'O envio da mídia foi cancelado.', 409);
         }
-        const record = await finalizeActivityRecord(ref, {
+        const record = await finalizeActivityRecord(context, ref, {
           driveFileId: uploaded.id,
           driveFolderId: uploaded.folderId,
           fileName: uploaded.name,
@@ -1130,21 +1254,47 @@ export default async function handler(req, res) {
       const recordId = sanitizeText(body.recordId, 128);
       const category = sanitizeText(body.category, 80);
       const visibility = sanitizeText(body.visibility, 40);
+      const description = sanitizeText(body.description, 2000);
       if (!ACTIVITY_CATEGORIES.has(category)) throw activityError('activity-records/invalid-category', 'Selecione uma categoria válida.');
       if (!ACTIVITY_VISIBILITIES.has(visibility)) throw activityError('activity-records/invalid-visibility', 'Selecione uma visibilidade válida.');
       const patient = await requirePatient(context, patientId);
       if (visibility === 'share_allowed' && patient.activityMediaAuthorization?.guardianSharingStatus !== 'authorized') {
         throw activityError('activity-records/sharing-not-authorized', 'O compartilhamento com o responsável não está autorizado para esta criança.', 409);
       }
-      await updateActivityMetadata(context, patientId, recordId, { category, visibility, description: sanitizeText(body.description, 2000), updatedByUserId: context.userId });
+      const current = await getActivityRecord(context, patientId, recordId);
+      await updateActivityMetadata(context, patientId, recordId, { category, visibility, description, updatedByUserId: context.userId });
+      await writeActivityAudit(context, {
+        patientId,
+        sessionIds: Array.isArray(current.data.sessionIds) ? current.data.sessionIds : [current.data.sessionId],
+        recordId,
+        action: 'metadata_updated',
+        details: {
+          previousCategory: current.data.category || '',
+          category,
+          previousVisibility: current.data.visibility || '',
+          visibility,
+          descriptionChanged: String(current.data.description || '') !== description,
+        },
+      });
       return res.status(200).json({ updated: true });
     }
 
     if (body.action === 'deleteRecord') {
       const patientId = sanitizeText(body.patientId, 128);
       const recordId = sanitizeText(body.recordId, 128);
+      const reason = sanitizeText(body.reason, 500);
+      if (!reason) throw activityError('activity-records/delete-reason-required', 'Informe o motivo da exclusão.');
       const { ref, data } = await getActivityRecord(context, patientId, recordId);
-      await setActivityRecordDocument(ref, { status: 'deleting', uploadStatus: 'deleting' }, { merge: true });
+      const sessionIds = [...new Set((Array.isArray(data.sessionIds) ? data.sessionIds : [data.sessionId])
+        .map(value => sanitizeText(value, 128))
+        .filter(Boolean))];
+      await setActivityRecordDocument(ref, {
+        status: 'deleting',
+        uploadStatus: 'deleting',
+        deletionRequestedByUserId: context.userId,
+        deletionRequestedByName: context.actorName,
+        deletionReason: reason,
+      }, { merge: true });
       try {
         if (data.driveFileId) await deleteActivityPhotoFromDrive(data.driveFileId, { ownerUserId: context.ownerUserId, patientId, recordId });
         await ref.delete();
@@ -1152,13 +1302,30 @@ export default async function handler(req, res) {
         await setActivityRecordDocument(ref, { status: 'delete_failed', uploadStatus: 'delete_failed', deleteFailureMessage: String(error?.message || '').slice(0, 500) }, { merge: true });
         throw error;
       }
-      return res.status(200).json({ deleted: true });
+      let summaryReconciled = true;
+      try {
+        await reconcileActivitySessionMediaStatus(context, patientId, sessionIds, {
+          action: 'media_deleted',
+          details: {
+            recordId,
+            reason,
+            mediaType: data.mediaType || '',
+            fileName: data.fileName || '',
+            affectedSessionCount: sessionIds.length,
+          },
+        });
+      } catch (summaryError) {
+        summaryReconciled = false;
+        console.error('[ACTIVITY RECORDS API] Falha ao recalcular pendências após exclusão:', summaryError?.message || summaryError);
+      }
+      return res.status(200).json({ deleted: true, summaryReconciled });
     }
 
     if (body.action === 'listRecords') {
       const patientId = sanitizeText(body.patientId, 128);
+      const sessionId = sanitizeText(body.sessionId, 128);
       if (!patientId) throw activityError('activity-records/invalid-patient', 'Não foi possível identificar a criança.');
-      return res.status(200).json({ records: await listActivityRecords(context, patientId) });
+      return res.status(200).json({ records: await listActivityRecords(context, patientId, sessionId) });
     }
 
     if (body.action === 'hasRecords') {

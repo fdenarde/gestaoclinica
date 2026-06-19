@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import type { User } from 'firebase/auth';
 import {
+  ArrowLeft,
   BarChart3,
   CalendarDays,
   Check,
@@ -19,6 +20,7 @@ import {
   Clock3,
   Download,
   Expand,
+  Eye,
   FileText,
   Film,
   Filter,
@@ -39,14 +41,17 @@ import {
 } from 'lucide-react';
 import { logout } from '../../firebase';
 import {
-  updateResponsiblePatient,
+  requestResponsiblePatientUpdate,
   uploadResponsibleDocument,
   getResponsibleDocumentUrl,
   getResponsibleMediaUrl,
   getResponsiblePatientPhotoUrl,
   getResponsiblePortalData,
+  getAdminResponsiblePortalData,
   recordResponsiblePortalAction,
 } from '../../lib/accessApi';
+import type { AdminResponsiblePortalData } from '../../lib/accessApi';
+import { activityRecordCategoryMatches, getActivityRecordCategoryLabel } from '../../types/activityRecords';
 import { applyTheme } from '../../lib/theme';
 import type {
   ResponsiblePortalData,
@@ -59,9 +64,15 @@ import type {
   ResponsiblePortalSession,
 } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
+import PatientRegistrationFields, { PatientRegistrationSummary } from '../Common/PatientRegistrationFields';
 
 interface ResponsiblePortalProps {
   user: User;
+  adminPreview?: {
+    patientId: string;
+    patientName: string;
+    onBack: () => void;
+  };
 }
 
 type MediaFilter = 'all' | 'photo' | 'video';
@@ -216,7 +227,7 @@ function sessionGroupTitle(records: ResponsiblePortalMedia[]): string {
 function sessionGroupSubtitle(records: ResponsiblePortalMedia[]): string {
   const photos = records.filter(record => record.mediaType === 'photo').length;
   const videos = records.filter(record => record.mediaType === 'video').length;
-  const parts = [`Sessão ${records[0]?.sessionNumber || 'relacionada'}`];
+  const parts: string[] = [];
   if (photos > 0) parts.push(`${photos} ${photos === 1 ? 'foto' : 'fotos'}`);
   if (videos > 0) parts.push(`${videos} ${videos === 1 ? 'vídeo' : 'vídeos'}`);
   return parts.join(' • ');
@@ -370,6 +381,7 @@ interface MediaCardProps {
   likeLoading: boolean;
   selected: boolean;
   selectMode: boolean;
+  readOnly: boolean;
   viewMode: ViewMode;
   onEnsureUrl: () => void;
   onOpen: () => void;
@@ -387,6 +399,7 @@ function MediaCard({
   likeLoading,
   selected,
   selectMode,
+  readOnly,
   viewMode,
   onEnsureUrl,
   onOpen,
@@ -432,7 +445,7 @@ function MediaCard({
         {!showPlaceholder && record.mediaType === 'photo' && (
           <img
             src={url}
-            alt={record.description || record.category}
+            alt={record.description || getActivityRecordCategoryLabel(record.category)}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
             loading="lazy"
             onError={() => setPreviewFailed(true)}
@@ -467,7 +480,7 @@ function MediaCard({
           </span>
         )}
         <span className="absolute bottom-2 left-2 right-2">
-          <span className="line-clamp-1 text-xs font-black text-white">{record.category}</span>
+          <span className="line-clamp-1 text-xs font-black text-white">{getActivityRecordCategoryLabel(record.category)}</span>
           <span className="mt-0.5 block text-[10px] font-bold text-white/85">
             {formatDate(record.sessionDate, false)} às {record.sessionTime}
           </span>
@@ -478,7 +491,7 @@ function MediaCard({
         <div>
           <p className="line-clamp-2 min-h-8 text-xs text-clinic-text-muted">{record.description || 'Sem observação.'}</p>
           <div className="mt-2 space-y-0.5 text-[10px] font-bold text-clinic-text-faint">
-            <p>Sessão {record.sessionNumber || 'relacionada'} • {statusLabel(record.sessionStatus)}</p>
+            <p>{statusLabel(record.sessionStatus)}</p>
             <p>Profissional: {record.professionalName || 'Fábio Denarde'}</p>
             <p>Compartilhamento permitido</p>
           </div>
@@ -496,9 +509,10 @@ function MediaCard({
           <button
             type="button"
             onClick={event => { event.stopPropagation(); onLike(); }}
-            disabled={selectMode || likeLoading}
-            className={`flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-[10px] font-black ${record.likedByCurrentResponsible ? 'bg-red-50 text-red-600' : 'bg-clinic-bg text-clinic-text-muted'}`}
-            aria-label={record.likedByCurrentResponsible ? 'Remover curtida' : 'Curtir'}
+            disabled={selectMode || likeLoading || readOnly}
+            className={`flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-[10px] font-black disabled:cursor-not-allowed disabled:opacity-60 ${record.likedByCurrentResponsible ? 'bg-red-50 text-red-600' : 'bg-clinic-bg text-clinic-text-muted'}`}
+            aria-label={readOnly ? 'Curtidas desativadas na visualização administrativa' : record.likedByCurrentResponsible ? 'Remover curtida' : 'Curtir'}
+            title={readOnly ? 'Somente visualização: nenhuma curtida será registrada.' : undefined}
           >
             {likeLoading ? <Loader2 size={14} className="animate-spin" /> : <Heart size={14} fill={record.likedByCurrentResponsible ? 'currentColor' : 'none'} />}
             {record.likeCount}
@@ -518,8 +532,10 @@ function MediaCard({
   );
 }
 
-export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
-  const [data, setData] = useState<ResponsiblePortalData | null>(null);
+export default function ResponsiblePortal({ user, adminPreview }: ResponsiblePortalProps) {
+  const isAdminPreview = Boolean(adminPreview);
+  const [previewResponsibleUid, setPreviewResponsibleUid] = useState('');
+  const [data, setData] = useState<ResponsiblePortalData | AdminResponsiblePortalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionError, setActionError] = useState('');
@@ -550,6 +566,8 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
   const [profileEditOpen, setProfileEditOpen] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
+  const [profileDeclarationAccepted, setProfileDeclarationAccepted] = useState(false);
+  const [profileDeclarationError, setProfileDeclarationError] = useState('');
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentCategory, setDocumentCategory] = useState('Receita médica');
   const [documentNote, setDocumentNote] = useState('');
@@ -557,18 +575,41 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
   const [documentMessage, setDocumentMessage] = useState('');
   const [profileForm, setProfileForm] = useState<ResponsiblePortalPatientUpdateInput>({
     name: '',
+    fullName: '',
     birthDate: '',
+    sex: 'Não informado',
     guardianName: '',
     whatsapp: '',
+    motherName: '',
+    motherProfession: '',
+    motherPhone: '',
+    fatherName: '',
+    fatherProfession: '',
+    fatherPhone: '',
+    otherResponsibleName: '',
+    otherResponsibleKinship: '',
+    otherResponsiblePhone: '',
     school: '',
-    grade: '',
+    grade: 'Não informado',
+    educationDetail: '',
     shift: '',
+    familyStatus: undefined,
+    custodyStatus: undefined,
+    custodyResponsibleName: '',
+    custodyResponsibleKinship: '',
+    careProfessionals: [],
     doctorName: '',
     medication: '',
     emergencyContact: '',
     allergies: '',
+    financialResponsible: undefined,
+    financialResponsibleOtherName: '',
+    financialResponsibleOtherKinship: '',
+    financialResponsibleOtherPhone: '',
+    financialResponsibleOtherCpf: '',
   });
   const mediaElementRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
+  const previewResponsibleUidRef = useRef('');
   const mediaUrlCacheRef = useRef<Record<string, string>>({});
   const mediaViewSessionRef = useRef<MediaViewSession | null>(null);
 
@@ -576,11 +617,33 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     applyTheme('calm-tech');
   }, []);
 
-  const loadPortal = useCallback(async () => {
+  const loadPortal = useCallback(async (responsibleUidOverride?: string) => {
     setLoading(true);
     setError('');
     try {
-      const result = await getResponsiblePortalData(user);
+      let result: ResponsiblePortalData | AdminResponsiblePortalData;
+
+      if (adminPreview) {
+        const requestedResponsibleUid = responsibleUidOverride ?? previewResponsibleUidRef.current;
+        const adminResult = await getAdminResponsiblePortalData(
+          adminPreview.patientId,
+          requestedResponsibleUid,
+          user,
+        );
+
+        result = adminResult;
+
+        const selectedResponsibleUid = adminResult.adminPreview.selectedResponsibleUid;
+        previewResponsibleUidRef.current = selectedResponsibleUid;
+        setPreviewResponsibleUid(current => (
+          current === selectedResponsibleUid
+            ? current
+            : selectedResponsibleUid
+        ));
+      } else {
+        result = await getResponsiblePortalData(user);
+      }
+
       setData(result);
       applyTheme(result.settings.visualTheme);
       const initialPatient = result.patients[0];
@@ -594,7 +657,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [adminPreview, user]);
 
   useEffect(() => {
     void loadPortal();
@@ -603,6 +666,8 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
   const patientData = useMemo<ResponsiblePortalPatientData | null>(() => (
     data?.patients.find(item => item.patient.id === selectedPatientId) || data?.patients[0] || null
   ), [data?.patients, selectedPatientId]);
+
+  const adminPreviewMeta = data && 'adminPreview' in data ? data.adminPreview : null;
 
   useEffect(() => {
     if (!patientData) {
@@ -642,7 +707,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     patientData?.media.filter(record => record.packageNumber === selectedPackage?.number) || []
   ), [patientData?.media, selectedPackage?.number]);
 
-  const categories = useMemo(() => [...new Set(packageMedia.map(record => record.category))].sort(), [packageMedia]);
+  const categories = useMemo(() => [...new Set(packageMedia.map(record => getActivityRecordCategoryLabel(record.category)))].sort(), [packageMedia]);
   const professionals = useMemo(() => [...new Set(packageMedia.map(record => record.professionalName).filter(Boolean) as string[])].sort(), [packageMedia]);
   const sessionsForFilter = useMemo(() => {
     const seen = new Map<string, ResponsiblePortalMedia>();
@@ -657,7 +722,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     if (periodFilter === '90') threshold.setDate(today.getDate() - 90);
     return packageMedia.filter(record => {
       if (mediaFilter !== 'all' && record.mediaType !== mediaFilter) return false;
-      if (categoryFilter !== 'all' && record.category !== categoryFilter) return false;
+      if (categoryFilter !== 'all' && !activityRecordCategoryMatches(record.category, categoryFilter)) return false;
       if (sessionFilter !== 'all' && record.sessionId !== sessionFilter) return false;
       if (visibilityFilter !== 'all' && record.visibility !== visibilityFilter) return false;
       if (shareFilter !== 'all') {
@@ -706,7 +771,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
       return () => { active = false; };
     }
     setPatientPhotoLoading(true);
-    void getResponsiblePatientPhotoUrl(patientData.patient.id)
+    void getResponsiblePatientPhotoUrl(patientData.patient.id, { adminPreview: isAdminPreview })
       .then(result => {
         if (active) setPatientPhotoUrl(result.url || '');
       })
@@ -717,25 +782,49 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
         if (active) setPatientPhotoLoading(false);
       });
     return () => { active = false; };
-  }, [patientData?.patient.hasPhoto, patientData?.patient.id]);
+  }, [isAdminPreview, patientData?.patient.hasPhoto, patientData?.patient.id]);
 
   useEffect(() => {
     if (!patientData) return;
     const patient = patientData.patient;
     setProfileForm({
-      name: patient.name,
-      birthDate: patient.birthDate,
-      guardianName: patient.guardianName,
-      whatsapp: patient.whatsapp,
-      school: patient.school,
-      grade: patient.grade,
-      shift: patient.shift,
-      doctorName: patient.doctorName,
-      medication: patient.medication,
-      emergencyContact: patient.emergencyContact,
-      allergies: patient.allergies,
+      name: patient.name || '',
+      fullName: patient.fullName || patient.name || '',
+      birthDate: patient.birthDate || '',
+      sex: patient.sex || 'Não informado',
+      guardianName: patient.guardianName || '',
+      whatsapp: patient.whatsapp || '',
+      motherName: patient.motherName || '',
+      motherProfession: patient.motherProfession || '',
+      motherPhone: patient.motherPhone || '',
+      fatherName: patient.fatherName || '',
+      fatherProfession: patient.fatherProfession || '',
+      fatherPhone: patient.fatherPhone || '',
+      otherResponsibleName: patient.otherResponsibleName || '',
+      otherResponsibleKinship: patient.otherResponsibleKinship || '',
+      otherResponsiblePhone: patient.otherResponsiblePhone || '',
+      school: patient.school || '',
+      grade: patient.grade || 'Não informado',
+      educationDetail: patient.educationDetail || '',
+      shift: patient.shift || '',
+      familyStatus: patient.familyStatus,
+      custodyStatus: patient.custodyStatus,
+      custodyResponsibleName: patient.custodyResponsibleName || '',
+      custodyResponsibleKinship: patient.custodyResponsibleKinship || '',
+      careProfessionals: patient.careProfessionals || [],
+      doctorName: patient.doctorName || '',
+      medication: patient.medication || '',
+      emergencyContact: patient.emergencyContact || '',
+      allergies: patient.allergies || '',
+      financialResponsible: patient.financialResponsible,
+      financialResponsibleOtherName: patient.financialResponsibleOtherName || '',
+      financialResponsibleOtherKinship: patient.financialResponsibleOtherKinship || '',
+      financialResponsibleOtherPhone: patient.financialResponsibleOtherPhone || '',
+      financialResponsibleOtherCpf: patient.financialResponsibleOtherCpf || '',
     });
     setProfileMessage('');
+    setProfileDeclarationAccepted(false);
+    setProfileDeclarationError('');
     setProfileEditOpen(false);
     setDocumentFile(null);
     setDocumentNote('');
@@ -755,7 +844,11 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     let session = mediaViewSessionRef.current;
     if (!session && selectedMedia?.mediaType === 'video') {
       const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const interactionSessionId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${selectedMedia.id}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       session = {
+        interactionSessionId,
         recordId: selectedMedia.id,
         patientId: selectedMedia.patientId,
         mediaType: 'video',
@@ -844,7 +937,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
   }, [activePortalTab, groupedMedia]);
 
   useEffect(() => {
-    if (activePortalTab !== 'gallery' || !patientData || !selectedPackage) return;
+    if (isAdminPreview || activePortalTab !== 'gallery' || !patientData || !selectedPackage) return;
     const storageKey = `responsible-gallery-notified:${user.uid}:${patientData.patient.id}`;
     try {
       if (window.sessionStorage.getItem(storageKey) === '1') return;
@@ -868,7 +961,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     }).catch(error => {
       console.error('Falha ao registrar acesso à galeria:', error);
     });
-  }, [activePortalTab, patientData?.patient.id, patientData?.patient.name, selectedPackage?.number, user.uid]);
+  }, [activePortalTab, isAdminPreview, patientData?.patient.id, patientData?.patient.name, selectedPackage?.number, user.uid]);
 
 
   const ensureMediaUrl = useCallback(async (record: ResponsiblePortalMedia): Promise<string> => {
@@ -876,7 +969,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
     if (cached) return cached;
     setMediaUrlLoadingIds(current => new Set(current).add(record.id));
     try {
-      const result = await getResponsibleMediaUrl(record.patientId, record.id);
+      const result = await getResponsibleMediaUrl(record.patientId, record.id, { adminPreview: isAdminPreview });
       mediaUrlCacheRef.current[record.id] = result.url;
       setMediaUrls(current => ({ ...current, [record.id]: result.url }));
       return result.url;
@@ -887,7 +980,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
         return next;
       });
     }
-  }, []);
+  }, [isAdminPreview]);
 
   const openMedia = useCallback(async (record: ResponsiblePortalMedia) => {
     setBusyAction({ id: record.id, type: 'open' });
@@ -1037,6 +1130,7 @@ export default function ResponsiblePortal({ user }: ResponsiblePortalProps) {
   }, [fetchMediaFile, triggerDownload]);
 
   const shareMedia = useCallback(async (record: ResponsiblePortalMedia, target: 'instagram' | 'whatsapp') => {
+    if (isAdminPreview) return;
     setBusyAction({ id: record.id, type: 'share' });
     setActionError('');
     try {
@@ -1068,9 +1162,10 @@ Arquivo preparado para compartilhamento.`);
     } finally {
       setBusyAction(null);
     }
-  }, [fallbackBrowserDownload, fetchMediaFile, patientData?.patient.firstName]);
+  }, [fallbackBrowserDownload, fetchMediaFile, isAdminPreview, patientData?.patient.firstName]);
 
   const toggleLike = useCallback(async (record: ResponsiblePortalMedia) => {
+    if (isAdminPreview) return;
     setBusyAction({ id: record.id, type: 'like' });
     setActionError('');
     try {
@@ -1094,10 +1189,10 @@ Arquivo preparado para compartilhamento.`);
     } finally {
       setBusyAction(null);
     }
-  }, []);
+  }, [isAdminPreview]);
 
   const submitComment = useCallback(async () => {
-    if (!selectedMedia || !comment.trim()) return;
+    if (isAdminPreview || !selectedMedia || !comment.trim()) return;
     setBusyAction({ id: selectedMedia.id, type: 'comment' });
     setActionError('');
     try {
@@ -1123,7 +1218,7 @@ Arquivo preparado para compartilhamento.`);
     } finally {
       setBusyAction(null);
     }
-  }, [comment, selectedMedia]);
+  }, [comment, isAdminPreview, selectedMedia]);
 
   const navigateMedia = useCallback((direction: -1 | 1) => {
     if (!selectedMedia) return;
@@ -1152,41 +1247,72 @@ Arquivo preparado para compartilhamento.`);
   }, []);
 
   const saveResponsibleProfile = useCallback(async () => {
-    if (!patientData) return;
+    if (isAdminPreview || !patientData) return;
+    const missingRequiredField = !profileForm.name.trim()
+      || !String(profileForm.fullName || '').trim()
+      || !profileForm.birthDate
+      || !profileForm.guardianName.trim()
+      || !profileForm.whatsapp.trim();
+    if (missingRequiredField) {
+      setActionError('Preencha o 1º nome e o nome completo do Atendente, a data de nascimento, o 1º nome do Responsável e o WhatsApp do Responsável.');
+      return;
+    }
+    if (!profileDeclarationAccepted) {
+      setProfileDeclarationError('Marque a declaração de ciência antes de enviar para análise.');
+      return;
+    }
+    setProfileDeclarationError('');
     setProfileSaving(true);
     setActionError('');
     setProfileMessage('');
     try {
-      const result = await updateResponsiblePatient(
+      const result = await requestResponsiblePatientUpdate(
         patientData.patient.id,
         profileForm,
+        profileDeclarationAccepted,
         buildPortalClientContext(
           'profile',
-          'Portal do Responsável / Atualização cadastral / Botão Salvar atualização',
+          'Portal do Responsável / Solicitação de alteração cadastral / Botão Enviar para análise',
         ),
       );
-      setData(current => {
-        if (!current) return current;
-        return {
-          ...current,
-          patients: current.patients.map(item => (
-            item.patient.id === patientData.patient.id
-              ? { ...item, patient: result.patient }
-              : item
-          )),
-        };
-      });
-      setProfileMessage(result.updated ? 'Cadastro atualizado com sucesso. O profissional foi notificado.' : 'Nenhuma alteração foi necessária.');
-      if (result.updated) window.setTimeout(() => setProfileEditOpen(false), 900);
+      if (result.request) {
+        setData(current => {
+          if (!current) return current;
+          return {
+            ...current,
+            patients: current.patients.map(item => (
+              item.patient.id === patientData.patient.id
+                ? {
+                    ...item,
+                    latestProfileChangeRequest: {
+                      id: result.request!.id,
+                      status: result.request!.status,
+                      createdAt: result.request!.createdAt,
+                      reviewedAt: result.request!.reviewedAt,
+                    },
+                  }
+                : item
+            )),
+          };
+        });
+      }
+      if (result.existingPending) {
+        setProfileMessage('Já existe uma solicitação pendente para este cadastro. Aguarde a análise do profissional.');
+      } else if (result.submitted) {
+        setProfileMessage('Solicitação enviada para análise. Os dados oficiais só serão alterados após a aprovação do profissional.');
+        window.setTimeout(() => { setProfileDeclarationAccepted(false); setProfileDeclarationError(''); setProfileEditOpen(false); }, 1200);
+      } else {
+        setProfileMessage('Nenhuma alteração foi necessária.');
+      }
     } catch (caughtError) {
       setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível atualizar o cadastro.');
     } finally {
       setProfileSaving(false);
     }
-  }, [patientData, profileForm]);
+  }, [isAdminPreview, patientData, profileDeclarationAccepted, profileForm]);
 
   const submitResponsibleDocument = useCallback(async () => {
-    if (!patientData || !documentFile) return;
+    if (isAdminPreview || !patientData || !documentFile) return;
     setDocumentUploading(true);
     setDocumentMessage('');
     setActionError('');
@@ -1220,14 +1346,14 @@ Arquivo preparado para compartilhamento.`);
     } finally {
       setDocumentUploading(false);
     }
-  }, [documentCategory, documentFile, documentNote, patientData]);
+  }, [documentCategory, documentFile, documentNote, isAdminPreview, patientData]);
 
   const downloadResponsibleDocument = useCallback(async (document: { id: string; fileName: string }) => {
     if (!patientData) return;
     setActionError('');
     try {
       const saveHandle = await requestDesktopSaveHandle(document.fileName);
-      const result = await getResponsibleDocumentUrl(patientData.patient.id, document.id);
+      const result = await getResponsibleDocumentUrl(patientData.patient.id, document.id, { adminPreview: isAdminPreview });
       const response = await fetch(result.url);
       if (!response.ok) throw new Error('Não foi possível carregar o documento.');
       const blob = await response.blob();
@@ -1238,7 +1364,7 @@ Arquivo preparado para compartilhamento.`);
         setActionError(caughtError instanceof Error ? caughtError.message : 'Não foi possível baixar o documento.');
       }
     }
-  }, [fallbackBrowserDownload, patientData, requestDesktopSaveHandle, writeBlobToSaveHandle]);
+  }, [fallbackBrowserDownload, isAdminPreview, patientData, requestDesktopSaveHandle, writeBlobToSaveHandle]);
 
   const resetFilters = () => {
     setPeriodFilter('all');
@@ -1277,6 +1403,66 @@ Arquivo preparado para compartilhamento.`);
 
   return (
     <div className="min-h-screen bg-clinic-bg">
+      {isAdminPreview && adminPreview && (
+        <div className="sticky top-0 z-[160] border-b border-indigo-200 bg-indigo-950 text-white shadow-lg">
+          <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/10 text-indigo-100">
+                <Eye size={20} />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-200">Visualização administrativa</p>
+                <p className="truncate text-sm font-black">
+                  Portal do Responsável — {adminPreview.patientName}
+                </p>
+                <p className="mt-0.5 text-xs text-indigo-100/85">
+                  Somente leitura. Nenhuma solicitação, curtida, comentário, documento ou notificação será criada em nome da família.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {adminPreviewMeta && adminPreviewMeta.responsibleOptions.length > 1 && (
+                <label className="min-w-0 sm:min-w-64">
+                  <span className="sr-only">Responsável visualizado</span>
+                  <select
+                    value={adminPreviewMeta.selectedResponsibleUid}
+                    onChange={event => {
+                      const nextResponsibleUid = event.target.value;
+                      previewResponsibleUidRef.current = nextResponsibleUid;
+                      setPreviewResponsibleUid(nextResponsibleUid);
+                      void loadPortal(nextResponsibleUid);
+                    }}
+                    className="w-full rounded-xl border border-white/20 bg-white/10 px-3 py-2.5 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-white/40"
+                  >
+                    {adminPreviewMeta.responsibleOptions.map(option => (
+                      <option key={option.uid} value={option.uid} className="text-slate-900">
+                        {option.displayName}{option.email ? ` — ${option.email}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {adminPreviewMeta && !adminPreviewMeta.hasLinkedResponsible && (
+                <span className="rounded-xl border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs font-bold text-amber-100">
+                  Sem conta de responsável vinculada; exibindo a visão padrão do atendente.
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={adminPreview.onBack}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-black text-indigo-950 transition hover:bg-indigo-50"
+              >
+                <ArrowLeft size={17} />
+                Voltar para Administração
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="bg-clinic-header text-white shadow-lg">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-2 sm:px-6 md:flex-row md:items-center md:justify-between">
           <div className="w-full min-w-0 md:hidden">
@@ -1296,27 +1482,31 @@ Arquivo preparado para compartilhamento.`);
               className="max-w-full"
             />
           </div>
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="flex items-center justify-center gap-2 rounded-xl border border-white/25 px-4 py-2 text-sm font-bold transition hover:bg-white/10"
-          >
-            <LogOut size={17} />
-            Sair
-          </button>
+          {!isAdminPreview && (
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className="flex items-center justify-center gap-2 rounded-xl border border-white/25 px-4 py-2 text-sm font-bold transition hover:bg-white/10"
+            >
+              <LogOut size={17} />
+              Sair
+            </button>
+          )}
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:py-8">
         <section className="rounded-2xl bg-gradient-to-br from-clinic-header to-clinic-primary p-6 text-white shadow-xl">
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/70">Acesso individual e protegido</p>
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/70">{isAdminPreview ? 'Prévia segura do acesso familiar' : 'Acesso individual e protegido'}</p>
           <h1 className="mt-2 text-3xl font-bold">Portal do Responsável</h1>
           <div className="mt-5 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:gap-8">
             <span className="flex items-center gap-2">
               <UserRound size={18} />
               {data?.responsible.displayName || user.displayName || 'Responsável'}
             </span>
-            <span className="break-all text-white/80">{data?.responsible.email || user.email}</span>
+            <span className="break-all text-white/80">
+              {data?.responsible.email || (isAdminPreview ? 'Responsável sem e-mail vinculado' : user.email)}
+            </span>
           </div>
         </section>
 
@@ -1669,6 +1859,7 @@ Arquivo preparado para compartilhamento.`);
                                   likeLoading={busyAction?.id === record.id && busyAction.type === 'like'}
                                   selected={selectedIds.has(record.id)}
                                   selectMode={selectMode}
+                                  readOnly={isAdminPreview}
                                   viewMode={viewMode}
                                   onEnsureUrl={() => { void ensureMediaUrl(record).catch(() => undefined); }}
                                   onOpen={() => void openMedia(record)}
@@ -1708,47 +1899,44 @@ Arquivo preparado para compartilhamento.`);
                   <div>
                     <p className="text-xs font-black uppercase tracking-wide text-clinic-primary">Atualização cadastral</p>
                     <h2 className="mt-1 text-xl font-black text-clinic-text">Dados detalhados de {patientData.patient.firstName}</h2>
-                    <p className="mt-1 text-xs text-clinic-text-muted">As alterações ficam registradas no histórico e geram notificação no sino da área profissional.</p>
+                    <p className="mt-1 text-xs text-clinic-text-muted">
+                      {isAdminPreview
+                        ? 'Visualização administrativa dos mesmos dados apresentados à família.'
+                        : 'As alterações ficam registradas no histórico e geram notificação no sino da área profissional.'}
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => { setProfileMessage(''); setProfileEditOpen(true); }}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase tracking-wide text-white"
-                  >
-                    <RefreshCw size={16} />
-                    Editar cadastro
-                  </button>
+                  {isAdminPreview ? (
+                    <span className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs font-black uppercase tracking-wide text-indigo-700">
+                      <Eye size={16} />
+                      Somente leitura
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { setProfileMessage(''); setProfileDeclarationAccepted(false); setProfileDeclarationError(''); setProfileEditOpen(true); }}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase tracking-wide text-white"
+                    >
+                      <RefreshCw size={16} />
+                      Editar cadastro
+                    </button>
+                  )}
                 </header>
 
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {[
-                    ['Nome completo', patientData.patient.name],
-                    ['Data de nascimento', patientData.patient.birthDate ? formatDate(patientData.patient.birthDate, false) : 'Não informado'],
-                    ['Responsável principal', patientData.patient.guardianName || 'Não informado'],
-                    ['WhatsApp', patientData.patient.whatsapp || 'Não informado'],
-                    ['Escola', patientData.patient.school || 'Não informado'],
-                    ['Ano/Série', patientData.patient.grade || 'Não informado'],
-                    ['Turno', patientData.patient.shift || 'Não informado'],
-                    ['Médico responsável', patientData.patient.doctorName || 'Não informado'],
-                    ['Contato de emergência', patientData.patient.emergencyContact || 'Não informado'],
-                  ].map(([label, value]) => (
-                    <article key={label} className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
-                      <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{label}</p>
-                      <p className="mt-2 break-words text-sm font-bold text-clinic-text">{value}</p>
-                    </article>
-                  ))}
-                </div>
+                {patientData.latestProfileChangeRequest && (
+                  <div className={`rounded-xl border p-4 text-sm font-bold ${
+                    patientData.latestProfileChangeRequest.status === 'pending'
+                      ? 'border-status-orange-text/25 bg-status-orange-bg text-status-orange-text'
+                      : patientData.latestProfileChangeRequest.status === 'approved'
+                        ? 'border-status-green-text/25 bg-status-green-bg text-status-green-text'
+                        : 'border-status-red-text/25 bg-status-red-bg text-status-red-text'
+                  }`}>
+                    {patientData.latestProfileChangeRequest.status === 'pending' && 'Sua última solicitação está pendente de análise pelo profissional.'}
+                    {patientData.latestProfileChangeRequest.status === 'approved' && 'Sua última solicitação foi aprovada e os dados oficiais foram atualizados.'}
+                    {patientData.latestProfileChangeRequest.status === 'rejected' && 'Sua última solicitação foi recusada. Confira os dados atuais antes de enviar uma nova solicitação.'}
+                  </div>
+                )}
 
-                <div className="grid gap-4 lg:grid-cols-3">
-                  <article className="rounded-xl border border-clinic-border bg-white p-4">
-                    <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Medicações em uso</p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm text-clinic-text-muted">{patientData.patient.medication || 'Nenhuma informação registrada.'}</p>
-                  </article>
-                  <article className="rounded-xl border border-clinic-border bg-white p-4">
-                    <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Alergias e restrições</p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm text-clinic-text-muted">{patientData.patient.allergies || 'Nenhuma informação registrada.'}</p>
-                  </article>
-                </div>
+                <PatientRegistrationSummary value={patientData.patient} />
 
                 <section className="rounded-2xl border border-clinic-border bg-clinic-bg/50 p-4 sm:p-5">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1762,6 +1950,14 @@ Arquivo preparado para compartilhamento.`);
                     <span className="rounded-full bg-white px-3 py-1 text-[10px] font-black uppercase text-clinic-primary shadow-sm">Máximo de 20 MB</span>
                   </div>
 
+                  {isAdminPreview && (
+                    <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm font-bold text-indigo-800">
+                      O envio de documentos está desativado nesta visualização. Os documentos já liberados continuam disponíveis para conferência.
+                    </div>
+                  )}
+
+                  {!isAdminPreview && (
+                    <>
                   <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)_auto]">
                     <label>
                       <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo de documento</span>
@@ -1825,6 +2021,8 @@ Arquivo preparado para compartilhamento.`);
                     </p>
                   )}
                   {documentMessage && <p className="mt-3 rounded-xl bg-status-green-bg p-3 text-sm font-bold text-status-green-text">{documentMessage}</p>}
+                    </>
+                  )}
 
                   <div className="mt-5 space-y-2">
                     <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Documentos já enviados</p>
@@ -1862,85 +2060,49 @@ Arquivo preparado para compartilhamento.`);
         )}
       </main>
 
-      {profileEditOpen && patientData && (
+      {!isAdminPreview && profileEditOpen && patientData && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-2 sm:p-4" role="dialog" aria-modal="true" aria-label="Atualizar cadastro do atendente">
           <div className="max-h-[96vh] w-full max-w-4xl overflow-auto rounded-2xl bg-clinic-surface shadow-2xl">
             <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-clinic-border bg-clinic-surface/95 px-4 py-4 backdrop-blur sm:px-6">
               <div>
                 <h2 className="text-lg font-black text-clinic-text">Atualizar cadastro</h2>
-                <p className="text-xs text-clinic-text-muted">As alterações serão registradas no histórico e o profissional será notificado.</p>
+                <p className="text-xs text-clinic-text-muted">As alterações serão enviadas para análise. Os dados oficiais só mudam após aprovação do profissional.</p>
               </div>
-              <button type="button" onClick={() => setProfileEditOpen(false)} className="rounded-full bg-clinic-bg p-2 text-clinic-text-muted" aria-label="Fechar atualização cadastral"><X size={20} /></button>
+              <button type="button" onClick={() => { setProfileDeclarationAccepted(false); setProfileDeclarationError(''); setProfileEditOpen(false); }} className="rounded-full bg-clinic-bg p-2 text-clinic-text-muted" aria-label="Fechar atualização cadastral"><X size={20} /></button>
             </header>
             <div className="space-y-5 p-4 sm:p-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                {([
-                  ['name', 'Nome completo', 'text'],
-                  ['birthDate', 'Data de nascimento', 'date'],
-                  ['guardianName', 'Responsável principal', 'text'],
-                  ['whatsapp', 'WhatsApp', 'tel'],
-                  ['school', 'Escola', 'text'],
-                  ['doctorName', 'Médico responsável', 'text'],
-                ] as const).map(([field, label, type]) => (
-                  <label key={field}>
-                    <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{label}</span>
-                    <input
-                      type={type}
-                      value={profileForm[field]}
-                      onChange={event => setProfileForm(current => ({ ...current, [field]: event.target.value }))}
-                      className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
-                    />
-                  </label>
-                ))}
-                <label>
-                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Ano/Série</span>
-                  <select
-                    value={profileForm.grade}
-                    onChange={event => setProfileForm(current => ({ ...current, grade: event.target.value }))}
-                    className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
-                  >
-                    <option value="">Selecione o ano/série</option>
-                    {GRADE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Turno</span>
-                  <select
-                    value={profileForm.shift}
-                    onChange={event => setProfileForm(current => ({ ...current, shift: event.target.value }))}
-                    className="w-full rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
-                  >
-                    <option value="">Selecione o turno</option>
-                    {SHIFT_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
-                  </select>
-                </label>
-              </div>
-              <div className="grid gap-4 lg:grid-cols-3">
-                {([
-                  ['medication', 'Medicações em uso'],
-                  ['emergencyContact', 'Contato de emergência'],
-                  ['allergies', 'Alergias e restrições'],
-                ] as const).map(([field, label]) => (
-                  <label key={field}>
-                    <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">{label}</span>
-                    <textarea
-                      rows={5}
-                      value={profileForm[field]}
-                      onChange={event => setProfileForm(current => ({ ...current, [field]: event.target.value }))}
-                      className="w-full rounded-xl border border-clinic-border bg-white p-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
-                    />
-                  </label>
-                ))}
-              </div>
-              <p className="rounded-xl border border-clinic-border bg-clinic-bg p-3 text-xs text-clinic-text-muted">
-                Declaro que as informações fornecidas são verdadeiras e não substituem orientação ou prescrição médica.
-              </p>
+              <PatientRegistrationFields
+                value={profileForm}
+                onChange={patch => setProfileForm(current => ({ ...current, ...patch }))}
+                disabled={profileSaving}
+                requiredCore
+              />
+              <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${profileDeclarationAccepted ? 'border-clinic-primary/35 bg-clinic-primary/5' : 'border-clinic-border bg-clinic-bg'}`}>
+                <input
+                  type="checkbox"
+                  checked={profileDeclarationAccepted}
+                  onChange={event => {
+                    setProfileDeclarationAccepted(event.target.checked);
+                    if (event.target.checked) setProfileDeclarationError('');
+                  }}
+                  disabled={profileSaving}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-clinic-primary"
+                />
+                <span className="text-xs leading-relaxed text-clinic-text-muted">
+                  Declaro que as informações fornecidas são verdadeiras e não substituem orientação ou prescrição médica.
+                </span>
+              </label>
+              {profileDeclarationError && (
+                <p className="rounded-xl border border-status-red-text/20 bg-status-red-bg p-3 text-xs font-bold text-status-red-text">
+                  {profileDeclarationError}
+                </p>
+              )}
               {profileMessage && <p className="rounded-xl bg-status-green-bg p-3 text-sm font-bold text-status-green-text">{profileMessage}</p>}
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <button type="button" onClick={() => setProfileEditOpen(false)} disabled={profileSaving} className="rounded-xl border border-clinic-border px-4 py-3 text-xs font-black uppercase text-clinic-text-muted">Cancelar</button>
-                <button type="button" onClick={() => void saveResponsibleProfile()} disabled={profileSaving || !profileForm.name.trim()} className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-xs font-black uppercase text-white disabled:opacity-45">
+                <button type="button" onClick={() => { setProfileDeclarationAccepted(false); setProfileDeclarationError(''); setProfileEditOpen(false); }} disabled={profileSaving} className="rounded-xl border border-clinic-border px-4 py-3 text-xs font-black uppercase text-clinic-text-muted">Cancelar</button>
+                <button type="button" onClick={() => void saveResponsibleProfile()} disabled={profileSaving || !profileDeclarationAccepted || !profileForm.name.trim() || !String(profileForm.fullName || '').trim() || !profileForm.birthDate || !profileForm.guardianName.trim() || !profileForm.whatsapp.trim()} className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-xs font-black uppercase text-white disabled:opacity-45">
                   {profileSaving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-                  Salvar atualização
+                  Enviar para análise
                 </button>
               </div>
             </div>
@@ -1976,8 +2138,8 @@ Arquivo preparado para compartilhamento.`);
           <div className="max-h-[96vh] w-full max-w-6xl overflow-auto rounded-2xl bg-clinic-surface shadow-2xl">
             <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-clinic-border bg-clinic-surface/95 px-4 py-3 backdrop-blur">
               <div className="min-w-0">
-                <p className="truncate font-bold text-clinic-text">{selectedMedia.category}</p>
-                <p className="truncate text-xs text-clinic-text-muted">{formatDate(selectedMedia.sessionDate, false)} às {selectedMedia.sessionTime} • Sessão {selectedMedia.sessionNumber || 'relacionada'}</p>
+                <p className="truncate font-bold text-clinic-text">{getActivityRecordCategoryLabel(selectedMedia.category)}</p>
+                <p className="truncate text-xs text-clinic-text-muted">{formatDate(selectedMedia.sessionDate, false)} às {selectedMedia.sessionTime}</p>
               </div>
               <div className="flex items-center gap-2">
                 <button type="button" onClick={() => void navigateMedia(-1)} className="rounded-full bg-clinic-bg p-2 text-clinic-primary" aria-label="Mídia anterior"><ChevronLeft size={20} /></button>
@@ -2009,18 +2171,28 @@ Arquivo preparado para compartilhamento.`);
                   <img
                     ref={element => { mediaElementRef.current = element; }}
                     src={mediaUrls[selectedMedia.id]}
-                    alt={selectedMedia.description || selectedMedia.category}
+                    alt={selectedMedia.description || getActivityRecordCategoryLabel(selectedMedia.category)}
                     className="max-h-[72vh] w-full rounded-xl bg-black/5 object-contain"
                   />
                 )}
                 <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={() => void downloadMedia(selectedMedia)} className="flex items-center gap-2 rounded-lg bg-clinic-primary px-4 py-2 text-xs font-black uppercase text-white"><Download size={15} /> Baixar</button>
-                  <button type="button" onClick={() => void shareMedia(selectedMedia, 'instagram')} className="flex items-center gap-2 rounded-lg bg-pink-50 px-4 py-2 text-xs font-black uppercase text-pink-700"><Instagram size={15} /> Compartilhar mídia no Instagram</button>
-                  <button type="button" onClick={() => void shareMedia(selectedMedia, 'whatsapp')} className="flex items-center gap-2 rounded-lg bg-status-green-bg px-4 py-2 text-xs font-black uppercase text-status-green-text"><MessageCircle size={15} /> Compartilhar mídia no WhatsApp</button>
-                  <button type="button" onClick={() => void toggleLike(selectedMedia)} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-black uppercase ${selectedMedia.likedByCurrentResponsible ? 'bg-red-50 text-red-600' : 'bg-clinic-bg text-clinic-text-muted'}`}><Heart size={15} fill={selectedMedia.likedByCurrentResponsible ? 'currentColor' : 'none'} /> {selectedMedia.likeCount}</button>
+                  {!isAdminPreview && (
+                    <>
+                      <button type="button" onClick={() => void shareMedia(selectedMedia, 'instagram')} className="flex items-center gap-2 rounded-lg bg-pink-50 px-4 py-2 text-xs font-black uppercase text-pink-700"><Instagram size={15} /> Compartilhar mídia no Instagram</button>
+                      <button type="button" onClick={() => void shareMedia(selectedMedia, 'whatsapp')} className="flex items-center gap-2 rounded-lg bg-status-green-bg px-4 py-2 text-xs font-black uppercase text-status-green-text"><MessageCircle size={15} /> Compartilhar mídia no WhatsApp</button>
+                      <button type="button" onClick={() => void toggleLike(selectedMedia)} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-black uppercase ${selectedMedia.likedByCurrentResponsible ? 'bg-red-50 text-red-600' : 'bg-clinic-bg text-clinic-text-muted'}`}><Heart size={15} fill={selectedMedia.likedByCurrentResponsible ? 'currentColor' : 'none'} /> {selectedMedia.likeCount}</button>
+                    </>
+                  )}
+                  {isAdminPreview && (
+                    <span className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-xs font-black uppercase text-indigo-700">
+                      <Eye size={15} />
+                      Interações desativadas
+                    </span>
+                  )}
                 </div>
                 <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4 text-sm">
-                  <p className="font-bold text-clinic-text">{selectedMedia.category}</p>
+                  <p className="font-bold text-clinic-text">{getActivityRecordCategoryLabel(selectedMedia.category)}</p>
                   <p className="mt-1 whitespace-pre-wrap text-clinic-text-muted">{selectedMedia.description || 'Sem observação.'}</p>
                   <p className="mt-3 text-xs font-bold text-clinic-text-faint">Profissional: {selectedMedia.professionalName || 'Fábio Denarde'}</p>
                 </div>
@@ -2043,14 +2215,22 @@ Arquivo preparado para compartilhamento.`);
                     </article>
                   ))}
                 </div>
-                <label>
-                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Adicionar comentário</span>
-                  <textarea value={comment} onChange={event => setComment(event.target.value)} maxLength={1000} rows={4} className="w-full rounded-xl border border-clinic-border bg-white p-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary" placeholder="Escreva uma observação sobre esta atividade..." />
-                </label>
-                <button type="button" onClick={() => void submitComment()} disabled={!comment.trim() || busyAction?.type === 'comment'} className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase text-white disabled:opacity-45">
-                  {busyAction?.type === 'comment' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                  Enviar comentário
-                </button>
+                {isAdminPreview ? (
+                  <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs font-bold text-indigo-800">
+                    Os comentários existentes podem ser conferidos, mas novos comentários não podem ser enviados na visualização administrativa.
+                  </div>
+                ) : (
+                  <>
+                    <label>
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Adicionar comentário</span>
+                      <textarea value={comment} onChange={event => setComment(event.target.value)} maxLength={1000} rows={4} className="w-full rounded-xl border border-clinic-border bg-white p-3 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary" placeholder="Escreva uma observação sobre esta atividade..." />
+                    </label>
+                    <button type="button" onClick={() => void submitComment()} disabled={!comment.trim() || busyAction?.type === 'comment'} className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase text-white disabled:opacity-45">
+                      {busyAction?.type === 'comment' ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                      Enviar comentário
+                    </button>
+                  </>
+                )}
               </aside>
             </div>
           </div>

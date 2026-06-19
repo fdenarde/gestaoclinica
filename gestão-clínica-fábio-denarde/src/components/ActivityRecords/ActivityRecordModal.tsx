@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Camera, CheckCircle2, Film, ImagePlus, Loader2, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import type { Patient, Session } from '../../types';
-import { SessionStatus } from '../../types';
-import { ACTIVITY_RECORD_CATEGORIES, getDefaultActivityAuthorization, type ActivityRecordCategory, type ActivityRecordVisibility } from '../../types/activityRecords';
+import { ACTIVITY_RECORD_CATEGORIES, DEFAULT_ACTIVITY_RECORD_CATEGORY, getDefaultActivityAuthorization, type ActivityRecord, type ActivityRecordCategory, type ActivityRecordVisibility } from '../../types/activityRecords';
 import { assertActivityMediaSourceReadable, inspectActivityMediaSource, processActivityMedia } from '../../lib/imageProcessing';
 import {
   activityFileNeedsReselection,
@@ -46,7 +45,7 @@ import {
 import Modal from '../Common/Modal';
 import { showToast } from '../Common/Toast';
 import { safeFormatDate } from '../../lib/utils';
-import { getPatientSessionsThroughDate } from '../../lib/sessionVisibility';
+import { getCurrentActivityMediaSessions } from '../../lib/activityMediaPackages';
 import {
   assertDurableActivityStorageCapacity,
   buildActivityMediaManifest,
@@ -65,13 +64,21 @@ import {
   saveActivityMediaManifest,
 } from '../../lib/activityMediaAcquisition.js';
 import { createActivityMediaThumbnail } from '../../lib/activityMediaThumbnails.js';
+import {
+  buildActivitySessionGroups,
+  findConfirmedActivityMediaDuplicate,
+  formatActivitySessionGroupLabel,
+  toggleActivitySessionSelection,
+} from '../../../shared/activityRecordUi.js';
 
 interface ActivityRecordModalProps {
   isOpen: boolean;
   onClose: () => void;
   patient: Patient;
   sessions: Session[];
+  records?: ActivityRecord[];
   initialSession?: Session | null;
+  initialSessions?: Session[];
   currentUserName: string;
   onViewGallery?: () => void;
 }
@@ -107,6 +114,7 @@ interface QueuedActivityMedia {
   duplicateWarning?: {
     sessionDate: string;
     sessionTime: string;
+    scope?: 'same-date' | 'other-date';
   };
   duplicateVerificationWarning?: boolean;
   thumbnailName?: string;
@@ -198,7 +206,7 @@ function getMediaLabel(mediaType: 'photo' | 'video'): string {
   return mediaType === 'video' ? 'Vídeo' : 'Foto';
 }
 
-export default function ActivityRecordModal({ isOpen, onClose, patient, sessions, initialSession, currentUserName, onViewGallery }: ActivityRecordModalProps) {
+export default function ActivityRecordModal({ isOpen, onClose, patient, sessions, records, initialSession, initialSessions = [], currentUserName, onViewGallery }: ActivityRecordModalProps) {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -209,8 +217,12 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
   const pendingDuplicateSummaryRef = useRef(0);
   const nextSelectionPositionRef = useRef(0);
   const recoveredScopeRef = useRef('');
-  const [sessionId, setSessionId] = useState(initialSession?.id || '');
-  const [category, setCategory] = useState<ActivityRecordCategory>('Atividade pedagógica');
+  const [sessionId, setSessionId] = useState(initialSession?.id || initialSessions[0]?.id || '');
+  const [relatedSessionIds, setRelatedSessionIds] = useState<string[]>(() => {
+    const initialIds = initialSessions.map(session => session.id).filter(Boolean);
+    return initialIds.length > 0 ? initialIds : initialSession?.id ? [initialSession.id] : [];
+  });
+  const [category, setCategory] = useState<ActivityRecordCategory>(DEFAULT_ACTIVITY_RECORD_CATEGORY);
   const [description, setDescription] = useState('');
   const [visibility, setVisibility] = useState<ActivityRecordVisibility>(() => patient.activityMediaAuthorization?.guardianSharingStatus === 'authorized' ? 'share_allowed' : 'internal_only');
   const [queuedMedia, setQueuedMedia] = useState<QueuedActivityMedia[]>([]);
@@ -231,20 +243,81 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
   const saveLockRef = useRef(false);
   const cancelBatchRef = useRef(false);
   const wakeLockRef = useRef<WakeLockHandle | null>(null);
+  const confirmedGroupKeyRef = useRef('');
   const [viewingMedia, setViewingMedia] = useState<QueuedActivityMedia | null>(null);
   const [viewingMediaUrl, setViewingMediaUrl] = useState('');
 
   const authorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
   const canRecord = authorization.internalRecordingStatus === 'authorized';
   const canShare = authorization.guardianSharingStatus === 'authorized';
-  const availableSessions = useMemo(() => getPatientSessionsThroughDate({ patient, sessions })
-    .filter(session => !session.isBlocked && ![SessionStatus.FALTA, SessionStatus.FALTA_PROF, SessionStatus.CANCELADA].includes(session.status))
-    .sort((a, b) => `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`)), [patient.id, patient.startDate, sessions]);
-  const allowedInitialSession = initialSession && availableSessions.some(item => item.id === initialSession.id)
-    ? initialSession
-    : null;
-  const selectedSession = availableSessions.find(item => item.id === sessionId) || allowedInitialSession;
+  const availableSessions = useMemo(() => getCurrentActivityMediaSessions({
+    patientId: patient.id,
+    sessions,
+  }), [patient.id, sessions]);
+  const sessionGroups = useMemo(
+    () => buildActivitySessionGroups(availableSessions, records),
+    [availableSessions, records],
+  );
+  const forcedInitialSessions = useMemo(() => {
+    const requested = initialSessions.length > 0 ? initialSessions : initialSession ? [initialSession] : [];
+    const availableIds = new Set(availableSessions.map(item => item.id));
+    return requested.filter(item => availableIds.has(item.id));
+  }, [availableSessions, initialSession?.id, initialSessions]);
+  const allowedInitialSession = forcedInitialSessions[0] || null;
+  const selectedSessionGroup = useMemo(
+    () => sessionGroups.find(group => group.primarySessionId === sessionId || group.sessionIds.includes(sessionId))
+      || sessionGroups.find(group => allowedInitialSession && group.sessionIds.includes(allowedInitialSession.id))
+      || null,
+    [allowedInitialSession, sessionGroups, sessionId],
+  );
+  const selectedSessionIds = useMemo(() => {
+    if (!selectedSessionGroup) return [];
+    const selected = selectedSessionGroup.sessionIds.filter(id => relatedSessionIds.includes(id));
+    return selected.length > 0 ? selected : selectedSessionGroup.sessionIds;
+  }, [relatedSessionIds, selectedSessionGroup]);
+  const selectedSessions = useMemo(
+    () => selectedSessionGroup?.sessions.filter(session => selectedSessionIds.includes(session.id)) || [],
+    [selectedSessionGroup, selectedSessionIds],
+  );
+  const selectedSession = selectedSessions[0] || selectedSessionGroup?.sessions[0] || allowedInitialSession;
+  const selectedSessionIdsKey = selectedSessionIds.slice().sort().join(',');
+  const selectedExistingMediaCount = Number(selectedSessionGroup?.mediaCount || 0);
+  const liveFormContextRef = useRef<{
+    selectedSession: Session | null;
+    selectedSessions: Session[];
+    selectedSessionIds: string[];
+    selectedGroupKey: string;
+    category: ActivityRecordCategory;
+    description: string;
+    visibility: ActivityRecordVisibility;
+    createdByName: string;
+  }>({
+    selectedSession: null,
+    selectedSessions: [],
+    selectedSessionIds: [],
+    selectedGroupKey: '',
+    category: DEFAULT_ACTIVITY_RECORD_CATEGORY,
+    description: '',
+    visibility: 'internal_only',
+    createdByName: currentUserName,
+  });
+  liveFormContextRef.current = {
+    selectedSession: selectedSession || null,
+    selectedSessions,
+    selectedSessionIds,
+    selectedGroupKey: selectedSessionGroup?.key || '',
+    category,
+    description,
+    visibility,
+    createdByName: currentUserName,
+  };
   const busy = stage !== 'idle';
+  const uploadLocked = stage === 'uploading' || stage === 'finalizing';
+  const locallyDetectedDuplicateCount = queuedMedia.filter(
+    item => item.status === 'duplicate' && item.duplicateWarning?.scope === 'same-date',
+  ).length;
+  const duplicateOverviewCount = ignoredDuplicateCount + locallyDetectedDuplicateCount;
+  const sameDateDuplicateOverviewCount = sameSessionDuplicateCount + locallyDetectedDuplicateCount;
   const batchOverview = useMemo(
     () => getActivityBatchOverview(confirmedMediaCount, queuedMedia),
     [confirmedMediaCount, queuedMedia],
@@ -254,8 +327,6 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     queuedItems: queuedMedia,
     busy,
   });
-  const metadataLocked = confirmedMediaCount > 0
-    || (queuedMedia.length > 0 && !recoveredNeedsMetadataConfirmation);
   const thumbnailOverview = useMemo(() => ({
     generating: queuedMedia.filter(item => item.thumbnailStatus === 'generating').length,
     unavailable: queuedMedia.filter(item => item.thumbnailStatus === 'unavailable').length,
@@ -296,17 +367,169 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
   };
 
   useEffect(() => {
-    if (allowedInitialSession) {
-      setSessionId(allowedInitialSession.id);
-      return;
+    if (forcedInitialSessions.length > 0) {
+      const forcedGroup = sessionGroups.find(group => group.sessionIds.includes(forcedInitialSessions[0].id));
+      if (forcedGroup) {
+        setSessionId(forcedGroup.primarySessionId);
+        setRelatedSessionIds(forcedGroup.sessionIds);
+        return;
+      }
     }
 
-    setSessionId(current => availableSessions.some(item => item.id === current) ? current : '');
-  }, [allowedInitialSession?.id, availableSessions]);
+    setSessionId(current => {
+      const currentGroup = sessionGroups.find(group => group.primarySessionId === current || group.sessionIds.includes(current));
+      if (!currentGroup) {
+        setRelatedSessionIds([]);
+        return '';
+      }
+      setRelatedSessionIds(ids => {
+        const preserved = currentGroup.sessionIds.filter(id => ids.includes(id));
+        return preserved.length > 0 ? preserved : currentGroup.sessionIds;
+      });
+      return currentGroup.primarySessionId;
+    });
+  }, [forcedInitialSessions, sessionGroups]);
 
   useEffect(() => {
     queuedMediaRef.current = queuedMedia;
   }, [queuedMedia]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const groupKey = selectedSessionGroup?.key || '';
+    if (confirmedGroupKeyRef.current !== groupKey) {
+      confirmedGroupKeyRef.current = groupKey;
+      setConfirmedMediaCount(selectedExistingMediaCount);
+      setIgnoredDuplicateCount(0);
+      setSameSessionDuplicateCount(0);
+      setSummary(null);
+      return;
+    }
+    setConfirmedMediaCount(current => Math.max(current, selectedExistingMediaCount));
+  }, [isOpen, selectedExistingMediaCount, selectedSessionGroup?.key]);
+
+  useEffect(() => {
+    if (uploadLocked || !selectedSession) return;
+    setQueuedMedia(current => {
+      let changed = false;
+      const next = current.map(item => {
+        if (item.status === 'uploading') return item;
+        const snapshot = item.metadataSnapshot;
+        if (
+          snapshot.sessionId === selectedSession.id
+          && snapshot.category === category
+          && snapshot.description === description
+          && snapshot.visibility === visibility
+          && snapshot.createdByName === currentUserName
+        ) return item;
+        changed = true;
+        return {
+          ...item,
+          metadataSnapshot: {
+            sessionId: selectedSession.id,
+            category,
+            description,
+            visibility,
+            createdByName: currentUserName,
+          },
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [category, currentUserName, description, selectedSession?.id, selectedSessionIdsKey, uploadLocked, visibility]);
+
+  const queuedHashSignature = useMemo(
+    () => queuedMedia
+      .map(item => `${item.id}:${item.originalContentHash || item.preparedContentHash || ''}`)
+      .join('|'),
+    [queuedMedia],
+  );
+
+  useEffect(() => {
+    if (uploadLocked || !selectedSessionGroup || !queuedHashSignature) return;
+    setQueuedMedia(current => {
+      let changed = false;
+      const next = current.map(item => {
+        if (item.status === 'acquiring' || item.status === 'preparing' || item.status === 'uploading' || item.status === 'failed') return item;
+        const sha256 = item.originalContentHash || item.preparedContentHash;
+        if (!sha256) return item;
+        const duplicate = findConfirmedActivityMediaDuplicate(records, {
+          sha256,
+          date: selectedSessionGroup.date,
+          sessionIds: selectedSessionIds,
+        });
+        if (duplicate) {
+          const scope = duplicate.scope === 'same-date' ? 'same-date' : 'other-date';
+          const warning = {
+            sessionDate: String(duplicate.record.sessionDate || ''),
+            sessionTime: String(duplicate.record.sessionTime || ''),
+            scope,
+          } as const;
+          if (
+            item.status === 'duplicate'
+            && item.duplicateWarning?.sessionDate === warning.sessionDate
+            && item.duplicateWarning?.sessionTime === warning.sessionTime
+            && item.duplicateWarning?.scope === warning.scope
+          ) return item;
+          changed = true;
+          return {
+            ...item,
+            status: 'duplicate' as QueueStatus,
+            duplicateWarning: warning,
+            duplicateVerificationWarning: false,
+          };
+        }
+        if (item.status === 'duplicate' && item.duplicateWarning?.scope) {
+          changed = true;
+          return {
+            ...item,
+            status: 'queued' as QueueStatus,
+            duplicateWarning: undefined,
+            duplicateVerificationWarning: undefined,
+          };
+        }
+        return item;
+      });
+      return changed ? next : current;
+    });
+  }, [queuedHashSignature, records, selectedSessionGroup?.date, selectedSessionIdsKey, uploadLocked]);
+
+  useEffect(() => {
+    if (!isOpen || uploadLocked || !selectedSessionIdsKey) return;
+    const items = queuedMediaRef.current.filter(item => item.durableName);
+    if (items.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const scopeKey = await buildActivityMediaScopeKey({
+        patientId: patient.id,
+        sessionId: selectedSessionIdsKey,
+      });
+      if (cancelled) return;
+      await Promise.allSettled(items.map(item => saveActivityMediaManifest(buildActivityMediaManifest({
+        attemptId: item.uploadAttemptId,
+        scopeKey,
+        durableName: item.durableName || '',
+        originalName: item.originalName,
+        originalSelectionPosition: item.originalSelectionPosition,
+        mediaType: item.mediaType,
+        mimeType: item.sourceFile.type,
+        fileSize: item.fileSize,
+        originalContentHash: item.originalContentHash,
+        preparedContentHash: item.preparedContentHash,
+        width: item.width,
+        height: item.height,
+        duration: item.durationSeconds,
+        lastModified: item.sourceFile.lastModified,
+        storageMode: item.storageMode,
+        thumbnailName: item.thumbnailName,
+        thumbnailMimeType: item.thumbnailMimeType,
+        thumbnailStatus: item.thumbnailStatus,
+      }))));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, patient.id, queuedHashSignature, selectedSessionIdsKey, uploadLocked]);
 
   const closeMediaViewer = () => {
     if (viewingMediaUrl) URL.revokeObjectURL(viewingMediaUrl);
@@ -340,7 +563,7 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     void (async () => {
       const scopeKey = await buildActivityMediaScopeKey({
         patientId: patient.id,
-        sessionId: selectedSession.id,
+        sessionId: selectedSessionIdsKey,
       });
       if (cancelled || recoveredScopeRef.current === scopeKey) return;
       recoveredScopeRef.current = scopeKey;
@@ -468,6 +691,7 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
             duplicateWarning: duplicateResult?.scope === 'other-session' && duplicateResult.existing ? {
               sessionDate: duplicateResult.existing.sessionDate,
               sessionTime: duplicateResult.existing.sessionTime,
+              scope: 'other-date',
             } : undefined,
             metadataSnapshot: {
               sessionId: selectedSession.id,
@@ -536,7 +760,7 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     return () => {
       cancelled = true;
     };
-  }, [isOpen, patient.id, selectedSession?.id]);
+  }, [isOpen, patient.id, selectedSessionIdsKey]);
 
   useEffect(() => {
     if (!busy) return;
@@ -574,12 +798,13 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     nextSelectionPositionRef.current = 0;
     setQueuedMedia([]);
     setConfirmedMediaCount(0);
+    confirmedGroupKeyRef.current = '';
     setIgnoredDuplicateCount(0);
     setSameSessionDuplicateCount(0);
     pendingDuplicateSummaryRef.current = 0;
     setRecoveredNeedsMetadataConfirmation(false);
     setDescription('');
-    setCategory('Atividade pedagógica');
+    setCategory(DEFAULT_ACTIVITY_RECORD_CATEGORY);
     setVisibility(patient.activityMediaAuthorization?.guardianSharingStatus === 'authorized' ? 'share_allowed' : 'internal_only');
     setProgress(0);
     setUploadTotal(0);
@@ -590,6 +815,35 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     setUploadEtaSeconds(null);
     setSummary(null);
     resetCaptureInputs();
+  };
+
+  const handleSessionGroupChange = (nextPrimarySessionId: string) => {
+    if (uploadLocked) return;
+    const nextGroup = sessionGroups.find(group => group.primarySessionId === nextPrimarySessionId);
+    setSessionId(nextGroup?.primarySessionId || '');
+    setRelatedSessionIds(nextGroup?.sessionIds || []);
+    setSummary(null);
+    if (nextGroup && queuedMediaRef.current.length > 0) {
+      showToast('Data da sessão atualizada. As mídias preparadas foram mantidas na remessa.', 'success');
+    }
+  };
+
+  const toggleRelatedSession = (sessionIdToToggle: string, checked: boolean) => {
+    if (uploadLocked || !selectedSessionGroup) return;
+    setRelatedSessionIds(current => {
+      const result = toggleActivitySessionSelection(
+        selectedSessionGroup.sessionIds,
+        current,
+        sessionIdToToggle,
+        checked,
+      );
+      if (result.blocked) {
+        showToast('Mantenha ao menos uma sessão vinculada à remessa.', 'warning');
+        return current;
+      }
+      return result.sessionIds;
+    });
+    setSummary(null);
   };
 
   const resetAndClose = async () => {
@@ -703,7 +957,7 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
 
     const scopeKey = await buildActivityMediaScopeKey({
       patientId: patient.id,
-      sessionId: selectedSession.id,
+      sessionId: selectedSessionIdsKey,
     });
     setSummary(null);
     setStage('preparing');
@@ -1008,20 +1262,36 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
           }
           knownHashes.add(dedupeContentHash);
 
-          const duplicateResult = await checkActivityMediaDuplicate({
-            patientId: patient.id,
-            sessionId: selectedSession.id,
-            sha256: dedupeContentHash,
-            fileSize: durableFile.size,
-            mediaType: queuedItem.mediaType,
-            mimeType: durableFile.type,
-          }).catch(() => ({
-            duplicate: false,
-            scope: 'none' as const,
-            verification: 'inconclusive' as const,
-            reason: 'verification-request-failed',
-            existing: null,
-          }));
+          const duplicateContext = liveFormContextRef.current;
+          const duplicateResultFromRequest = duplicateContext.selectedSession
+            ? await checkActivityMediaDuplicate({
+              patientId: patient.id,
+              sessionId: duplicateContext.selectedSession.id,
+              sha256: dedupeContentHash,
+              fileSize: durableFile.size,
+              mediaType: queuedItem.mediaType,
+              mimeType: durableFile.type,
+            }).catch(() => ({
+              duplicate: false,
+              scope: 'none' as const,
+              verification: 'inconclusive' as const,
+              reason: 'verification-request-failed',
+              existing: null,
+            }))
+            : {
+              duplicate: false,
+              scope: 'none' as const,
+              verification: 'complete' as const,
+              existing: null,
+            };
+          const duplicateResult = liveFormContextRef.current.selectedGroupKey === duplicateContext.selectedGroupKey
+            ? duplicateResultFromRequest
+            : {
+              duplicate: false,
+              scope: 'none' as const,
+              verification: 'complete' as const,
+              existing: null,
+            };
           if (duplicateResult?.scope === 'same-session') {
             duplicateCount += 1;
             pendingDuplicateSummaryRef.current += 1;
@@ -1103,6 +1373,7 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
             duplicateWarning: duplicateResult?.scope === 'other-session' && duplicateResult.existing ? {
               sessionDate: duplicateResult.existing.sessionDate,
               sessionTime: duplicateResult.existing.sessionTime,
+              scope: 'other-date',
             } : undefined,
             preparedPhotoForRetry,
           };
@@ -1400,7 +1671,7 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     if (storageStatus.supported && selectedSession) {
       const scopeKey = await buildActivityMediaScopeKey({
         patientId: patient.id,
-        sessionId: selectedSession.id,
+        sessionId: selectedSessionIdsKey,
       });
       await saveActivityMediaManifest(buildActivityMediaManifest({
         attemptId: replacedItem.uploadAttemptId,
@@ -1678,9 +1949,15 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
           const sha256 = originalContentHash || preparedContentHash;
           if (!sha256) throw new Error('Não foi possível confirmar a identificação da mídia.');
 
+          const currentContext = liveFormContextRef.current;
+          if (!currentContext.selectedSession || currentContext.selectedSessions.length === 0) {
+            throw new Error('Selecione ao menos uma sessão relacionada antes de enviar.');
+          }
+
           const input: UploadActivityPhotoInput = {
             patient,
-            session: selectedSession,
+            session: currentContext.selectedSession,
+            sessions: currentContext.selectedSessions,
             file,
             width,
             height,
@@ -1691,10 +1968,10 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
             mediaType: queuedItem.mediaType,
             durationSeconds: queuedItem.mediaType === 'video' ? durationSeconds : undefined,
             lastModified: file.lastModified || queuedItem.sourceFile.lastModified || Date.now(),
-            category: queuedItem.metadataSnapshot.category,
-            description: queuedItem.metadataSnapshot.description,
-            visibility: queuedItem.metadataSnapshot.visibility,
-            createdByName: queuedItem.metadataSnapshot.createdByName,
+            category: currentContext.category,
+            description: currentContext.description,
+            visibility: currentContext.visibility,
+            createdByName: currentContext.createdByName,
             uploadAttemptId: queuedItem.uploadAttemptId,
           };
 
@@ -1713,6 +1990,24 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
       }
 
       if (readyInputs.length > 0 && !cancelBatchRef.current) {
+        const uploadContext = liveFormContextRef.current;
+        if (!uploadContext.selectedSession || uploadContext.selectedSessions.length === 0) {
+          throw new Error('Selecione ao menos uma sessão relacionada antes de enviar.');
+        }
+
+        for (const ready of readyInputs) {
+          ready.input = {
+            ...ready.input,
+            session: uploadContext.selectedSession,
+            sessions: uploadContext.selectedSessions,
+            category: uploadContext.category,
+            description: uploadContext.description,
+            visibility: uploadContext.visibility,
+            createdByName: uploadContext.createdByName,
+          };
+        }
+
+        // A partir deste ponto os metadados ficam congelados até a confirmação final.
         setStage('uploading');
         setUploadBytesTotal(readyInputs.reduce((sum, item) => sum + item.input.file.size, 0));
         const preparedByAttempt = await prepareActivityUploadBatch(readyInputs.map(item => item.input));
@@ -1916,10 +2211,10 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
     : '';
   const uploadEtaLabel = formatActivityUploadEta(uploadEtaSeconds);
   const stageLabel = stage === 'preparing'
-    ? 'Protegendo e preparando mídias...'
+    ? 'Protegendo e preparando mídias. Você ainda pode ajustar sessão, categoria, visibilidade e observação.'
     : stage === 'uploading'
       ? [
-          `Envio rápido: ${uploadIndex} de ${uploadTotal || queuedMedia.length} concluídas • ${progress}%`,
+          `Enviando e vinculando as mídias. Aguarde para não interromper a operação. ${uploadIndex} de ${uploadTotal || queuedMedia.length} concluídas • ${progress}%`,
           uploadTransferLabel,
           uploadSpeedLabel,
           uploadEtaLabel ? `aprox. ${uploadEtaLabel} restantes` : '',
@@ -1944,12 +2239,44 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
 
         <div>
           <label className="block text-[10px] font-black uppercase tracking-wider text-clinic-text-faint mb-1">Sessão relacionada</label>
-          <select value={sessionId} onChange={event => setSessionId(event.target.value)} disabled={busy || metadataLocked || !!allowedInitialSession} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-70">
+          <select
+            value={selectedSessionGroup?.primarySessionId || ''}
+            onChange={event => handleSessionGroupChange(event.target.value)}
+            disabled={uploadLocked}
+            className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-70"
+          >
             <option value="">Selecione a sessão...</option>
-            {availableSessions.map(session => (
-              <option key={session.id} value={session.id}>{safeFormatDate(session.date, 'dd/MM/yyyy')} às {session.time} • {session.status} {session.packageNumber ? `• Sessão ${session.packageNumber}` : ''}</option>
+            {sessionGroups.map(group => (
+              <option key={group.key} value={group.primarySessionId}>{formatActivitySessionGroupLabel(group)}</option>
             ))}
           </select>
+          {sessionGroups.length === 0 && (
+            <p className="mt-2 rounded-lg border border-dashed border-clinic-border bg-clinic-bg/50 px-3 py-2 text-xs font-bold text-clinic-text-muted">
+              Nenhuma sessão do pacote atual disponível até o momento.
+            </p>
+          )}
+          {selectedSessionGroup && selectedSessionGroup.sessions.length > 1 && (
+            <div className="mt-3 rounded-xl border border-clinic-border bg-white p-3">
+              <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Sessões relacionadas a esta remessa</p>
+              <p className="mt-1 text-xs text-clinic-text-muted">As sessões disponíveis desta data já ficam marcadas. Os arquivos serão armazenados uma única vez e você pode desmarcar um horário em uma situação excepcional.</p>
+              <div className="mt-2 space-y-2">
+                {selectedSessionGroup.sessions.map(session => {
+                  const checked = selectedSessionIds.includes(session.id);
+                  return (
+                    <label key={session.id} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-xs font-bold text-clinic-text">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={uploadLocked}
+                        onChange={event => toggleRelatedSession(session.id, event.target.checked)}
+                      />
+                      <span>{safeFormatDate(session.date, 'dd/MM/yyyy')} às {session.time} • {session.status} • Sessão {session.activitySessionNumber}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1973,23 +2300,23 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
           <div className="rounded-xl border border-clinic-border bg-white p-3"><p className="text-[10px] font-black uppercase text-clinic-text-faint">Já salvas</p><p className="text-xl font-black text-status-green-text">{batchOverview.confirmed}</p></div>
           <div className="rounded-xl border border-clinic-border bg-white p-3"><p className="text-[10px] font-black uppercase text-clinic-text-faint">Na remessa</p><p className="text-xl font-black text-clinic-primary">{batchOverview.currentBatch}</p></div>
           <div className="rounded-xl border border-clinic-border bg-white p-3"><p className="text-[10px] font-black uppercase text-clinic-text-faint">Espaço restante</p><p className="text-xl font-black text-clinic-text">{batchOverview.remaining}</p></div>
-          <div className="rounded-xl border border-amber-300 bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-800">Repetidas ignoradas</p><p className="text-xl font-black text-amber-800">{ignoredDuplicateCount}</p></div>
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-3"><p className="text-[10px] font-black uppercase text-amber-800">Repetidas identificadas</p><p className="text-xl font-black text-amber-800">{duplicateOverviewCount}</p></div>
         </div>
 
-        {ignoredDuplicateCount > 0 && (
+        {duplicateOverviewCount > 0 && (
           <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm font-bold text-amber-900" role="status" aria-live="polite">
             <p className="font-black">Mídias repetidas protegidas</p>
             <p className="mt-1">
-              {ignoredDuplicateCount === 1
-                ? '1 mídia repetida não foi enviada novamente e não ocupou uma nova vaga.'
-                : `${ignoredDuplicateCount} mídias repetidas não foram enviadas novamente e não ocuparam novas vagas.`}
+              {duplicateOverviewCount === 1
+                ? '1 mídia repetida foi identificada nesta remessa.'
+                : `${duplicateOverviewCount} mídias repetidas foram identificadas nesta remessa.`}
             </p>
-            {sameSessionDuplicateCount > 0 && (
+            {sameDateDuplicateOverviewCount > 0 && (
               <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <span>
-                  {sameSessionDuplicateCount === 1
-                    ? 'Esta mídia já se encontra na galeria desta sessão.'
-                    : `${sameSessionDuplicateCount} mídias já se encontram na galeria desta sessão.`}
+                  {sameDateDuplicateOverviewCount === 1
+                    ? 'Esta mídia já se encontra na galeria desta data de atendimento.'
+                    : `${sameDateDuplicateOverviewCount} mídias já se encontram na galeria desta data de atendimento.`}
                 </span>
                 {onViewGallery && (
                   <button type="button" onClick={onViewGallery} className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-black uppercase text-amber-900">
@@ -2061,9 +2388,13 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
                         <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900">
                           <div className="font-black">Mídia já registrada</div>
                           <div>
-                            Esta mídia já foi registrada em outra sessão deste paciente
-                            {item.duplicateWarning?.sessionDate ? ` (${safeFormatDate(item.duplicateWarning.sessionDate, 'dd/MM/yyyy')}${item.duplicateWarning.sessionTime ? ` às ${item.duplicateWarning.sessionTime}` : ''})` : ''}.
-                            {' '}Confira o registro existente antes de decidir se deseja enviá-la novamente.
+                            {item.duplicateWarning?.scope === 'same-date'
+                              ? 'Esta mídia já foi registrada nesta data de atendimento.'
+                              : 'Esta mídia já foi registrada em outra data deste paciente.'}
+                            {item.duplicateWarning?.sessionDate ? ` (${safeFormatDate(item.duplicateWarning.sessionDate, 'dd/MM/yyyy')}${item.duplicateWarning.sessionTime ? ` às ${item.duplicateWarning.sessionTime}` : ''})` : ''}
+                            {item.duplicateWarning?.scope === 'same-date'
+                              ? ' Ela não deve ser enviada novamente.'
+                              : ' Confira o registro existente antes de decidir se deseja enviá-la novamente.'}
                           </div>
                           <div className="flex flex-col gap-1">
                             {onViewGallery && (
@@ -2074,9 +2405,11 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
                             <button type="button" onClick={() => ignoreDuplicateMedia(item.id)} className="rounded-lg border border-clinic-border bg-white px-2 py-1 text-[9px] font-black uppercase text-clinic-text-muted">
                               Não enviar novamente
                             </button>
-                            <button type="button" onClick={() => allowDuplicateMedia(item.id)} className="rounded-lg border border-status-orange-text/30 bg-white px-2 py-1 text-[9px] font-black uppercase text-status-orange-text">
-                              Enviar mesmo assim
-                            </button>
+                            {item.duplicateWarning?.scope !== 'same-date' && (
+                              <button type="button" onClick={() => allowDuplicateMedia(item.id)} className="rounded-lg border border-status-orange-text/30 bg-white px-2 py-1 text-[9px] font-black uppercase text-status-orange-text">
+                                Enviar mesmo assim
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -2140,22 +2473,22 @@ export default function ActivityRecordModal({ isOpen, onClose, patient, sessions
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-[10px] font-black uppercase tracking-wider text-clinic-text-faint mb-1">Categoria</label>
-            <select value={category} disabled={busy || metadataLocked} onChange={event => setCategory(event.target.value as ActivityRecordCategory)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm">
+            <select value={category} disabled={uploadLocked} onChange={event => setCategory(event.target.value as ActivityRecordCategory)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm">
               {ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-[10px] font-black uppercase tracking-wider text-clinic-text-faint mb-1">Visibilidade</label>
-            <select value={visibility} disabled={busy || metadataLocked} onChange={event => setVisibility(event.target.value as ActivityRecordVisibility)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm">
-              <option value="internal_only">Somente interno</option>
-              {canShare && <option value="share_allowed">Pode ser compartilhado com o responsável</option>}
+            <select value={visibility} disabled={uploadLocked} onChange={event => setVisibility(event.target.value as ActivityRecordVisibility)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm">
+              <option value="internal_only">Somente uso profissional</option>
+              {canShare && <option value="share_allowed">Visível ao responsável</option>}
             </select>
           </div>
         </div>
 
         <div>
           <label className="block text-[10px] font-black uppercase tracking-wider text-clinic-text-faint mb-1">Observação opcional</label>
-          <textarea value={description} disabled={busy || metadataLocked} maxLength={2000} onChange={event => setDescription(event.target.value)} className="min-h-24 w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary" placeholder="Descreva a atividade, o nível de auxílio ou alguma observação relevante. A observação será aplicada a todos os lotes desta atividade." />
+          <textarea value={description} disabled={uploadLocked} maxLength={2000} onChange={event => setDescription(event.target.value)} className="min-h-24 w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary" placeholder="Descreva a atividade, o nível de auxílio ou alguma observação relevante. A observação será aplicada a todos os lotes desta atividade." />
         </div>
 
         {summary && (

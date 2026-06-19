@@ -1,3 +1,5 @@
+import { findWhatsappReminderSuppression } from './whatsappReminderSuppressions.js';
+
 export function formatPhoneNumber(phoneStr) {
   let clean = phoneStr.replace(/\D/g, '');
   if (!clean.startsWith('55')) {
@@ -183,7 +185,19 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
   return processed;
 }
 
-export function getWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, settings }) {
+export function getWhatsappReminderPlan({
+  runDateStr,
+  tipo,
+  patients,
+  sessions,
+  settings,
+  suppressions = []
+}) {
+  const scheduledTimeByType = {
+    HOJE_MANHA: '06:30',
+    AMANHA: '09:00',
+    HOJE_TARDE: '12:30'
+  };
   let dateStr = runDateStr;
   if (tipo === 'AMANHA') {
     const d = new Date(`${runDateStr}T12:00:00`);
@@ -275,6 +289,33 @@ export function getWhatsappReminderPlan({ runDateStr, tipo, patients, sessions, 
     const isSent = selectedMap.get(s.patientId).id === s.id;
 
     if (isSent) {
+      const suppression = findWhatsappReminderSuppression({
+        suppressions,
+        patient,
+        session: s,
+        runDateStr,
+        scheduledTime: scheduledTimeByType[tipo],
+        dateStr,
+        tipo
+      });
+      if (suppression) {
+        diagnostics.push({
+          id: s.id,
+          patientId: s.patientId,
+          time: s.time,
+          patientName: patient.name,
+          guardianName: patient.guardianName,
+          whatsapp: patient.whatsapp,
+          type: s.type,
+          isVirtual: s.isVirtual,
+          isValid: false,
+          blockedReason: suppression.reason,
+          suppressionId: suppression.id,
+          isSuppressed: true
+        });
+        continue;
+      }
+
       const phone = formatPhoneNumber(patient.whatsapp);
       const greeting = tipo === 'HOJE_TARDE' ? 'Boa tarde' : 'Bom dia';
       const timeFormatted = s.time.endsWith(':00') ? `${s.time.split(':')[0]}h` : `${s.time}h`;

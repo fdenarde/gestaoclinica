@@ -1,3 +1,9 @@
+import {
+  DEFAULT_ACTIVITY_RECORD_CATEGORY,
+  INTERVENTION_ACTIVITY_RECORD_CATEGORY,
+  LEGACY_ACTIVITY_RECORD_CATEGORY,
+} from '../../shared/activityRecordUi.js';
+
 import crypto from 'crypto';
 import {
   ACTIVITY_VIDEO_CHUNK_ALIGNMENT_BYTES,
@@ -43,7 +49,8 @@ export function isActivityUploadLeaseExpired(record, nowMillis = Date.now()) {
 }
 
 export const ACTIVITY_CATEGORIES = new Set([
-  'Atividade pedagógica', 'Atenção', 'Memória', 'Linguagem', 'Raciocínio lógico',
+  DEFAULT_ACTIVITY_RECORD_CATEGORY, INTERVENTION_ACTIVITY_RECORD_CATEGORY, LEGACY_ACTIVITY_RECORD_CATEGORY,
+  'Atenção', 'Memória', 'Linguagem', 'Raciocínio lógico',
   'Coordenação motora', 'Coordenação visuomotora', 'Funções executivas',
   'Atividade lúdica', 'Evolução', 'Devolutiva', 'Outro',
 ]);
@@ -163,6 +170,10 @@ export function decodeActivityVideoChunk(dataBase64, mimeType, { isFirstChunk = 
 export function validateUploadInput(body) {
   const patientId = sanitizeText(body.patientId, 128);
   const sessionId = sanitizeText(body.sessionId, 128);
+  const sessionIds = [...new Set((Array.isArray(body.sessionIds) ? body.sessionIds : [sessionId])
+    .map(value => sanitizeText(value, 128))
+    .filter(Boolean))].slice(0, 8);
+  if (sessionId && !sessionIds.includes(sessionId)) sessionIds.unshift(sessionId);
   const uploadAttemptId = sanitizeText(body.uploadAttemptId, 128);
   const category = sanitizeText(body.category, 80);
   const visibility = sanitizeText(body.visibility, 40);
@@ -173,7 +184,7 @@ export function validateUploadInput(body) {
   const mediaType = getMediaTypeFromMime(mimeType);
 
   if (!patientId) throw activityError('activity-records/missing-patient-id', 'Criança não identificada.');
-  if (!sessionId) throw activityError('activity-records/missing-session-id', 'Sessão não identificada.');
+  if (!sessionId || sessionIds.length === 0) throw activityError('activity-records/missing-session-id', 'Sessão não identificada.');
   if (!uploadAttemptId) throw activityError('activity-records/missing-upload-id', 'Tentativa de envio não identificada.');
   if (!ACTIVITY_CATEGORIES.has(category)) throw activityError('activity-records/invalid-category', 'Selecione uma categoria válida.');
   if (!ACTIVITY_VISIBILITIES.has(visibility)) throw activityError('activity-records/invalid-visibility', 'Selecione uma visibilidade válida.');
@@ -201,6 +212,7 @@ export function validateUploadInput(body) {
   return {
     patientId,
     sessionId,
+    sessionIds,
     uploadAttemptId,
     category,
     visibility,
@@ -219,21 +231,30 @@ export function validateUploadInput(body) {
   };
 }
 
-export function buildActivityDedupeKey({ workspaceId, patientId, sessionId, sha256 }) {
-  return crypto.createHash('sha256').update(`${workspaceId}:${patientId}:${sessionId}:${sha256}`).digest('hex');
+export function buildActivityDedupeKey({ workspaceId, patientId, sessionId, sessionIds, sha256 }) {
+  const normalizedSessionIds = [...new Set((Array.isArray(sessionIds) ? sessionIds : [sessionId])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))].sort();
+  const sessionScope = normalizedSessionIds.join(',') || String(sessionId || '');
+  return crypto.createHash('sha256').update(`${workspaceId}:${patientId}:${sessionScope}:${sha256}`).digest('hex');
 }
 
-export function buildActivityVideoDedupeKey({ workspaceId, patientId, sessionId, sha256, fileName, fileSize, durationSeconds, lastModified }) {
+export function buildActivityVideoDedupeKey({ workspaceId, patientId, sessionId, sessionIds, sha256, fileName, fileSize, durationSeconds, lastModified }) {
   if (/^[a-f0-9]{64}$/.test(String(sha256 || '').toLowerCase())) {
     return buildActivityDedupeKey({
       workspaceId,
       patientId,
       sessionId,
+      sessionIds,
       sha256: String(sha256).toLowerCase(),
     });
   }
+  const normalizedSessionIds = [...new Set((Array.isArray(sessionIds) ? sessionIds : [sessionId])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))].sort();
+  const sessionScope = normalizedSessionIds.join(',') || String(sessionId || '');
   return crypto.createHash('sha256')
-    .update(`${workspaceId}:${patientId}:${sessionId}:${fileName}:${fileSize}:${durationSeconds}:${lastModified}`)
+    .update(`${workspaceId}:${patientId}:${sessionScope}:${fileName}:${fileSize}:${durationSeconds}:${lastModified}`)
     .digest('hex');
 }
 

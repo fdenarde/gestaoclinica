@@ -18,6 +18,15 @@ responsive-backups/
 !firebase-blueprint.json
 !firebase-applet-config.json
 !tsconfig.json
+!config/whatsapp-reminder-suppressions.example.json
 .vercel
 
 client_secret*.json
+
+# Dados operacionais locais: nunca versionar dados reais de pacientes.
+config/whatsapp-reminder-suppressions.json
+
+# Relatórios locais de auditoria e continuidade.
+relatorios/CHECKPOINT_CONTINUIDADE_FIRESTORE_*.md
+relatorios/auditoria-whatsapp-*.md
+relatorios/preparacao-pm2-robo-whatsapp-*.md

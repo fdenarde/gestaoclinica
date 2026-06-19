@@ -12,8 +12,10 @@ const ACTIVE_LEGACY_VERIFICATIONS = new Map();
 export const MAX_LEGACY_DUPLICATE_CANDIDATES = 8;
 
 function duplicateResult(matches, sessionId) {
-  const sameSession = matches.find(record => record.sessionId === sessionId);
-  const otherSession = matches.find(record => record.sessionId !== sessionId);
+  const belongsToSession = record => record.sessionId === sessionId
+    || (Array.isArray(record.sessionIds) && record.sessionIds.includes(sessionId));
+  const sameSession = matches.find(belongsToSession);
+  const otherSession = matches.find(record => !belongsToSession(record));
   const existing = sameSession || otherSession;
   return {
     duplicate: Boolean(existing),

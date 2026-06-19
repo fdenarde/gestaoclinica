@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
+import { ACCESS_CONTEXTS, ACCESS_ROLES as ACCESS_PROFILE_ROLES, normalizePermissionOverrides } from './_lib/accessPermissions.js';
 import { notifyAccessApproval, notifyAccessRequest } from './_lib/accessRequestNotification.js';
 import { canShareActivityWithGuardian } from './_lib/activityRecordsValidation.js';
 import { buildResponsiblePackages, getPackageForMedia } from './_lib/responsiblePortalPackages.js';
@@ -224,14 +225,34 @@ function normalizeNotificationDetails(value) {
   )).filter(item => item.label);
 }
 
+function serializeProfileContexts(value, role) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map(item => normalizeText(item, 40))
+    .filter(item => ACCESS_CONTEXTS.has(item) && item !== role))]
+    .slice(0, 4);
+}
+
+function serializeProfileLinkedPatientIds(value) {
+  return Array.isArray(value)
+    ? [...new Set(value
+      .filter(item => typeof item === 'string' && item.trim())
+      .map(item => item.trim()))]
+      .slice(0, 200)
+    : [];
+}
+
 function serializeProfile(data) {
   if (!data) return null;
+  const role = ACCESS_PROFILE_ROLES.has(data.role) ? data.role : 'professional';
+  const workspaceId = normalizeText(data.workspaceId, 160);
+  const permissionOverrides = normalizePermissionOverrides(data.permissionOverrides);
   return {
     uid: String(data.uid || ''),
     email: normalizeEmail(data.email),
     displayName: normalizeText(data.displayName, 120),
     phone: normalizeText(data.phone, 24),
-    role: ['admin', 'professional', 'responsible'].includes(data.role) ? data.role : 'professional',
+    role,
     status: ACCESS_STATUSES.has(data.status) ? data.status : 'pending',
     createdAt: serializeDate(data.createdAt),
     approvedAt: serializeDate(data.approvedAt),
@@ -239,9 +260,31 @@ function serializeProfile(data) {
     revokedAt: serializeDate(data.revokedAt),
     revokedBy: data.revokedBy ? String(data.revokedBy) : null,
     revokedByEmail: data.revokedByEmail ? normalizeEmail(data.revokedByEmail) : null,
-    linkedPatientIds: serializeLinkedPatientIds(data.linkedPatientIds),
+    linkedPatientIds: serializeProfileLinkedPatientIds(data.linkedPatientIds),
+    linkedProfessionalIds: serializeProfileLinkedPatientIds(data.linkedProfessionalIds),
     provider: normalizeText(data.provider, 80),
     requestId: data.requestId ? String(data.requestId) : null,
+    schemaVersion: Number.isFinite(Number(data.schemaVersion)) ? Number(data.schemaVersion) : 1,
+    workspaceId: workspaceId || undefined,
+    enabledContexts: serializeProfileContexts(data.enabledContexts, role),
+    permissionOverrides,
+    suspension: data.suspension && typeof data.suspension === 'object'
+      ? {
+        active: data.suspension.active === true,
+        reason: normalizeText(data.suspension.reason, 300) || undefined,
+        startedAt: serializeDate(data.suspension.startedAt),
+        endsAt: serializeDate(data.suspension.endsAt),
+      }
+      : null,
+    temporaryAccess: data.temporaryAccess && typeof data.temporaryAccess === 'object'
+      ? {
+        startsAt: serializeDate(data.temporaryAccess.startsAt),
+        endsAt: serializeDate(data.temporaryAccess.endsAt),
+      }
+      : null,
+    configurationVersion: Number.isFinite(Number(data.configurationVersion))
+      ? Number(data.configurationVersion)
+      : 1,
   };
 }
 
@@ -1342,6 +1385,13 @@ async function manageProfessionalNotifications(db, decodedToken, body) {
     const data = snapshot.data();
     const lifecycle = notificationLifecycleForData(data);
     const type = normalizeText(data.type, 80);
+    const isPendingProfileReview = type === 'patient_profile_update'
+      && data.requestVersion === 2
+      && data.reviewStatus === 'pending';
+    if (isPendingProfileReview && ['complete', 'archive', 'ignore', 'delete'].includes(operation)) {
+      skippedIds.push(snapshot.id);
+      continue;
+    }
     if (scope === 'read_informational' && !['portal_access', 'gallery_access'].includes(type)) continue;
     if (scope === 'archived_deletable' && (!lifecycle.archived || lifecycle.protectedFromDeletion)) continue;
 
@@ -1508,12 +1558,19 @@ async function getResponsiblePortalData(db, decodedToken, req) {
       .filter(document => document.status === 'available')
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 
+    const latestProfileChangeRequest = serializeLatestProfileChangeRequestSummary(
+      profile.latestPatientProfileRequests && typeof profile.latestPatientProfileRequests === 'object'
+        ? profile.latestPatientProfileRequests[patientId]
+        : null,
+    );
+
     patientResults.push({
       patient: serializeResponsiblePatientProfile(patientId, patient),
       currentPackageNumber: packageResult.currentPackageNumber,
       packages: packageResult.packages,
       media,
       documents,
+      latestProfileChangeRequest,
     });
   }
 
@@ -1577,6 +1634,167 @@ async function getResponsiblePortalData(db, decodedToken, req) {
   return { ...baseResult, patients: patientResults };
 }
 
+
+async function listAdminResponsiblePreviewOptions(db, patientId) {
+  const snapshot = await db.collection('accessProfiles')
+    .where('linkedPatientIds', 'array-contains', patientId)
+    .limit(100)
+    .get();
+
+  return snapshot.docs
+    .map(document => {
+      const profile = document.data() || {};
+      return {
+        uid: document.id,
+        displayName: normalizeText(profile.displayName, 120) || 'Responsável',
+        email: normalizeEmail(profile.email),
+        status: normalizeText(profile.status, 40),
+        role: normalizeText(profile.role, 40),
+        profile,
+      };
+    })
+    .filter(option => option.status === 'approved' && option.role === 'responsible')
+    .sort((left, right) => (
+      left.displayName.localeCompare(right.displayName, 'pt-BR')
+      || left.email.localeCompare(right.email, 'pt-BR')
+    ));
+}
+
+async function getAdminResponsiblePortalData(db, decodedToken, req) {
+  requirePrimaryAdmin(decodedToken);
+
+  const patientId = normalizeText(req?.query?.patientId, 128);
+  if (!patientId) {
+    throw accessError(
+      'access/admin-preview-patient-required',
+      'Não foi possível identificar o atendente para a visualização.',
+      400,
+    );
+  }
+
+  const ownerUserId = await getPrimaryAdminUid();
+  const patientRef = db.doc(`users/${ownerUserId}/patients/${patientId}`);
+  const [patientSnapshot, settingsSnapshot, responsibleOptions] = await Promise.all([
+    patientRef.get(),
+    db.doc(`users/${ownerUserId}/settings/config`).get(),
+    listAdminResponsiblePreviewOptions(db, patientId),
+  ]);
+
+  if (!patientSnapshot.exists) {
+    throw accessError('access/patient-not-found', 'Atendente não encontrado.', 404);
+  }
+
+  const patient = patientSnapshot.data();
+  const requestedResponsibleUid = normalizeText(req?.query?.responsibleUid, 128);
+  const selectedResponsible = responsibleOptions.find(option => option.uid === requestedResponsibleUid)
+    || responsibleOptions[0]
+    || null;
+  const selectedResponsibleUid = selectedResponsible?.uid || '';
+  const selectedProfile = selectedResponsible?.profile || null;
+  const settings = serializePortalSettings(settingsSnapshot.exists ? settingsSnapshot.data() : {});
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [sessionsSnapshot, paymentsSnapshot, interactionsSnapshot, documentsSnapshot] = await Promise.all([
+    db.collection(`users/${ownerUserId}/sessions`).where('patientId', '==', patientId).limit(500).get(),
+    db.collection(`users/${ownerUserId}/payments`).where('patientId', '==', patientId).limit(200).get(),
+    db.collection(`users/${ownerUserId}/portalMediaInteractions`).where('patientId', '==', patientId).limit(1000).get(),
+    patientRef.collection('portalDocuments').limit(100).get(),
+  ]);
+
+  const sessions = sessionsSnapshot.docs
+    .map(serializeResponsibleSession)
+    .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
+  const packageResult = buildResponsiblePackages(sessions, { today });
+  const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
+  const sessionPackageMap = new Map();
+
+  for (const pkg of packageResult.packages) {
+    for (const session of pkg.sessions) sessionPackageMap.set(session.id, pkg.number);
+    Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number));
+  }
+
+  const interactions = selectedResponsibleUid
+    ? aggregateMediaInteractions(interactionsSnapshot.docs, selectedResponsibleUid)
+    : new Map();
+
+  let media = [];
+  if (patient.activityMediaAuthorization?.guardianSharingStatus === 'authorized') {
+    const mediaSnapshot = await patientRef.collection('activityRecords').limit(500).get();
+    media = mediaSnapshot.docs
+      .filter(snapshot => {
+        const record = snapshot.data();
+        return record.patientId === patientId && canShareActivityWithGuardian(patient, record);
+      })
+      .map(serializeResponsibleMedia)
+      .map(record => {
+        const packageNumber = getPackageForMedia(record, sessionPackageMap, packageResult.packages, today);
+        if (!packageNumber || packageNumber < packageResult.currentPackageNumber) return null;
+        const interaction = interactions.get(record.id) || {
+          likeCount: 0,
+          likedByCurrentResponsible: false,
+          comments: [],
+        };
+        return {
+          ...record,
+          packageNumber,
+          likeCount: interaction.likeCount,
+          likedByCurrentResponsible: interaction.likedByCurrentResponsible,
+          comments: interaction.comments,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => (
+        `${right.sessionDate}T${right.sessionTime}`.localeCompare(`${left.sessionDate}T${left.sessionTime}`)
+      ));
+  }
+
+  const documents = documentsSnapshot.docs
+    .map(serializeResponsibleDocument)
+    .filter(document => document.status === 'available')
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
+
+  const latestProfileChangeRequest = serializeLatestProfileChangeRequestSummary(
+    selectedProfile?.latestPatientProfileRequests
+      && typeof selectedProfile.latestPatientProfileRequests === 'object'
+      ? selectedProfile.latestPatientProfileRequests[patientId]
+      : null,
+  );
+
+  const patientResult = {
+    patient: serializeResponsiblePatientProfile(patientId, patient),
+    currentPackageNumber: packageResult.currentPackageNumber,
+    packages: packageResult.packages,
+    media,
+    documents,
+    latestProfileChangeRequest,
+  };
+
+  const fallbackResponsibleName = normalizeText(patient.guardianName, 120) || 'Responsável';
+  const responsibleName = selectedResponsible?.displayName || fallbackResponsibleName;
+  const responsibleEmail = selectedResponsible?.email || '';
+
+  return {
+    responsible: {
+      uid: selectedResponsibleUid || `admin-preview:${patientId}`,
+      displayName: responsibleName,
+      email: responsibleEmail,
+    },
+    settings,
+    patients: [patientResult],
+    adminPreview: {
+      readOnly: true,
+      patientId,
+      selectedResponsibleUid,
+      hasLinkedResponsible: responsibleOptions.length > 0,
+      responsibleOptions: responsibleOptions.map(option => ({
+        uid: option.uid,
+        displayName: option.displayName,
+        email: option.email,
+      })),
+    },
+  };
+}
+
 function patientPhotoFileId(patient = {}) {
   const direct = normalizeText(patient.photoDriveFileId, 256);
   if (direct) return direct;
@@ -1604,49 +1822,196 @@ async function getResponsiblePatientPhotoUrl(db, decodedToken, body, req) {
   return { url: '', expiresAt: 0 };
 }
 
-const RESPONSIBLE_PATIENT_FIELDS = {
+
+async function getAdminResponsiblePatientPhotoUrl(db, decodedToken, body, req) {
+  requirePrimaryAdmin(decodedToken);
+
+  const ownerUserId = await getPrimaryAdminUid();
+  const patientId = normalizeText(body.patientId, 128);
+  if (!patientId) {
+    throw accessError('access/admin-preview-patient-required', 'Não foi possível identificar o atendente.', 400);
+  }
+
+  const patientSnapshot = await db.doc(`users/${ownerUserId}/patients/${patientId}`).get();
+  if (!patientSnapshot.exists) {
+    throw accessError('access/patient-not-found', 'Atendente não encontrado.', 404);
+  }
+
+  const patient = patientSnapshot.data();
+  const fileId = patientPhotoFileId(patient);
+  if (fileId) {
+    const metadata = await getDriveFileMetadata(fileId);
+    assertOwnedPatientPhoto(metadata, ownerUserId);
+    return createSignedPhotoUrl({ req, fileId, ownerUserId });
+  }
+
+  const legacyUrl = typeof patient.photoUrl === 'string' ? patient.photoUrl.trim() : '';
+  if (legacyUrl) return { url: legacyUrl, expiresAt: Date.now() + 5 * 60 * 1000 };
+  return { url: '', expiresAt: 0 };
+}
+
+const RESPONSIBLE_PATIENT_TEXT_FIELDS = {
   name: 120,
+  fullName: 180,
   birthDate: 10,
   guardianName: 120,
   whatsapp: 30,
+  motherName: 180,
+  motherProfession: 120,
+  motherPhone: 30,
+  fatherName: 180,
+  fatherProfession: 120,
+  fatherPhone: 30,
+  otherResponsibleName: 180,
+  otherResponsibleKinship: 100,
+  otherResponsiblePhone: 30,
   school: 180,
-  grade: 80,
+  grade: 100,
+  educationDetail: 180,
   shift: 40,
+  custodyResponsibleName: 180,
+  custodyResponsibleKinship: 100,
   doctorName: 180,
   medication: 1000,
   emergencyContact: 300,
   allergies: 1000,
+  financialResponsibleOtherName: 180,
+  financialResponsibleOtherKinship: 100,
+  financialResponsibleOtherPhone: 30,
+  financialResponsibleOtherCpf: 20,
+};
+
+const RESPONSIBLE_PATIENT_ENUM_FIELDS = {
+  sex: new Set(['Masculino', 'Feminino', 'Não informado']),
+  familyStatus: new Set([
+    'Casados',
+    'União estável',
+    'Separados',
+    'Divorciados',
+    'Nunca viveram juntos',
+    'Pai falecido',
+    'Mãe falecida',
+    'Ambos falecidos',
+  ]),
+  custodyStatus: new Set([
+    'Guarda compartilhada',
+    'Guarda unilateral da mãe',
+    'Guarda unilateral do pai',
+    'Guarda de outro responsável',
+  ]),
+  financialResponsible: new Set(['Pai', 'Mãe', 'Outro']),
 };
 
 const RESPONSIBLE_PATIENT_FIELD_LABELS = {
-  name: 'Nome completo',
+  name: '1º Nome do Atendente',
+  fullName: 'Nome completo do Atendente',
   birthDate: 'Data de nascimento',
-  guardianName: 'Responsável principal',
-  whatsapp: 'WhatsApp',
+  sex: 'Sexo',
+  guardianName: '1º Nome do Responsável',
+  whatsapp: 'WhatsApp do Responsável',
+  motherName: 'Nome completo da mãe',
+  motherProfession: 'Profissão da mãe',
+  motherPhone: 'Contato da mãe',
+  fatherName: 'Nome completo do pai',
+  fatherProfession: 'Profissão do pai',
+  fatherPhone: 'Contato do pai',
+  otherResponsibleName: 'Nome completo de outro responsável',
+  otherResponsibleKinship: 'Parentesco do outro responsável',
+  otherResponsiblePhone: 'Contato de outro responsável',
   school: 'Escola',
-  grade: 'Ano/Série',
+  grade: 'Ano/nível escolar',
+  educationDetail: 'Curso, especialização ou formação',
   shift: 'Turno',
-  doctorName: 'Médico responsável',
+  familyStatus: 'Situação familiar',
+  custodyStatus: 'Situação da guarda',
+  custodyResponsibleName: 'Nome do responsável pela guarda',
+  custodyResponsibleKinship: 'Parentesco do responsável pela guarda',
+  careProfessionals: 'Profissionais que acompanham o Atendente',
+  doctorName: 'Profissional/médico informado anteriormente',
   medication: 'Medicação em uso',
   emergencyContact: 'Contato de emergência',
   allergies: 'Alergias e restrições',
+  financialResponsible: 'Responsável financeiro',
+  financialResponsibleOtherName: 'Nome do responsável financeiro',
+  financialResponsibleOtherKinship: 'Parentesco do responsável financeiro',
+  financialResponsibleOtherPhone: 'Telefone do responsável financeiro',
+  financialResponsibleOtherCpf: 'CPF do responsável financeiro',
 };
+
+function normalizePatientCareProfessionals(value) {
+  if (!Array.isArray(value)) return [];
+  const usedIds = new Set();
+  return value.slice(0, 20).map((item, index) => {
+    const source = item && typeof item === 'object' ? item : {};
+    let id = normalizeText(source.id, 128) || `care-${index + 1}`;
+    if (usedIds.has(id)) id = `${id}-${index + 1}`;
+    usedIds.add(id);
+    return {
+      id,
+      specialty: normalizeText(source.specialty, 100),
+      customSpecialty: normalizeText(source.customSpecialty, 100),
+      name: normalizeText(source.name, 180),
+      contact: normalizeText(source.contact, 120),
+    };
+  }).filter(item => item.specialty);
+}
+
+function normalizeResponsiblePatientField(field, value) {
+  if (field === 'careProfessionals') return normalizePatientCareProfessionals(value);
+  if (Object.prototype.hasOwnProperty.call(RESPONSIBLE_PATIENT_TEXT_FIELDS, field)) {
+    return normalizeText(value, RESPONSIBLE_PATIENT_TEXT_FIELDS[field]);
+  }
+  const allowed = RESPONSIBLE_PATIENT_ENUM_FIELDS[field];
+  if (allowed) {
+    const normalized = normalizeText(value, 100);
+    return allowed.has(normalized) ? normalized : '';
+  }
+  return undefined;
+}
+
+function patientFieldValuesEqual(left, right) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
 
 function serializeResponsiblePatientProfile(patientId, patient = {}) {
   return {
     id: patientId,
     name: normalizeText(patient.name, 120) || 'Paciente',
     firstName: normalizeText(patient.name, 120).split(' ')[0] || 'Paciente',
+    fullName: normalizeText(patient.fullName, 180) || normalizeText(patient.name, 120),
     birthDate: normalizeText(patient.birthDate, 10),
+    sex: RESPONSIBLE_PATIENT_ENUM_FIELDS.sex.has(patient.sex) ? patient.sex : 'Não informado',
     guardianName: normalizeText(patient.guardianName, 120),
     whatsapp: normalizeText(patient.whatsapp, 30),
+    motherName: normalizeText(patient.motherName, 180),
+    motherProfession: normalizeText(patient.motherProfession, 120),
+    motherPhone: normalizeText(patient.motherPhone, 30),
+    fatherName: normalizeText(patient.fatherName, 180),
+    fatherProfession: normalizeText(patient.fatherProfession, 120),
+    fatherPhone: normalizeText(patient.fatherPhone, 30),
+    otherResponsibleName: normalizeText(patient.otherResponsibleName, 180),
+    otherResponsibleKinship: normalizeText(patient.otherResponsibleKinship, 100),
+    otherResponsiblePhone: normalizeText(patient.otherResponsiblePhone, 30),
     school: normalizeText(patient.school, 180),
-    grade: normalizeText(patient.grade, 80),
+    grade: normalizeText(patient.grade, 100),
+    educationDetail: normalizeText(patient.educationDetail, 180),
     shift: normalizeText(patient.shift, 40),
+    familyStatus: RESPONSIBLE_PATIENT_ENUM_FIELDS.familyStatus.has(patient.familyStatus) ? patient.familyStatus : undefined,
+    custodyStatus: RESPONSIBLE_PATIENT_ENUM_FIELDS.custodyStatus.has(patient.custodyStatus) ? patient.custodyStatus : undefined,
+    custodyResponsibleName: normalizeText(patient.custodyResponsibleName, 180),
+    custodyResponsibleKinship: normalizeText(patient.custodyResponsibleKinship, 100),
+    careProfessionals: normalizePatientCareProfessionals(patient.careProfessionals),
     doctorName: normalizeText(patient.doctorName, 180),
     medication: normalizeText(patient.medication, 1000),
     emergencyContact: normalizeText(patient.emergencyContact, 300),
     allergies: normalizeText(patient.allergies, 1000),
+    financialResponsible: RESPONSIBLE_PATIENT_ENUM_FIELDS.financialResponsible.has(patient.financialResponsible)
+      ? patient.financialResponsible
+      : undefined,
+    financialResponsibleOtherName: normalizeText(patient.financialResponsibleOtherName, 180),
+    financialResponsibleOtherKinship: normalizeText(patient.financialResponsibleOtherKinship, 100),
+    financialResponsibleOtherPhone: normalizeText(patient.financialResponsibleOtherPhone, 30),
+    financialResponsibleOtherCpf: normalizeText(patient.financialResponsibleOtherCpf, 20),
     hasPhoto: Boolean(
       patient.photoDriveFileId
       || String(patient.photoStoragePath || '').startsWith('google-drive:')
@@ -1655,83 +2020,374 @@ function serializeResponsiblePatientProfile(patientId, patient = {}) {
   };
 }
 
-async function updateResponsiblePatient(db, decodedToken, body) {
+function serializePatientProfileChangeRequest(snapshot) {
+  if (!snapshot?.exists) return null;
+  const data = snapshot.data() || {};
+  const status = ['pending', 'approved', 'rejected'].includes(data.reviewStatus)
+    ? data.reviewStatus
+    : 'pending';
+  return {
+    id: snapshot.id,
+    patientId: normalizeText(data.patientId, 128),
+    patientName: normalizeText(data.patientName, 180),
+    responsibleUid: normalizeText(data.responsibleUid, 128),
+    responsibleName: normalizeText(data.responsibleName, 120),
+    responsibleEmail: normalizeEmail(data.responsibleEmail),
+    status,
+    changedFields: Array.isArray(data.changedFields)
+      ? data.changedFields.map(field => normalizeText(field, 100)).filter(Boolean)
+      : [],
+    before: data.before && typeof data.before === 'object' ? data.before : {},
+    after: data.after && typeof data.after === 'object' ? data.after : {},
+    createdAt: serializeDate(data.createdAt),
+    reviewedAt: serializeDate(data.reviewedAt),
+    reviewedBy: data.reviewedBy ? String(data.reviewedBy) : null,
+    reviewedByEmail: data.reviewedByEmail ? normalizeEmail(data.reviewedByEmail) : null,
+    rejectionReason: data.rejectionReason ? normalizeText(data.rejectionReason, 1000) : null,
+  };
+}
+
+function serializeLatestProfileChangeRequestSummary(value) {
+  if (!value || typeof value !== 'object') return null;
+  const status = ['pending', 'approved', 'rejected'].includes(value.status) ? value.status : null;
+  const id = normalizeText(value.id, 128);
+  if (!id || !status) return null;
+  return {
+    id,
+    status,
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : serializeDate(value.createdAt),
+    reviewedAt: typeof value.reviewedAt === 'string' ? value.reviewedAt : serializeDate(value.reviewedAt),
+  };
+}
+
+async function requestResponsiblePatientUpdate(db, decodedToken, body) {
   const { profile, linkedPatientIds, ownerUserId } = await requireResponsibleContext(db, decodedToken);
   const patientId = normalizeText(body.patientId, 128);
   if (!patientId || !linkedPatientIds.includes(patientId)) {
     throw accessError('access/patient-not-linked', 'O atendente informado não está vinculado a este acesso.', 403);
   }
+  if (body.declarationAccepted !== true) {
+    throw accessError(
+      'access/profile-declaration-required',
+      'Confirme a declaração de ciência antes de enviar a solicitação.',
+      400,
+    );
+  }
+
   const patientRef = db.doc(`users/${ownerUserId}/patients/${patientId}`);
   const patientSnapshot = await patientRef.get();
   if (!patientSnapshot.exists) throw accessError('access/patient-not-found', 'Atendente não encontrado.', 404);
   const current = patientSnapshot.data();
   const rawValues = body.values && typeof body.values === 'object' ? body.values : {};
-  const nextValues = {};
   const before = {};
+  const after = {};
   const changedFields = [];
-  for (const [field, maxLength] of Object.entries(RESPONSIBLE_PATIENT_FIELDS)) {
-    const next = normalizeText(rawValues[field], maxLength);
-    const previous = normalizeText(current[field], maxLength);
+  const supportedFields = [
+    ...Object.keys(RESPONSIBLE_PATIENT_TEXT_FIELDS),
+    ...Object.keys(RESPONSIBLE_PATIENT_ENUM_FIELDS),
+    'careProfessionals',
+  ];
+
+  for (const field of supportedFields) {
+    if (!Object.prototype.hasOwnProperty.call(rawValues, field)) continue;
+    const next = normalizeResponsiblePatientField(field, rawValues[field]);
+    const previous = normalizeResponsiblePatientField(field, current[field]);
     if (field === 'name' && !next) {
-      throw accessError('access/patient-name-required', 'Informe o nome do atendente.');
+      throw accessError('access/patient-name-required', 'Informe o 1º nome do atendente.');
     }
-    nextValues[field] = next;
-    if (next !== previous) {
+    if (!patientFieldValuesEqual(next, previous)) {
       before[field] = previous;
+      after[field] = next;
       changedFields.push(field);
     }
   }
-  if (changedFields.length === 0) {
-    return { updated: false, patient: serializeResponsiblePatientProfile(patientId, current), changedFields: [] };
+
+  const requiredProfileFields = [
+    ['name', 'Informe o 1º nome do atendente.'],
+    ['fullName', 'Informe o nome completo do atendente.'],
+    ['birthDate', 'Informe a data de nascimento do atendente.'],
+    ['guardianName', 'Informe o 1º nome do responsável.'],
+    ['whatsapp', 'Informe o WhatsApp do responsável.'],
+  ];
+  for (const [field, message] of requiredProfileFields) {
+    const effectiveValue = Object.prototype.hasOwnProperty.call(after, field)
+      ? after[field]
+      : normalizeResponsiblePatientField(field, current[field]);
+    if (!normalizeText(effectiveValue, 300)) {
+      throw accessError(`access/patient-${field}-required`, message);
+    }
   }
+
+  if (changedFields.length === 0) {
+    return {
+      submitted: false,
+      existingPending: false,
+      patient: serializeResponsiblePatientProfile(patientId, current),
+      changedFields: [],
+      request: null,
+    };
+  }
+
+  const latestByPatient = profile.latestPatientProfileRequests && typeof profile.latestPatientProfileRequests === 'object'
+    ? profile.latestPatientProfileRequests
+    : {};
+  const latestSummary = serializeLatestProfileChangeRequestSummary(latestByPatient[patientId]);
+  if (latestSummary?.status === 'pending') {
+    const existingRef = db.doc(`users/${ownerUserId}/portalNotifications/${latestSummary.id}`);
+    const existingSnapshot = await existingRef.get();
+    if (existingSnapshot.exists && existingSnapshot.data()?.reviewStatus === 'pending') {
+      return {
+        submitted: false,
+        existingPending: true,
+        patient: serializeResponsiblePatientProfile(patientId, current),
+        changedFields: serializePatientProfileChangeRequest(existingSnapshot)?.changedFields || [],
+        request: serializePatientProfileChangeRequest(existingSnapshot),
+      };
+    }
+  }
+
   const responsibleName = normalizeText(profile.displayName || decodedToken.name, 120) || 'Responsável';
   const responsibleEmail = normalizeEmail(profile.email || decodedToken.email);
   const clientContext = normalizeClientContext({
     portalTab: 'profile',
-    actionLocation: 'Portal do Responsável / Atualização cadastral',
+    actionLocation: 'Portal do Responsável / Solicitação de alteração cadastral',
     ...(body.clientContext && typeof body.clientContext === 'object' ? body.clientContext : {}),
   });
-  const after = Object.fromEntries(changedFields.map(field => [field, nextValues[field]]));
+  const patientName = normalizeText(after.fullName || current.fullName || after.name || current.name, 180) || 'Atendente';
+  const formatChangeValue = (field, value) => {
+    if (field !== 'careProfessionals') return value;
+    return normalizePatientCareProfessionals(value).map(item => {
+      const specialty = item.specialty === 'Outro'
+        ? item.customSpecialty || 'Outro'
+        : item.specialty;
+      const details = [item.name, item.contact].filter(Boolean).join(' — ');
+      return details ? `${specialty}: ${details}` : specialty;
+    }).join('; ');
+  };
   const changeDetails = changedFields.map(field => notificationDetail(
     RESPONSIBLE_PATIENT_FIELD_LABELS[field] || field,
-    'Campo atualizado',
-    { previousValue: before[field], newValue: nextValues[field] },
+    'Alteração aguardando aprovação',
+    {
+      previousValue: formatChangeValue(field, before[field]),
+      newValue: formatChangeValue(field, after[field]),
+    },
   ));
   const notificationRef = db.collection(`users/${ownerUserId}/portalNotifications`).doc();
-  const batch = db.batch();
-  batch.set(patientRef, {
-    ...nextValues,
-    lastResponsiblePortalUpdate: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  }, { merge: true });
-  batch.set(notificationRef, {
-    type: 'patient_profile_update',
-    ...notificationBaseFields('patient_profile_update', { changedFields }),
-    title: 'Cadastro atualizado pelo responsável',
-    message: `${responsibleName} alterou ${changedFields.length} campo(s) do cadastro de ${nextValues.name}: ${changedFields.map(field => RESPONSIBLE_PATIENT_FIELD_LABELS[field] || field).join(', ')}.`,
-    patientId,
-    patientName: nextValues.name,
-    responsibleUid: decodedToken.uid,
-    responsibleName,
-    responsibleEmail,
-    changedFields,
-    before,
-    after,
-    actionLocation: clientContext.actionLocation,
-    actionTarget: `Cadastro de ${nextValues.name}`,
-    navigationTarget: 'patient_profile',
-    clientContext,
-    details: changeDetails,
-    read: false,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
+  const profileRef = db.collection('accessProfiles').doc(decodedToken.uid);
+  const createdAtIso = new Date().toISOString();
+
+  const transactionResult = await db.runTransaction(async transaction => {
+    const freshProfileSnapshot = await transaction.get(profileRef);
+    const freshProfile = freshProfileSnapshot.exists ? freshProfileSnapshot.data() : {};
+    const freshLatestMap = freshProfile.latestPatientProfileRequests
+      && typeof freshProfile.latestPatientProfileRequests === 'object'
+      ? freshProfile.latestPatientProfileRequests
+      : {};
+    const freshLatestSummary = serializeLatestProfileChangeRequestSummary(freshLatestMap[patientId]);
+
+    if (freshLatestSummary?.status === 'pending') {
+      const existingRef = db.doc(`users/${ownerUserId}/portalNotifications/${freshLatestSummary.id}`);
+      const existingSnapshot = await transaction.get(existingRef);
+      if (existingSnapshot.exists && existingSnapshot.data()?.reviewStatus === 'pending') {
+        return {
+          existingRequest: serializePatientProfileChangeRequest(existingSnapshot),
+        };
+      }
+    }
+
+    const nextLatestMap = {
+      ...freshLatestMap,
+      [patientId]: {
+        id: notificationRef.id,
+        status: 'pending',
+        createdAt: createdAtIso,
+        reviewedAt: null,
+      },
+    };
+
+    transaction.set(notificationRef, {
+      type: 'patient_profile_update',
+      requestVersion: 2,
+      reviewStatus: 'pending',
+      ...notificationBaseFields('patient_profile_update', { changedFields }),
+      title: 'Alteração cadastral aguardando aprovação',
+      message: `${responsibleName} solicitou alteração de ${changedFields.length} campo(s) do cadastro de ${patientName}.`,
+      patientId,
+      patientName,
+      responsibleUid: decodedToken.uid,
+      responsibleName,
+      responsibleEmail,
+      changedFields,
+      before,
+      after,
+      declarationAccepted: true,
+      declarationText: 'Declaro que as informações fornecidas são verdadeiras e não substituem orientação ou prescrição médica.',
+      declarationAcceptedAt: FieldValue.serverTimestamp(),
+      actionLocation: clientContext.actionLocation,
+      actionTarget: `Cadastro de ${patientName}`,
+      navigationTarget: 'patient_profile',
+      clientContext,
+      details: changeDetails,
+      pendingAction: true,
+      completed: false,
+      status: 'pending',
+      read: false,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    transaction.set(profileRef, { latestPatientProfileRequests: nextLatestMap }, { merge: true });
+    return { existingRequest: null };
   });
-  await batch.commit();
+
+  if (transactionResult.existingRequest) {
+    return {
+      submitted: false,
+      existingPending: true,
+      patient: serializeResponsiblePatientProfile(patientId, current),
+      changedFields: transactionResult.existingRequest.changedFields || [],
+      request: transactionResult.existingRequest,
+    };
+  }
+
+  const createdSnapshot = await notificationRef.get();
   return {
-    updated: true,
-    patient: serializeResponsiblePatientProfile(patientId, { ...current, ...nextValues }),
+    submitted: true,
+    existingPending: false,
+    patient: serializeResponsiblePatientProfile(patientId, current),
     changedFields,
+    request: serializePatientProfileChangeRequest(createdSnapshot),
   };
+}
+
+async function listPatientProfileChangeRequests(db, decodedToken, req) {
+  const { ownerUserId } = await requireInternalNotificationContext(db, decodedToken);
+  const patientId = normalizeText(req?.query?.patientId, 128);
+  if (!patientId) throw accessError('access/patient-id-required', 'Informe o atendente para consultar as solicitações.');
+  const snapshot = await db.collection(`users/${ownerUserId}/portalNotifications`)
+    .where('patientId', '==', patientId)
+    .limit(100)
+    .get();
+  const requests = snapshot.docs
+    .filter(item => item.data()?.type === 'patient_profile_update' && item.data()?.requestVersion === 2)
+    .map(serializePatientProfileChangeRequest)
+    .filter(Boolean)
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  return { requests };
+}
+
+async function reviewPatientProfileChangeRequest(db, decodedToken, body) {
+  const { ownerUserId } = await requireInternalNotificationContext(db, decodedToken);
+  const requestId = normalizeText(body.requestId, 128);
+  const decision = normalizeText(body.decision, 20);
+  const rejectionReason = normalizeText(body.rejectionReason, 1000);
+  if (!requestId) throw accessError('access/profile-request-id-required', 'Solicitação não informada.');
+  if (!['approved', 'rejected'].includes(decision)) {
+    throw accessError('access/profile-request-invalid-decision', 'Selecione aprovar ou recusar.');
+  }
+
+  const requestRef = db.doc(`users/${ownerUserId}/portalNotifications/${requestId}`);
+  await db.runTransaction(async transaction => {
+    const requestSnapshot = await transaction.get(requestRef);
+    if (!requestSnapshot.exists) throw accessError('access/profile-request-not-found', 'Solicitação não encontrada.', 404);
+    const requestData = requestSnapshot.data();
+    if (requestData.type !== 'patient_profile_update' || requestData.requestVersion !== 2) {
+      throw accessError('access/profile-request-invalid', 'O registro informado não é uma solicitação cadastral válida.');
+    }
+    if (requestData.reviewStatus !== 'pending') {
+      throw accessError('access/profile-request-already-reviewed', 'Esta solicitação já foi analisada.', 409);
+    }
+
+    const patientId = normalizeText(requestData.patientId, 128);
+    const patientRef = db.doc(`users/${ownerUserId}/patients/${patientId}`);
+    const patientSnapshot = await transaction.get(patientRef);
+    if (!patientSnapshot.exists) throw accessError('access/patient-not-found', 'Atendente não encontrado.', 404);
+
+    const responsibleUid = normalizeText(requestData.responsibleUid, 128);
+    const responsibleProfileRef = responsibleUid
+      ? db.collection('accessProfiles').doc(responsibleUid)
+      : null;
+    const responsibleProfileSnapshot = responsibleProfileRef
+      ? await transaction.get(responsibleProfileRef)
+      : null;
+
+    const current = patientSnapshot.data();
+    const changedFields = Array.isArray(requestData.changedFields) ? requestData.changedFields : [];
+    const before = requestData.before && typeof requestData.before === 'object' ? requestData.before : {};
+    const after = requestData.after && typeof requestData.after === 'object' ? requestData.after : {};
+    const patientPatch = {};
+
+    if (decision === 'approved') {
+      const conflicts = [];
+      for (const field of changedFields) {
+        const currentValue = normalizeResponsiblePatientField(field, current[field]);
+        const beforeValue = normalizeResponsiblePatientField(field, before[field]);
+        if (!patientFieldValuesEqual(currentValue, beforeValue)) {
+          conflicts.push(RESPONSIBLE_PATIENT_FIELD_LABELS[field] || field);
+          continue;
+        }
+        patientPatch[field] = normalizeResponsiblePatientField(field, after[field]);
+      }
+      if (conflicts.length > 0) {
+        throw accessError(
+          'access/profile-request-conflict',
+          `O cadastro foi alterado após a solicitação nos campos: ${conflicts.join(', ')}. Recuse esta solicitação e confira os dados atuais.`,
+          409,
+        );
+      }
+    }
+
+    if (decision === 'approved') {
+      transaction.set(patientRef, {
+        ...patientPatch,
+        lastResponsiblePortalApprovedUpdate: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    const reviewedBy = decodedToken.uid;
+    const reviewedByEmail = normalizeEmail(decodedToken.email);
+    transaction.set(requestRef, {
+      reviewStatus: decision,
+      rejectionReason: decision === 'rejected' ? rejectionReason : null,
+      reviewedAt: FieldValue.serverTimestamp(),
+      reviewedBy,
+      reviewedByEmail,
+      pendingAction: false,
+      completed: true,
+      completedAt: FieldValue.serverTimestamp(),
+      status: 'completed',
+      read: true,
+      readAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    if (responsibleProfileRef && responsibleProfileSnapshot?.exists) {
+      const responsibleProfile = responsibleProfileSnapshot.data();
+      const latestByPatient = responsibleProfile.latestPatientProfileRequests && typeof responsibleProfile.latestPatientProfileRequests === 'object'
+        ? responsibleProfile.latestPatientProfileRequests
+        : {};
+      transaction.set(responsibleProfileRef, {
+        latestPatientProfileRequests: {
+          ...latestByPatient,
+          [patientId]: {
+            id: requestId,
+            status: decision,
+            createdAt: serializeDate(requestData.createdAt) || null,
+            reviewedAt: new Date().toISOString(),
+          },
+        },
+      }, { merge: true });
+    }
+  });
+
+  const reviewedSnapshot = await requestRef.get();
+  const reviewedRequest = serializePatientProfileChangeRequest(reviewedSnapshot);
+  let patient = null;
+  if (reviewedRequest?.patientId) {
+    const patientSnapshot = await db.doc(`users/${ownerUserId}/patients/${reviewedRequest.patientId}`).get();
+    if (patientSnapshot.exists) patient = serializeResponsiblePatientProfile(reviewedRequest.patientId, patientSnapshot.data());
+  }
+  return { request: reviewedRequest, patient };
 }
 
 const RESPONSIBLE_DOCUMENT_TYPES = new Set([
@@ -2237,8 +2893,14 @@ export default async function handler(req, res) {
       if (req.query?.mode === 'responsiblePortal') {
         return res.status(200).json(await getResponsiblePortalData(db, decodedToken, req));
       }
+      if (req.query?.mode === 'adminResponsiblePreview') {
+        return res.status(200).json(await getAdminResponsiblePortalData(db, decodedToken, req));
+      }
       if (req.query?.mode === 'professionalNotifications') {
         return res.status(200).json(await listProfessionalNotifications(db, decodedToken, req));
+      }
+      if (req.query?.action === 'listPatientProfileChangeRequests') {
+        return res.status(200).json(await listPatientProfileChangeRequests(db, decodedToken, req));
       }
       const snapshot = await getProfile(db, decodedToken);
       return res.status(200).json({ profile: snapshot.exists ? serializeProfile(snapshot.data()) : null });
@@ -2306,9 +2968,19 @@ export default async function handler(req, res) {
       return res.status(200).json(await getResponsiblePatientPhotoUrl(db, decodedToken, body, req));
     }
 
-    if (body.action === 'updateResponsiblePatient') {
+    if (body.action === 'getAdminResponsiblePatientPhotoUrl') {
       const decodedToken = await verifyFirebaseRequest(req);
-      return res.status(200).json(await updateResponsiblePatient(db, decodedToken, body));
+      return res.status(200).json(await getAdminResponsiblePatientPhotoUrl(db, decodedToken, body, req));
+    }
+
+    if (body.action === 'requestResponsiblePatientUpdate' || body.action === 'updateResponsiblePatient') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      return res.status(200).json(await requestResponsiblePatientUpdate(db, decodedToken, body));
+    }
+
+    if (body.action === 'reviewPatientProfileChangeRequest') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      return res.status(200).json(await reviewPatientProfileChangeRequest(db, decodedToken, body));
     }
 
     if (body.action !== 'requestAccess') {

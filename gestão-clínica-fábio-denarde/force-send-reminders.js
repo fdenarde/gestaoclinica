@@ -4,10 +4,20 @@ import qrcode from 'qrcode-terminal';
 import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
+import { findWhatsappReminderSuppression } from './src/lib/whatsappReminderSuppressions.js';
+import { loadWhatsappReminderSuppressions } from './src/lib/whatsappReminderSuppressionStore.js';
 
 if (process.env.ALLOW_FORCE_WHATSAPP_SEND !== 'SIM') {
     console.error('BLOQUEADO: force-send-reminders.js envia lembretes reais para responsaveis.');
     console.error('Use dry_run_reminders.js para validar. Para executar conscientemente, defina ALLOW_FORCE_WHATSAPP_SEND=SIM.');
+    process.exit(1);
+}
+
+let reminderSuppressions;
+try {
+    reminderSuppressions = loadWhatsappReminderSuppressions();
+} catch (error) {
+    console.error('[BLOQUEIO] Não foi possível carregar as supressões obrigatórias de WhatsApp:', error.message);
     process.exit(1);
 }
 
@@ -394,6 +404,26 @@ async function dispararLembretes(tipo) {
             console.log(`[INFO] ${plan.dateStr} (${tipo}): Encontradas ${plan.reminders.length} mensagens únicas para enviar.`);
 
             for (const r of plan.reminders) {
+                const patient = patients.find(p => p.id === r.patientId);
+                const scheduledTimeByType = {
+                    HOJE_MANHA: '06:30',
+                    AMANHA: '09:00',
+                    HOJE_TARDE: '12:30'
+                };
+                const suppression = findWhatsappReminderSuppression({
+                    suppressions: reminderSuppressions,
+                    patient,
+                    session: r,
+                    runDateStr: today.toISOString().split('T')[0],
+                    scheduledTime: scheduledTimeByType[tipo],
+                    dateStr: plan.dateStr,
+                    tipo
+                });
+                if (suppression) {
+                    console.log(`[BLOQUEIO] ${r.patientName} (${plan.dateStr} ${r.time}): ${suppression.reason}`);
+                    continue;
+                }
+
                 console.log(`[ENVIO] Enviando para ${r.guardianName} (${r.phone})...`);
                 try {
                     await client.sendMessage(r.phone, r.message);

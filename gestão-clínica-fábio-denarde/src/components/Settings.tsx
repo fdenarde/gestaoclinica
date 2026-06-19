@@ -1,18 +1,43 @@
 import React, { useState, useRef } from 'react';
 import { AppState, ClinicSettings, Patient, PaymentModal } from '../types';
-import { Save, Building, Mail, Phone, MapPin, User, CheckCircle, Database, Download, Upload, Calendar, Trash2, Palette, ChevronDown } from 'lucide-react';
+import { Save, Building, Mail, Phone, MapPin, User, CheckCircle, Database, Download, Upload, Calendar, Trash2, Palette, ChevronDown, Clock3, ImagePlus, PanelLeft, Rows3 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import Papa from 'papaparse';
 import { safeFormatDate, generateHolidaysForYear } from '../lib/utils';
 import { APP_THEMES, resolveTheme, type AppTheme } from '../lib/theme';
+import type { NavigationMode } from '../lib/navigationPreferences';
 
 interface SettingsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
   onThemeChange: (theme: AppTheme) => Promise<boolean>;
+  canManageActivityMonitoring?: boolean;
+  navigationMode: NavigationMode;
+  onNavigationModeChange: (mode: NavigationMode) => void;
 }
 
-export default function Settings({ state, onUpdate, onThemeChange }: SettingsProps) {
+function toMonitoringInputValue(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date).replace(' ', 'T');
+}
+
+function monitoringInputToIso(value: string): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(`${value}:00-03:00`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+export default function Settings({ state, onUpdate, onThemeChange, canManageActivityMonitoring = false, navigationMode, onNavigationModeChange }: SettingsProps) {
   const [settings, setSettings] = useState<ClinicSettings>(state.settings);
   const [success, setSuccess] = useState(false);
   const [themeMessage, setThemeMessage] = useState('');
@@ -281,7 +306,74 @@ export default function Settings({ state, onUpdate, onThemeChange }: SettingsPro
             </div>
           </div>
 
+          <section className="rounded-xl border border-purple-300 bg-purple-50/70 p-4 sm:p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-purple-800">
+                  <ImagePlus size={19} />
+                  <h3 className="font-bold">Monitoramento de uploads de atividades</h3>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-purple-900/75">
+                  Sessões realizadas cujo término ocorrer a partir desta data serão acompanhadas por 24 horas. Sessões e mídias anteriores continuam visíveis, sem alertas retroativos.
+                </p>
+              </div>
+              <div className="w-full lg:max-w-md">
+                <label className="mb-1 block text-[10px] font-black uppercase tracking-wider text-purple-800">Início do monitoramento de uploads de atividades</label>
+                <div className="relative">
+                  <Clock3 className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-700" size={16} />
+                  <input
+                    type="datetime-local"
+                    value={toMonitoringInputValue(settings.activityMediaMonitoringStart)}
+                    onChange={event => setSettings({ ...settings, activityMediaMonitoringStart: monitoringInputToIso(event.target.value) })}
+                    disabled={!canManageActivityMonitoring}
+                    className="w-full rounded-xl border border-purple-300 bg-white py-2.5 pl-10 pr-3 text-sm font-bold text-clinic-text outline-none focus:ring-2 focus:ring-purple-500 disabled:cursor-not-allowed disabled:bg-purple-100/70 disabled:text-purple-900/60"
+                  />
+                </div>
+                <p className="mt-1 text-[10px] font-bold text-purple-800/70">Fuso utilizado: America/Sao_Paulo • 24 horas corridas.</p>
+                {!canManageActivityMonitoring && (
+                  <p className="mt-1 text-[10px] font-bold text-purple-800">Somente um administrador pode alterar esta configuração.</p>
+                )}
+              </div>
+            </div>
+          </section>
+
           <section className="border-t border-clinic-border pt-5">
+            <div className="mb-4 rounded-xl border border-clinic-border bg-clinic-bg/40 p-4">
+              <div className="flex items-start gap-3">
+                <PanelLeft size={18} className="mt-0.5 shrink-0 text-clinic-primary" />
+                <div>
+                  <h3 className="text-base font-bold text-clinic-text">Tipo de navegação</h3>
+                  <p className="mt-1 text-xs text-clinic-text-muted">Escolha entre o menu lateral profissional ou o menu superior compacto. A preferência fica salva somente neste navegador.</p>
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => onNavigationModeChange('sidebar')}
+                  aria-pressed={navigationMode === 'sidebar'}
+                  className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-all ${navigationMode === 'sidebar' ? 'border-clinic-primary bg-clinic-surface shadow-sm ring-2 ring-clinic-primary/15' : 'border-clinic-border bg-white hover:border-clinic-border-dark'}`}
+                >
+                  <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${navigationMode === 'sidebar' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-primary'}`}><PanelLeft size={21} /></span>
+                  <span>
+                    <span className="block text-sm font-black text-clinic-text">Menu lateral</span>
+                    <span className="mt-1 block text-[11px] text-clinic-text-muted">Padrão recomendado, recolhível e adaptado para celular.</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigationModeChange('top')}
+                  aria-pressed={navigationMode === 'top'}
+                  className={`flex items-center gap-3 rounded-xl border p-4 text-left transition-all ${navigationMode === 'top' ? 'border-clinic-primary bg-clinic-surface shadow-sm ring-2 ring-clinic-primary/15' : 'border-clinic-border bg-white hover:border-clinic-border-dark'}`}
+                >
+                  <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${navigationMode === 'top' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-primary'}`}><Rows3 size={21} /></span>
+                  <span>
+                    <span className="block text-sm font-black text-clinic-text">Menu superior</span>
+                    <span className="mt-1 block text-[11px] text-clinic-text-muted">Abas compactas, sem barra de rolagem horizontal.</span>
+                  </span>
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-4 rounded-xl border border-clinic-border bg-clinic-bg/40 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">

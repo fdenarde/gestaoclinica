@@ -1,4 +1,4 @@
-import { verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
+import { assertAccessPermission, assertPatientBinding, resolveAccessContext } from './_lib/accessContext.js';
 import {
   assertOwnedPatientPhoto,
   createSignedPhotoUrl,
@@ -111,11 +111,25 @@ export default async function handler(req, res) {
       return;
     }
 
-    const decodedToken = await verifyFirebaseRequest(req);
-    const ownerUserId = decodedToken.uid;
     const body = parseBody(req);
+    const context = await resolveAccessContext(req, {
+      allowedRoles: ['admin', 'professional'],
+    });
+    // Mantém o namespace atual das fotos nesta fase. A migração para o workspace
+    // canônico ocorrerá separadamente, sem mover ou invalidar arquivos existentes.
+    const ownerUserId = context.legacyStorageOwnerId;
 
     if (body.action === 'uploadPatientPhoto') {
+      assertAccessPermission(
+        context,
+        'patients.photo.upload',
+        'Seu perfil não possui permissão para enviar fotos de atendentes.',
+      );
+      assertPatientBinding(
+        context,
+        body.patientId,
+        'Você não possui vínculo com o atendente informado para enviar esta foto.',
+      );
       if (!body.patientId) {
         const error = new Error('Atendente não identificado para enviar a foto.');
         error.code = 'drive-api/missing-patient-id';
@@ -141,16 +155,38 @@ export default async function handler(req, res) {
     }
 
     if (body.action === 'getPatientPhotoUrl') {
+      assertAccessPermission(
+        context,
+        'patients.photo.view',
+        'Seu perfil não possui permissão para visualizar fotos de atendentes.',
+      );
       const fileId = String(body.fileId || '');
       const metadata = await getDriveFileMetadata(fileId);
       assertOwnedPatientPhoto(metadata, ownerUserId);
+      assertPatientBinding(
+        context,
+        metadata?.appProperties?.patientId,
+        'Você não possui vínculo com o atendente desta foto.',
+      );
       sendJson(res, 200, createSignedPhotoUrl({ req, fileId, ownerUserId }));
       return;
     }
 
     if (body.action === 'deletePatientPhoto') {
+      assertAccessPermission(
+        context,
+        'patients.photo.delete',
+        'Seu perfil não possui permissão para excluir fotos de atendentes.',
+      );
       const fileId = String(body.fileId || '');
       if (fileId) {
+        const metadata = await getDriveFileMetadata(fileId);
+        assertOwnedPatientPhoto(metadata, ownerUserId);
+        assertPatientBinding(
+          context,
+          metadata?.appProperties?.patientId,
+          'Você não possui vínculo com o atendente desta foto.',
+        );
         await deletePatientPhotoFromDrive(fileId, ownerUserId);
       }
       sendJson(res, 200, { deleted: true });

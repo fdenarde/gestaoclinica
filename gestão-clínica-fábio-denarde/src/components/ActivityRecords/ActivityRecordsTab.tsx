@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, Camera, CheckSquare, Filter, Film, Image, Images, LayoutGrid, Loader2, LockKeyhole, Plus, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { Patient, Session } from '../../types';
-import { ACTIVITY_RECORD_CATEGORIES, getDefaultActivityAuthorization, type ActivityRecord, type ActivityRecordCategory, type ActivityRecordVisibility } from '../../types/activityRecords';
+import { ACTIVITY_RECORD_CATEGORIES, DEFAULT_ACTIVITY_RECORD_CATEGORY, activityRecordCategoryMatches, getActivityRecordCategoryLabel, getDefaultActivityAuthorization, type ActivityRecord, type ActivityRecordCategory, type ActivityRecordVisibility } from '../../types/activityRecords';
 import { useActivityRecords } from '../../lib/useActivityRecords';
 import { deleteActivityRecord, getActivityRecordErrorMessage, updateActivityRecordMetadata } from '../../lib/activityRecordsApi';
 import ActivityRecordModal from './ActivityRecordModal';
@@ -11,7 +11,16 @@ import Modal from '../Common/Modal';
 import { showToast } from '../Common/Toast';
 import { safeFormatDate } from '../../lib/utils';
 
-interface Props { patient: Patient; sessions: Session[]; currentUserId: string; currentUserName: string; onOpenAuthorization?: () => void; }
+interface Props {
+  patient: Patient;
+  sessions: Session[];
+  currentUserId: string;
+  currentUserName: string;
+  onOpenAuthorization?: () => void;
+  selectedSessionId?: string | null;
+  sessionScoped?: boolean;
+  allowNewRecord?: boolean;
+}
 type MediaFilter = 'all' | 'photo' | 'video';
 
 function getRecordMediaKind(record: ActivityRecord): 'photo' | 'video' {
@@ -20,7 +29,8 @@ function getRecordMediaKind(record: ActivityRecord): 'photo' | 'video' {
 }
 
 function getSessionGroupKey(record: ActivityRecord): string {
-  return `${record.sessionDate}|${record.sessionTime}|${record.sessionId}`;
+  const ids = record.sessionIds?.length ? record.sessionIds.slice().sort().join(',') : record.sessionId;
+  return `${record.sessionDate}|${record.sessionTime}|${ids}`;
 }
 
 function getSessionGroupTitle(records: ActivityRecord[]): string {
@@ -31,7 +41,10 @@ function getSessionGroupTitle(records: ActivityRecord[]): string {
 
 function getSessionGroupSubtitle(records: ActivityRecord[]): string {
   const first = records[0];
-  const sessionLabel = first?.sessionNumber ? `Sessão ${first.sessionNumber}` : 'Sessão relacionada';
+  const linkedCount = first?.sessionIds?.length || 1;
+  const sessionLabel = linkedCount > 1
+    ? `${linkedCount} sessões vinculadas`
+    : first?.sessionNumber ? `Sessão ${first.sessionNumber}` : 'Sessão relacionada';
   const photos = records.filter(record => getRecordMediaKind(record) === 'photo').length;
   const videos = records.filter(record => getRecordMediaKind(record) === 'video').length;
   const parts = [`${photos} ${photos === 1 ? 'foto' : 'fotos'}`];
@@ -39,8 +52,22 @@ function getSessionGroupSubtitle(records: ActivityRecord[]): string {
   return `${sessionLabel} • ${parts.join(' • ')}`;
 }
 
-export default function ActivityRecordsTab({ patient, sessions, currentUserId, currentUserName, onOpenAuthorization }: Props) {
-  const { records, loading, error } = useActivityRecords(currentUserId, patient.id);
+export default function ActivityRecordsTab({
+  patient,
+  sessions,
+  currentUserId,
+  currentUserName,
+  onOpenAuthorization,
+  selectedSessionId = null,
+  sessionScoped = false,
+  allowNewRecord = true,
+}: Props) {
+  const { records, loading, error } = useActivityRecords(
+    currentUserId,
+    patient.id,
+    sessionScoped ? selectedSessionId : undefined,
+    !sessionScoped || Boolean(selectedSessionId),
+  );
   const [newOpen, setNewOpen] = useState(false);
   const [authorizationHelpOpen, setAuthorizationHelpOpen] = useState(false);
   const [viewRecord, setViewRecord] = useState<ActivityRecord | null>(null);
@@ -52,19 +79,33 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
   const [visibilityFilter, setVisibilityFilter] = useState('all');
   const [periodFilter, setPeriodFilter] = useState('all');
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all');
-  const [editCategory, setEditCategory] = useState<ActivityRecordCategory>('Atividade pedagógica');
+  const [editCategory, setEditCategory] = useState<ActivityRecordCategory>(DEFAULT_ACTIVITY_RECORD_CATEGORY);
   const [editDescription, setEditDescription] = useState('');
   const [editVisibility, setEditVisibility] = useState<ActivityRecordVisibility>('internal_only');
   const [busy, setBusy] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [bulkDeleteReason, setBulkDeleteReason] = useState('');
   const galleryRef = useRef<HTMLDivElement>(null);
   const authorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
   const canRecord = authorization.internalRecordingStatus === 'authorized';
   const authorizationMessage = authorization.internalRecordingStatus === 'not_authorized'
     ? 'O responsável não autorizou o registro interno de imagens ou mídias para esta criança.'
     : 'O registro de atividades está bloqueado porque a autorização para registro interno está pendente.';
+  const selectedSession = useMemo(
+    () => sessions.find(session => session.id === selectedSessionId) || null,
+    [selectedSessionId, sessions],
+  );
+
+  useEffect(() => {
+    if (!sessionScoped) return;
+    setSessionFilter(selectedSessionId || 'all');
+    setSelectedIds(new Set());
+    setSelectMode(false);
+    setViewRecord(null);
+  }, [selectedSessionId, sessionScoped]);
 
   const handleNewRecord = () => {
     if (canRecord) {
@@ -90,8 +131,8 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       || (periodFilter === 'year' && recordDate.getFullYear() === today.getFullYear())
       || (days !== null && recordDate >= new Date(today.getFullYear(), today.getMonth(), today.getDate() - days));
     return periodMatches
-      && (categoryFilter === 'all' || record.category === categoryFilter)
-      && (sessionFilter === 'all' || record.sessionId === sessionFilter)
+      && (categoryFilter === 'all' || activityRecordCategoryMatches(record.category, categoryFilter))
+      && (sessionFilter === 'all' || record.sessionId === sessionFilter || record.sessionIds?.includes(sessionFilter))
       && (visibilityFilter === 'all' || record.visibility === visibilityFilter)
       && (mediaFilter === 'all' || mediaKind === mediaFilter)
       && (shareFilter === 'all' || (shareFilter === 'shared' ? record.shareStatus === 'shared_confirmed' : record.shareStatus !== 'shared_confirmed'));
@@ -151,13 +192,18 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
 
   const confirmBulkDelete = async () => {
     if (selectedRecords.length === 0) return;
+    if (!bulkDeleteReason.trim()) {
+      showToast('Informe o motivo da exclusão das mídias.', 'error');
+      return;
+    }
     setBusy(true);
     try {
       for (const record of selectedRecords) {
-        await deleteActivityRecord(record);
+        await deleteActivityRecord(record, bulkDeleteReason.trim());
       }
       showToast(`${selectedRecords.length} ${selectedRecords.length === 1 ? 'mídia excluída' : 'mídias excluídas'} da galeria.`, 'success');
       setBulkDeleteOpen(false);
+      setBulkDeleteReason('');
       clearSelection();
     } catch (err) {
       showToast(getActivityRecordErrorMessage(err), 'error');
@@ -168,7 +214,7 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
 
   const openEdit = (record: ActivityRecord) => {
     setEditRecord(record);
-    setEditCategory(record.category);
+    setEditCategory(getActivityRecordCategoryLabel(record.category) as ActivityRecordCategory);
     setEditDescription(record.description);
     setEditVisibility(record.visibility === 'do_not_share' ? 'internal_only' : record.visibility);
   };
@@ -186,11 +232,16 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
 
   const confirmDelete = async () => {
     if (!deleteRecord) return;
+    if (!deleteReason.trim()) {
+      showToast('Informe o motivo da exclusão da mídia.', 'error');
+      return;
+    }
     setBusy(true);
     try {
-      await deleteActivityRecord(deleteRecord);
+      await deleteActivityRecord(deleteRecord, deleteReason.trim());
       showToast('Registro e mídia excluídos com segurança.', 'success');
       setDeleteRecord(null);
+      setDeleteReason('');
     } catch (err) { showToast(getActivityRecordErrorMessage(err), 'error'); }
     finally { setBusy(false); }
   };
@@ -201,19 +252,25 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
         <div className="flex items-center gap-2"><Images size={19} className="text-clinic-primary" /><h4 className="font-black text-clinic-text">Galeria de atividades</h4></div>
         <p className="mt-1 text-xs text-clinic-text-muted">Fotos e vídeos em cards visuais, vinculados à criança e à sessão correta.</p>
       </div>
-      <button type="button" onClick={handleNewRecord} className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-xs font-black uppercase tracking-wide transition-all ${canRecord ? 'bg-clinic-primary text-white hover:bg-clinic-primary-hover' : 'border border-status-orange-text/30 bg-status-orange-bg text-status-orange-text hover:brightness-95'}`} title={canRecord ? 'Registrar uma nova atividade' : 'Ver motivo do bloqueio'}>{canRecord ? <Plus size={16} /> : <LockKeyhole size={16} />} Nova mídia</button>
+      {allowNewRecord ? (
+        <button type="button" onClick={handleNewRecord} className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-xs font-black uppercase tracking-wide transition-all ${canRecord ? 'bg-clinic-primary text-white hover:bg-clinic-primary-hover' : 'border border-status-orange-text/30 bg-status-orange-bg text-status-orange-text hover:brightness-95'}`} title={canRecord ? 'Registrar uma nova atividade' : 'Ver motivo do bloqueio'}>{canRecord ? <Plus size={16} /> : <LockKeyhole size={16} />} Nova mídia</button>
+      ) : (
+        <span className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-center text-[10px] font-black uppercase tracking-wide text-clinic-text-muted">
+          Pacote anterior: somente consulta
+        </span>
+      )}
     </div>
 
     <div className={`rounded-xl border p-3 text-sm font-bold ${authorization.internalRecordingStatus === 'authorized' ? 'border-status-green-text/20 bg-status-green-bg text-status-green-text' : 'border-status-orange-text/20 bg-status-orange-bg text-status-orange-text'}`}>
       <div className="flex items-center gap-2"><ShieldCheck size={16} /> Registro interno: {authorization.internalRecordingStatus === 'authorized' ? 'autorizado' : authorization.internalRecordingStatus === 'not_authorized' ? 'não autorizado' : 'pendente'} • Compartilhamento: {authorization.guardianSharingStatus === 'authorized' ? 'autorizado' : authorization.guardianSharingStatus === 'not_authorized' ? 'não autorizado' : 'pendente'}</div>
     </div>
 
-    <div className="grid grid-cols-1 gap-2 rounded-xl border border-clinic-border bg-white p-3 sm:grid-cols-2 xl:grid-cols-6">
+    <div className={`grid grid-cols-1 gap-2 rounded-xl border border-clinic-border bg-white p-3 sm:grid-cols-2 ${sessionScoped ? 'xl:grid-cols-5' : 'xl:grid-cols-6'}`}>
       <label className="relative"><CalendarDays size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" /><select value={periodFilter} onChange={e => setPeriodFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs"><option value="all">Todo o período</option><option value="30">Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="year">Ano atual</option></select></label>
       <label className="relative"><Filter size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" /><select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs"><option value="all">Todas as categorias</option>{ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item}>{item}</option>)}</select></label>
       <label className="relative"><LayoutGrid size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" /><select value={mediaFilter} onChange={e => setMediaFilter(e.target.value as MediaFilter)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs"><option value="all">Fotos e vídeos</option><option value="photo">Somente fotos</option><option value="video">Somente vídeos</option></select></label>
-      <select value={sessionFilter} onChange={e => setSessionFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as sessões</option>{sessions.filter(s => s.patientId === patient.id).sort((a,b) => `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`)).map(s => <option key={s.id} value={s.id}>{s.date.split('-').reverse().join('/')} às {s.time}</option>)}</select>
-      <select value={visibilityFilter} onChange={e => setVisibilityFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as visibilidades</option><option value="internal_only">Somente interno</option><option value="share_allowed">Compartilhamento permitido</option></select>
+      {!sessionScoped && <select value={sessionFilter} onChange={e => setSessionFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as sessões</option>{sessions.filter(s => s.patientId === patient.id).sort((a,b) => `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`)).map(s => <option key={s.id} value={s.id}>{s.date.split('-').reverse().join('/')} às {s.time}</option>)}</select>}
+      <select value={visibilityFilter} onChange={e => setVisibilityFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todas as visibilidades</option><option value="internal_only">Somente uso profissional</option><option value="share_allowed">Visível ao responsável</option></select>
       <select value={shareFilter} onChange={e => setShareFilter(e.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs"><option value="all">Todos os compartilhamentos</option><option value="shared">Compartilhados</option><option value="not_shared">Não compartilhados</option></select>
     </div>
 
@@ -269,7 +326,16 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       })}
     </div>
 
-    <ActivityRecordModal isOpen={newOpen} onClose={() => setNewOpen(false)} onViewGallery={returnToGallery} patient={patient} sessions={sessions} currentUserName={currentUserName} />
+    <ActivityRecordModal
+      isOpen={newOpen}
+      onClose={() => setNewOpen(false)}
+      onViewGallery={returnToGallery}
+      patient={patient}
+      sessions={sessions}
+      records={sessionScoped ? undefined : records}
+      initialSession={sessionScoped ? selectedSession : null}
+      currentUserName={currentUserName}
+    />
     <ActivityRecordViewer record={viewRecord} onClose={returnToGallery} />
 
 
@@ -287,8 +353,26 @@ export default function ActivityRecordsTab({ patient, sessions, currentUserId, c
       </div>
     </Modal>
 
-    <Modal isOpen={!!editRecord} onClose={() => !busy && setEditRecord(null)} title="Editar informações" width="max-w-lg"><div className="space-y-4"><select value={editCategory} onChange={e => setEditCategory(e.target.value as ActivityRecordCategory)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm">{ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item}>{item}</option>)}</select><textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} className="min-h-28 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" /><select value={editVisibility} onChange={e => setEditVisibility(e.target.value as ActivityRecordVisibility)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm"><option value="internal_only">Somente interno</option>{authorization.guardianSharingStatus === 'authorized' && <option value="share_allowed">Pode ser compartilhado</option>}</select><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setEditRecord(null)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy} onClick={() => void saveEdit()} className="rounded-lg bg-clinic-primary px-4 py-2 text-xs font-bold text-white">{busy ? 'Salvando...' : 'Salvar'}</button></div></div></Modal>
-    <Modal isOpen={!!deleteRecord} onClose={() => !busy && setDeleteRecord(null)} title="Excluir registro" width="max-w-md"><div className="space-y-5"><p className="text-sm text-clinic-text">A mídia será removida do Google Drive e o registro será excluído. Esta ação não altera a sessão, presença ou pagamentos.</p><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setDeleteRecord(null)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy} onClick={() => void confirmDelete()} className="rounded-lg bg-status-red-text px-4 py-2 text-xs font-bold text-white">{busy ? 'Excluindo...' : 'Excluir'}</button></div></div></Modal>
-    <Modal isOpen={bulkDeleteOpen} onClose={() => !busy && setBulkDeleteOpen(false)} title="Excluir mídias selecionadas" width="max-w-md"><div className="space-y-5"><p className="text-sm text-clinic-text">Você selecionou <strong>{selectedRecords.length}</strong> {selectedRecords.length === 1 ? 'mídia' : 'mídias'}. Elas serão removidas do Google Drive e os registros serão excluídos. Esta ação não altera sessão, presença ou pagamentos.</p><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setBulkDeleteOpen(false)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy || selectedRecords.length === 0} onClick={() => void confirmBulkDelete()} className="rounded-lg bg-status-red-text px-4 py-2 text-xs font-bold text-white">{busy ? 'Excluindo...' : `Excluir ${selectedRecords.length}`}</button></div></div></Modal>
+    <Modal isOpen={!!editRecord} onClose={() => !busy && setEditRecord(null)} title="Editar informações" width="max-w-lg"><div className="space-y-4"><select value={editCategory} onChange={e => setEditCategory(e.target.value as ActivityRecordCategory)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm">{ACTIVITY_RECORD_CATEGORIES.map(item => <option key={item}>{item}</option>)}</select><textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} className="min-h-28 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" /><select value={editVisibility} onChange={e => setEditVisibility(e.target.value as ActivityRecordVisibility)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm"><option value="internal_only">Somente uso profissional</option>{authorization.guardianSharingStatus === 'authorized' && <option value="share_allowed">Visível ao responsável</option>}</select><div className="flex justify-end gap-2"><button disabled={busy} onClick={() => setEditRecord(null)} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy} onClick={() => void saveEdit()} className="rounded-lg bg-clinic-primary px-4 py-2 text-xs font-bold text-white">{busy ? 'Salvando...' : 'Salvar'}</button></div></div></Modal>
+    <Modal isOpen={!!deleteRecord} onClose={() => { if (!busy) { setDeleteRecord(null); setDeleteReason(''); } }} title="Excluir registro" width="max-w-md">
+      <div className="space-y-5">
+        <p className="text-sm text-clinic-text">A mídia será removida do Google Drive e o registro será excluído. A sessão será recalculada e poderá voltar a ficar pendente.</p>
+        <div>
+          <label className="mb-1 block text-[10px] font-black uppercase text-clinic-text-faint">Motivo da exclusão</label>
+          <textarea value={deleteReason} onChange={event => setDeleteReason(event.target.value)} maxLength={500} className="min-h-24 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" placeholder="Informe por que esta mídia está sendo excluída." />
+        </div>
+        <div className="flex justify-end gap-2"><button disabled={busy} onClick={() => { setDeleteRecord(null); setDeleteReason(''); }} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy || !deleteReason.trim()} onClick={() => void confirmDelete()} className="rounded-lg bg-status-red-text px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? 'Excluindo...' : 'Excluir'}</button></div>
+      </div>
+    </Modal>
+    <Modal isOpen={bulkDeleteOpen} onClose={() => { if (!busy) { setBulkDeleteOpen(false); setBulkDeleteReason(''); } }} title="Excluir mídias selecionadas" width="max-w-md">
+      <div className="space-y-5">
+        <p className="text-sm text-clinic-text">Você selecionou <strong>{selectedRecords.length}</strong> {selectedRecords.length === 1 ? 'mídia' : 'mídias'}. As sessões vinculadas serão recalculadas após cada exclusão.</p>
+        <div>
+          <label className="mb-1 block text-[10px] font-black uppercase text-clinic-text-faint">Motivo da exclusão em lote</label>
+          <textarea value={bulkDeleteReason} onChange={event => setBulkDeleteReason(event.target.value)} maxLength={500} className="min-h-24 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" placeholder="Informe o motivo aplicado a todas as mídias selecionadas." />
+        </div>
+        <div className="flex justify-end gap-2"><button disabled={busy} onClick={() => { setBulkDeleteOpen(false); setBulkDeleteReason(''); }} className="rounded-lg bg-clinic-bg px-4 py-2 text-xs font-bold">Cancelar</button><button disabled={busy || selectedRecords.length === 0 || !bulkDeleteReason.trim()} onClick={() => void confirmBulkDelete()} className="rounded-lg bg-status-red-text px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? 'Excluindo...' : `Excluir ${selectedRecords.length}`}</button></div>
+      </div>
+    </Modal>
   </div>;
 }

@@ -36,12 +36,72 @@ export interface ResponsibleDocumentSummary {
   createdAt: string;
 }
 
-export interface Patient {
+export type PatientSex = 'Masculino' | 'Feminino' | 'Não informado';
+
+export type PatientFamilyStatus =
+  | 'Casados'
+  | 'União estável'
+  | 'Separados'
+  | 'Divorciados'
+  | 'Nunca viveram juntos'
+  | 'Pai falecido'
+  | 'Mãe falecida'
+  | 'Ambos falecidos';
+
+export type PatientCustodyStatus =
+  | 'Guarda compartilhada'
+  | 'Guarda unilateral da mãe'
+  | 'Guarda unilateral do pai'
+  | 'Guarda de outro responsável';
+
+export type PatientFinancialResponsible = 'Pai' | 'Mãe' | 'Outro';
+
+export interface PatientCareProfessional {
   id: string;
+  specialty: string;
+  customSpecialty?: string;
+  name?: string;
+  contact?: string;
+}
+
+export interface PatientRegistrationData {
   name: string;
+  fullName?: string;
   birthDate: string;
+  sex?: PatientSex;
   guardianName: string;
   whatsapp: string;
+  motherName?: string;
+  motherProfession?: string;
+  motherPhone?: string;
+  fatherName?: string;
+  fatherProfession?: string;
+  fatherPhone?: string;
+  otherResponsibleName?: string;
+  otherResponsibleKinship?: string;
+  otherResponsiblePhone?: string;
+  school?: string;
+  grade?: string;
+  educationDetail?: string;
+  shift?: string;
+  familyStatus?: PatientFamilyStatus;
+  custodyStatus?: PatientCustodyStatus;
+  custodyResponsibleName?: string;
+  custodyResponsibleKinship?: string;
+  careProfessionals?: PatientCareProfessional[];
+  doctorName?: string;
+  medication?: string;
+  emergencyContact?: string;
+  allergies?: string;
+  financialResponsible?: PatientFinancialResponsible;
+  financialResponsibleOtherName?: string;
+  financialResponsibleOtherKinship?: string;
+  financialResponsibleOtherPhone?: string;
+  financialResponsibleOtherCpf?: string;
+}
+
+export interface Patient extends PatientRegistrationData {
+  id: string;
   fixedDay: string; // terça, quinta, sexta, sábado
   fixedTime: string;
   doubleSession?: boolean; // true = atende 2 horários seguidos (ex: 14h e 15h)
@@ -61,19 +121,12 @@ export interface Patient {
   photoDriveFileId?: string;
   photoDriveFileName?: string;
   photoMimeType?: string;
-  school?: string;
-  grade?: string;
-  shift?: string;
-  doctorName?: string;
-  medication?: string;
   activityMediaAuthorization?: ActivityMediaAuthorization;
   lastExternalRegistrationUpdate?: string;
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;
   opinionPdfUrl?: string;
   responsibleDocuments?: ResponsibleDocumentSummary[];
-  emergencyContact?: string;
-  allergies?: string;
   anamnese: {
     complaint: string;
     school: string;
@@ -191,6 +244,7 @@ export interface ClinicSettings {
   customFooter?: string;
   holidays?: { id: string; date: string; name: string }[];
   visualTheme?: AppTheme;
+  activityMediaMonitoringStart?: string;
 }
 
 export interface Expense {

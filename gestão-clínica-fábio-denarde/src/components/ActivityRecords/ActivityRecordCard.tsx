@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Clock3, Eye, Film, ImageIcon, Loader2, Pencil, PlayCircle, Trash2 } from 'lucide-react';
-import type { ActivityRecord } from '../../types/activityRecords';
+import { getActivityRecordCategoryLabel, type ActivityRecord } from '../../types/activityRecords';
 import { getActivityPhotoUrl } from '../../lib/activityRecordsApi';
 import { safeFormatDate } from '../../lib/utils';
 
@@ -33,7 +33,7 @@ export default function ActivityRecordCard({ record, onView, onEdit, onDelete, s
   const [retriedUrl, setRetriedUrl] = useState(false);
   const mediaKind = getMediaKind(record);
   const duration = formatDuration(record.durationSeconds);
-  const visibility = record.visibility === 'share_allowed' ? 'Compartilhamento permitido' : 'Somente interno';
+  const visibility = record.visibility === 'share_allowed' ? 'Visível ao responsável' : 'Somente uso profissional';
 
   useEffect(() => {
     let active = true;
@@ -64,7 +64,7 @@ export default function ActivityRecordCard({ record, onView, onEdit, onDelete, s
     <article className={`group overflow-hidden rounded-2xl border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl ${selected ? 'border-clinic-primary ring-2 ring-clinic-primary/30' : 'border-clinic-border'}`}>
       <button type="button" onClick={selectMode ? onToggleSelect : onView} className="relative block aspect-video w-full overflow-hidden bg-slate-950 text-left">
         {url && mediaKind === 'photo' && (
-          <img src={url} alt={record.description || record.category} onError={handleMediaError} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+          <img src={url} alt={record.description || getActivityRecordCategoryLabel(record.category)} onError={handleMediaError} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
         )}
         {url && mediaKind === 'video' && (
           <video src={url} preload="metadata" muted playsInline onError={handleMediaError} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
@@ -104,7 +104,7 @@ export default function ActivityRecordCard({ record, onView, onEdit, onDelete, s
         )}
         {record.status === 'delete_failed' && <span className="absolute left-2 top-10 rounded-full bg-status-red-text px-2 py-1 text-[9px] font-black uppercase text-white">Exclusão pendente</span>}
         <span className="absolute bottom-2 left-2 right-2">
-          <span className="line-clamp-1 text-xs font-black text-white drop-shadow-sm">{record.category}</span>
+          <span className="line-clamp-1 text-xs font-black text-white drop-shadow-sm">{getActivityRecordCategoryLabel(record.category)}</span>
           <span className="mt-0.5 block text-[10px] font-bold text-white/85">{safeFormatDate(record.sessionDate, 'dd/MM/yyyy')} às {record.sessionTime}</span>
         </span>
       </button>

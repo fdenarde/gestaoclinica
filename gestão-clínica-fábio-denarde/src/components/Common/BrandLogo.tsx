@@ -2,7 +2,7 @@ import React from 'react';
 import { DEFAULT_APP_THEME, isAppTheme, type AppTheme } from '../../lib/theme';
 
 interface BrandLogoProps {
-  variant?: 'horizontal' | 'compact';
+  variant?: 'horizontal' | 'compact' | 'sidebar';
   className?: string;
   showSubtitle?: boolean;
   theme?: AppTheme;
@@ -42,6 +42,7 @@ export default function BrandLogo({
   subtitle,
 }: BrandLogoProps) {
   const isCompact = variant === 'compact';
+  const isSidebar = variant === 'sidebar';
   const activeTheme = getActiveTheme(theme);
   const brainSrc = `${import.meta.env.BASE_URL}brand/${BRAIN_ASSET_BY_THEME[activeTheme]}`;
   const brandName = withFallback(name, DEFAULT_BRAND_NAME);
@@ -64,13 +65,19 @@ export default function BrandLogo({
         className={
           isCompact
             ? 'mr-1 h-[28px] w-[28px] shrink-0 object-contain object-center select-none'
-            : 'mr-1 h-[30px] w-[30px] shrink-0 object-contain object-center select-none md:mr-1 md:h-[34px] md:w-[34px] lg:mr-1.5 lg:h-[36px] lg:w-[36px] xl:h-[40px] xl:w-[40px] 2xl:h-[42px] 2xl:w-[42px]'
+            : isSidebar
+              ? 'mr-2 h-[38px] w-[38px] shrink-0 object-contain object-center select-none'
+              : 'mr-1 h-[30px] w-[30px] shrink-0 object-contain object-center select-none md:mr-1 md:h-[34px] md:w-[34px] lg:mr-1.5 lg:h-[36px] lg:w-[36px] xl:h-[40px] xl:w-[40px] 2xl:h-[42px] 2xl:w-[42px]'
         }
       />
 
       {!isCompact && (
         <span
-          className="mr-2 h-[38px] w-px shrink-0 rounded-full md:mr-2.5 md:h-[42px] lg:mr-3 lg:h-[46px] xl:mr-3 xl:h-[50px] 2xl:mr-3.5 2xl:h-[52px]"
+          className={
+            isSidebar
+              ? 'mr-2 h-[42px] w-px shrink-0 rounded-full'
+              : 'mr-2 h-[38px] w-px shrink-0 rounded-full md:mr-2.5 md:h-[42px] lg:mr-3 lg:h-[46px] xl:mr-3 xl:h-[50px] 2xl:mr-3.5 2xl:h-[52px]'
+          }
           style={{ backgroundColor: 'var(--logo-divider)' }}
           aria-hidden="true"
         />
@@ -81,7 +88,9 @@ export default function BrandLogo({
           className={
             isCompact
               ? 'block max-w-full break-words text-[14px] font-bold leading-[1.05] tracking-[-0.035em]'
-              : 'block max-w-full break-words text-[17px] font-bold leading-[0.95] tracking-[-0.045em] md:text-[19px] lg:text-[22px] xl:text-[24px] 2xl:text-[26px]'
+              : isSidebar
+                ? 'block max-w-full truncate text-[18px] font-bold leading-[0.98] tracking-[-0.04em]'
+                : 'block max-w-full break-words text-[17px] font-bold leading-[0.95] tracking-[-0.045em] md:text-[19px] lg:text-[22px] xl:text-[24px] 2xl:text-[26px]'
           }
           style={{ color: 'var(--logo-text)' }}
         >
@@ -93,7 +102,9 @@ export default function BrandLogo({
             className={
               isCompact
                 ? 'mt-0.5 block max-w-full break-words text-[5px] font-medium uppercase leading-tight tracking-[0.08em]'
-                : 'mt-1 block max-w-full break-words text-[6px] font-medium uppercase leading-tight tracking-[0.11em] md:text-[7px] lg:mt-1.5 lg:text-[8px] lg:tracking-[0.12em] xl:text-[8px] 2xl:text-[9px]'
+                : isSidebar
+                  ? 'mt-1 block max-w-full truncate text-[6px] font-semibold uppercase leading-tight tracking-[0.1em]'
+                  : 'mt-1 block max-w-full break-words text-[6px] font-medium uppercase leading-tight tracking-[0.11em] md:text-[7px] lg:mt-1.5 lg:text-[8px] lg:tracking-[0.12em] xl:text-[8px] 2xl:text-[9px]'
             }
             style={{ color: 'var(--logo-subtitle)' }}
           >
