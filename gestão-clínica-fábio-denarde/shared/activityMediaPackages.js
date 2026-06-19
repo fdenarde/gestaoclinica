@@ -2,6 +2,7 @@ import {
   getActivitySessionEndAt,
   getActivitySessionStartAt,
 } from './activityGalleryStatus.js';
+import { getActivatedPackageNumber } from './packagePayments.js';
 
 const COMPLETED_MEDIA_STATUSES = new Set(['Realizada', 'Reposição']);
 
@@ -58,6 +59,7 @@ export function isActivityMediaSelectableSession(session, now = new Date()) {
 export function buildActivityMediaPackageModel(rawSessions, {
   patientId = '',
   now = new Date(),
+  payments = null,
 } = {}) {
   const normalizedPatientId = normalizePatientId(patientId);
   const nowAt = normalizeNow(now);
@@ -67,8 +69,14 @@ export function buildActivityMediaPackageModel(rawSessions, {
     .filter(session => /^\d{4}-\d{2}-\d{2}$/.test(String(session.date || '')))
     .sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
 
+  const paymentGateEnabled = Array.isArray(payments);
+  const activatedPackageNumber = paymentGateEnabled
+    ? getActivatedPackageNumber(payments, { patientId: normalizedPatientId })
+    : Number.POSITIVE_INFINITY;
   let consumedPosition = 0;
+  let naturalInProgressPackageNumber = 0;
   const enriched = [];
+  const awaitingPaymentSessions = [];
 
   for (const session of sessions) {
     const consumesPackage = activitySessionConsumesPackage(session);
@@ -83,10 +91,11 @@ export function buildActivityMediaPackageModel(rawSessions, {
     } else if (inProgress) {
       packageNumber = Math.floor(consumedPosition / 10) + 1;
       sessionNumber = (consumedPosition % 10) + 1;
+      naturalInProgressPackageNumber = Math.max(naturalInProgressPackageNumber, packageNumber);
     }
 
     if (packageNumber) {
-      enriched.push({
+      const enrichedSession = {
         ...session,
         packageNumber,
         activityPackageNumber: packageNumber,
@@ -94,18 +103,20 @@ export function buildActivityMediaPackageModel(rawSessions, {
         consumesPackage,
         inProgress,
         selectableForMedia: isActivityMediaSelectableSession(session, nowAt),
-      });
+      };
+      if (packageNumber <= activatedPackageNumber) enriched.push(enrichedSession);
+      else awaitingPaymentSessions.push(enrichedSession);
     }
   }
 
   const startedSessions = enriched.filter(session => session.selectableForMedia);
-  const inProgressPackageNumber = enriched
-    .filter(session => session.inProgress)
-    .reduce((highest, session) => Math.max(highest, Number(session.activityPackageNumber || 0)), 0);
   const consumedPackageNumber = consumedPosition > 0
     ? Math.floor((consumedPosition - 1) / 10) + 1
     : 1;
-  const currentPackageNumber = Math.max(consumedPackageNumber, inProgressPackageNumber || 1);
+  const naturalCurrentPackageNumber = Math.max(consumedPackageNumber, naturalInProgressPackageNumber || 1);
+  const currentPackageNumber = paymentGateEnabled
+    ? Math.max(1, Math.min(naturalCurrentPackageNumber, activatedPackageNumber))
+    : naturalCurrentPackageNumber;
 
   const packagesByNumber = new Map();
   for (const session of startedSessions) {
@@ -150,6 +161,8 @@ export function buildActivityMediaPackageModel(rawSessions, {
     consumedSessionCount: consumedPosition,
     packages,
     currentSessions: packages.find(pkg => pkg.number === currentPackageNumber)?.sessions || [],
+    activatedPackageNumber: Number.isFinite(activatedPackageNumber) ? activatedPackageNumber : null,
+    awaitingPaymentSessions,
   };
 }
 

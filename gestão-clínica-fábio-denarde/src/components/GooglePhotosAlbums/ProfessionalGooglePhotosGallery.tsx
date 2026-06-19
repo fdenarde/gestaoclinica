@@ -16,7 +16,7 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
-import type { Patient, Session } from '../../types';
+import type { Patient, Payment, Session } from '../../types';
 import {
   ACTIVITY_RECORD_CATEGORIES,
   type ActivityRecordCategory,
@@ -39,6 +39,7 @@ import {
   buildGooglePhotosAlbumGroupKey,
   buildGooglePhotosAlbumPackageKey,
   buildGooglePhotosVirtualAlbumCards,
+  getGooglePhotosAlbumDisplayTitle,
   mergeGooglePhotosAlbumCards,
   normalizeGooglePhotosAlbumUrl,
 } from '../../../shared/googlePhotosAlbums.js';
@@ -46,8 +47,10 @@ import {
 interface Props {
   patients: Patient[];
   sessions: Session[];
+  payments: Payment[];
   currentUserName: string;
   initialPatientId?: string | null;
+  initialSessionId?: string | null;
 }
 
 const EMPTY_PERMISSIONS: GooglePhotosAlbumCapabilities = {
@@ -71,6 +74,7 @@ const buildPackageKey = buildGooglePhotosAlbumPackageKey as (options: {
 }) => string;
 
 const normalizeAlbumUrl = normalizeGooglePhotosAlbumUrl as (value: string) => string | null;
+const getAlbumDisplayTitle = getGooglePhotosAlbumDisplayTitle as (album: GooglePhotosAlbum) => string;
 const AUTOSAVE_DELAY_MS = 2000;
 type AutosaveStatus = 'idle' | 'pending' | 'saving' | 'invalid' | 'error' | 'switching';
 
@@ -120,8 +124,10 @@ function toPackageInput(card: GooglePhotosAlbum): GooglePhotosAlbumInput {
 export default function ProfessionalGooglePhotosGallery({
   patients,
   sessions,
+  payments,
   currentUserName,
   initialPatientId = null,
+  initialSessionId = null,
 }: Props) {
   const [patientOptions, setPatientOptions] = useState<Array<{ id: string; name: string }>>(() => patients.map(patient => ({ id: patient.id, name: patient.fullName || patient.name })));
   const [remoteSessions, setRemoteSessions] = useState<Session[]>([]);
@@ -148,6 +154,7 @@ export default function ProfessionalGooglePhotosGallery({
   const currentPackageNumberRef = useRef(0);
   const permissionsRef = useRef(EMPTY_PERMISSIONS);
   const performAutosaveRef = useRef<(immediate?: boolean) => Promise<boolean>>(async () => false);
+  const initialSessionHandledRef = useRef(false);
 
   useEffect(() => {
     if (patients.length > 0) {
@@ -181,7 +188,7 @@ export default function ProfessionalGooglePhotosGallery({
       .map(option => {
         const patient = patients.find(item => item.id === option.id) || null;
         const patientSessions = sessions.filter(session => session.patientId === option.id);
-        const model = buildActivityMediaPackageModel({ patientId: option.id, sessions: patientSessions });
+        const model = buildActivityMediaPackageModel({ patientId: option.id, sessions: patientSessions, payments });
         const currentSessions = model.currentSessions || [];
         const latestSession = currentSessions[0] || patientSessions
           .slice()
@@ -203,7 +210,7 @@ export default function ProfessionalGooglePhotosGallery({
       .sort((left, right) => (
         left.name.localeCompare(right.name, 'pt-BR', { sensitivity: 'base' })
       ));
-  }, [patientOptions, patientSearch, patients, sessions]);
+  }, [patientOptions, patientSearch, patients, payments, sessions]);
 
   const sessionSource = useMemo(() => {
     const local = sessions.filter(session => session.patientId === selectedPatientId);
@@ -213,7 +220,8 @@ export default function ProfessionalGooglePhotosGallery({
   const packageModel = useMemo(() => buildActivityMediaPackageModel({
     patientId: selectedPatientId,
     sessions: sessionSource,
-  }), [selectedPatientId, sessionSource]);
+    payments,
+  }), [payments, selectedPatientId, sessionSource]);
 
   const currentPackageNumber = packageModel.currentPackageNumber || 1;
   const currentPackage = useMemo(() => (
@@ -229,9 +237,11 @@ export default function ProfessionalGooglePhotosGallery({
     buildGooglePhotosVirtualAlbumCards(sessionSource, {
       patientId: selectedPatientId,
       patientName: selectedPatientName,
+      patientDoubleSession: Boolean(selectedPatient?.doubleSession),
       packageNumber: currentPackageNumber,
+      payments,
     }) as GooglePhotosAlbum[]
-  ), [currentPackageNumber, selectedPatientId, selectedPatientName, sessionSource]);
+  ), [currentPackageNumber, payments, selectedPatient?.doubleSession, selectedPatientId, selectedPatientName, sessionSource]);
 
   const allCards = useMemo(() => (
     mergeGooglePhotosAlbumCards({
@@ -377,6 +387,18 @@ export default function ProfessionalGooglePhotosGallery({
     });
     setMessage('');
   };
+
+
+  useEffect(() => {
+    if (initialSessionHandledRef.current || !initialSessionId || !selectedPatientId || loading || allCards.length === 0) return;
+    const targetCard = allCards.find(card => card.sessionIds.includes(initialSessionId));
+    if (!targetCard) return;
+    initialSessionHandledRef.current = true;
+    openEditor(targetCard);
+    window.setTimeout(() => {
+      document.getElementById(`google-photos-card-${encodeURIComponent(targetCard.id)}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+  }, [allCards, initialSessionId, loading, selectedPatientId]);
 
   const closeEditor = (cardId: string) => {
     setEditingCardIds(current => current.filter(id => id !== cardId));
@@ -743,6 +765,11 @@ export default function ProfessionalGooglePhotosGallery({
 
       {message && <div className="rounded-xl border border-status-green-text/20 bg-status-green-bg px-4 py-3 text-sm font-bold text-status-green-text">{message}</div>}
       {error && <div className="rounded-xl border border-status-red-text/20 bg-status-red-bg px-4 py-3 text-sm font-bold text-status-red-text">{error}</div>}
+      {selectedPatientId && (packageModel.awaitingPaymentSessions?.length || 0) > 0 && (
+        <div className="rounded-xl border border-status-orange-text/25 bg-status-orange-bg px-4 py-3 text-sm font-bold text-status-orange-text">
+          Há {packageModel.awaitingPaymentSessions?.length} sessão(ões) além do pacote atual aguardando o pagamento do próximo pacote. Nenhum novo pacote foi aberto.
+        </div>
+      )}
 
       {selectedPatientId && (
       <section className="rounded-2xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
@@ -781,7 +808,7 @@ export default function ProfessionalGooglePhotosGallery({
               const sameDateSessions = packageSessions.filter(session => session.date === card.activityDate);
               const sessionLabel = formatSessionNumbers(card.sessionNumbers);
               return (
-                <article key={card.id} className={`rounded-2xl border p-3 shadow-sm sm:p-4 ${cardHasInvalidLink ? 'border-status-orange-text/40 bg-status-orange-bg/70 ring-2 ring-status-orange-text/15' : card.status === 'hidden' ? 'border-amber-300 bg-amber-50/70' : hasValidLink ? 'border-clinic-border bg-white' : 'border-dashed border-clinic-border bg-clinic-bg/70'}`}>
+                <article id={`google-photos-card-${encodeURIComponent(card.id)}`} key={card.id} className={`rounded-2xl border p-3 shadow-sm sm:p-4 ${cardHasInvalidLink ? 'border-status-orange-text/40 bg-status-orange-bg/70 ring-2 ring-status-orange-text/15' : card.status === 'hidden' ? 'border-amber-300 bg-amber-50/70' : hasValidLink ? 'border-clinic-border bg-white' : 'border-dashed border-clinic-border bg-clinic-bg/70'}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap gap-2">
@@ -791,9 +818,9 @@ export default function ProfessionalGooglePhotosGallery({
                         <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${card.status === 'hidden' ? 'bg-amber-100 text-amber-800' : 'bg-status-blue-bg text-status-blue-text'}`}>{cardStatusLabel(card)}</span>
                         <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${card.visibleToGuardian ? 'bg-status-green-bg text-status-green-text' : 'bg-clinic-bg text-clinic-text-muted'}`}>{card.visibleToGuardian ? 'Visível ao responsável' : 'Somente equipe'}</span>
                       </div>
-                      <h3 className="mt-3 break-words text-base font-bold text-clinic-text">{card.title || 'Atividade de Intervenção'}</h3>
+                      <h3 className="mt-3 break-words text-base font-bold text-clinic-text">{getAlbumDisplayTitle(card) || 'Atividade de Intervenção'}</h3>
                       <p className="mt-1 text-xs font-bold text-clinic-primary">
-                        {sessionLabel ? `${sessionLabel} - ` : ''}{safeFormatDate(card.activityDate, 'dd/MM/yyyy')}{card.sessionTime ? ` às ${card.sessionTime}` : ''}
+                        {card.sessionIds.length > 1 ? 'Sessão dupla • 2 sessões vinculadas - ' : sessionLabel ? `${sessionLabel} - ` : ''}{safeFormatDate(card.activityDate, 'dd/MM/yyyy')}{card.sessionTime ? ` às ${card.sessionTime}` : ''}
                       </p>
                     </div>
                     <span className="rounded-xl bg-clinic-bg p-2 text-clinic-primary"><CalendarDays size={17} /></span>

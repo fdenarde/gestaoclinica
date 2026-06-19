@@ -12,18 +12,45 @@ test('falta só consome pacote quando o profissional decide', () => {
   assert.equal(sessionConsumesPackage({ status: 'Falta.Prof', consumesPackage: true }), false);
 });
 
-test('pacote atual avança depois de dez sessões consumidas', () => {
+test('décima sessão permanece no pacote anterior até existir pagamento do próximo pacote', () => {
   const sessions = Array.from({ length: 10 }, (_, index) => ({
     id: `s${index + 1}`,
+    patientId: 'patient-1',
     date: `2026-01-${String(index + 1).padStart(2, '0')}`,
     time: '14:00',
     status: 'Realizada',
   }));
-  const result = buildResponsiblePackages(sessions, { today: '2026-06-14' });
-  assert.equal(result.currentPackageNumber, 2);
+  const result = buildResponsiblePackages(sessions, { today: '2026-06-14', payments: [] });
+  assert.equal(result.currentPackageNumber, 1);
   assert.equal(result.packages.length, 1);
-  assert.equal(result.packages[0].number, 2);
-  assert.equal(result.packages[0].consumedCount, 0);
+  assert.equal(result.packages[0].number, 1);
+  assert.equal(result.packages[0].consumedCount, 10);
+  assert.equal(result.packages[0].remainingCount, 0);
+});
+
+test('novo pacote só aparece após pagamento e início efetivo da primeira sessão', () => {
+  const sessions = [
+    ...Array.from({ length: 10 }, (_, index) => ({
+      id: `s${index + 1}`,
+      patientId: 'patient-1',
+      date: `2026-01-${String(index + 1).padStart(2, '0')}`,
+      time: '14:00',
+      status: 'Realizada',
+    })),
+    { id: 's11', patientId: 'patient-1', date: '2026-06-19', time: '14:00', status: 'Realizada' },
+  ];
+  const unpaid = buildResponsiblePackages(sessions, { today: '2026-06-19', payments: [{ patientId: 'patient-1', amount: 1000, packageNumber: 1 }] });
+  assert.equal(unpaid.currentPackageNumber, 1);
+  assert.equal(unpaid.packages.some(pkg => pkg.number === 2), false);
+  assert.equal(unpaid.awaitingPaymentSessionCount, 1);
+
+  const paid = buildResponsiblePackages(sessions, { today: '2026-06-19', payments: [
+    { patientId: 'patient-1', amount: 1000, packageNumber: 1 },
+    { patientId: 'patient-1', amount: 500, packageNumber: 2 },
+  ] });
+  assert.equal(paid.currentPackageNumber, 2);
+  assert.deepEqual(paid.packages.map(pkg => [pkg.number, pkg.status]), [[1, 'previous'], [2, 'current']]);
+  assert.equal(paid.packages[1].sessions[0].id, 's11');
 });
 
 test('sessões agendadas recebem posições sequenciais no pacote atual e futuro', () => {
@@ -41,11 +68,18 @@ test('sessões agendadas recebem posições sequenciais no pacote atual e futuro
       status: 'Agendada',
     })),
   ];
-  const result = buildResponsiblePackages(sessions, { today: '2026-06-14' });
+  const result = buildResponsiblePackages(sessions, {
+    today: '2026-06-14',
+    payments: [
+      { patientId: 'patient-1', amount: 1000, packageNumber: 1 },
+      { patientId: 'patient-1', amount: 500, packageNumber: 2 },
+    ],
+  });
   assert.equal(result.currentPackageNumber, 1);
   assert.deepEqual(result.packages.map(pkg => pkg.number), [1, 2]);
   assert.deepEqual(result.packages[0].sessions.filter(s => s.status === 'Agendada').map(s => s.sessionNumber), [9, 10]);
   assert.deepEqual(result.packages[1].sessions.map(s => s.sessionNumber), [1, 2]);
+  assert.equal(result.packages[1].status, 'future');
 });
 
 test('mídia usa vínculo da sessão e respeita a data atual', () => {

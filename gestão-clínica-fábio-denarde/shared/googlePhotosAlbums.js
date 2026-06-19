@@ -223,6 +223,106 @@ export function buildGooglePhotosSessionActivityKey(session) {
   return `session:${String(session?.id || '')}`;
 }
 
+
+function timeToMinutes(value) {
+  const time = normalizeTime(value);
+  if (!time) return null;
+  const [hour, minute] = time.split(':').map(Number);
+  return (hour * 60) + minute;
+}
+
+function isDoubleSession(session) {
+  const type = String(session?.type || '').toLocaleLowerCase('pt-BR');
+  return session?.doubleSession === true || type.includes('sessão dupla') || type.includes('sessao dupla');
+}
+
+function normalizeActivitySessionNumber(session) {
+  const number = Number(
+    session?.activitySessionNumber
+    ?? session?.sessionNumber
+    ?? session?.packageSessionNumber,
+  );
+  return Number.isInteger(number) && number > 0 && number <= 10 ? number : 0;
+}
+
+function isHistoricalDoubleSessionPair(session, candidate) {
+  const sessionNumber = normalizeActivitySessionNumber(session);
+  const candidateNumber = normalizeActivitySessionNumber(candidate);
+  if (!sessionNumber || !candidateNumber) return false;
+
+  const expectedPairStart = Math.floor((sessionNumber - 1) / 2) * 2 + 1;
+  const pairNumbers = new Set([expectedPairStart, expectedPairStart + 1]);
+  if (!pairNumbers.has(candidateNumber) || sessionNumber === candidateNumber) return false;
+
+  if (String(candidate?.date || '') !== String(session?.date || '')) return false;
+
+  const sessionPackage = Number(session?.activityPackageNumber || 0);
+  const candidatePackage = Number(candidate?.activityPackageNumber || 0);
+  if (sessionPackage && candidatePackage && sessionPackage !== candidatePackage) return false;
+
+  const baseMinutes = timeToMinutes(session?.time);
+  const candidateMinutes = timeToMinutes(candidate?.time);
+  return baseMinutes !== null
+    && candidateMinutes !== null
+    && Math.abs(candidateMinutes - baseMinutes) === 60;
+}
+
+export function groupGooglePhotosActivitySessions(rawSessions, { patientDoubleSession = false } = {}) {
+  const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
+  const explicitGroups = new Map();
+  const automaticCandidates = [];
+
+  for (const session of sessions) {
+    const key = buildGooglePhotosSessionActivityKey(session);
+    if (key.startsWith('explicit:')) {
+      const group = explicitGroups.get(key) || [];
+      group.push(session);
+      explicitGroups.set(key, group);
+    } else {
+      automaticCandidates.push(session);
+    }
+  }
+
+  const groups = [...explicitGroups.values()];
+  const used = new Set();
+
+  for (let index = 0; index < automaticCandidates.length; index += 1) {
+    const session = automaticCandidates[index];
+    const sessionId = String(session?.id || '');
+    if (!sessionId || used.has(sessionId)) continue;
+
+    const group = [session];
+    used.add(sessionId);
+
+    const baseMinutes = timeToMinutes(session.time);
+    const pair = automaticCandidates.find(candidate => {
+      const candidateId = String(candidate?.id || '');
+      if (!candidateId || used.has(candidateId)) return false;
+
+      if (patientDoubleSession && isHistoricalDoubleSessionPair(session, candidate)) return true;
+      if (!isDoubleSession(session) || !isDoubleSession(candidate)) return false;
+      if (String(candidate.date || '') !== String(session.date || '')) return false;
+
+      const candidateMinutes = timeToMinutes(candidate.time);
+      return baseMinutes !== null
+        && candidateMinutes !== null
+        && Math.abs(candidateMinutes - baseMinutes) === 60;
+    });
+
+    if (pair) {
+      group.push(pair);
+      used.add(String(pair.id));
+    }
+
+    groups.push(group);
+  }
+
+  return groups;
+}
+
 export function createEmptyGooglePhotosAlbumCard({
   patientId,
   patientName = '',
@@ -284,10 +384,12 @@ export function createEmptyGooglePhotosAlbumCard({
 export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
   patientId = '',
   patientName = '',
+  patientDoubleSession = false,
   packageNumber = 0,
   now = new Date(),
+  payments = null,
 } = {}) {
-  const model = buildActivityMediaPackageModel(rawSessions, { patientId, now });
+  const model = buildActivityMediaPackageModel(rawSessions, { patientId, now, payments });
   const requestedPackageNumber = normalizeGooglePhotosPackageNumber(packageNumber) || model.currentPackageNumber;
   const targetPackage = model.packages.find(pkg => pkg.number === requestedPackageNumber)
     || model.packages.find(pkg => pkg.number === model.currentPackageNumber)
@@ -298,16 +400,12 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
     patientId,
     packageNumber: targetPackage.number,
   });
-  const grouped = new Map();
-  for (const session of targetPackage.sessions || []) {
-    if (!session?.selectableForMedia) continue;
-    const groupKey = buildGooglePhotosSessionActivityKey(session);
-    const group = grouped.get(groupKey) || [];
-    group.push(session);
-    grouped.set(groupKey, group);
-  }
+  const groupedSessions = groupGooglePhotosActivitySessions(
+    (targetPackage.sessions || []).filter(session => session?.selectableForMedia),
+    { patientDoubleSession: normalizeBoolean(patientDoubleSession) },
+  );
 
-  return [...grouped.values()]
+  return groupedSessions
     .map(groupSessions => {
       const sorted = groupSessions.slice().sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
       const activityDate = normalizeDate(sorted[0]?.date);
@@ -316,6 +414,7 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
         .map(session => Number(session.activitySessionNumber ?? session.packageNumber))
         .filter(value => Number.isFinite(value) && value > 0);
       const numberLabel = formatSessionNumbers(sessionNumbers);
+      const doubleSessionGroup = sorted.length === 2;
       return createEmptyGooglePhotosAlbumCard({
         patientId,
         patientName,
@@ -325,7 +424,9 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
         sessionIds,
         sessionTime: sorted[0]?.time || '',
         sessionNumbers,
-        title: numberLabel ? `${INTERVENTION_ACTIVITY_RECORD_CATEGORY} - ${numberLabel}` : INTERVENTION_ACTIVITY_RECORD_CATEGORY,
+        title: doubleSessionGroup
+          ? `${INTERVENTION_ACTIVITY_RECORD_CATEGORY} - Sessão dupla`
+          : numberLabel ? `${INTERVENTION_ACTIVITY_RECORD_CATEGORY} - ${numberLabel}` : INTERVENTION_ACTIVITY_RECORD_CATEGORY,
         category: INTERVENTION_ACTIVITY_RECORD_CATEGORY,
       });
     })
@@ -334,6 +435,26 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
       `${right.activityDate}T${right.sessionTime || '00:00'}|${right.sessionGroupKey}`
         .localeCompare(`${left.activityDate}T${left.sessionTime || '00:00'}|${left.sessionGroupKey}`)
     ));
+}
+
+export function getGooglePhotosAlbumDisplayTitle(album = {}) {
+  const category = sanitizeText(album?.category, 120) || INTERVENTION_ACTIVITY_RECORD_CATEGORY;
+  const title = sanitizeText(album?.title, 120) || category;
+  const sessionIds = normalizeGooglePhotosSessionIds(album?.sessionIds);
+  if (sessionIds.length < 2) return title;
+
+  const generatedPrefixes = [
+    category,
+    DEFAULT_ACTIVITY_RECORD_CATEGORY,
+    INTERVENTION_ACTIVITY_RECORD_CATEGORY,
+    'Atividade Pedagógica',
+  ].filter(Boolean);
+  const isGeneratedSessionTitle = generatedPrefixes.some(prefix => (
+    title === prefix
+    || title.toLocaleLowerCase('pt-BR').startsWith(`${String(prefix).toLocaleLowerCase('pt-BR')} - sessão`)
+  ));
+
+  return isGeneratedSessionTitle ? `${category} - Sessão dupla` : title;
 }
 
 export function mergeGooglePhotosAlbumCards({
@@ -360,6 +481,7 @@ export function mergeGooglePhotosAlbumCards({
       sessionGroupKey: String(card.sessionGroupKey || id),
       status: normalizeGooglePhotosAlbumStatus(card.status),
       category: normalizeGooglePhotosCategory(card.category),
+      title: getGooglePhotosAlbumDisplayTitle({ ...card, sessionIds }),
       url: normalizeGooglePhotosAlbumUrl(card.url) || '',
       visibleToGuardian: normalizeBoolean(card.visibleToGuardian),
       isVirtual: source === 'virtual',

@@ -19,18 +19,21 @@ test('botão do card do atendente abre a nova Galeria de Atividades do atendente
 
 test('atalhos da Agenda convergem para a mesma galeria sem abrir o modal antigo', () => {
   assert.match(agendaSource, /handleOpenActivityGallery/);
-  assert.match(agendaSource, /onNavigateToPatientGallery\(patient\.id\)/);
-  assert.match(agendaSource, /Abrir Galeria de Atividades/);
+  assert.match(agendaSource, /onNavigateToPatientGallery\(patient\.id, targetSessionId\)/);
+  assert.match(agendaSource, /Registrar atividade/);
   assert.doesNotMatch(agendaSource, /ActivityRecordModal/);
-  assert.doesNotMatch(agendaSource, /Registrar atividade/);
   assert.doesNotMatch(agendaSource, /Ver Galeria de Mídias/);
 });
 
-test('atalho explícito transporta somente o patientId e abre o pacote sob demanda', () => {
-  assert.match(appSource, /const openActivityGallery = \(patientId: string \| null = null\)/);
+test('atalho explícito transporta atendente e sessão e abre o card correto sob demanda', () => {
+  assert.match(appSource, /const openActivityGallery = \(patientId: string \| null = null, sessionId: string \| null = null\)/);
   assert.match(appSource, /setSelectedGalleryPatientId\(patientId\)/);
+  assert.match(appSource, /setSelectedGallerySessionId\(sessionId\)/);
   assert.match(appSource, /initialPatientId=\{selectedGalleryPatientId\}/);
+  assert.match(appSource, /initialSessionId=\{selectedGallerySessionId\}/);
   assert.match(gallerySource, /initialPatientId\?: string \| null/);
+  assert.match(gallerySource, /initialSessionId\?: string \| null/);
+  assert.match(gallerySource, /card\.sessionIds\.includes\(initialSessionId\)/);
   assert.match(gallerySource, /useState\(\(\) => String\(initialPatientId \|\| ''\)\.trim\(\)\)/);
 });
 

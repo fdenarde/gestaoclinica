@@ -905,7 +905,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                           </div>
                           {item.hasNewPackageWithoutPayment && (
                             <p className="mt-3 rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-3 py-2 text-xs font-bold text-status-orange-text">
-                              Este paciente tem pacote atual iniciado por sessão realizada/reposição sem pagamento vinculado ao pacote {item.packageNumber}. Se pacote anterior foi quitado, ele permanece apenas como histórico.
+                              Há sessão além das 10 previstas no Pacote {item.packageNumber}, mas o Pacote {item.packageNumber + 1} não foi aberto porque ainda não existe pagamento confirmado. Registre o pagamento para liberar o novo pacote.
                             </p>
                           )}
                           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-clinic-border bg-white px-3 py-3">

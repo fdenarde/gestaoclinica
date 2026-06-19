@@ -91,7 +91,7 @@ interface AgendaProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (id: string) => void;
-  onNavigateToPatientGallery?: (id: string) => void;
+  onNavigateToPatientGallery?: (id: string, sessionId?: string) => void;
   currentUserName: string;
 }
 
@@ -334,6 +334,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   };
 
   const handleOpenActivityGallery = async (session: ProcessedSession) => {
+    let targetSessionId = session.id;
     const patient = state.patients.find(item => item.id === session.patientId);
     if (!patient) {
       showToast('Atendente não encontrado.', 'error');
@@ -362,6 +363,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       virtualActionLocksRef.current.add(actionKey);
       try {
         await onUpdate({ sessions: [...state.sessions, result.session] });
+        targetSessionId = result.session.id;
       } catch (error) {
         virtualActionLocksRef.current.delete(actionKey);
         console.error('Falha ao preparar sessão fixa para a Galeria de Atividades:', error);
@@ -371,7 +373,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     }
 
     setActionSession(null);
-    onNavigateToPatientGallery(patient.id);
+    onNavigateToPatientGallery(patient.id, targetSessionId);
   };
 
 
@@ -1179,9 +1181,9 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   type="button"
                   onClick={() => void handleOpenActivityGallery(actionSession)}
                   className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-clinic-primary/25 bg-clinic-primary text-white font-bold hover:bg-clinic-primary-hover active:scale-95 transition-all"
-                  title={`Abrir a Galeria de Atividades de ${patient.name}`}
+                  title={`Registrar atividade de ${patient.name} nesta sessão`}
                 >
-                  <Images size={17} /> Abrir Galeria de Atividades
+                  <Images size={17} /> Registrar atividade
                 </button>
               )}
 

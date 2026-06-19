@@ -1,4 +1,5 @@
 import { Payment, PaymentModal, Patient, Session, SessionStatus } from '../types';
+import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 
 export const PACKAGE_GROSS_VALUE = 1000;
 export const PARTNER_SHARE_RATE = 0.2;
@@ -115,28 +116,9 @@ export function calculatePackageFinancialSummary(
     .sort(sortPaymentsChronologically);
 
   const totalPaidGross = patientPayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-  const paidFullPackagesByTotal = Math.floor(totalPaidGross / PACKAGE_GROSS_VALUE);
-  const hasPartialPackageByTotal = totalPaidGross % PACKAGE_GROSS_VALUE > 0;
-  const packageByTotalPayments = paidFullPackagesByTotal + (hasPartialPackageByTotal ? 1 : 0);
-
-  const explicitPackageNumbers = patientPayments
-    .map(getExplicitPackageNumber)
-    .filter((packageNumber): packageNumber is number => packageNumber !== null);
-
-  const latestExplicitPackageNumber = explicitPackageNumbers.length > 0 ? Math.max(...explicitPackageNumbers) : 0;
-  const paymentIndicatedPackageNumber = Math.max(latestExplicitPackageNumber, packageByTotalPayments);
-  const hasStartedNextPackageWithoutPayment =
-    totalPaidGross > 0 &&
-    !hasPartialPackageByTotal &&
-    completedPackageNumber === paidFullPackagesByTotal + 1 &&
-    latestExplicitPackageNumber <= paidFullPackagesByTotal;
-
-  const packageNumber = Math.max(
-    1,
-    hasStartedNextPackageWithoutPayment ? completedPackageNumber : 0,
-    paymentIndicatedPackageNumber,
-    paymentIndicatedPackageNumber === 0 ? Math.min(completedPackageNumber, 1) : 0
-  );
+  const activatedPackageNumber = getActivatedPackageNumber(patientPayments, { patientId: patient.id });
+  const packageNumber = Math.max(1, activatedPackageNumber);
+  const hasStartedNextPackageWithoutPayment = completedPackageNumber > activatedPackageNumber && completedPackageNumber > 1;
 
   const previousPackageNumber = packageNumber > 1 ? packageNumber - 1 : null;
   const currentPackageStartIndex = (packageNumber - 1) * SESSIONS_PER_PACKAGE;
@@ -178,7 +160,7 @@ export function calculatePackageFinancialSummary(
   }
 
   const lastPayment = patientPayments.length > 0 ? patientPayments[patientPayments.length - 1] : null;
-  const hasNewPackageWithoutPayment = hasStartedNextPackageWithoutPayment && pendingGross > 0;
+  const hasNewPackageWithoutPayment = hasStartedNextPackageWithoutPayment;
 
   return {
     patient,

@@ -222,7 +222,7 @@ export interface ResponsiblePortalPayment {
 
 export interface ResponsiblePortalPackage {
   number: number;
-  status: 'current' | 'future';
+  status: 'previous' | 'current' | 'future';
   startDate: string;
   endDate: string;
   consumedCount: number;

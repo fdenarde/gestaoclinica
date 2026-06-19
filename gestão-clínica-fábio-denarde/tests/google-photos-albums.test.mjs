@@ -8,12 +8,14 @@ import {
   buildGooglePhotosAlbumPackageKey,
   buildGooglePhotosVirtualAlbumCards,
   filterGooglePhotosAlbumsForViewer,
+  getGooglePhotosAlbumDisplayTitle,
   getGooglePhotosAlbumCapabilities,
   isGooglePhotosAlbumPatientAllowed,
   isValidGooglePhotosAlbumUrl,
   mergeGooglePhotosAlbumCards,
   normalizeGooglePhotosAlbumUrl,
 } from '../shared/googlePhotosAlbums.js';
+import { buildActivityMediaPackageModel } from '../shared/activityMediaPackages.js';
 
 const validAlbum = {
   id: 'album-1',
@@ -171,7 +173,7 @@ test('cards virtuais cobrem a primeira sessão do pacote atual até a sessão at
   assert.equal(cards.some(card => card.category === 'Atividade de Intervenção'), true);
 });
 
-test('sessões duplas usam IDs reais, agrupam apenas com chave explícita e separam atividades diferentes no mesmo dia', () => {
+test('sessões duplas usam IDs reais, agrupam automaticamente pares consecutivos e preservam grupos explícitos', () => {
   const grouped = buildGooglePhotosVirtualAlbumCards([
     makeSession('double-b', '2026-06-18', 'Realizada', { activityGroupKey: 'same-activity', time: '11:00' }),
     makeSession('double-a', '2026-06-18', 'Realizada', { activityGroupKey: 'same-activity', time: '10:00' }),
@@ -179,12 +181,136 @@ test('sessões duplas usam IDs reais, agrupam apenas com chave explícita e sepa
   assert.equal(grouped.length, 1);
   assert.equal(grouped[0].sessionGroupKey, 'sessions:patient-1:2026-06-18:double-a,double-b');
 
+
+  const automatic = buildGooglePhotosVirtualAlbumCards([
+    makeSession('double-auto-a', '2026-06-19', 'Realizada', { type: 'Sessão dupla (2 × 50 min)', time: '14:00' }),
+    makeSession('double-auto-b', '2026-06-19', 'Realizada', { type: 'Sessão dupla (2 × 50 min)', time: '15:00' }),
+  ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-19T20:00:00Z') });
+  assert.equal(automatic.length, 1);
+  assert.deepEqual(automatic[0].sessionIds, ['double-auto-a', 'double-auto-b']);
+  assert.match(automatic[0].title, /Sessão dupla/);
+
   const separated = buildGooglePhotosVirtualAlbumCards([
     makeSession('activity-a', '2026-06-18', 'Realizada', { time: '10:00' }),
     makeSession('activity-b', '2026-06-18', 'Realizada', { time: '11:00' }),
   ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-19T12:00:00Z') });
   assert.equal(separated.length, 2);
   assert.deepEqual(separated.map(card => card.sessionIds), [['activity-b'], ['activity-a']]);
+});
+
+test('atendente configurado para sessão dupla reconstrói todos os pares históricos do pacote', () => {
+  const sessions = [
+    makeSession('celso-1', '2026-05-22', 'Realizada', { time: '14:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-2', '2026-05-22', 'Realizada', { time: '15:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-3', '2026-05-29', 'Realizada', { time: '14:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-4', '2026-05-29', 'Realizada', { time: '15:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-5', '2026-06-03', 'Realizada', { time: '14:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-6', '2026-06-03', 'Realizada', { time: '15:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-7', '2026-06-12', 'Realizada', { time: '14:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-8', '2026-06-12', 'Realizada', { time: '15:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-9', '2026-06-19', 'Realizada', { time: '14:00', type: 'Sessão simples (50 min)' }),
+    makeSession('celso-10', '2026-06-19', 'Realizada', { time: '15:00', type: 'Sessão simples (50 min)' }),
+  ];
+
+  const cards = buildGooglePhotosVirtualAlbumCards(sessions, {
+    patientId: 'patient-1',
+    patientName: 'Celso',
+    patientDoubleSession: true,
+    packageNumber: 1,
+    now: new Date('2026-06-19T20:00:00Z'),
+  });
+
+  assert.equal(cards.length, 5);
+  assert.deepEqual(
+    cards.map(card => card.sessionNumbers).sort((left, right) => left[0] - right[0]),
+    [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
+  );
+  assert.equal(cards.every(card => card.sessionIds.length === 2), true);
+  assert.equal(cards.every(card => /Sessão dupla/.test(card.title)), true);
+
+  const professionalSource = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url), 'utf8');
+  assert.match(professionalSource, /patientDoubleSession: Boolean\(selectedPatient\?\.doubleSession\)/);
+});
+
+test('regra histórica de sessão dupla não une atendimentos simples nem horários incompatíveis', () => {
+  const sessions = [
+    makeSession('simple-1', '2026-06-01', 'Realizada', { time: '14:00', type: 'Sessão simples (50 min)' }),
+    makeSession('simple-2', '2026-06-01', 'Realizada', { time: '15:00', type: 'Sessão simples (50 min)' }),
+  ];
+  const simpleCards = buildGooglePhotosVirtualAlbumCards(sessions, {
+    patientId: 'patient-1',
+    packageNumber: 1,
+    patientDoubleSession: false,
+    now: new Date('2026-06-02T12:00:00Z'),
+  });
+  assert.equal(simpleCards.length, 2);
+
+  const incompatibleCards = buildGooglePhotosVirtualAlbumCards([
+    makeSession('double-1', '2026-06-01', 'Realizada', { time: '14:00' }),
+    makeSession('double-2', '2026-06-01', 'Realizada', { time: '16:00' }),
+  ], {
+    patientId: 'patient-1',
+    packageNumber: 1,
+    patientDoubleSession: true,
+    now: new Date('2026-06-02T12:00:00Z'),
+  });
+  assert.equal(incompatibleCards.length, 2);
+});
+
+test('título gerado de card persistido com dois IDs é exibido como sessão dupla', () => {
+  assert.equal(getGooglePhotosAlbumDisplayTitle({
+    title: 'Atividade de Intervenção - Sessão 9',
+    category: 'Atividade de Intervenção',
+    sessionIds: ['celso-9', 'celso-10'],
+  }), 'Atividade de Intervenção - Sessão dupla');
+
+  assert.equal(getGooglePhotosAlbumDisplayTitle({
+    title: 'Jogo da memória',
+    category: 'Atividade de Intervenção',
+    sessionIds: ['celso-9', 'celso-10'],
+  }), 'Jogo da memória');
+});
+
+test('galeria não avança para pacote sem pagamento confirmado', () => {
+  const sessions = [
+    ...Array.from({ length: 10 }, (_, index) => makeSession(`paid-1-${index + 1}`, `2026-05-${String(index + 1).padStart(2, '0')}`)),
+    makeSession('unpaid-package-2', '2026-06-19'),
+  ];
+  const model = buildActivityMediaPackageModel(sessions, {
+    patientId: 'patient-1',
+    payments: [{ patientId: 'patient-1', amount: 1000, packageNumber: 1 }],
+    now: new Date('2026-06-19T20:00:00Z'),
+  });
+  assert.equal(model.currentPackageNumber, 1);
+  assert.equal(model.awaitingPaymentSessions.length, 1);
+  assert.equal(model.currentSessions.some(session => session.id === 'unpaid-package-2'), false);
+
+  const renewed = buildActivityMediaPackageModel(sessions, {
+    patientId: 'patient-1',
+    payments: [
+      { patientId: 'patient-1', amount: 1000, packageNumber: 1 },
+      { patientId: 'patient-1', amount: 500, packageNumber: 2 },
+    ],
+    now: new Date('2026-06-19T20:00:00Z'),
+  });
+  assert.equal(renewed.currentPackageNumber, 2);
+  assert.equal(renewed.currentSessions.some(session => session.id === 'unpaid-package-2'), true);
+});
+
+
+
+test('Portal bloqueia leitura direta de pacote ainda não ativado por pagamento', () => {
+  const repositorySource = fs.readFileSync(new URL('../api/_lib/googlePhotosAlbumsRepository.js', import.meta.url), 'utf8');
+  assert.match(repositorySource, /normalizedScope === 'portal'/);
+  assert.match(repositorySource, /getActivatedPackageNumber\(payments, \{ patientId: normalizedPatientId \}\)/);
+  assert.match(repositorySource, /normalizedPackageNumber > activatedPackageNumber/);
+  assert.match(repositorySource, /albums: \[\]/);
+});
+
+test('área profissional avisa quando há sessão aguardando pagamento do próximo pacote', () => {
+  const professionalSource = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url), 'utf8');
+  assert.match(professionalSource, /awaitingPaymentSessions/);
+  assert.match(professionalSource, /Nenhum novo pacote foi aberto/);
 });
 
 test('mesclagem remove cards virtuais cobertos por card persistido e preserva rascunhos locais', () => {

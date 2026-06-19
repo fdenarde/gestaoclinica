@@ -1,4 +1,4 @@
-import type { Session } from '../types';
+import type { Payment, Session } from '../types';
 import {
   buildActivityMediaPackageModel as buildSharedActivityMediaPackageModel,
   getCurrentActivityMediaSessions as getSharedCurrentActivityMediaSessions,
@@ -27,30 +27,36 @@ export interface ActivityMediaPackageModel {
   consumedSessionCount: number;
   packages: ActivityMediaPackage[];
   currentSessions: ActivityMediaPackageSession[];
+  activatedPackageNumber?: number | null;
+  awaitingPaymentSessions?: ActivityMediaPackageSession[];
 }
 
 export function buildActivityMediaPackageModel({
   patientId,
   sessions,
   now = new Date(),
+  payments = null,
 }: {
   patientId: string;
   sessions: Session[];
   now?: Date;
+  payments?: Payment[] | null;
 }): ActivityMediaPackageModel {
-  return buildSharedActivityMediaPackageModel(sessions, { patientId, now }) as ActivityMediaPackageModel;
+  return buildSharedActivityMediaPackageModel(sessions, { patientId, now, payments }) as ActivityMediaPackageModel;
 }
 
 export function getCurrentActivityMediaSessions({
   patientId,
   sessions,
   now = new Date(),
+  payments = null,
 }: {
   patientId: string;
   sessions: Session[];
   now?: Date;
+  payments?: Payment[] | null;
 }): ActivityMediaPackageSession[] {
-  return getSharedCurrentActivityMediaSessions(sessions, { patientId, now }) as ActivityMediaPackageSession[];
+  return getSharedCurrentActivityMediaSessions(sessions, { patientId, now, payments }) as ActivityMediaPackageSession[];
 }
 
 export function isActivitySessionInProgress(session: Session, now = new Date()): boolean {

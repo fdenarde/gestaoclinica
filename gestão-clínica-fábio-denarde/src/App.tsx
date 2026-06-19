@@ -134,6 +134,7 @@ export default function App() {
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [selectedPatientSubTab, setSelectedPatientSubTab] = useState<string | null>(null);
   const [selectedGalleryPatientId, setSelectedGalleryPatientId] = useState<string | null>(null);
+  const [selectedGallerySessionId, setSelectedGallerySessionId] = useState<string | null>(null);
   const [galleryNavigationKey, setGalleryNavigationKey] = useState(0);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
   const notificationCursorRef = useRef<string | null>(null);
@@ -153,15 +154,16 @@ export default function App() {
     setActiveTab('atendentes');
   };
 
-  const openActivityGallery = (patientId: string | null = null) => {
+  const openActivityGallery = (patientId: string | null = null, sessionId: string | null = null) => {
     setSelectedGalleryPatientId(patientId);
+    setSelectedGallerySessionId(sessionId);
     setGalleryNavigationKey(current => current + 1);
     setActiveTab('galeria-atividades');
     setMobileSidebarOpen(false);
   };
 
-  const navigateToPatientGallery = (id: string) => {
-    openActivityGallery(id);
+  const navigateToPatientGallery = (id: string, sessionId?: string) => {
+    openActivityGallery(id, sessionId || null);
   };
 
   const changeNavigationMode = (mode: NavigationMode) => {
@@ -181,6 +183,7 @@ export default function App() {
   const selectNavigationItem = (id: string) => {
     if (id === 'galeria-atividades') {
       setSelectedGalleryPatientId(null);
+      setSelectedGallerySessionId(null);
       setGalleryNavigationKey(current => current + 1);
     }
     setActiveTab(id);
@@ -1109,7 +1112,7 @@ export default function App() {
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
-              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} />}
+              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}

@@ -6,6 +6,7 @@ import {
   listGooglePhotosAlbums,
 } from '../../lib/googlePhotosAlbumsApi';
 import { safeFormatDate } from '../../lib/utils';
+import { getGooglePhotosAlbumDisplayTitle } from '../../../shared/googlePhotosAlbums.js';
 
 interface Props {
   patientId: string;
@@ -99,7 +100,7 @@ export default function ResponsibleGooglePhotosGallery({ patientId, patientName,
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full bg-status-green-bg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-status-green-text">{album.category}</span>
               </div>
-              <h3 className="mt-3 break-words text-base font-bold text-clinic-text">{album.title}</h3>
+              <h3 className="mt-3 break-words text-base font-bold text-clinic-text">{getGooglePhotosAlbumDisplayTitle(album)}</h3>
               <div className="mt-3 flex-1 space-y-2 text-sm">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Data</p>

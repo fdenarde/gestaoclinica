@@ -88,10 +88,11 @@ const previousPaidNewOpen = calculatePackageFinancialSummary(
   [makePayment(patient, 'p1', 1000, '2026-01-01', 1)],
   today
 );
-assertEqual(previousPaidNewOpen.packageNumber, 2, 'new package detected only after completed session 11');
-assertEqual(previousPaidNewOpen.completedSessionsInCurrentPackage, 1, 'new package counts only completed session 11');
-assertEqual(previousPaidNewOpen.status, 'EM ABERTO', 'previous package payment does not settle new package');
-assertEqual(previousPaidNewOpen.pendingGross, 1000, 'new started unpaid package pending gross');
+assertEqual(previousPaidNewOpen.packageNumber, 1, 'session 11 does not activate package 2 without payment');
+assertEqual(previousPaidNewOpen.completedSessionsInCurrentPackage, 10, 'completed package 1 remains the current financial package');
+assertEqual(previousPaidNewOpen.status, 'QUITADO', 'paid package 1 remains settled while renewal awaits payment');
+assertEqual(previousPaidNewOpen.pendingGross, 0, 'unpaid package 2 is not created as debt');
+assertEqual(previousPaidNewOpen.hasNewPackageWithoutPayment, true, 'session beyond package 1 is flagged for payment confirmation');
 
 const partial = calculatePackageFinancialSummary(
   patient,
