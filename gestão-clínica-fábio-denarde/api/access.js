@@ -1505,10 +1505,9 @@ async function getResponsiblePortalData(db, decodedToken, req) {
     if (!patientSnapshot.exists) continue;
     const patient = patientSnapshot.data();
 
-    const [sessionsSnapshot, paymentsSnapshot, interactionsSnapshot, documentsSnapshot] = await Promise.all([
+    const [sessionsSnapshot, paymentsSnapshot, documentsSnapshot] = await Promise.all([
       db.collection(`users/${ownerUserId}/sessions`).where('patientId', '==', patientId).limit(500).get(),
       db.collection(`users/${ownerUserId}/payments`).where('patientId', '==', patientId).limit(200).get(),
-      db.collection(`users/${ownerUserId}/portalMediaInteractions`).where('patientId', '==', patientId).limit(1000).get(),
       patientRef.collection('portalDocuments').limit(100).get(),
     ]);
 
@@ -1517,41 +1516,11 @@ async function getResponsiblePortalData(db, decodedToken, req) {
       .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
     const packageResult = buildResponsiblePackages(sessions, { today });
     const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
-    const sessionPackageMap = new Map();
     for (const pkg of packageResult.packages) {
-      for (const session of pkg.sessions) sessionPackageMap.set(session.id, pkg.number);
       Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number));
     }
 
-    const interactions = aggregateMediaInteractions(interactionsSnapshot.docs, decodedToken.uid);
-    let media = [];
-    if (patient.activityMediaAuthorization?.guardianSharingStatus === 'authorized') {
-      const mediaSnapshot = await patientRef.collection('activityRecords').limit(500).get();
-      media = mediaSnapshot.docs
-        .filter(snapshot => {
-          const record = snapshot.data();
-          return record.patientId === patientId && canShareActivityWithGuardian(patient, record);
-        })
-        .map(serializeResponsibleMedia)
-        .map(record => {
-          const packageNumber = getPackageForMedia(record, sessionPackageMap, packageResult.packages, today);
-          if (!packageNumber || packageNumber < packageResult.currentPackageNumber) return null;
-          const interaction = interactions.get(record.id) || {
-            likeCount: 0,
-            likedByCurrentResponsible: false,
-            comments: [],
-          };
-          return {
-            ...record,
-            packageNumber,
-            likeCount: interaction.likeCount,
-            likedByCurrentResponsible: interaction.likedByCurrentResponsible,
-            comments: interaction.comments,
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => `${b.sessionDate}T${b.sessionTime}`.localeCompare(`${a.sessionDate}T${a.sessionTime}`));
-    }
+    const media = [];
 
     const documents = documentsSnapshot.docs
       .map(serializeResponsibleDocument)
@@ -1694,10 +1663,9 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
   const settings = serializePortalSettings(settingsSnapshot.exists ? settingsSnapshot.data() : {});
   const today = new Date().toISOString().slice(0, 10);
 
-  const [sessionsSnapshot, paymentsSnapshot, interactionsSnapshot, documentsSnapshot] = await Promise.all([
+  const [sessionsSnapshot, paymentsSnapshot, documentsSnapshot] = await Promise.all([
     db.collection(`users/${ownerUserId}/sessions`).where('patientId', '==', patientId).limit(500).get(),
     db.collection(`users/${ownerUserId}/payments`).where('patientId', '==', patientId).limit(200).get(),
-    db.collection(`users/${ownerUserId}/portalMediaInteractions`).where('patientId', '==', patientId).limit(1000).get(),
     patientRef.collection('portalDocuments').limit(100).get(),
   ]);
 
@@ -1706,47 +1674,11 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
     .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
   const packageResult = buildResponsiblePackages(sessions, { today });
   const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
-  const sessionPackageMap = new Map();
-
   for (const pkg of packageResult.packages) {
-    for (const session of pkg.sessions) sessionPackageMap.set(session.id, pkg.number);
     Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number));
   }
 
-  const interactions = selectedResponsibleUid
-    ? aggregateMediaInteractions(interactionsSnapshot.docs, selectedResponsibleUid)
-    : new Map();
-
-  let media = [];
-  if (patient.activityMediaAuthorization?.guardianSharingStatus === 'authorized') {
-    const mediaSnapshot = await patientRef.collection('activityRecords').limit(500).get();
-    media = mediaSnapshot.docs
-      .filter(snapshot => {
-        const record = snapshot.data();
-        return record.patientId === patientId && canShareActivityWithGuardian(patient, record);
-      })
-      .map(serializeResponsibleMedia)
-      .map(record => {
-        const packageNumber = getPackageForMedia(record, sessionPackageMap, packageResult.packages, today);
-        if (!packageNumber || packageNumber < packageResult.currentPackageNumber) return null;
-        const interaction = interactions.get(record.id) || {
-          likeCount: 0,
-          likedByCurrentResponsible: false,
-          comments: [],
-        };
-        return {
-          ...record,
-          packageNumber,
-          likeCount: interaction.likeCount,
-          likedByCurrentResponsible: interaction.likedByCurrentResponsible,
-          comments: interaction.comments,
-        };
-      })
-      .filter(Boolean)
-      .sort((left, right) => (
-        `${right.sessionDate}T${right.sessionTime}`.localeCompare(`${left.sessionDate}T${left.sessionTime}`)
-      ));
-  }
+  const media = [];
 
   const documents = documentsSnapshot.docs
     .map(serializeResponsibleDocument)

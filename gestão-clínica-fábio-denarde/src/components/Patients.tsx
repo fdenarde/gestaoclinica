@@ -12,8 +12,6 @@ import { createStrongToken, getExternalRegistrationExpiry, getExternalRegistrati
 import { cancelPatientPhotoUpload, deletePatientPhoto, getPatientPhotoErrorMessage, uploadPatientPhoto, validatePatientPhoto } from '../lib/patientPhotoStorage';
 import { auth, db } from '../firebase';
 import { doc, setDoc, Timestamp } from 'firebase/firestore';
-import ActivityRecordsTab from './ActivityRecords/ActivityRecordsTab';
-import ActivityRecordModal from './ActivityRecords/ActivityRecordModal';
 import { hasPatientActivityRecords } from '../lib/activityRecordsApi';
 import { getDefaultActivityAuthorization } from '../types/activityRecords';
 import { getProfessionalPatientProfileChangeRequests, getProfessionalResponsibleDocumentUrl, reviewPatientProfileChangeRequest } from '../lib/accessApi';
@@ -31,6 +29,7 @@ interface PatientsProps {
   currentUserName?: string;
   initialPatientSubTab?: string | null;
   onPatientSubTabConsumed?: () => void;
+  onNavigateToPatientGallery?: (id: string) => void;
 }
 
 const PATIENT_FIELD_LABELS: Record<string, string> = {
@@ -65,7 +64,7 @@ function formatPortalDocumentSize(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
 }
 
-export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId, currentUserId, currentUserName, initialPatientSubTab, onPatientSubTabConsumed }: PatientsProps) {
+export default function Patients({ state, onUpdate, selectedPatientId: propSelectedId, setSelectedPatientId: propSetSelectedId, currentUserId, currentUserName, initialPatientSubTab, onPatientSubTabConsumed, onNavigateToPatientGallery }: PatientsProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showInactive, setShowInactive] = useState(false);
   const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
@@ -79,7 +78,6 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   const setSelectedPatientId = propSetSelectedId || setInternalSelectedId;
 
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
-  const [quickActivityPatientId, setQuickActivityPatientId] = useState<string | null>(null);
   const [adminPortalPreviewPatientId, setAdminPortalPreviewPatientId] = useState<string | null>(null);
   const [requestedPatientSubTab, setRequestedPatientSubTab] = useState<string | null>(initialPatientSubTab || null);
 
@@ -301,7 +299,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
     try {
       if (currentUserId && await hasPatientActivityRecords(patientToDelete)) {
-        showToast('Este atendente possui registros de atividades. Exclua as mídias pela aba Registros de Atividades antes de remover o cadastro.', 'error');
+        showToast('Este atendente possui registros históricos de atividades preservados. O cadastro não pode ser excluído sem uma auditoria específica desses dados.', 'error');
         return;
       }
 
@@ -328,22 +326,8 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   };
 
   const selectedPatient = state.patients.find(p => p.id === selectedPatientId);
-  const quickActivityPatient = state.patients.find(p => p.id === quickActivityPatientId) || null;
   const adminPortalPreviewPatient = state.patients.find(p => p.id === adminPortalPreviewPatientId) || null;
   const isPrimaryAdmin = auth.currentUser?.email?.trim().toLowerCase() === 'fdenarde@gmail.com';
-
-  const handleQuickActivity = (patient: Patient) => {
-    const authorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
-    if (authorization.internalRecordingStatus !== 'authorized') {
-      const message = authorization.internalRecordingStatus === 'not_authorized'
-        ? 'O responsável não autorizou o registro interno de imagens ou mídias para este atendente.'
-        : 'O registro de atividades está bloqueado porque a autorização para registro interno está pendente.';
-      showToast(message, 'error');
-      setSelectedPatientId(patient.id);
-      return;
-    }
-    setQuickActivityPatientId(patient.id);
-  };
 
   const copyExternalRegistrationLink = async (link: string) => {
     try {
@@ -479,8 +463,6 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
               const displayRemaining = attendedInCycle === 0 && totalRealized > 0 ? 0 : 10 - attendedInCycle;
 
               const hasPendingReposition = state.repositions.some(r => r.patientId === patient.id && r.status === 'Pendente');
-              const activityAuthorization = patient.activityMediaAuthorization || getDefaultActivityAuthorization();
-              const canRecordActivity = activityAuthorization.internalRecordingStatus === 'authorized';
               
               return (
                 <div key={patient.id} className="p-5 rounded-2xl border border-clinic-border hover:bg-clinic-bg/40 transition-all flex flex-col md:flex-row items-center gap-6">
@@ -537,15 +519,10 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                     </a>
                     <button
                       type="button"
-                      onClick={() => handleQuickActivity(patient)}
-                      className={cn(
-                        "p-3 rounded-xl transition-all hover:scale-105",
-                        canRecordActivity
-                          ? "bg-status-blue-bg text-status-blue-text"
-                          : "bg-status-orange-bg text-status-orange-text"
-                      )}
-                      title={canRecordActivity ? 'Registrar atividade' : 'Verificar autorização de imagem e mídia'}
-                      aria-label={`Registrar atividade de ${patient.name}`}
+                      onClick={() => onNavigateToPatientGallery?.(patient.id)}
+                      className="p-3 rounded-xl bg-status-blue-bg text-status-blue-text transition-all hover:scale-105"
+                      title={`Abrir Galeria de Atividades de ${patient.name}`}
+                      aria-label={`Abrir Galeria de Atividades de ${patient.name}`}
                     >
                       <Camera size={20} />
                     </button>
@@ -765,21 +742,6 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         </div>
       </Modal>
 
-      {quickActivityPatient && (
-        <ActivityRecordModal
-          isOpen={true}
-          onClose={() => setQuickActivityPatientId(null)}
-          patient={quickActivityPatient}
-          sessions={state.sessions}
-          currentUserName={currentUserName || 'Usuário'}
-          onViewGallery={() => {
-            setQuickActivityPatientId(null);
-            setRequestedPatientSubTab('atividades');
-            setSelectedPatientId(quickActivityPatient.id);
-          }}
-        />
-      )}
-
       {isPrimaryAdmin && adminPortalPreviewPatient && auth.currentUser && (
         <div className="fixed inset-0 z-[250] overflow-y-auto bg-clinic-bg">
           <ResponsiblePortal
@@ -806,6 +768,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
           currentUserName={currentUserName || 'Usuário'}
           createExternalRegistrationForm={createExternalRegistrationForm}
           copyExternalRegistrationLink={copyExternalRegistrationLink}
+          onNavigateToPatientGallery={onNavigateToPatientGallery}
           initialSubTab={requestedPatientSubTab}
           onInitialSubTabApplied={() => {
             setRequestedPatientSubTab(null);
@@ -817,8 +780,8 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   );
 }
 
-function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink, initialSubTab, onInitialSubTabApplied }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void | Promise<void>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void>, initialSubTab?: string | null, onInitialSubTabApplied?: () => void }) {
-  const [activeSubTab, setActiveSubTab] = useState(initialSubTab || 'dados');
+function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink, onNavigateToPatientGallery, initialSubTab, onInitialSubTabApplied }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void | Promise<void>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void>, onNavigateToPatientGallery?: (id: string) => void, initialSubTab?: string | null, onInitialSubTabApplied?: () => void }) {
+  const [activeSubTab, setActiveSubTab] = useState(initialSubTab && initialSubTab !== 'atividades' ? initialSubTab : 'dados');
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Patient>>(() => getPatientEditDefaults(patient));
@@ -866,7 +829,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
 
   useEffect(() => {
     if (!initialSubTab) return;
-    setActiveSubTab(initialSubTab);
+    setActiveSubTab(initialSubTab === 'atividades' ? 'dados' : initialSubTab);
     onInitialSubTabApplied?.();
   }, [initialSubTab, onInitialSubTabApplied]);
 
@@ -887,15 +850,6 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
       });
     return () => { active = false; };
   }, [isOpen, patient.id]);
-  const openActivityAuthorization = () => {
-    setEditForm(getPatientEditDefaults(patient));
-    setActiveSubTab('dados');
-    setIsEditingData(true);
-    window.setTimeout(() => {
-      document.querySelector('[data-activity-authorization]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 80);
-  };
-
   useEffect(() => {
     return () => {
       if (pendingPhotoPreviewUrl) {
@@ -1650,7 +1604,6 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     { id: 'financeiro', label: 'Financeiro', fullLabel: 'Financeiro', icon: DollarSign },
     { id: 'anotacoes', label: 'Anotações', fullLabel: 'Anotações Gerais', icon: Edit3 },
     { id: 'evolucao', label: 'Evolução', fullLabel: 'Evolução Clínica', icon: FileText },
-    { id: 'atividades', label: 'Atividades', fullLabel: 'Registros de Atividades', icon: Images },
   ];
 
   const updateNotes = (notes: string) => {
@@ -1824,6 +1777,17 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                 <MessageCircle size={13} /> Confirmar sessão
               </a>
 
+              {onNavigateToPatientGallery && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateToPatientGallery(patient.id)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-status-blue-bg px-3 py-2 text-[9px] font-black uppercase tracking-wide text-status-blue-text transition hover:scale-[1.02]"
+                  title="Abrir a Galeria de Atividades deste atendente"
+                >
+                  <Images size={13} /> Galeria de Atividades
+                </button>
+              )}
+
               {patient.paymentModal === PaymentModal.PARCELADO && realizedInPackage >= 4 && (
                 <a
                   href={`https://wa.me/55${(patient.whatsapp || '').replace(/\D/g, '')}?text=${encodeURIComponent(paymentMessage)}`}
@@ -1876,7 +1840,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
               </select>
             </div>
 
-            <div className="hidden grid-cols-7 divide-x divide-clinic-border md:grid">
+            <div className="hidden grid-cols-6 divide-x divide-clinic-border md:grid">
               {tabs.map(tab => (
                 <button
                   key={tab.id}
@@ -2496,16 +2460,6 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                    )}
                 </div>
               </div>
-            )}
-
-            {activeSubTab === 'atividades' && (
-              <ActivityRecordsTab
-                patient={patient}
-                sessions={state.sessions}
-                currentUserId={currentUserId}
-                currentUserName={currentUserName}
-                onOpenAuthorization={openActivityAuthorization}
-              />
             )}
 
             {activeSubTab === 'anotacoes' && (

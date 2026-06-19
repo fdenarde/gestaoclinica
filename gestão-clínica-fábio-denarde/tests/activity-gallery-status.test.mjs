@@ -127,21 +127,25 @@ test('múltiplas sessões são normalizadas sem duplicação e preservam compati
 
 test('interface inclui aba, selo, indicadores, filtros e carregamento sob demanda', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  const gallerySource = fs.readFileSync(new URL('../src/components/ActivityRecords/ProfessionalActivityGallery.tsx', import.meta.url), 'utf8');
-  assert.match(appSource, /Galeria de atividades/);
-  assert.match(appSource, /lateSessionCount/);
-  assert.match(gallerySource, /Atendentes com upload atrasado/);
-  assert.match(gallerySource, /Sessões aguardando upload/);
-  assert.match(gallerySource, /Sessões regularizadas hoje/);
-  assert.match(gallerySource, /Todos os atendentes/);
-  assert.match(gallerySource, /Carregar mais/);
-  assert.match(gallerySource, /Visualizar galeria/);
-  assert.match(gallerySource, /ActivityRecordsTab/);
-  const viewerSource = fs.readFileSync(new URL('../src/components/ActivityRecords/ActivityRecordViewer.tsx', import.meta.url), 'utf8');
-  assert.match(viewerSource, /Baixar mídia/);
-  const cardSource = fs.readFileSync(new URL('../src/components/ActivityRecords/ActivityRecordCard.tsx', import.meta.url), 'utf8');
-  assert.match(cardSource, /Visível ao responsável/);
-  assert.match(cardSource, /Somente uso profissional/);
+  const professionalSource = fs.readFileSync(
+    new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // galeria-consolidada-v3-interface: a única aba visível usa a galeria nova e mantém os indicadores profissionais.
+  assert.match(appSource, /id: 'galeria-atividades', label: 'Galeria de Atividades'/);
+  assert.match(
+    appSource,
+    /activeTab === 'galeria-atividades'\s*&&\s*<ProfessionalGooglePhotosGallery/,
+  );
+  assert.match(professionalSource, /Selecione o atendente/);
+  assert.match(professionalSource, /Pesquisar por nome/);
+  assert.match(professionalSource, /Sessão hoje/);
+  assert.match(professionalSource, /Alterações pendentes/);
+  assert.match(professionalSource, /Tudo salvo/);
+  assert.match(professionalSource, /await listGooglePhotosAlbums\(\{/);
+  assert.doesNotMatch(appSource, /<ProfessionalActivityGallery/);
+  assert.doesNotMatch(appSource, /getProfessionalActivityGallerySummary/);
 });
 
 test('acesso profissional é validado também no backend e o responsável permanece limitado ao atendente vinculado', () => {
@@ -305,17 +309,15 @@ test('foto do atendente usa ampliação clicável sem texto visível de instruç
 test('hooks da galeria permanecem antes dos retornos condicionais de autenticação', () => {
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const authReturnIndex = appSource.indexOf('if (authLoading)');
-  const gallerySummaryIndex = appSource.indexOf('getProfessionalActivityGallerySummary');
+
+  // galeria-consolidada-v3-hooks: o resumo legado foi retirado e todos os hooks continuam antes dos retornos.
   assert.ok(authReturnIndex > 0, 'retorno condicional de autenticação não encontrado');
-  assert.ok(gallerySummaryIndex > 0, 'efeito de resumo da galeria não encontrado');
-  assert.ok(
-    gallerySummaryIndex < authReturnIndex,
-    'o efeito da Galeria de atividades deve ser declarado antes do retorno condicional de autenticação',
-  );
   assert.ok(
     appSource.lastIndexOf('useEffect(') < authReturnIndex,
     'nenhum useEffect pode ser declarado depois do retorno condicional de autenticação',
   );
+  assert.doesNotMatch(appSource, /getProfessionalActivityGallerySummary/);
+  assert.doesNotMatch(appSource, /activityGalleryMetrics/);
 });
 
 test('sessão inicial é pré-selecionada e o dropdown continua editável durante a preparação', () => {
@@ -360,15 +362,16 @@ test('Fase 1 evita resumo duplicado e usa cache por usuário com atualização f
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const clientSource = fs.readFileSync(new URL('../src/lib/activityRecordsApi.ts', import.meta.url), 'utf8');
 
+  // galeria-consolidada-v3-summary: o helper histórico permanece disponível, mas não é chamado pela navegação principal.
   assert.match(clientSource, /ACTIVITY_GALLERY_SUMMARY_CACHE_TTL_MS = 5 \* 60_000/);
   assert.match(clientSource, /activityGallerySummaryInFlight/);
-  assert.match(clientSource, /scope === scope/);
-  assert.match(clientSource, /getProfessionalActivityGallerySummary\(\s*options: \{ force\?: boolean \} = \{\}/);
-  assert.match(appSource, /getProfessionalActivityGallerySummary\(\{ force \}\)/);
-  assert.match(appSource, /const handleChanged = \(\) => void refresh\(true\)/);
-  assert.match(appSource, /document\.visibilityState === 'visible'\) void refresh\(false\)/);
-  assert.match(appSource, /\}, \[canAccessInternalSystem, user\?\.uid\]\);/);
-  assert.doesNotMatch(appSource, /\[canAccessInternalSystem, state\.sessions, state\.settings\.activityMediaMonitoringStart, user\?\.uid\]/);
+  assert.doesNotMatch(appSource, /getProfessionalActivityGallerySummary/);
+  assert.doesNotMatch(appSource, /activityGalleryMetrics/);
+  assert.match(
+    appSource,
+    /activeTab === 'galeria-atividades'\s*&&\s*<ProfessionalGooglePhotosGallery/,
+  );
+  assert.doesNotMatch(appSource, /<ProfessionalActivityGallery/);
 });
 
 test('Fase 2A.1 ignora bootstrap de sessions antes de disparar refresh forçado da galeria', () => {

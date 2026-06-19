@@ -65,6 +65,7 @@ import type {
 } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
 import PatientRegistrationFields, { PatientRegistrationSummary } from '../Common/PatientRegistrationFields';
+import ResponsibleGooglePhotosGallery from '../GooglePhotosAlbums/ResponsibleGooglePhotosGallery';
 
 interface ResponsiblePortalProps {
   user: User;
@@ -1610,7 +1611,7 @@ Arquivo preparado para compartilhamento.`);
             </section>
 
             <nav className="overflow-x-auto rounded-2xl border border-clinic-border bg-clinic-surface p-2 shadow-clinic" aria-label="Seções do Portal do Responsável">
-              <div className="flex min-w-max gap-2 sm:min-w-0 sm:grid sm:grid-cols-4">
+              <div className="flex min-w-max gap-2 sm:min-w-0 sm:grid sm:grid-cols-5">
                 {portalTabs.map(tab => {
                   const Icon = tab.icon;
                   const active = activePortalTab === tab.id;
@@ -1721,176 +1722,12 @@ Arquivo preparado para compartilhamento.`);
               <PackageSessionsTable pkg={selectedPackage} />
             )}
 
-            {activePortalTab === 'gallery' && (
-              <section className="space-y-5 rounded-2xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
-              <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3">
-                  <ImageIcon size={20} className="text-clinic-primary" />
-                  <div>
-                    <h2 className="font-bold text-clinic-text">Galeria de atividades</h2>
-                    <p className="text-xs text-clinic-text-muted">Mídias do pacote selecionado, da primeira sessão até a data atual.</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => setViewMode('grid')} className={`rounded-lg p-2 ${viewMode === 'grid' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-text-muted'}`} aria-label="Visualização em grade"><LayoutGrid size={17} /></button>
-                  <button type="button" onClick={() => setViewMode('list')} className={`rounded-lg p-2 ${viewMode === 'list' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-text-muted'}`} aria-label="Visualização em lista"><List size={17} /></button>
-                </div>
-              </header>
-
-              <div className="grid grid-cols-1 gap-2 rounded-xl border border-clinic-border bg-white p-3 sm:grid-cols-2 xl:grid-cols-4">
-                <label className="relative">
-                  <CalendarDays size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" />
-                  <select value={periodFilter} onChange={event => setPeriodFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs">
-                    <option value="all">Todo o período</option>
-                    <option value="30">Últimos 30 dias</option>
-                    <option value="90">Últimos 90 dias</option>
-                    <option value="year">Ano atual</option>
-                  </select>
-                </label>
-                <label className="relative">
-                  <Filter size={14} className="absolute left-3 top-3.5 text-clinic-text-faint" />
-                  <select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg py-2.5 pl-9 pr-2 text-xs">
-                    <option value="all">Todas as categorias</option>
-                    {categories.map(category => <option key={category}>{category}</option>)}
-                  </select>
-                </label>
-                <select value={mediaFilter} onChange={event => setMediaFilter(event.target.value as MediaFilter)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
-                  <option value="all">Fotos e vídeos</option>
-                  <option value="photo">Somente fotos</option>
-                  <option value="video">Somente vídeos</option>
-                </select>
-                <select value={sessionFilter} onChange={event => setSessionFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
-                  <option value="all">Todas as sessões</option>
-                  {sessionsForFilter.map(record => <option key={record.sessionId} value={record.sessionId}>{formatDate(record.sessionDate, false)} às {record.sessionTime}</option>)}
-                </select>
-                <select value={visibilityFilter} onChange={event => setVisibilityFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
-                  <option value="all">Todas as visibilidades</option>
-                  <option value="share_allowed">Compartilhamento permitido</option>
-                </select>
-                <select value={shareFilter} onChange={event => setShareFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
-                  <option value="all">Todos os compartilhamentos</option>
-                  <option value="shared">Já compartilhados</option>
-                  <option value="not_shared">Ainda não compartilhados</option>
-                </select>
-                <select value={professionalFilter} onChange={event => setProfessionalFilter(event.target.value)} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs">
-                  <option value="all">Todos os profissionais</option>
-                  {professionals.map(name => <option key={name}>{name}</option>)}
-                </select>
-                <button type="button" onClick={resetFilters} className="rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs font-black uppercase text-clinic-primary">Limpar filtros</button>
-              </div>
-
-              {filteredMedia.length > 0 && (
-                <div className={`rounded-xl border p-3 ${selectMode ? 'border-clinic-primary/30 bg-clinic-primary/5' : 'border-clinic-border bg-white'}`}>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-wide text-clinic-text">Seleção múltipla</p>
-                      <p className="text-xs text-clinic-text-muted">Baixe mídias escolhidas, todas de uma sessão ou todo o pacote.</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {!selectMode ? (
-                        <button type="button" onClick={() => setSelectMode(true)} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"><CheckSquare size={14} /> Selecionar mídias</button>
-                      ) : (
-                        <>
-                          <button type="button" onClick={() => setSelectedIds(new Set(filteredMedia.map(record => record.id)))} className="rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary">Selecionar visíveis</button>
-                          <button type="button" onClick={() => void downloadMany(selectedRecords)} disabled={selectedRecords.length === 0 || bulkBusy} className="flex items-center gap-2 rounded-lg bg-clinic-primary px-3 py-2 text-[10px] font-black uppercase text-white disabled:opacity-45"><Download size={14} /> Baixar selecionadas ({selectedRecords.length})</button>
-                          {sessionFilter !== 'all' && <button type="button" onClick={() => void downloadMany(filteredMedia)} disabled={bulkBusy} className="rounded-lg bg-status-blue-bg px-3 py-2 text-[10px] font-black uppercase text-status-blue-text">Baixar sessão</button>}
-                          <button type="button" onClick={() => void downloadMany(packageMedia)} disabled={bulkBusy} className="rounded-lg bg-status-green-bg px-3 py-2 text-[10px] font-black uppercase text-status-green-text">Baixar pacote</button>
-                          <button type="button" onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-text-muted"><X size={14} /> Cancelar</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {filteredMedia.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-clinic-border bg-clinic-bg/40 p-10 text-center">
-                  <ImageIcon className="mx-auto mb-3 text-clinic-text-faint" />
-                  <p className="font-bold text-clinic-text">Nenhuma mídia encontrada</p>
-                  <p className="text-xs text-clinic-text-muted">As mídias autorizadas aparecerão aqui após o vínculo com uma sessão do pacote.</p>
-                </div>
-              ) : (
-                <div className="space-y-7">
-                  {groupedMedia.map(records => {
-                    const groupKey = mediaGroupKey(records[0]);
-                    const isExpanded = Boolean(expandedSessionGroups[groupKey]);
-                    return (
-                      <section key={groupKey} className="overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm">
-                        <button
-                          type="button"
-                          onClick={() => toggleSessionGroup(groupKey)}
-                          className="flex w-full flex-col gap-3 px-4 py-4 text-left transition hover:bg-clinic-bg/35 sm:flex-row sm:items-center sm:justify-between"
-                          aria-expanded={isExpanded}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-clinic-bg text-clinic-primary">
-                              <CalendarDays size={17} />
-                            </span>
-                            <div>
-                              <h3 className="text-sm font-black text-clinic-text">{sessionGroupTitle(records)}</h3>
-                              <p className="text-xs font-bold text-clinic-text-faint">{sessionGroupSubtitle(records)}</p>
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                            <span className="rounded-full bg-clinic-bg px-3 py-1 text-[11px] font-black text-clinic-primary">
-                              {records.length} mídias
-                            </span>
-                            <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-clinic-border bg-white text-clinic-primary">
-                              <ChevronDown size={18} className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                            </span>
-                          </div>
-                        </button>
-
-                        {isExpanded && (
-                          <div className="space-y-4 border-t border-clinic-border px-4 py-4">
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                              <p className="text-xs text-clinic-text-muted">Mídias organizadas por sessão para evitar mistura entre datas diferentes.</p>
-                              <button type="button" onClick={() => void downloadMany(records)} disabled={bulkBusy} className="flex items-center gap-2 rounded-lg bg-clinic-bg px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"><Download size={13} /> Baixar sessão</button>
-                            </div>
-                            <div className={viewMode === 'grid' ? 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3' : 'space-y-3'}>
-                              {records.map(record => (
-                                <MediaCard
-                                  key={record.id}
-                                  record={record}
-                                  url={mediaUrls[record.id] || ''}
-                                  previewLoading={mediaUrlLoadingIds.has(record.id)}
-                                  openLoading={busyAction?.id === record.id && busyAction.type === 'open'}
-                                  downloadLoading={busyAction?.id === record.id && busyAction.type === 'download'}
-                                  likeLoading={busyAction?.id === record.id && busyAction.type === 'like'}
-                                  selected={selectedIds.has(record.id)}
-                                  selectMode={selectMode}
-                                  readOnly={isAdminPreview}
-                                  viewMode={viewMode}
-                                  onEnsureUrl={() => { void ensureMediaUrl(record).catch(() => undefined); }}
-                                  onOpen={() => void openMedia(record)}
-                                  onDownload={() => void downloadMedia(record)}
-                                  onToggleSelect={() => toggleSelection(record.id)}
-                                  onLike={() => void toggleLike(record)}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </section>
-                    );
-                  })}
-                  <div className="flex min-h-12 items-center justify-center">
-                    {visibleCount < filteredMedia.length ? (
-                      <button
-                        type="button"
-                        onClick={() => setVisibleCount(current => Math.min(current + PAGE_SIZE, filteredMedia.length))}
-                        className="inline-flex items-center gap-2 rounded-xl border border-clinic-border bg-white px-5 py-3 text-xs font-black uppercase tracking-wide text-clinic-primary shadow-sm transition hover:bg-clinic-bg"
-                      >
-                        <ChevronDown size={16} />
-                        Carregar mais mídias ({filteredMedia.length - visibleCount} restantes)
-                      </button>
-                    ) : (
-                      <span className="text-xs font-bold text-clinic-text-muted">{filteredMedia.length} mídias exibidas</span>
-                    )}
-                  </div>
-                </div>
-              )}
-              </section>
+            {activePortalTab === 'gallery' && patientData && (
+              <ResponsibleGooglePhotosGallery
+                patientId={patientData.patient.id}
+                patientName={patientData.patient.fullName || patientData.patient.name}
+                packageNumber={selectedPackage.number}
+              />
             )}
 
             {activePortalTab === 'profile' && (

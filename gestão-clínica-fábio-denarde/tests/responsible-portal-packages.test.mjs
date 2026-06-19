@@ -80,18 +80,23 @@ test('URLs assinadas preferem a origem local confiável para funcionar em rede p
 });
 
 
-test('portal usa abas responsivas, seletores escolares e ações independentes nos cards', async () => {
+test('portal mantém as abas principais e substitui a galeria anterior pela nova experiência', async () => {
   const fs = await import('node:fs');
   const portalSource = fs.readFileSync(new URL('../src/components/Auth/ResponsiblePortal.tsx', import.meta.url), 'utf8');
+  const responsibleGallerySource = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ResponsibleGooglePhotosGallery.tsx', import.meta.url), 'utf8');
   assert.match(portalSource, /type PortalTab = 'dashboard' \| 'sessions' \| 'gallery' \| 'profile'/);
   assert.match(portalSource, /Resumo geral/);
   assert.match(portalSource, /Sessões agendadas/);
   assert.match(portalSource, /Galeria de atividades/);
+  assert.match(responsibleGallerySource, /Abrir Atividade/);
+  assert.doesNotMatch(responsibleGallerySource, /Abrir álbum/);
+  assert.doesNotMatch(portalSource, /Galeria de atividades \(Google Fotos\)/);
+  assert.doesNotMatch(portalSource, /id: 'googlePhotos'/);
   assert.match(portalSource, /Atualização cadastral/);
   assert.match(portalSource, /GRADE_OPTIONS/);
   assert.match(portalSource, /SHIFT_OPTIONS/);
-  assert.match(portalSource, /openLoading=/);
-  assert.match(portalSource, /likeLoading=/);
+  assert.match(portalSource, /<ResponsibleGooglePhotosGallery/);
+  assert.doesNotMatch(portalSource, /Carregar mais mídias/);
   assert.match(portalSource, /showSaveFilePicker/);
   assert.doesNotMatch(portalSource, /target === 'instagram'[\s\S]{0,500}wa\.me/);
 });
@@ -116,13 +121,21 @@ test('documentos do responsável usam Drive, aparecem no cadastro profissional e
 });
 
 
-test('galeria abre a primeira sessão automaticamente e não exibe spinner infinito de paginação', async () => {
+test('portal substitui a galeria individual pela galeria de atividades sob demanda', async () => {
   const fs = await import('node:fs');
   const portalSource = fs.readFileSync(new URL('../src/components/Auth/ResponsiblePortal.tsx', import.meta.url), 'utf8');
-  assert.match(portalSource, /activePortalTab !== 'gallery' \|\| groupedMedia\.length === 0/);
-  assert.match(portalSource, /\{ \[firstGroupKey\]: true \}/);
-  assert.match(portalSource, /Carregar mais mídias/);
-  assert.doesNotMatch(portalSource, /ref=\{loadMoreRef\}/);
+  const accessSource = fs.readFileSync(new URL('../api/access.js', import.meta.url), 'utf8');
+  assert.match(portalSource, /activePortalTab === 'gallery' && patientData/);
+  assert.match(portalSource, /<ResponsibleGooglePhotosGallery/);
+  assert.doesNotMatch(portalSource, /activePortalTab === 'googlePhotos'/);
+  assert.doesNotMatch(portalSource, /Carregar mais mídias/);
+  assert.match(accessSource, /const media = \[\];/);
+  const responsibleLoader = accessSource.slice(
+    accessSource.indexOf('async function getResponsiblePortalData'),
+    accessSource.indexOf('async function listAdminResponsiblePreviewOptions'),
+  );
+  assert.doesNotMatch(responsibleLoader, /activityRecords/);
+  assert.doesNotMatch(responsibleLoader, /portalMediaInteractions/);
 });
 
 test('notificações profissionais ficam restritas a login, galeria e atualização cadastral', async () => {

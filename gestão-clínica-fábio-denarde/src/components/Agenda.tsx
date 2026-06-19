@@ -1,14 +1,13 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Camera, Images } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Images } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
-import ActivityRecordModal from './ActivityRecords/ActivityRecordModal';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
@@ -113,7 +112,6 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
-  const [activitySession, setActivitySession] = useState<Session | null>(null);
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
 // Reposition Modal State
@@ -335,24 +333,25 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     }
   };
 
-  const handleRegisterActivity = async (session: ProcessedSession) => {
+  const handleOpenActivityGallery = async (session: ProcessedSession) => {
     const patient = state.patients.find(item => item.id === session.patientId);
-    if (!patient) return showToast('Atendente não encontrado.', 'error');
-    const authorizationStatus = patient.activityMediaAuthorization?.internalRecordingStatus || 'pending';
-    if (authorizationStatus !== 'authorized') {
-      showToast(
-        authorizationStatus === 'not_authorized'
-          ? 'O responsável não autorizou o registro interno de imagens ou mídias para esta criança.'
-          : 'O registro de atividades está bloqueado porque a autorização para registro interno está pendente.',
-        'error'
-      );
+    if (!patient) {
+      showToast('Atendente não encontrado.', 'error');
+      return;
+    }
+    if (!onNavigateToPatientGallery) {
+      showToast('A Galeria de Atividades não está disponível nesta tela.', 'error');
       return;
     }
 
-    if (session.isVirtual) {
+    if (session.isVirtual && !session.isBlocked && ![
+      SessionStatus.FALTA,
+      SessionStatus.FALTA_PROF,
+      SessionStatus.CANCELADA,
+    ].includes(session.status)) {
       const actionKey = getVirtualActionKey(session);
       if (virtualActionLocksRef.current.has(actionKey)) {
-        showToast('Esta sessão fixa já está sendo registrada. Aguarde a atualização da Agenda.', 'error');
+        showToast('Esta sessão fixa já está sendo preparada. Aguarde a atualização da Agenda.', 'error');
         return;
       }
       const result = createRealFromVirtual(session, SessionStatus.AGENDADA);
@@ -363,19 +362,18 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       virtualActionLocksRef.current.add(actionKey);
       try {
         await onUpdate({ sessions: [...state.sessions, result.session] });
-        setActivitySession(result.session);
-        setActionSession(null);
       } catch (error) {
         virtualActionLocksRef.current.delete(actionKey);
-        console.error('Falha ao preparar sessão fixa para registro de atividade:', error);
-        showToast('Não foi possível preparar a sessão. Nenhuma foto foi enviada.', 'error');
+        console.error('Falha ao preparar sessão fixa para a Galeria de Atividades:', error);
+        showToast('Não foi possível preparar a sessão. Nenhum dado da galeria foi alterado.', 'error');
+        return;
       }
-      return;
     }
 
-    setActivitySession(session);
     setActionSession(null);
+    onNavigateToPatientGallery(patient.id);
   };
+
 
   // ── Action handlers for the modal ─────────────────────────────
   const handleActionOk = async (session: ProcessedSession) => {
@@ -1176,34 +1174,17 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 </div>
               )}
 
-              {patient && !actionSession.isBlocked && ![SessionStatus.FALTA, SessionStatus.FALTA_PROF, SessionStatus.CANCELADA].includes(actionSession.status) && (
-                <button
-                  type="button"
-                  onClick={() => void handleRegisterActivity(actionSession)}
-                  className={cn(
-                    "w-full flex items-center justify-center gap-2 py-3 px-4 font-bold rounded-xl active:scale-95 transition-all",
-                    patient.activityMediaAuthorization?.internalRecordingStatus === 'authorized'
-                      ? "bg-clinic-primary text-white hover:bg-clinic-primary-hover"
-                      : "border border-status-orange-text/30 bg-status-orange-bg text-status-orange-text hover:brightness-95"
-                  )}
-                  title={patient.activityMediaAuthorization?.internalRecordingStatus === 'authorized' ? 'Registrar foto desta sessão' : 'Clique para ver o motivo do bloqueio'}
-                >
-                  <Camera size={17} /> Registrar atividade
-                </button>
-              )}
-
               {patient && onNavigateToPatientGallery && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setActionSession(null);
-                    onNavigateToPatientGallery(patient.id);
-                  }}
-                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-clinic-primary/25 bg-clinic-primary/5 text-clinic-primary font-bold hover:bg-clinic-primary/10 active:scale-95 transition-all"
+                  onClick={() => void handleOpenActivityGallery(actionSession)}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-clinic-primary/25 bg-clinic-primary text-white font-bold hover:bg-clinic-primary-hover active:scale-95 transition-all"
+                  title={`Abrir a Galeria de Atividades de ${patient.name}`}
                 >
-                  <Images size={17} /> Ver Galeria de Mídias
+                  <Images size={17} /> Abrir Galeria de Atividades
                 </button>
               )}
+
 
               {/* ── Botões de ação ── */}
               {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
@@ -1290,24 +1271,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         );
       })()}
 
-      {activitySession && (() => {
-        const activityPatient = state.patients.find(item => item.id === activitySession.patientId);
-        if (!activityPatient) return null;
-        return (
-          <ActivityRecordModal
-            isOpen={true}
-            onClose={() => setActivitySession(null)}
-            patient={activityPatient}
-            sessions={[...state.sessions, ...(state.sessions.some(item => item.id === activitySession.id) ? [] : [activitySession])]}
-            initialSession={activitySession}
-            currentUserName={currentUserName}
-            onViewGallery={() => {
-              setActivitySession(null);
-              onNavigateToPatientGallery?.(activityPatient.id);
-            }}
-          />
-        );
-      })()}
+
 
       {/* ── Faltas e Reposições Pendentes ── */}
       <div className="bg-clinic-surface rounded-2xl border border-clinic-border overflow-hidden shadow-sm">

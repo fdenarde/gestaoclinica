@@ -24,7 +24,8 @@
     "test:drive": "node scripts/test-google-drive-config.mjs",
     "test:activity-records": "node --test tests/activity-records.test.mjs",
     "test:responsible-portal": "node --test tests/responsible-portal-packages.test.mjs",
-    "test:activity-gallery": "node --test tests/activity-gallery-status.test.mjs"
+    "test:activity-gallery": "node --test tests/activity-gallery-status.test.mjs",
+    "test:google-photos-albums": "node --test tests/google-photos-albums.test.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

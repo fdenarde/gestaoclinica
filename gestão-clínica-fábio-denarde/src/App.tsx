@@ -30,8 +30,7 @@ import type {
   ProfessionalNotificationBulkScope,
   ProfessionalPortalNotification,
 } from './types/access';
-import { ACTIVITY_GALLERY_CHANGED_EVENT, getActivityPhotoUrl, getProfessionalActivityGallerySummary } from './lib/activityRecordsApi';
-import type { ProfessionalActivityGalleryMetrics } from './types/activityGallery';
+import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
 import SidebarNavigation, { type AppNavigationItem } from './components/Navigation/SidebarNavigation';
 import {
   loadNavigationMode,
@@ -49,7 +48,7 @@ const Finance = lazy(() => import('./components/Finance'));
 const Reports = lazy(() => import('./components/Reports'));
 const Settings = lazy(() => import('./components/Settings'));
 const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
-const ProfessionalActivityGallery = lazy(() => import('./components/ActivityRecords/ProfessionalActivityGallery'));
+const ProfessionalGooglePhotosGallery = lazy(() => import('./components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -74,14 +73,6 @@ const DEFAULT_STATE: AppState = {
 
 const APP_VERSION = `v${packageJson.version}`;
 const NOTIFICATION_MANUAL_MIN_INTERVAL_MS = 5 * 1000;
-const EMPTY_ACTIVITY_GALLERY_METRICS: ProfessionalActivityGalleryMetrics = {
-  latePatientCount: 0,
-  waitingSessionCount: 0,
-  regularizedTodayCount: 0,
-  lateSessionCount: 0,
-  nextTransitionAt: null,
-};
-
 type PortalNotification = ProfessionalPortalNotification;
 
 function mergePortalNotifications(
@@ -140,13 +131,10 @@ export default function App() {
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [notificationHasMore, setNotificationHasMore] = useState(false);
   const [selectedPortalNotification, setSelectedPortalNotification] = useState<PortalNotification | null>(null);
-  const [notificationMediaUrl, setNotificationMediaUrl] = useState('');
-  const [notificationMediaLoading, setNotificationMediaLoading] = useState(false);
-  const [notificationMediaError, setNotificationMediaError] = useState('');
-  const [notificationMediaReloadKey, setNotificationMediaReloadKey] = useState(0);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [selectedPatientSubTab, setSelectedPatientSubTab] = useState<string | null>(null);
-  const [activityGalleryMetrics, setActivityGalleryMetrics] = useState<ProfessionalActivityGalleryMetrics>(EMPTY_ACTIVITY_GALLERY_METRICS);
+  const [selectedGalleryPatientId, setSelectedGalleryPatientId] = useState<string | null>(null);
+  const [galleryNavigationKey, setGalleryNavigationKey] = useState(0);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
   const notificationCursorRef = useRef<string | null>(null);
   const notificationOldestCursorRef = useRef<string | null>(null);
@@ -165,8 +153,15 @@ export default function App() {
     setActiveTab('atendentes');
   };
 
+  const openActivityGallery = (patientId: string | null = null) => {
+    setSelectedGalleryPatientId(patientId);
+    setGalleryNavigationKey(current => current + 1);
+    setActiveTab('galeria-atividades');
+    setMobileSidebarOpen(false);
+  };
+
   const navigateToPatientGallery = (id: string) => {
-    navigateToPatient(id, 'atividades');
+    openActivityGallery(id);
   };
 
   const changeNavigationMode = (mode: NavigationMode) => {
@@ -184,6 +179,10 @@ export default function App() {
   };
 
   const selectNavigationItem = (id: string) => {
+    if (id === 'galeria-atividades') {
+      setSelectedGalleryPatientId(null);
+      setGalleryNavigationKey(current => current + 1);
+    }
     setActiveTab(id);
     setMobileSidebarOpen(false);
   };
@@ -601,6 +600,7 @@ export default function App() {
           detail: { reason: 'clinic-data-updated' },
         }));
       }
+
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'users/' + user.uid);
     }
@@ -630,86 +630,6 @@ export default function App() {
       return false;
     }
   };
-
-  useEffect(() => {
-    let active = true;
-    setNotificationMediaUrl('');
-    setNotificationMediaError('');
-
-    const notification = selectedPortalNotification;
-    if (!notification?.patientId || !notification.recordId || !notification.mediaType) {
-      setNotificationMediaLoading(false);
-      return () => { active = false; };
-    }
-
-    setNotificationMediaLoading(true);
-    void getActivityPhotoUrl(
-      notification.recordId,
-      notification.patientId,
-      notificationMediaReloadKey > 0,
-    )
-      .then(url => {
-        if (active) setNotificationMediaUrl(url);
-      })
-      .catch(error => {
-        if (!active) return;
-        setNotificationMediaError(error instanceof Error
-          ? error.message
-          : 'Não foi possível carregar a mídia relacionada a esta notificação.');
-      })
-      .finally(() => {
-        if (active) setNotificationMediaLoading(false);
-      });
-
-    return () => { active = false; };
-  }, [
-    selectedPortalNotification?.id,
-    selectedPortalNotification?.patientId,
-    selectedPortalNotification?.recordId,
-    selectedPortalNotification?.mediaType,
-    notificationMediaReloadKey,
-  ]);
-
-  useEffect(() => {
-    if (!user || !canAccessInternalSystem) {
-      setActivityGalleryMetrics(EMPTY_ACTIVITY_GALLERY_METRICS);
-      return;
-    }
-
-    let active = true;
-    let transitionTimer: number | null = null;
-    const scheduleTransitionRefresh = (nextTransitionAt: string | null) => {
-      if (transitionTimer) window.clearTimeout(transitionTimer);
-      if (!nextTransitionAt) return;
-      const transitionAt = new Date(nextTransitionAt).getTime();
-      if (!Number.isFinite(transitionAt)) return;
-      const delay = Math.max(1000, Math.min(transitionAt - Date.now() + 1500, 2_147_000_000));
-      transitionTimer = window.setTimeout(() => void refresh(true), delay);
-    };
-    const refresh = async (force = false) => {
-      try {
-        const result = await getProfessionalActivityGallerySummary({ force });
-        if (!active) return;
-        setActivityGalleryMetrics(result.metrics || EMPTY_ACTIVITY_GALLERY_METRICS);
-        scheduleTransitionRefresh(result.metrics?.nextTransitionAt || null);
-      } catch (error) {
-        console.error('Falha ao atualizar resumo da Galeria de atividades:', error);
-      }
-    };
-    const handleChanged = () => void refresh(true);
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') void refresh(false);
-    };
-    window.addEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, handleChanged);
-    document.addEventListener('visibilitychange', handleVisibility);
-    void refresh(false);
-    return () => {
-      active = false;
-      if (transitionTimer) window.clearTimeout(transitionTimer);
-      window.removeEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, handleChanged);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [canAccessInternalSystem, user?.uid]);
 
   if (authLoading) {
     return (
@@ -758,7 +678,6 @@ export default function App() {
 
   const openPortalNotification = (notification: PortalNotification) => {
     setNotificationsOpen(false);
-    setNotificationMediaReloadKey(0);
     setSelectedPortalNotification(notification);
   };
 
@@ -885,7 +804,7 @@ export default function App() {
     setSelectedPortalNotification(null);
     setNotificationCenterOpen(false);
     if (notification.navigationTarget === 'patient_gallery') {
-      navigateToPatient(notification.patientId, 'atividades');
+      navigateToPatientGallery(notification.patientId);
       return;
     }
     navigateToPatient(notification.patientId, 'dados');
@@ -896,7 +815,7 @@ export default function App() {
     { id: 'agenda', label: 'Agenda', icon: Calendar },
     { id: 'agenda-pessoal', label: 'Agenda Pessoal', icon: BookOpen },
     { id: 'atendentes', label: 'Atendentes', icon: Users },
-    { id: 'galeria-atividades', label: 'Galeria de atividades', icon: Images, badge: activityGalleryMetrics.lateSessionCount, badgeTone: 'danger' },
+    { id: 'galeria-atividades', label: 'Galeria de Atividades', icon: Images },
     { id: 'pre-cadastros', label: 'Pré-cadastros', icon: ClipboardList, badge: pendingExternalForms },
     { id: 'pagamentos', label: 'Pagamentos', icon: DollarSign },
     { id: 'relatorios', label: 'Relatórios', icon: BarChart3 },
@@ -1131,7 +1050,7 @@ export default function App() {
       {/* Navigation Menu */}
       {navigationMode === 'top' && (
         <nav className="sticky top-[58px] z-40 shrink-0 border-b border-clinic-border-dark bg-clinic-nav-bg lg:top-[66px]">
-          <div className="grid w-full grid-cols-3 gap-px px-1 sm:grid-cols-5 xl:grid-cols-9">
+          <div className="grid w-full grid-cols-3 gap-px px-1 sm:grid-cols-5 xl:grid-cols-10">
             {tabs.map(tab => (
               <button
                 key={tab.id}
@@ -1185,14 +1104,12 @@ export default function App() {
                   onUpdate={updateState}
                   onNavigateToPatient={navigateToPatient}
                   isPrimaryAdmin={accessProfile?.role === 'admin' && accessProfile.email === 'fdenarde@gmail.com'}
-                  activityUploadLateSessionCount={activityGalleryMetrics.lateSessionCount}
-                  onNavigateToActivityGallery={() => setActiveTab('galeria-atividades')}
                 />
               )}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
-              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
-              {activeTab === 'galeria-atividades' && <ProfessionalActivityGallery patients={state.patients} sessions={state.sessions} currentUserId={user.uid} currentUserName={user.displayName || user.email || 'Usuário'} accessRole={accessProfile?.role || 'professional'} />}
+              {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
+              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
@@ -1274,101 +1191,6 @@ export default function App() {
                 </div>
               </div>
 
-              {selectedPortalNotification.recordId && selectedPortalNotification.mediaType && (
-                <div className="mt-5 overflow-hidden rounded-2xl border border-clinic-border bg-clinic-bg">
-                  <div className="flex flex-col gap-2 border-b border-clinic-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-wide text-clinic-primary">Mídia acessada pelo responsável</p>
-                      <p className="mt-1 break-all text-sm font-black text-clinic-text">
-                        {selectedPortalNotification.mediaFileName || selectedPortalNotification.actionTarget || 'Mídia relacionada'}
-                      </p>
-                      <p className="mt-1 text-xs text-clinic-text-muted">
-                        {selectedPortalNotification.mediaType === 'video' ? 'Vídeo' : 'Imagem'}
-                        {selectedPortalNotification.sessionNumber ? ` • Sessão ${selectedPortalNotification.sessionNumber}` : ''}
-                        {selectedPortalNotification.sessionDate ? ` • ${selectedPortalNotification.sessionDate}` : ''}
-                        {selectedPortalNotification.sessionTime ? ` às ${selectedPortalNotification.sessionTime}` : ''}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setNotificationMediaReloadKey(current => current + 1)}
-                      className="rounded-xl border border-clinic-border bg-white px-3 py-2 text-[10px] font-black uppercase text-clinic-primary"
-                    >
-                      Recarregar mídia
-                    </button>
-                  </div>
-
-                  <div className="bg-black p-2 sm:p-4">
-                    {notificationMediaLoading && (
-                      <div className="flex min-h-56 items-center justify-center text-white">
-                        <Loader2 className="h-8 w-8 animate-spin" />
-                      </div>
-                    )}
-                    {!notificationMediaLoading && notificationMediaError && (
-                      <div className="flex min-h-56 flex-col items-center justify-center gap-3 rounded-xl bg-white/10 p-5 text-center text-sm text-white">
-                        <p>{notificationMediaError}</p>
-                        <button
-                          type="button"
-                          onClick={() => setNotificationMediaReloadKey(current => current + 1)}
-                          className="rounded-xl bg-white px-4 py-2 text-xs font-black uppercase text-clinic-primary"
-                        >
-                          Tentar novamente
-                        </button>
-                      </div>
-                    )}
-                    {!notificationMediaLoading && !notificationMediaError && notificationMediaUrl && (
-                      selectedPortalNotification.mediaType === 'video' ? (
-                        <video
-                          src={notificationMediaUrl}
-                          controls
-                          preload="metadata"
-                          className="mx-auto max-h-[58vh] w-full rounded-xl bg-black object-contain"
-                        >
-                          Seu navegador não conseguiu reproduzir este vídeo.
-                        </video>
-                      ) : (
-                        <img
-                          src={notificationMediaUrl}
-                          alt={selectedPortalNotification.mediaFileName || 'Imagem acessada pelo responsável'}
-                          className="mx-auto max-h-[58vh] w-full rounded-xl object-contain"
-                        />
-                      )
-                    )}
-                  </div>
-
-                  {selectedPortalNotification.playback && (
-                    <div className="grid gap-3 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
-                      <div className="rounded-xl bg-white p-3 shadow-sm">
-                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Tempo na tela do player</p>
-                        <p className="mt-1 text-lg font-black text-clinic-text">{formatAuditDuration(selectedPortalNotification.playback.viewDurationSeconds)}</p>
-                      </div>
-                      <div className="rounded-xl bg-white p-3 shadow-sm">
-                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Tempo reproduzido</p>
-                        <p className="mt-1 text-lg font-black text-clinic-text">{formatAuditDuration(selectedPortalNotification.playback.totalPlayedSeconds)}</p>
-                      </div>
-                      <div className="rounded-xl bg-white p-3 shadow-sm">
-                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Maior ponto alcançado</p>
-                        <p className="mt-1 text-lg font-black text-clinic-text">{formatAuditDuration(selectedPortalNotification.playback.maxPositionSeconds)}</p>
-                      </div>
-                      <div className="rounded-xl bg-white p-3 shadow-sm">
-                        <p className="text-[10px] font-black uppercase text-clinic-text-faint">Resultado</p>
-                        <p className="mt-1 text-lg font-black text-clinic-text">
-                          {selectedPortalNotification.playback.completed
-                            ? 'Assistiu até o final'
-                            : `${Math.round(selectedPortalNotification.playback.percentWatched || 0)}% alcançado`}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {!selectedPortalNotification.playback && selectedPortalNotification.mediaType === 'video' && (
-                    <p className="px-4 py-3 text-xs text-clinic-text-muted">
-                      Esta notificação registra a abertura do vídeo. Ao fechar o player, o mesmo registro será atualizado com o tempo na tela, o tempo reproduzido e o percentual alcançado.
-                    </p>
-                  )}
-                </div>
-              )}
-
               <div className="mt-5">
                 <h3 className="text-sm font-black text-clinic-text">{selectedPortalNotification.type === 'patient_profile_update' ? 'Comparação visual do que foi alterado' : 'Detalhes completos da ação'}</h3>
                 <div className="mt-3 space-y-3">
@@ -1443,7 +1265,7 @@ export default function App() {
                 >
                   <ExternalLink size={16} />
                   {selectedPortalNotification.navigationTarget === 'patient_gallery'
-                    ? 'Abrir galeria do atendente'
+                    ? 'Abrir Galeria de Atividades'
                     : selectedPortalNotification.navigationTarget === 'patient_documents'
                       ? 'Abrir documentos do atendente'
                       : 'Abrir cadastro do atendente'}

@@ -4,6 +4,7 @@ import driveHandler from './api/drive.js';
 import activityRecordsHandler from './api/activity-records.js';
 import activityUploadChunkHandler from './api/activity-upload-chunk.js';
 import accessHandler from './api/access.js';
+import googlePhotosAlbumsHandler from './api/google-photos-albums.js';
 
 const app = express();
 const port = Number(process.env.DRIVE_API_PORT || 3002);
@@ -23,6 +24,7 @@ app.get('/api/health', (_req, res) => {
 app.all('/api/drive', driveHandler);
 app.all('/api/activity-records', activityRecordsHandler);
 app.all('/api/access', accessHandler);
+app.all('/api/google-photos-albums', googlePhotosAlbumsHandler);
 
 app.use('/api', (req, res) => {
   res.status(404).json({
