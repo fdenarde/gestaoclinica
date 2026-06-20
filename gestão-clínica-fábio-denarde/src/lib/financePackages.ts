@@ -37,6 +37,7 @@ export interface PackageFinancialSummary {
 const COUNTED_SESSION_STATUSES = new Set<string>([
   SessionStatus.REALIZADA,
   SessionStatus.REPOSICAO,
+  SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
 ]);
 
 function sortSessionsChronologically(a: Session, b: Session) {

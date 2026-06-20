@@ -4,7 +4,8 @@ type SequencedSession = Pick<Session, 'id' | 'patientId' | 'date' | 'time' | 'st
 
 const COUNTED_STATUSES = new Set<string>([
   SessionStatus.REALIZADA,
-  SessionStatus.REPOSICAO
+  SessionStatus.REPOSICAO,
+  SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT
 ]);
 
 const PLANNED_STATUSES = new Set<string>([

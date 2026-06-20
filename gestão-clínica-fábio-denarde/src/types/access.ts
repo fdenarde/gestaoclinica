@@ -205,6 +205,11 @@ export interface ResponsiblePortalSession {
   source: string | null;
   isBlocked: boolean;
   consumesPackage: boolean;
+  noReplacementReasonCode?: string;
+  noReplacementReasonText?: string;
+  noReplacementObservation?: string;
+  noReplacementRecordedAt?: string;
+  noReplacementRecordedBy?: string;
   packageNumber: number;
   sessionNumber: number;
   isFuture: boolean;

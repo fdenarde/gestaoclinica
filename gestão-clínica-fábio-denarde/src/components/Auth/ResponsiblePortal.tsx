@@ -196,17 +196,27 @@ function formatFileSize(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
 }
 
+const NO_REPLACEMENT_SESSION_STATUS = 'late_cancellation_no_replacement';
+const NO_REPLACEMENT_PORTAL_LABEL = 'Sessão contabilizada — sem reposição';
+const NO_REPLACEMENT_REASON_TEXT = 'Aviso tardio ou cancelamento fora do prazo';
+
 function statusClass(status: string): string {
   if (status === 'Realizada') return 'bg-status-green-bg text-status-green-text';
   if (status === 'Reposição') return 'bg-status-orange-bg text-status-orange-text';
   if (status === 'Falta') return 'bg-status-red-bg text-status-red-text';
   if (status === 'Falta.Prof') return 'bg-orange-100 text-orange-700';
+  if (status === NO_REPLACEMENT_SESSION_STATUS) return 'bg-[#FFF4F4] text-[#A94444]';
   return 'bg-status-blue-bg text-status-blue-text';
 }
 
 function statusLabel(status: string): string {
+  if (status === NO_REPLACEMENT_SESSION_STATUS) return NO_REPLACEMENT_PORTAL_LABEL;
   if (status === 'Falta.Prof') return 'Falta do profissional';
   return status || 'Agendada';
+}
+
+function noReplacementReasonLabel(session: ResponsiblePortalSession): string {
+  return session.noReplacementReasonText || NO_REPLACEMENT_REASON_TEXT;
 }
 
 function packageLabel(pkg: ResponsiblePortalPackage): string {
@@ -355,6 +365,14 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
                           </span>
                         </div>
                       </div>
+                      {session.status === NO_REPLACEMENT_SESSION_STATUS && (
+                        <div className="mt-3 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
+                          <p className="font-black text-clinic-text">{NO_REPLACEMENT_PORTAL_LABEL}</p>
+                          <p className="mt-1 text-[12px] font-bold" style={{ color: '#A94444' }}>
+                            {noReplacementReasonLabel(session)}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1384,12 +1402,14 @@ Arquivo preparado para compartilhamento.`);
       agendada: 0,
       falta: 0,
       faltaProfissional: 0,
+      semReposicao: 0,
     };
     for (const session of selectedPackage?.sessions || []) {
       if (session.status === 'Realizada') summary.realizada += 1;
       else if (session.status === 'Reposição') summary.reposicao += 1;
       else if (session.status === 'Falta') summary.falta += 1;
       else if (session.status === 'Falta.Prof') summary.faltaProfissional += 1;
+      else if (session.status === NO_REPLACEMENT_SESSION_STATUS) summary.semReposicao += 1;
       else summary.agendada += 1;
     }
     return summary;
@@ -1706,6 +1726,7 @@ Arquivo preparado para compartilhamento.`);
                       ['Reposições', sessionSummary.reposicao, 'bg-status-orange-bg text-status-orange-text'],
                       ['Agendadas', sessionSummary.agendada, 'bg-status-blue-bg text-status-blue-text'],
                       ['Faltas', sessionSummary.falta, 'bg-status-red-bg text-status-red-text'],
+                      ['Sem reposição', sessionSummary.semReposicao, 'bg-[#FFF4F4] text-[#A94444]'],
                       ['Falta profissional', sessionSummary.faltaProfissional, 'bg-orange-100 text-orange-700'],
                     ].map(([label, value, tone]) => (
                       <article key={String(label)} className={`rounded-xl px-4 py-3 ${String(tone)}`}>

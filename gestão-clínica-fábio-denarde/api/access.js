@@ -1041,6 +1041,11 @@ function serializeResponsibleSession(snapshot) {
     consumesPackage: data.consumesPackage === true
       || data.consumePackageSession === true
       || data.countsTowardPackage === true,
+    noReplacementReasonCode: normalizeText(data.noReplacementReasonCode, 80),
+    noReplacementReasonText: normalizeText(data.noReplacementReasonText, 160),
+    noReplacementObservation: normalizeText(data.noReplacementObservation, 500),
+    noReplacementRecordedAt: serializeDate(data.noReplacementRecordedAt),
+    noReplacementRecordedBy: normalizeText(data.noReplacementRecordedBy, 120),
   };
 }
 

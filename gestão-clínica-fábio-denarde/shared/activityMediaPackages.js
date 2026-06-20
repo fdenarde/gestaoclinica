@@ -5,6 +5,7 @@ import {
 import { getActivatedPackageNumber } from './packagePayments.js';
 
 const COMPLETED_MEDIA_STATUSES = new Set(['Realizada', 'Reposição']);
+const COUNTED_NO_MEDIA_STATUSES = new Set(['late_cancellation_no_replacement']);
 
 function normalizeBoolean(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
@@ -29,6 +30,7 @@ function normalizeNow(value) {
 export function activitySessionConsumesPackage(session) {
   const status = String(session?.status || '');
   if (COMPLETED_MEDIA_STATUSES.has(status)) return true;
+  if (COUNTED_NO_MEDIA_STATUSES.has(status)) return true;
   if (status === 'Falta') {
     return normalizeBoolean(
       session?.consumesPackage

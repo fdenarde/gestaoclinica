@@ -61,6 +61,7 @@ export function getStatusColor(status: string) {
     case 'Laranja':
       return 'bg-status-orange-bg text-status-orange-text';
     case 'Falta':
+    case 'late_cancellation_no_replacement':
     case 'Atraso':
     case 'Vermelho':
       return 'bg-status-red-bg text-status-red-text';

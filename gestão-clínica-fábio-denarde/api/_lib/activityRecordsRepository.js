@@ -110,7 +110,7 @@ export async function requirePatientAndSessions(context, patientId, sessionIds) 
     const session = snapshot.data();
     if (session.patientId !== patientId) throw activityError('activity-records/session-mismatch', 'Uma das sessões selecionadas não pertence a esta criança.', 409);
     if (session.isBlocked) throw activityError('activity-records/blocked-session', 'Não é possível registrar atividade em um bloqueio pessoal.', 409);
-    if (['Falta', 'Falta.Prof', 'Cancelada'].includes(session.status)) throw activityError('activity-records/invalid-session-status', 'Uma das sessões selecionadas não permite registro de atividade.', 409);
+    if (['Falta', 'Falta.Prof', 'Cancelada', 'late_cancellation_no_replacement'].includes(session.status)) throw activityError('activity-records/invalid-session-status', 'Uma das sessões selecionadas não permite registro de atividade.', 409);
     return { id: normalizedSessionIds[index], ...session };
   });
 

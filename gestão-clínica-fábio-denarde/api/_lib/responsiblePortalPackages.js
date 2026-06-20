@@ -1,6 +1,6 @@
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 
-const CONSUMED_STATUSES = new Set(['Realizada', 'Reposição']);
+const CONSUMED_STATUSES = new Set(['Realizada', 'Reposição', 'late_cancellation_no_replacement']);
 const EXCLUDED_STATUSES = new Set(['Cancelada']);
 
 function normalizeBoolean(value) {

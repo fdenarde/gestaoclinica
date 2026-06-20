@@ -17,12 +17,28 @@ export enum SessionStatus {
   FALTA_PROF = 'Falta.Prof',
   AGENDADA = 'Agendada',
   REPOSICAO = 'Reposição',
-  CANCELADA = 'Cancelada'
+  CANCELADA = 'Cancelada',
+  LATE_CANCELLATION_NO_REPLACEMENT = 'late_cancellation_no_replacement'
 }
 
 export enum SessionType {
   SIMPLES = 'Sessão simples (50 min)',
   DUPLA = 'Sessão dupla (2 × 50 min)'
+}
+
+export type NoReplacementReasonCode =
+  | 'late_notice_or_out_of_policy_cancellation'
+  | 'no_show_without_notice'
+  | 'contractual_no_replacement';
+
+export interface SessionNoReplacementHistoryEntry {
+  previousStatus: SessionStatus | string;
+  newStatus: SessionStatus | string;
+  reasonCode: NoReplacementReasonCode;
+  reasonText: string;
+  observation: string;
+  changedAt: string;
+  changedBy: string;
 }
 
 export interface ResponsibleDocumentSummary {
@@ -213,6 +229,12 @@ export interface Session {
   isFixedSchedule?: boolean; // true if this is an automatic/fixed session
   source?: 'fixed' | 'manual' | 'reposition' | 'blocked';
   consumesPackage?: boolean; // decisão do profissional para faltas que devem consumir sessão
+  noReplacementReasonCode?: NoReplacementReasonCode;
+  noReplacementReasonText?: string;
+  noReplacementObservation?: string;
+  noReplacementRecordedAt?: string;
+  noReplacementRecordedBy?: string;
+  noReplacementHistory?: SessionNoReplacementHistoryEntry[];
 }
 
 export interface Reposition {

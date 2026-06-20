@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { AppState, Session, SessionStatus, SessionType, Reposition } from '../types';
+import { AppState, NoReplacementReasonCode, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
 import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Images } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
@@ -14,6 +14,34 @@ const getHourBase = (timeStr: string): string => {
   const [hour] = timeStr.split(':');
   return `${hour}:00`;
 };
+
+const NO_REPLACEMENT_STATUS_LABEL = 'Falta contabilizada — sem reposição';
+const NO_REPLACEMENT_PORTAL_REASON = 'Aviso tardio ou cancelamento fora do prazo';
+const NO_REPLACEMENT_DEFAULT_NOTE = 'Devido ao aviso tardio, a sessão foi contabilizada como dada.';
+
+const NO_REPLACEMENT_REASON_OPTIONS: Array<{ code: NoReplacementReasonCode; label: string; defaultObservation: string }> = [
+  {
+    code: 'late_notice_or_out_of_policy_cancellation',
+    label: NO_REPLACEMENT_PORTAL_REASON,
+    defaultObservation: NO_REPLACEMENT_DEFAULT_NOTE,
+  },
+  {
+    code: 'no_show_without_notice',
+    label: 'Ausência sem aviso',
+    defaultObservation: '',
+  },
+  {
+    code: 'contractual_no_replacement',
+    label: 'Outro motivo previsto no contrato',
+    defaultObservation: '',
+  },
+];
+
+function getNoReplacementReasonLabel(code?: string, fallback?: string) {
+  return NO_REPLACEMENT_REASON_OPTIONS.find(option => option.code === code)?.label
+    || fallback
+    || NO_REPLACEMENT_PORTAL_REASON;
+}
 
 // ── Status helpers ────────────────────────────────────────────────
 
@@ -31,6 +59,7 @@ function getStatusLabel(session: ProcessedSession): string {
     case 'Falta.Prof': return 'Falta Prof.';
     case 'Cancelada': return 'Cancelada';
     case 'Reposição': return 'Reposição';
+    case 'late_cancellation_no_replacement': return 'FALTA CONTABILIZADA';
     default:
       // Truly unknown status — fall back to blockedReason
       if (!session.isValid) {
@@ -56,6 +85,7 @@ function getStatusCardBg(session: ProcessedSession): string {
     case 'Falta.Prof': return 'bg-orange-500/10 border-orange-500/25';
     case 'Cancelada': return 'bg-rose-900/15 border-rose-900/25';
     case 'Reposição': return 'bg-blue-500/8 border-blue-400/50';
+    case 'late_cancellation_no_replacement': return 'bg-[#FFF4F4] border-[#A94444]/35';
     default:
       if (!session.isValid) return 'bg-gray-100/70 border-gray-300/60';
       return 'bg-white border-clinic-border';
@@ -70,6 +100,7 @@ function getStatusBadgeStyle(status: string): string {
     case 'Falta.Prof': return 'bg-status-orange-bg text-status-orange-text';
     case 'Cancelada': return 'bg-gray-100 text-gray-400';
     case 'Reposição': return 'bg-status-blue-bg text-status-blue-text';
+    case 'late_cancellation_no_replacement': return 'bg-[#FFF4F4] text-[#A94444]';
     default: return 'bg-clinic-bg text-clinic-text-muted';
   }
 }
@@ -79,6 +110,7 @@ const STATUS_LEGEND = [
   { label: 'Realizada', colorClass: 'bg-blue-500/8 border-blue-400/60' },
   { label: 'Falta', colorClass: 'bg-red-500/10 border-red-500/30' },
   { label: 'Falta Prof.', colorClass: 'bg-orange-500/10 border-orange-500/30' },
+  { label: 'Falta contabilizada', colorClass: 'bg-[#FFF4F4] border-[#A94444]/40' },
   { label: 'Cancelada', colorClass: 'bg-rose-900/15 border-rose-900/30' },
   { label: 'Reposição', colorClass: 'bg-blue-500/8 border-blue-400/60' },
   { label: 'Bloqueado', colorClass: 'bg-[#5D4037]/10 border-[#5D4037]/40' },
@@ -112,6 +144,12 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
+  const [noReplacementModal, setNoReplacementModal] = useState<{
+    session: ProcessedSession;
+    reasonCode: NoReplacementReasonCode;
+    observation: string;
+    confirmedNoRealActivity: boolean;
+  } | null>(null);
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
 // Reposition Modal State
@@ -160,7 +198,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   const getPatientRecentSessions = (targetPatientId: string) =>
     getPatientSessions(targetPatientId)
-      .filter(s => [SessionStatus.REALIZADA, SessionStatus.FALTA, SessionStatus.FALTA_PROF, SessionStatus.CANCELADA, SessionStatus.REPOSICAO].includes(s.status))
+      .filter(s => [SessionStatus.REALIZADA, SessionStatus.FALTA, SessionStatus.FALTA_PROF, SessionStatus.CANCELADA, SessionStatus.REPOSICAO, SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT].includes(s.status))
       .slice(-4)
       .reverse();
 
@@ -251,7 +289,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   };
 
   // ── Create real session from virtual ──────────────────────────
-  const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
+  const createRealFromVirtual = (
+    virtualSession: ProcessedSession,
+    newStatus: SessionStatus,
+    extraSessionData: Partial<Session> = {},
+  ): { session: Session; reposition?: Reposition } | null => {
     const patient = state.patients.find(p => p.id === virtualSession.patientId);
     if (!patient || patient.status !== 'Ativo' || virtualSession.isBlocked) return null;
 
@@ -273,9 +315,12 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       packageNumber: 0,
       isFixedSchedule: true,
       source: 'fixed',
-      consumesPackage: newStatus === SessionStatus.FALTA
+      consumesPackage: newStatus === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT
+        ? true
+        : newStatus === SessionStatus.FALTA
         ? window.confirm('Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim.\nCancelar = Não.')
         : false,
+      ...extraSessionData,
     };
     const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
     const newReal: Session = {
@@ -376,6 +421,99 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     onNavigateToPatientGallery(patient.id, targetSessionId);
   };
 
+  const openNoReplacementModal = (session: ProcessedSession) => {
+    setNoReplacementModal({
+      session,
+      reasonCode: 'late_notice_or_out_of_policy_cancellation',
+      observation: NO_REPLACEMENT_DEFAULT_NOTE,
+      confirmedNoRealActivity: session.status !== SessionStatus.REALIZADA,
+    });
+  };
+
+  const handleNoReplacementReasonChange = (reasonCode: NoReplacementReasonCode) => {
+    const option = NO_REPLACEMENT_REASON_OPTIONS.find(item => item.code === reasonCode);
+    setNoReplacementModal(current => current
+      ? {
+          ...current,
+          reasonCode,
+          observation: option?.defaultObservation ?? '',
+        }
+      : current);
+  };
+
+  const handleConfirmNoReplacement = async () => {
+    if (!noReplacementModal) return;
+    const { session, reasonCode, observation, confirmedNoRealActivity } = noReplacementModal;
+    const reasonText = getNoReplacementReasonLabel(reasonCode);
+    const trimmedObservation = observation.trim();
+    if (!trimmedObservation) {
+      showToast('Informe a observação antes de registrar a falta sem reposição.', 'error');
+      return;
+    }
+    if (session.status === SessionStatus.REALIZADA && !confirmedNoRealActivity) {
+      showToast('Confirme que não há atividade, link ou mídia real vinculada antes de converter esta sessão.', 'error');
+      return;
+    }
+
+    const changedAt = new Date().toISOString();
+    const historyEntry = {
+      previousStatus: session.status,
+      newStatus: SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
+      reasonCode,
+      reasonText,
+      observation: trimmedObservation,
+      changedAt,
+      changedBy: currentUserName || 'Profissional',
+    };
+    const sessionPatch: Partial<Session> = {
+      status: SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
+      consumesPackage: true,
+      noReplacementReasonCode: reasonCode,
+      noReplacementReasonText: reasonText,
+      noReplacementObservation: trimmedObservation,
+      noReplacementRecordedAt: changedAt,
+      noReplacementRecordedBy: currentUserName || 'Profissional',
+    };
+
+    if (session.isVirtual) {
+      const result = createRealFromVirtual(session, SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT, {
+        ...sessionPatch,
+        noReplacementHistory: [historyEntry],
+      });
+      if (!result) {
+        showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+        return;
+      }
+      try {
+        await onUpdate({ sessions: [...state.sessions, result.session] });
+        showToast('Falta contabilizada sem reposição registrada.');
+      } catch (error) {
+        console.error('Falha ao registrar falta sem reposição:', error);
+        showToast('Não foi possível registrar a falta sem reposição.', 'error');
+        return;
+      }
+    } else {
+      const updatedSessions = state.sessions.map(item => item.id === session.id
+        ? {
+            ...item,
+            ...sessionPatch,
+            noReplacementHistory: [...(item.noReplacementHistory || []), historyEntry],
+          }
+        : item);
+      try {
+        await onUpdate({ sessions: updatedSessions });
+        showToast('Falta contabilizada sem reposição registrada.');
+      } catch (error) {
+        console.error('Falha ao registrar falta sem reposição:', error);
+        showToast('Não foi possível registrar a falta sem reposição.', 'error');
+        return;
+      }
+    }
+
+    setNoReplacementModal(null);
+    setActionSession(null);
+  };
+
 
   // ── Action handlers for the modal ─────────────────────────────
   const handleActionOk = async (session: ProcessedSession) => {
@@ -432,9 +570,23 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   const handleActionReopen = (session: ProcessedSession) => {
     if (session.isVirtual) return;
-    const updatedSessions = state.sessions.map(s =>
-      s.id === session.id ? { ...s, status: SessionStatus.AGENDADA } : s
-    );
+    const updatedSessions = state.sessions.map(s => {
+      if (s.id !== session.id) return s;
+      const {
+        noReplacementReasonCode,
+        noReplacementReasonText,
+        noReplacementObservation,
+        noReplacementRecordedAt,
+        noReplacementRecordedBy,
+        ...rest
+      } = s;
+      void noReplacementReasonCode;
+      void noReplacementReasonText;
+      void noReplacementObservation;
+      void noReplacementRecordedAt;
+      void noReplacementRecordedBy;
+      return { ...rest, status: SessionStatus.AGENDADA, consumesPackage: false };
+    });
     onUpdate({ sessions: updatedSessions });
     showToast(`Sessão de ${state.patients.find(p => p.id === session.patientId)?.name} reaberta como Agendada.`);
     setActionSession(null);
@@ -681,28 +833,30 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   // ── Determine if the session has available actions ──────────
   const getSessionActions = (s: ProcessedSession): {
     canOk: boolean; canFalta: boolean; canFaltaProf: boolean;
-    canCancel: boolean; canReopen: boolean; canDelete: boolean;
+    canNoReplacement: boolean; canCancel: boolean; canReopen: boolean; canDelete: boolean;
   } => {
-    if (s.isBlocked) return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: false, canDelete: true };
+    if (s.isBlocked) return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: false, canDelete: true };
     if (s.isVirtual && s.isValid) {
       // Virtual sessions behave like Agendada
-      return { canOk: true, canFalta: true, canFaltaProf: true, canCancel: true, canReopen: false, canDelete: false };
+      return { canOk: true, canFalta: true, canFaltaProf: true, canNoReplacement: true, canCancel: true, canReopen: false, canDelete: false };
     }
-    if (s.isVirtual) return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: false, canDelete: false };
+    if (s.isVirtual) return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: false, canDelete: false };
 
     // Manual sessions
     switch (s.status) {
       case SessionStatus.AGENDADA:
-        return { canOk: true, canFalta: true, canFaltaProf: true, canCancel: true, canReopen: false, canDelete: true };
+        return { canOk: true, canFalta: true, canFaltaProf: true, canNoReplacement: true, canCancel: true, canReopen: false, canDelete: true };
       case SessionStatus.REALIZADA:
+        return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: true, canCancel: false, canReopen: true, canDelete: true };
       case SessionStatus.FALTA:
       case SessionStatus.FALTA_PROF:
       case SessionStatus.CANCELADA:
-        return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: true, canDelete: true };
+      case SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT:
+        return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: true, canDelete: true };
       case SessionStatus.REPOSICAO:
-        return { canOk: true, canFalta: true, canFaltaProf: true, canCancel: true, canReopen: false, canDelete: true };
+        return { canOk: true, canFalta: true, canFaltaProf: true, canNoReplacement: false, canCancel: true, canReopen: false, canDelete: true };
       default:
-        return { canOk: false, canFalta: false, canFaltaProf: false, canCancel: false, canReopen: false, canDelete: true };
+        return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: false, canDelete: true };
     }
   };
 
@@ -895,7 +1049,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                           const isOnHoliday = !!holiday;
                           const statusLabel = getStatusLabel(session);
                           const sessionActions = getSessionActions(session);
-                          const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canCancel;
+                          const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canNoReplacement || sessionActions.canCancel;
                           const sessionCycleLabel = getSessionCycleLabel(state.sessions, session);
 
                           const handleCardClick = () => {
@@ -931,6 +1085,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                                       session.status === SessionStatus.FALTA_PROF ? 'Falta.Prof' :
                                       session.status === SessionStatus.REALIZADA ? 'Realizada' :
                                       session.status === SessionStatus.REPOSICAO ? 'Reposição' :
+                                      session.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT ? 'late_cancellation_no_replacement' :
                                       session.status === SessionStatus.AGENDADA ? 'Agendada' :
                                       ''
                                     )
@@ -976,6 +1131,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                                         </span>
                                       )}
                                     </div>
+                                  )}
+                                  {!isBlocked && session.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
+                                    <span className="mt-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-snug" style={{ backgroundColor: '#FFF4F4', color: '#A94444' }}>
+                                      Sessão {getSessionCycleNumber(state.sessions, session)} contabilizada no pacote.
+                                    </span>
                                   )}
 
                                   {/* Sem overlay — clique abre modal em qualquer tamanho de tela */}
@@ -1055,6 +1215,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     actionSession.status === SessionStatus.FALTA_PROF ? 'Falta.Prof' :
                     actionSession.status === SessionStatus.REALIZADA ? 'Realizada' :
                     actionSession.status === SessionStatus.REPOSICAO ? 'Reposição' :
+                    actionSession.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT ? 'late_cancellation_no_replacement' :
                     actionSession.status === SessionStatus.AGENDADA ? 'Agendada' :
                     ''
                   ))}>
@@ -1078,6 +1239,17 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     <p className="text-[10px] font-bold text-status-red-text uppercase">
                       ⚠️ {actionSession.blockedReason}
                     </p>
+                  )}
+                  {actionSession.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
+                    <div className="mt-2 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4', color: '#A94444' }}>
+                      <p className="font-black">{NO_REPLACEMENT_STATUS_LABEL}</p>
+                      <p className="mt-1 text-[12px] font-bold">{getNoReplacementReasonLabel(actionSession.noReplacementReasonCode, actionSession.noReplacementReasonText)}</p>
+                      {getSessionCycleNumber(state.sessions, actionSession) > 0 && (
+                        <p className="mt-1 text-[12px] text-clinic-text-muted">
+                          Sessão {getSessionCycleNumber(state.sessions, actionSession)} contabilizada no pacote.
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -1176,7 +1348,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 </div>
               )}
 
-              {patient && onNavigateToPatientGallery && (
+              {patient && onNavigateToPatientGallery && actionSession.status !== SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
                 <button
                   type="button"
                   onClick={() => void handleOpenActivityGallery(actionSession)}
@@ -1189,11 +1361,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
 
               {/* ── Botões de ação ── */}
-              {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel || actions.canReopen) && (
+              {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel || actions.canReopen) && (
                 <div className="space-y-2.5">
                   <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">⚡ Ações Rápidas</p>
 
-                  {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canCancel) && (
+                  {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel) && (
                     <div className="grid grid-cols-2 gap-2">
                       {actions.canOk && (
                         <button
@@ -1220,6 +1392,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                         >
                           <span className="text-base">🟠</span>
                           <span className="text-xs font-black uppercase">Falta Prof.</span>
+                        </button>
+                      )}
+                      {actions.canNoReplacement && (
+                        <button
+                          onClick={() => openNoReplacementModal(actionSession)}
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 border border-[#A94444]/30 bg-[#FFF4F4] text-[#A94444] font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                        >
+                          <AlertTriangle size={16} />
+                          <span className="text-xs font-black uppercase">Registrar falta sem reposição</span>
                         </button>
                       )}
                       {actions.canCancel && (
@@ -1256,7 +1437,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 </button>
               )}
 
-              {!actions.canOk && !actions.canFalta && !actions.canFaltaProf && !actions.canCancel && !actions.canReopen && !actions.canDelete && (
+              {!actions.canOk && !actions.canFalta && !actions.canFaltaProf && !actions.canNoReplacement && !actions.canCancel && !actions.canReopen && !actions.canDelete && (
                 <div className="text-center text-xs text-clinic-text-muted italic py-2">
                   Nenhuma ação disponível para esta sessão.
                 </div>
@@ -1272,6 +1453,84 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
           </Modal>
         );
       })()}
+
+      {noReplacementModal && (
+        <Modal
+          isOpen={true}
+          onClose={() => setNoReplacementModal(null)}
+          title="Registrar falta sem reposição"
+          width="max-w-xl"
+        >
+          <div className="space-y-4">
+            <div className="rounded-2xl border p-4" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
+              <p className="text-sm font-black text-clinic-text">{NO_REPLACEMENT_STATUS_LABEL}</p>
+              <p className="mt-1 text-xs font-bold" style={{ color: '#A94444' }}>{getNoReplacementReasonLabel(noReplacementModal.reasonCode)}</p>
+              <ul className="mt-3 space-y-1.5 text-xs font-semibold text-clinic-text-muted">
+                <li>• O atendimento será registrado como não realizado.</li>
+                <li>• A sessão será contabilizada no pacote.</li>
+                <li>• Não haverá reposição automática.</li>
+                <li>• Nenhuma atividade ou mídia será solicitada.</li>
+              </ul>
+            </div>
+
+            {noReplacementModal.session.status === SessionStatus.REALIZADA && (
+              <label className="flex items-start gap-3 rounded-xl border border-status-orange-text/30 bg-status-orange-bg p-3 text-xs text-status-orange-text">
+                <input
+                  type="checkbox"
+                  checked={noReplacementModal.confirmedNoRealActivity}
+                  onChange={event => setNoReplacementModal(current => current ? { ...current, confirmedNoRealActivity: event.target.checked } : current)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Confirmo que esta sessão foi marcada como realizada apenas para consumo do pacote e que não há link persistido, mídia real, card com conteúdo ou registro clínico de atividade realizada. Se houver conteúdo real, a conversão simples deve ser bloqueada e tratada em auditoria específica.
+                </span>
+              </label>
+            )}
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-black uppercase tracking-wide text-clinic-text-faint">Motivo</span>
+              <select
+                value={noReplacementModal.reasonCode}
+                onChange={event => handleNoReplacementReasonChange(event.target.value as NoReplacementReasonCode)}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm font-bold text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+              >
+                {NO_REPLACEMENT_REASON_OPTIONS.map(option => (
+                  <option key={option.code} value={option.code}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-xs font-black uppercase tracking-wide text-clinic-text-faint">Observação</span>
+              <textarea
+                value={noReplacementModal.observation}
+                onChange={event => setNoReplacementModal(current => current ? { ...current, observation: event.target.value } : current)}
+                rows={4}
+                maxLength={1000}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                placeholder={NO_REPLACEMENT_DEFAULT_NOTE}
+              />
+            </label>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setNoReplacementModal(null)}
+                className="rounded-xl border border-clinic-border bg-white px-4 py-2.5 text-xs font-black uppercase tracking-wide text-clinic-text-muted"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmNoReplacement()}
+                className="rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white hover:bg-clinic-primary-hover"
+              >
+                Confirmar falta sem reposição
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
 
 
