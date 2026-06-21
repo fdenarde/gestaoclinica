@@ -308,7 +308,7 @@ function normalizePackageCardInput({
   const title = sanitizeText(card?.title, MAX_TITLE_LENGTH);
   if (!title) throw albumError('google-photos-albums/missing-title', 'Informe o título do card.');
 
-  const publishedAt = sanitizeText(card?.publishedAt || todayIsoDate(), 10);
+  const publishedAt = sanitizeText(card?.publishedAt || activityDate, 10);
   if (!isSafeGooglePhotosAlbumDate(publishedAt)) {
     throw albumError('google-photos-albums/invalid-published-date', 'Informe uma data de publicação válida.');
   }

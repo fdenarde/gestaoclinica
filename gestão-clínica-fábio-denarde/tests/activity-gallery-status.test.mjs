@@ -183,6 +183,8 @@ test('navegação lateral é padrão e o menu superior alternativo não usa rola
   assert.match(preferencesSource, /return stored === 'top' \? 'top' : 'sidebar'/);
   assert.match(preferencesSource, /gestao-clinica:navigation-mode/);
   assert.match(preferencesSource, /gestao-clinica:sidebar-collapsed/);
+  assert.match(preferencesSource, /window\.sessionStorage/);
+  assert.match(preferencesSource, /getSessionStorage\(\)\?\.getItem\(SIDEBAR_COLLAPSED_STORAGE_KEY\) === 'true'/);
   assert.match(appSource, /navigationMode === 'sidebar'/);
   assert.match(appSource, /<SidebarNavigation/);
   assert.match(appSource, /grid w-full grid-cols-3 gap-px/);
@@ -194,6 +196,26 @@ test('navegação lateral é padrão e o menu superior alternativo não usa rola
   assert.match(sidebarSource, /Gestão/);
   assert.match(sidebarSource, /Sistema/);
   assert.match(sidebarSource, /title=\{effectiveCollapsed \? item.label : undefined\}/);
+});
+
+test('Dashboard remove formulários recebidos, mantém renovação coerente e mostra o próximo dia com sessões', () => {
+  const dashboardSource = fs.readFileSync(new URL('../src/components/Dashboard.tsx', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(dashboardSource, /Formulários recebidos/);
+  assert.doesNotMatch(dashboardSource, /patientsNearRenewal\.slice\(0, 2\)/);
+  assert.match(dashboardSource, /patientsNearRenewal\.map/);
+  assert.match(dashboardSource, /const \[renewalDetailsOpen, setRenewalDetailsOpen\] = useState\(false\)/);
+  assert.match(dashboardSource, /aria-expanded=\{renewalDetailsOpen\}/);
+  assert.match(dashboardSource, /aria-controls="dashboard-renewal-details"/);
+  assert.match(dashboardSource, /renewalDetailsOpen && \(/);
+  assert.match(dashboardSource, /id="dashboard-renewal-details"/);
+  assert.match(dashboardSource, /setRenewalDetailsOpen\(open => !open\)/);
+  assert.match(dashboardSource, /renewalDetailsOpen && "rotate-180"/);
+  assert.match(dashboardSource, /new Map\([\s\S]*item\.patient\.id/);
+  assert.match(dashboardSource, /const nextSessionsPanel = useMemo/);
+  assert.match(dashboardSource, /offset <= 90/);
+  assert.match(dashboardSource, /offset === 1[\s\S]*'Amanhã'/);
+  assert.match(dashboardSource, /Próximas Sessões — \{nextSessionsPanel\.label\}/);
 });
 
 test('pacote atual só avança quando o próximo pacote é efetivamente iniciado', () => {
@@ -337,9 +359,12 @@ test('marca do menu lateral usa a mesma escala do cabeçalho e permanece em uma 
   assert.match(sidebarSource, /bg-clinic-header/);
   assert.match(sidebarSource, /variant="horizontal"/);
   assert.doesNotMatch(sidebarSource, /variant="sidebar"/);
-  assert.match(sidebarSource, /w-\[380px\]/);
-  assert.match(sidebarSource, /w-\[min\(92vw,380px\)\]/);
-  assert.match(appSource, /lg:pl-\[380px\]/);
+  assert.match(sidebarSource, /w-\[264px\]/);
+  assert.match(sidebarSource, /w-\[min\(92vw,320px\)\]/);
+  assert.match(appSource, /lg:pl-\[264px\]/);
+  assert.match(sidebarSource, /aria-expanded=\{!effectiveCollapsed\}/);
+  assert.match(sidebarSource, /Expandir menu lateral/);
+  assert.match(sidebarSource, /Recolher menu lateral/);
   assert.match(sidebarSource, /whitespace-nowrap/);
   assert.match(sidebarSource, /min-h-\[88px\]/);
   assert.match(sidebarSource, /text-white\/80/);

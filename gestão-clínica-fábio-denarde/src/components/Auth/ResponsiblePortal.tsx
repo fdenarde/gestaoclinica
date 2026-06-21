@@ -1487,21 +1487,35 @@ Arquivo preparado para compartilhamento.`);
       <header className="bg-clinic-header text-white shadow-lg">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-2 sm:px-6 md:flex-row md:items-center md:justify-between">
           <div className="w-full min-w-0 md:hidden">
-            <BrandLogo
-              variant="compact"
-              theme={data?.settings.visualTheme}
-              name={data?.settings.name}
-              subtitle={data?.settings.title}
-              className="w-full justify-center"
-            />
+            <button
+              type="button"
+              onClick={() => setActivePortalTab('dashboard')}
+              className="w-full cursor-pointer rounded-xl transition hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+              aria-label="Ir para a página inicial do Portal do Responsável"
+            >
+              <BrandLogo
+                variant="compact"
+                theme={data?.settings.visualTheme}
+                name={data?.settings.name}
+                subtitle={data?.settings.title}
+                className="w-full justify-center"
+              />
+            </button>
           </div>
           <div className="hidden min-w-0 flex-1 md:block">
-            <BrandLogo
-              theme={data?.settings.visualTheme}
-              name={data?.settings.name}
-              subtitle={data?.settings.title}
-              className="max-w-full"
-            />
+            <button
+              type="button"
+              onClick={() => setActivePortalTab('dashboard')}
+              className="max-w-full cursor-pointer rounded-xl text-left transition hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+              aria-label="Ir para a página inicial do Portal do Responsável"
+            >
+              <BrandLogo
+                theme={data?.settings.visualTheme}
+                name={data?.settings.name}
+                subtitle={data?.settings.title}
+                className="max-w-full"
+              />
+            </button>
           </div>
           {!isAdminPreview && (
             <button

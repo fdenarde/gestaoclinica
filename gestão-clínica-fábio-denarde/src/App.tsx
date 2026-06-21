@@ -31,6 +31,7 @@ import type {
   ProfessionalPortalNotification,
 } from './types/access';
 import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
+import { useDailyWhatsappOperationalReport } from './lib/useDailyWhatsappOperationalReport';
 import SidebarNavigation, { type AppNavigationItem } from './components/Navigation/SidebarNavigation';
 import {
   loadNavigationMode,
@@ -141,8 +142,14 @@ export default function App() {
   const notificationOldestCursorRef = useRef<string | null>(null);
   const notificationLastLoadedAtRef = useRef(0);
   const notificationInFlightRef = useRef<Promise<boolean> | null>(null);
+  const forceAccessTokenRefreshRef = useRef(false);
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
+  const whatsappOperationalReportState = useDailyWhatsappOperationalReport(
+    !publicRegistrationMatch
+      && accessProfile?.status === 'approved'
+      && accessProfile.role === 'admin',
+  );
 
   if (publicRegistrationMatch) {
     return <ExternalRegistrationPage token={publicRegistrationMatch[1]} />;
@@ -190,6 +197,14 @@ export default function App() {
     setMobileSidebarOpen(false);
   };
 
+  const navigateToProfileHome = () => {
+    const role = accessProfile?.role;
+    const target = role === 'admin' || role === 'professional' || role === 'monitoring'
+      ? 'dashboard'
+      : 'dashboard';
+    selectNavigationItem(target);
+  };
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -207,9 +222,12 @@ export default function App() {
     if (!user) return;
     let cancelled = false;
 
+    const forceRefreshToken = forceAccessTokenRefreshRef.current;
+    forceAccessTokenRefreshRef.current = false;
+
     setAccessLoading(true);
     setAccessError('');
-    void getAccessProfile(user)
+    void getAccessProfile(user, { forceRefreshToken })
       .then(profile => {
         if (!cancelled) setAccessProfile(profile);
       })
@@ -227,6 +245,21 @@ export default function App() {
       cancelled = true;
     };
   }, [accessRetryKey, user]);
+
+  const handleRetryAccessProfile = useCallback(() => {
+    forceAccessTokenRefreshRef.current = true;
+    setAccessError('');
+    setAccessRetryKey(current => current + 1);
+  }, []);
+
+  const handleAccessPortalLogout = useCallback(async () => {
+    await logout();
+    forceAccessTokenRefreshRef.current = false;
+    setUser(null);
+    setAccessProfile(null);
+    setAccessLoading(false);
+    setAccessError('');
+  }, []);
 
   const canAccessInternalSystem =
     accessProfile?.status === 'approved'
@@ -658,7 +691,8 @@ export default function App() {
           setAccessLoading(false);
           setAccessError('');
         }}
-        onRetryProfile={() => setAccessRetryKey(current => current + 1)}
+        onRetryProfile={handleRetryAccessProfile}
+        onLogout={handleAccessPortalLogout}
       />
     );
   }
@@ -843,6 +877,7 @@ export default function App() {
           userEmail={user.email}
           userPhotoUrl={user.photoURL}
           onSelect={selectNavigationItem}
+          onHome={navigateToProfileHome}
           onToggleCollapsed={toggleSidebarCollapsed}
           onCloseMobile={() => setMobileSidebarOpen(false)}
           onLogout={logout}
@@ -850,7 +885,7 @@ export default function App() {
       )}
       <div className={cn(
         'min-h-screen flex flex-col pb-10 transition-[padding] duration-200',
-        navigationMode === 'sidebar' && (sidebarCollapsed ? 'lg:pl-[76px]' : 'lg:pl-[380px]'),
+        navigationMode === 'sidebar' && (sidebarCollapsed ? 'lg:pl-[76px]' : 'lg:pl-[264px]'),
       )}>
       <header className={cn(
         'sticky top-0 z-50 flex shrink-0 items-center justify-between bg-clinic-header px-3 py-2 text-white shadow-lg sm:px-5 lg:min-h-[66px] xl:px-7',
@@ -861,21 +896,35 @@ export default function App() {
         {navigationMode === 'top' ? (
           <>
             <div className="min-w-0 flex-1 md:hidden">
-              <BrandLogo
-                variant="horizontal"
-                theme={state.settings.visualTheme}
-                name={state.settings.name}
-                subtitle={state.settings.title}
-                className="max-w-[calc(100vw-116px)] whitespace-nowrap sm:max-w-full"
-              />
+              <button
+                type="button"
+                onClick={navigateToProfileHome}
+                className="max-w-[calc(100vw-116px)] cursor-pointer rounded-xl text-left transition hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:max-w-full"
+                aria-label="Ir para a página inicial"
+              >
+                <BrandLogo
+                  variant="horizontal"
+                  theme={state.settings.visualTheme}
+                  name={state.settings.name}
+                  subtitle={state.settings.title}
+                  className="max-w-[calc(100vw-116px)] whitespace-nowrap sm:max-w-full"
+                />
+              </button>
             </div>
             <div className="hidden min-w-0 flex-1 md:block">
-              <BrandLogo
-                theme={state.settings.visualTheme}
-                name={state.settings.name}
-                subtitle={state.settings.title}
-                className="max-w-full"
-              />
+              <button
+                type="button"
+                onClick={navigateToProfileHome}
+                className="max-w-full cursor-pointer rounded-xl text-left transition hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                aria-label="Ir para a página inicial"
+              >
+                <BrandLogo
+                  theme={state.settings.visualTheme}
+                  name={state.settings.name}
+                  subtitle={state.settings.title}
+                  className="max-w-full"
+                />
+              </button>
             </div>
           </>
         ) : (
@@ -1107,6 +1156,8 @@ export default function App() {
                   onUpdate={updateState}
                   onNavigateToPatient={navigateToPatient}
                   isPrimaryAdmin={accessProfile?.role === 'admin' && accessProfile.email === 'fdenarde@gmail.com'}
+                  canViewWhatsappReport={accessProfile?.role === 'admin'}
+                  whatsappReportState={whatsappOperationalReportState}
                 />
               )}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}
@@ -1115,7 +1166,7 @@ export default function App() {
               {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
-              {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} />}
+              {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} isAdmin={accessProfile?.role === 'admin'} whatsappReportState={whatsappOperationalReportState} />}
               {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} onThemeChange={updateVisualTheme} canManageActivityMonitoring={accessProfile?.role === 'admin'} navigationMode={navigationMode} onNavigationModeChange={changeNavigationMode} />}
             </motion.div>
           </AnimatePresence>

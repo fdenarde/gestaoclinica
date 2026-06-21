@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { AppState, SessionStatus } from '../types';
 import { FileDown, FileUp, Trash2, Printer, Download, Calendar, DollarSign, User, Database, Clock, Plus, Copy } from 'lucide-react';
 import { showToast } from './Common/Toast';
@@ -9,15 +9,22 @@ import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
 import { getSessionCycleNumber } from '../lib/sessionSequence';
+import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
+import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
 
 interface ReportsProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => void;
+  isAdmin?: boolean;
+  whatsappReportState: WhatsappOperationalReportState;
 }
 
-export default function Reports({ state }: ReportsProps) {
+export default function Reports({ state, isAdmin = false, whatsappReportState }: ReportsProps) {
   const [selectedPatientId, setSelectedPatientId] = useState<string>('all');
   const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [activeReportTab, setActiveReportTab] = useState<'clinical' | 'whatsapp'>('clinical');
+  const [whatsappExpanded, setWhatsappExpanded] = useState(false);
+  const visibleReportTab = activeReportTab === 'whatsapp' && isAdmin ? 'whatsapp' : 'clinical';
 
   const handleExportJSON = () => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state));
@@ -280,8 +287,52 @@ export default function Reports({ state }: ReportsProps) {
     showToast('Resumo de todos os atendentes copiado!');
   };
 
+  const reportTabHeader = (
+    <div className="flex flex-wrap gap-2 rounded-2xl border border-clinic-border bg-clinic-surface p-2 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setActiveReportTab('clinical')}
+        className={cn(
+          'rounded-xl px-4 py-2 text-xs font-black uppercase tracking-wide',
+          visibleReportTab === 'clinical' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-text-muted',
+        )}
+        aria-current={visibleReportTab === 'clinical' ? 'page' : undefined}
+      >
+        Clínicos e financeiros
+      </button>
+      {isAdmin && (
+        <button
+          type="button"
+          onClick={() => setActiveReportTab('whatsapp')}
+          className={cn(
+            'rounded-xl px-4 py-2 text-xs font-black uppercase tracking-wide',
+            visibleReportTab === 'whatsapp' ? 'bg-clinic-primary text-white' : 'bg-clinic-bg text-clinic-text-muted',
+          )}
+          aria-current={visibleReportTab === 'whatsapp' ? 'page' : undefined}
+        >
+          WhatsApp
+        </button>
+      )}
+    </div>
+  );
+
+  if (visibleReportTab === 'whatsapp') {
+    return (
+      <div className="space-y-6 pb-10">
+        {reportTabHeader}
+        <WhatsappOperationalReportPanel
+          state={whatsappReportState}
+          expanded={whatsappExpanded}
+          onToggle={() => setWhatsappExpanded(open => !open)}
+          variant="reports"
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 pb-10">
+      {reportTabHeader}
       {/* Visual Quick Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-sm">

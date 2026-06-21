@@ -1,11 +1,8 @@
 import { findWhatsappReminderSuppression } from './whatsappReminderSuppressions.js';
+import { maskPhoneShort, normalizeBrazilianWhatsappPhone } from './whatsappPhone.js';
 
 export function formatPhoneNumber(phoneStr) {
-  let clean = phoneStr.replace(/\D/g, '');
-  if (!clean.startsWith('55')) {
-    clean = `55${clean}`;
-  }
-  return `${clean}@c.us`;
+  return normalizeBrazilianWhatsappPhone(phoneStr).chatId;
 }
 
 function normalizeStr(s) {
@@ -31,7 +28,37 @@ function formatDateStr(date) {
   return date.toISOString().split('T')[0];
 }
 
-function formatLocalDateStr(date) {
+function sameName(a, b) {
+  return normalizeStr(a) && normalizeStr(a) === normalizeStr(b);
+}
+
+export function getSelectedReminderContact(patient) {
+  const responsibleName = String(patient?.guardianName || '').trim();
+  let relationship = 'não informado';
+  let source = 'patient.whatsapp';
+
+  if (sameName(responsibleName, patient?.motherName)) {
+    relationship = 'Mãe';
+    source = 'patient.whatsapp:motherName-match';
+  } else if (sameName(responsibleName, patient?.fatherName)) {
+    relationship = 'Pai';
+    source = 'patient.whatsapp:fatherName-match';
+  } else if (sameName(responsibleName, patient?.otherResponsibleName)) {
+    relationship = patient?.otherResponsibleKinship || 'outro responsável';
+    source = 'patient.whatsapp:otherResponsible-match';
+  }
+
+  return {
+    responsibleName,
+    guardianName: responsibleName,
+    responsibleRelationship: relationship,
+    responsiblePhoneSource: source,
+    whatsapp: patient?.whatsapp || '',
+    phoneMasked: maskPhoneShort(patient?.whatsapp || ''),
+  };
+}
+
+export function formatLocalDateStr(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
@@ -109,10 +136,16 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
       blockedReason = 'paciente inativo';
     } else if (s.status === 'Cancelada') {
       blockedReason = 'sessão cancelada';
-    } else if (!patient.whatsapp || !patient.whatsapp.trim()) {
-      blockedReason = 'paciente sem WhatsApp';
     } else if (s.status !== 'Agendada') {
       blockedReason = 'status inválido';
+    } else if (!patient.whatsapp || !patient.whatsapp.trim()) {
+      blockedReason = 'responsável sem WhatsApp válido';
+    } else {
+      try {
+        normalizeBrazilianWhatsappPhone(patient.whatsapp);
+      } catch {
+        blockedReason = 'responsável sem WhatsApp válido';
+      }
     }
 
     processed.push({
@@ -139,7 +172,16 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
           s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time1)
         );
         if (!hasManual1) {
-          const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : null;
+          let blockedReason = null;
+          if (!p.whatsapp || !p.whatsapp.trim()) {
+            blockedReason = 'responsável sem WhatsApp válido';
+          } else {
+            try {
+              normalizeBrazilianWhatsappPhone(p.whatsapp);
+            } catch {
+              blockedReason = 'responsável sem WhatsApp válido';
+            }
+          }
           processed.push({
             id: `virtual-${p.id}-${dateStr}-${time1}`,
             patientId: p.id,
@@ -161,7 +203,16 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
             s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time2)
           );
           if (!hasManual2) {
-            const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : null;
+            let blockedReason = null;
+            if (!p.whatsapp || !p.whatsapp.trim()) {
+              blockedReason = 'responsável sem WhatsApp válido';
+            } else {
+              try {
+                normalizeBrazilianWhatsappPhone(p.whatsapp);
+              } catch {
+                blockedReason = 'responsável sem WhatsApp válido';
+              }
+            }
             processed.push({
               id: `virtual-${p.id}-${dateStr}-${time2}`,
               patientId: p.id,
@@ -239,6 +290,10 @@ export function getWhatsappReminderPlan({
         id: s.id,
         time: s.time,
         patientName: patient ? patient.name : (s.blockName || 'Compromisso'),
+        guardianName: patient?.guardianName || '',
+        responsibleName: patient?.guardianName || '',
+        responsibleRelationship: patient ? getSelectedReminderContact(patient).responsibleRelationship : 'não informado',
+        phoneMasked: patient?.whatsapp ? maskPhoneShort(patient.whatsapp) : '(sem telefone)',
         type: s.type,
         isVirtual: s.isVirtual,
         isValid: false,
@@ -253,6 +308,10 @@ export function getWhatsappReminderPlan({
         id: s.id,
         time: s.time,
         patientName: patient.name,
+        guardianName: patient.guardianName,
+        responsibleName: patient.guardianName,
+        responsibleRelationship: getSelectedReminderContact(patient).responsibleRelationship,
+        phoneMasked: maskPhoneShort(patient.whatsapp),
         type: s.type,
         isVirtual: s.isVirtual,
         isValid: false,
@@ -266,6 +325,10 @@ export function getWhatsappReminderPlan({
         id: s.id,
         time: s.time,
         patientName: patient.name,
+        guardianName: patient.guardianName,
+        responsibleName: patient.guardianName,
+        responsibleRelationship: getSelectedReminderContact(patient).responsibleRelationship,
+        phoneMasked: maskPhoneShort(patient.whatsapp),
         type: s.type,
         isVirtual: s.isVirtual,
         isValid: false,
@@ -305,6 +368,9 @@ export function getWhatsappReminderPlan({
           time: s.time,
           patientName: patient.name,
           guardianName: patient.guardianName,
+          responsibleName: patient.guardianName,
+          responsibleRelationship: getSelectedReminderContact(patient).responsibleRelationship,
+          phoneMasked: maskPhoneShort(patient.whatsapp),
           whatsapp: patient.whatsapp,
           type: s.type,
           isVirtual: s.isVirtual,
@@ -316,6 +382,7 @@ export function getWhatsappReminderPlan({
         continue;
       }
 
+      const contact = getSelectedReminderContact(patient);
       const phone = formatPhoneNumber(patient.whatsapp);
       const greeting = tipo === 'HOJE_TARDE' ? 'Boa tarde' : 'Bom dia';
       const timeFormatted = s.time.endsWith(':00') ? `${s.time.split(':')[0]}h` : `${s.time}h`;
@@ -331,9 +398,13 @@ export function getWhatsappReminderPlan({
         id: s.id,
         patientId: s.patientId,
         patientName: patient.name,
-        guardianName: patient.guardianName,
+        guardianName: contact.guardianName,
+        responsibleName: contact.responsibleName,
+        responsibleRelationship: contact.responsibleRelationship,
+        responsiblePhoneSource: contact.responsiblePhoneSource,
         whatsapp: patient.whatsapp,
         phone,
+        phoneMasked: contact.phoneMasked,
         time: s.time,
         timeFormatted,
         message,
@@ -345,6 +416,10 @@ export function getWhatsappReminderPlan({
         id: s.id,
         time: s.time,
         patientName: patient.name,
+        guardianName: patient.guardianName,
+        responsibleName: patient.guardianName,
+        responsibleRelationship: getSelectedReminderContact(patient).responsibleRelationship,
+        phoneMasked: maskPhoneShort(patient.whatsapp),
         type: s.type,
         isVirtual: s.isVirtual,
         isValid: false,

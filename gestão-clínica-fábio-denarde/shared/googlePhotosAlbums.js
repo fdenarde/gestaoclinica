@@ -367,7 +367,7 @@ export function createEmptyGooglePhotosAlbumCard({
     url: '',
     visibleToGuardian: false,
     observation: '',
-    publishedAt: todayIsoDate(),
+    publishedAt: normalizedActivityDate,
     status: 'active',
     createdByUserId: '',
     createdByName: '',
@@ -435,6 +435,30 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
       `${right.activityDate}T${right.sessionTime || '00:00'}|${right.sessionGroupKey}`
         .localeCompare(`${left.activityDate}T${left.sessionTime || '00:00'}|${left.sessionGroupKey}`)
     ));
+}
+
+
+export function buildGooglePhotosAlbumEditorSignature(album = {}) {
+  return JSON.stringify({
+    id: String(album?.id || album?.sessionGroupKey || ''),
+    packageKey: String(album?.packageKey || ''),
+    packageNumber: Number(album?.packageNumber || 0),
+    patientId: String(album?.patientId || ''),
+    sessionIds: normalizeGooglePhotosSessionIds(album?.sessionIds).sort(),
+    sessionGroupKey: String(album?.sessionGroupKey || ''),
+    activityDate: String(album?.activityDate || ''),
+    title: String(album?.title || ''),
+    category: String(album?.category || ''),
+    url: String(album?.url || ''),
+    visibleToGuardian: normalizeBoolean(album?.visibleToGuardian),
+    observation: String(album?.observation || ''),
+    publishedAt: String(album?.publishedAt || ''),
+    status: normalizeGooglePhotosAlbumStatus(album?.status),
+  });
+}
+
+export function hasGooglePhotosAlbumEditorChanges(current = {}, baseline = {}) {
+  return buildGooglePhotosAlbumEditorSignature(current) !== buildGooglePhotosAlbumEditorSignature(baseline);
 }
 
 export function getGooglePhotosAlbumDisplayTitle(album = {}) {

@@ -153,7 +153,7 @@ test('paciente inativo e telefone ausente são bloqueados', () => {
     settings,
   });
   assert.equal(daySessions.find(item => item.id === 'inactive-session')?.blockedReason, 'paciente inativo');
-  assert.equal(daySessions.find(item => item.id === 'no-phone-session')?.blockedReason, 'paciente sem WhatsApp');
+  assert.equal(daySessions.find(item => item.id === 'no-phone-session')?.blockedReason, 'responsável sem WhatsApp válido');
 });
 
 test('sessão de sábado e cálculo de amanhã permanecem na data local correta', () => {

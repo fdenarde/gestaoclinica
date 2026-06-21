@@ -13,7 +13,10 @@
     "server": "node server.js",
     "audit:wpp": "tsx scripts/audit-whatsapp-reminders.ts",
     "audit:sessions": "tsx scripts/audit-session-sequence.ts",
-    "test:wpp:offline": "tsx scripts/test-whatsapp-reminders.ts",
+    "test:wpp:offline": "node --test tests/whatsapp-reminder-operations.test.mjs tests/whatsapp-activation-safety.test.mjs tests/whatsapp-admin-monitor.test.mjs tests/whatsapp-pm2-state.test.mjs && tsx scripts/test-whatsapp-reminders.ts",
+    "check:wpp:architecture": "node scripts/check-whatsapp-architecture.mjs",
+    "selfcheck:wpp:scheduler": "node scripts/whatsapp-reminder-scheduler.js --self-check",
+    "selfcheck:wpp:watchdog": "node scripts/whatsapp-reminder-watchdog.js --self-check",
     "test-msg": "node test-messages.js",
     "test-wpp": "node send-test-whatsapp.js",
     "deploy": "node -e \"console.error('Deploy automatico desativado por seguranca. Use npm run safe-deploy.'); process.exit(1)\"",
@@ -25,7 +28,8 @@
     "test:activity-records": "node --test tests/activity-records.test.mjs",
     "test:responsible-portal": "node --test tests/responsible-portal-packages.test.mjs",
     "test:activity-gallery": "node --test tests/activity-gallery-status.test.mjs",
-    "test:google-photos-albums": "node --test tests/google-photos-albums.test.mjs"
+    "test:google-photos-albums": "node --test tests/google-photos-albums.test.mjs",
+    "test:wpp:operational": "node --test tests/whatsapp-operational-report.test.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

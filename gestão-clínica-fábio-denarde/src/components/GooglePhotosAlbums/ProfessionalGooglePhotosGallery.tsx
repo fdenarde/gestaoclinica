@@ -3,6 +3,8 @@ import {
   AlertTriangle,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   EyeOff,
   Images,
@@ -15,6 +17,7 @@ import {
   Search,
   ShieldCheck,
   Trash2,
+  X,
 } from 'lucide-react';
 import type { Patient, Payment, Session } from '../../types';
 import {
@@ -40,6 +43,7 @@ import {
   buildGooglePhotosAlbumPackageKey,
   buildGooglePhotosVirtualAlbumCards,
   getGooglePhotosAlbumDisplayTitle,
+  hasGooglePhotosAlbumEditorChanges,
   mergeGooglePhotosAlbumCards,
   normalizeGooglePhotosAlbumUrl,
 } from '../../../shared/googlePhotosAlbums.js';
@@ -75,11 +79,46 @@ const buildPackageKey = buildGooglePhotosAlbumPackageKey as (options: {
 
 const normalizeAlbumUrl = normalizeGooglePhotosAlbumUrl as (value: string) => string | null;
 const getAlbumDisplayTitle = getGooglePhotosAlbumDisplayTitle as (album: GooglePhotosAlbum) => string;
-const AUTOSAVE_DELAY_MS = 2000;
-type AutosaveStatus = 'idle' | 'pending' | 'saving' | 'invalid' | 'error' | 'switching';
+type SaveStatus = 'idle' | 'dirty' | 'saving' | 'invalid' | 'error';
 
 function todayIsoDate(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+}
+
+function isSafeIsoDate(value = ''): boolean {
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return false;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day <= lastDay;
+}
+
+function isoToDisplayDate(value = ''): string {
+  if (!isSafeIsoDate(value)) return '';
+  const [year, month, day] = value.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function normalizeDisplayDateInput(value = ''): string {
+  const raw = String(value || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (/^\d{8}$/.test(raw) || (digits.length === 8 && !raw.includes('/'))) {
+    return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4, 8)}`;
+  }
+  return raw.replace(/[^\d/]/g, '').slice(0, 10);
+}
+
+function displayDateToIso(value = ''): { iso: string; error: string } {
+  const normalized = normalizeDisplayDateInput(value);
+  const match = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return { iso: '', error: 'Informe a data de publicação no formato DD/MM/AAAA.' };
+  const [, day, month, year] = match;
+  const iso = `${year}-${month}-${day}`;
+  if (!isSafeIsoDate(iso)) return { iso: '', error: 'Informe uma data de publicação real.' };
+  return { iso, error: '' };
 }
 
 function normalizeTimeForSort(time = ''): string {
@@ -116,8 +155,18 @@ function toPackageInput(card: GooglePhotosAlbum): GooglePhotosAlbumInput {
     url: normalizeAlbumUrl(card.url) || '',
     visibleToGuardian: card.visibleToGuardian,
     observation: card.observation,
-    publishedAt: card.publishedAt || todayIsoDate(),
+    publishedAt: card.publishedAt || '',
     status: card.status,
+  };
+}
+
+function buildEditorInitialCard(card: GooglePhotosAlbum): GooglePhotosAlbum {
+  const authorizeNewLinkByDefault = !card.url.trim() && card.status !== 'hidden';
+  return {
+    ...card,
+    visibleToGuardian: authorizeNewLinkByDefault ? true : card.visibleToGuardian,
+    publishedAt: card.publishedAt || card.activityDate || '',
+    isVirtual: false,
   };
 }
 
@@ -137,24 +186,23 @@ export default function ProfessionalGooglePhotosGallery({
   const [draftCards, setDraftCards] = useState<Record<string, GooglePhotosAlbum>>({});
   const [removedCardIds, setRemovedCardIds] = useState<string[]>([]);
   const [editingCardIds, setEditingCardIds] = useState<string[]>([]);
+  const [expandedObservationIds, setExpandedObservationIds] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<GooglePhotosAlbumCapabilities>(EMPTY_PERMISSIONS);
   const [ownerUserId, setOwnerUserId] = useState('');
-  const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>('idle');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [loading, setLoading] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const autosaveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
-  const queuedSaveRef = useRef(false);
   const lastConfirmedSignatureRef = useRef('[]');
   const allCardsRef = useRef<GooglePhotosAlbum[]>([]);
   const selectedPatientIdRef = useRef('');
   const currentPackageNumberRef = useRef(0);
   const permissionsRef = useRef(EMPTY_PERMISSIONS);
-  const performAutosaveRef = useRef<(immediate?: boolean) => Promise<boolean>>(async () => false);
   const initialSessionHandledRef = useRef(false);
+  const editorBaselineRef = useRef<Record<string, GooglePhotosAlbum>>({});
 
   useEffect(() => {
     if (patients.length > 0) {
@@ -252,7 +300,26 @@ export default function ProfessionalGooglePhotosGallery({
     }) as GooglePhotosAlbum[]
   ), [draftCards, persistedCards, removedCardIds, virtualCards]);
 
-  const hasLocalChanges = Object.keys(draftCards).length > 0 || removedCardIds.length > 0;
+  const editorSourceCards = useMemo(() => (
+    mergeGooglePhotosAlbumCards({
+      virtualCards,
+      persistedCards,
+      draftCards: [],
+      removedCardIds: [],
+    }) as GooglePhotosAlbum[]
+  ), [persistedCards, virtualCards]);
+  const editorSourceById = useMemo(
+    () => new Map(editorSourceCards.map(card => [card.id, card])),
+    [editorSourceCards],
+  );
+  const hasLocalChanges = useMemo(() => (
+    removedCardIds.length > 0
+    || Object.entries(draftCards).some(([cardId, draftCard]) => {
+      const baseline = editorBaselineRef.current[cardId]
+        || (editorSourceById.get(cardId) ? buildEditorInitialCard(editorSourceById.get(cardId)!) : null);
+      return !baseline || hasGooglePhotosAlbumEditorChanges(draftCard, baseline);
+    })
+  ), [draftCards, editorSourceById, removedCardIds]);
   const currentPackageKey = useMemo(() => buildPackageKey({
     patientId: selectedPatientId,
     packageNumber: currentPackageNumber,
@@ -265,14 +332,6 @@ export default function ProfessionalGooglePhotosGallery({
     .map(card => card.id), [allCards]);
   const invalidCardIdSet = useMemo(() => new Set(invalidCardIds), [invalidCardIds]);
   const hasInvalidLinks = invalidCardIds.length > 0;
-  const savableCardsSignature = useMemo(() => {
-    const inputs = allCards
-      .filter(card => Boolean(normalizeAlbumUrl(card.url)))
-      .map(card => toPackageInput({ ...card, url: normalizeAlbumUrl(card.url) || '' }))
-      .sort((left, right) => String(left.id || left.sessionGroupKey).localeCompare(String(right.id || right.sessionGroupKey)));
-    return JSON.stringify(inputs);
-  }, [allCards]);
-
   useEffect(() => {
     allCardsRef.current = allCards;
   }, [allCards]);
@@ -349,7 +408,9 @@ export default function ProfessionalGooglePhotosGallery({
         setRemovedCardIds([]);
       }
       setEditingCardIds([]);
-      setAutosaveStatus('idle');
+      setExpandedObservationIds([]);
+      editorBaselineRef.current = {};
+      setSaveStatus('idle');
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível carregar os cards do pacote.');
     } finally {
@@ -367,23 +428,50 @@ export default function ProfessionalGooglePhotosGallery({
     setDraftCards({});
     setRemovedCardIds([]);
     setEditingCardIds([]);
+    setExpandedObservationIds([]);
+    editorBaselineRef.current = {};
     setOwnerUserId('');
-    setAutosaveStatus('idle');
+    setSaveStatus('idle');
     lastConfirmedSignatureRef.current = '[]';
     setMessage('');
     setError('');
   };
 
+  const discardAllDrafts = useCallback(() => {
+    setDraftCards({});
+    setRemovedCardIds([]);
+    setEditingCardIds([]);
+    setExpandedObservationIds([]);
+    editorBaselineRef.current = {};
+    setSaveStatus('idle');
+    setError('');
+  }, []);
+
+  const confirmDiscardChanges = useCallback(() => (
+    !hasLocalChanges || window.confirm('Existem alterações não salvas. Deseja descartá-las?')
+  ), [hasLocalChanges]);
+
+  const hasUnsavedChangesForCard = useCallback((cardId: string): boolean => {
+    const draft = draftCards[cardId];
+    if (!draft) return false;
+    const source = editorSourceById.get(cardId);
+    const baseline = editorBaselineRef.current[cardId]
+      || (source ? buildEditorInitialCard(source) : null);
+    return !baseline || hasGooglePhotosAlbumEditorChanges(draft, baseline);
+  }, [draftCards, editorSourceById]);
+
   const openEditor = (card: GooglePhotosAlbum) => {
+    if (hasLocalChanges && !editingCardIds.includes(card.id)) {
+      if (!confirmDiscardChanges()) return;
+      discardAllDrafts();
+    }
+    const initialCard = buildEditorInitialCard(card);
+    if (!draftCards[card.id]) editorBaselineRef.current[card.id] = initialCard;
     setEditingCardIds(current => current.includes(card.id) ? current : [...current, card.id]);
-    const authorizeNewLinkByDefault = !card.url.trim() && card.status !== 'hidden';
+    setExpandedObservationIds(current => current.filter(id => id !== card.id));
     setDraftCards(current => current[card.id] ? current : {
       ...current,
-      [card.id]: {
-        ...card,
-        visibleToGuardian: authorizeNewLinkByDefault ? true : card.visibleToGuardian,
-        isVirtual: false,
-      },
+      [card.id]: initialCard,
     });
     setMessage('');
   };
@@ -401,7 +489,23 @@ export default function ProfessionalGooglePhotosGallery({
   }, [allCards, initialSessionId, loading, selectedPatientId]);
 
   const closeEditor = (cardId: string) => {
+    if (hasUnsavedChangesForCard(cardId) && !window.confirm('Existem alterações não salvas. Deseja descartá-las?')) return;
+    setDraftCards(current => {
+      if (!current[cardId]) return current;
+      const copy = { ...current };
+      delete copy[cardId];
+      return copy;
+    });
+    delete editorBaselineRef.current[cardId];
     setEditingCardIds(current => current.filter(id => id !== cardId));
+    setExpandedObservationIds(current => current.filter(id => id !== cardId));
+    setMessage('');
+  };
+
+  const toggleObservation = (cardId: string) => {
+    setExpandedObservationIds(current => current.includes(cardId)
+      ? current.filter(id => id !== cardId)
+      : [...current, cardId]);
   };
 
   const commitCard = (previousId: string, nextCard: GooglePhotosAlbum) => {
@@ -417,6 +521,7 @@ export default function ProfessionalGooglePhotosGallery({
         ? current.filter(id => id !== previousId)
         : [...current.filter(id => id !== previousId), nextCard.id]);
     }
+    setSaveStatus('dirty');
     setMessage('');
   };
 
@@ -476,26 +581,53 @@ export default function ProfessionalGooglePhotosGallery({
     .map(card => toPackageInput({ ...card, url: normalizeAlbumUrl(card.url) || '' }))
     .sort((left, right) => String(left.id || left.sessionGroupKey).localeCompare(String(right.id || right.sessionGroupKey))), []);
 
-  const performAutosave = useCallback(async (immediate = false): Promise<boolean> => {
+  const validateEditedCards = useCallback((): string => {
+    if (hasInvalidLinks) return 'Use um link HTTPS válido de photos.app.goo.gl antes de salvar.';
+    const editedCards = allCardsRef.current.filter(card => draftCards[card.id] || card.url.trim());
+    for (const card of editedCards) {
+      const removingExistingLink = !String(card.url || '').trim()
+        && persistedCards.some(persisted => persisted.id === card.id && Boolean(normalizeAlbumUrl(persisted.url)));
+      if (removingExistingLink) continue;
+      if (!String(card.title || '').trim()) return 'Informe o título da publicação.';
+      if (!String(card.category || '').trim()) return 'Selecione a categoria da publicação.';
+      if (!String(card.url || '').trim()) return 'Informe o link da publicação antes de salvar.';
+      if (!normalizeAlbumUrl(card.url)) return 'Informe um link HTTPS legítimo do Google Fotos.';
+      if (!Array.isArray(card.sessionIds) || card.sessionIds.length === 0) {
+        return 'Cada publicação precisa estar vinculada a uma sessão válida.';
+      }
+      if (!String(card.publishedAt || '').trim()) return 'Informe a Data de publicação.';
+      if (!isSafeIsoDate(card.publishedAt)) return 'Informe uma Data de publicação real no formato DD/MM/AAAA.';
+    }
+    return '';
+  }, [draftCards, hasInvalidLinks, persistedCards]);
+
+  const saveNow = useCallback(async (): Promise<boolean> => {
     if (!selectedPatientIdRef.current || !currentPackageNumberRef.current || !permissionsRef.current.canEdit) return true;
     if (savingRef.current) {
-      queuedSaveRef.current = true;
+      return false;
+    }
+    const validationError = validateEditedCards();
+    if (validationError) {
+      setError(validationError);
+      setSaveStatus('invalid');
       return false;
     }
     const cardsWithLinks = buildSavableInputs(allCardsRef.current);
     const nextSignature = JSON.stringify(cardsWithLinks);
-    if (nextSignature === lastConfirmedSignatureRef.current && !immediate) {
-      setAutosaveStatus(hasInvalidLinks ? 'invalid' : 'idle');
-      return true;
-    }
-    if (nextSignature === lastConfirmedSignatureRef.current && immediate) {
-      setAutosaveStatus(hasInvalidLinks ? 'invalid' : 'idle');
+    if (nextSignature === lastConfirmedSignatureRef.current && !hasLocalChanges) {
+      setDraftCards({});
+      setEditingCardIds([]);
+      setExpandedObservationIds([]);
+      editorBaselineRef.current = {};
+      if (draftStorageKey && typeof window !== 'undefined') window.sessionStorage.removeItem(draftStorageKey);
+      setSaveStatus('idle');
+      setMessage('Nenhuma alteração pendente.');
       return true;
     }
     savingRef.current = true;
     setSaving(true);
     setError('');
-    setAutosaveStatus('saving');
+    setSaveStatus('saving');
     try {
       const result = await saveGooglePhotosAlbumPackage({
         patientId: selectedPatientIdRef.current,
@@ -508,69 +640,43 @@ export default function ProfessionalGooglePhotosGallery({
       setDraftCards({});
       setRemovedCardIds([]);
       setEditingCardIds([]);
+      setExpandedObservationIds([]);
+      editorBaselineRef.current = {};
       lastConfirmedSignatureRef.current = JSON.stringify(buildSavableInputs(result.albums));
       if (draftStorageKey && typeof window !== 'undefined') window.sessionStorage.removeItem(draftStorageKey);
-      setAutosaveStatus('idle');
+      setSaveStatus('idle');
       setMessage('Tudo salvo.');
       return true;
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível salvar os links do pacote.');
-      setAutosaveStatus('error');
+      setSaveStatus('error');
       return false;
     } finally {
       savingRef.current = false;
       setSaving(false);
-      if (queuedSaveRef.current) {
-        queuedSaveRef.current = false;
-        window.setTimeout(() => { void performAutosaveRef.current(true); }, 0);
-      }
     }
-  }, [buildSavableInputs, draftStorageKey, hasInvalidLinks, ownerUserId]);
-
-  useEffect(() => {
-    performAutosaveRef.current = performAutosave;
-  }, [performAutosave]);
-
-  const saveNow = useCallback(async () => {
-    if (autosaveTimerRef.current) {
-      window.clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-    }
-    return performAutosave(true);
-  }, [performAutosave]);
+  }, [buildSavableInputs, draftStorageKey, hasLocalChanges, validateEditedCards]);
 
   useEffect(() => {
     if (!draftStorageKey || typeof window === 'undefined') return;
-    if (!hasLocalChanges) return;
+    if (!hasLocalChanges) {
+      window.sessionStorage.removeItem(draftStorageKey);
+      return;
+    }
     window.sessionStorage.setItem(draftStorageKey, JSON.stringify({ draftCards, removedCardIds }));
   }, [draftCards, draftStorageKey, hasLocalChanges, removedCardIds]);
 
   useEffect(() => {
-    if (!selectedPatientId || loading || !permissions.canEdit || !hasLocalChanges) return undefined;
-    if (hasInvalidLinks && savableCardsSignature === lastConfirmedSignatureRef.current) {
-      setAutosaveStatus('invalid');
-      return undefined;
+    if (saveStatus === 'saving' || saveStatus === 'error') return;
+    if (hasInvalidLinks) {
+      setSaveStatus('invalid');
+      return;
     }
-    if (savableCardsSignature === lastConfirmedSignatureRef.current) {
-      setAutosaveStatus(hasInvalidLinks ? 'invalid' : 'idle');
-      return undefined;
-    }
-    setAutosaveStatus(hasInvalidLinks ? 'invalid' : 'pending');
-    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = window.setTimeout(() => {
-      autosaveTimerRef.current = null;
-      void performAutosave(false);
-    }, AUTOSAVE_DELAY_MS);
-    return () => {
-      if (autosaveTimerRef.current) {
-        window.clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
-      }
-    };
-  }, [hasInvalidLinks, hasLocalChanges, loading, performAutosave, permissions.canEdit, savableCardsSignature, selectedPatientId]);
+    setSaveStatus(hasLocalChanges ? 'dirty' : 'idle');
+  }, [hasInvalidLinks, hasLocalChanges, saveStatus]);
 
   useEffect(() => {
-    const shouldWarn = hasLocalChanges || autosaveStatus === 'pending' || autosaveStatus === 'saving' || autosaveStatus === 'error';
+    const shouldWarn = hasLocalChanges || saveStatus === 'saving' || saveStatus === 'error';
     if (!shouldWarn) return undefined;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -578,50 +684,40 @@ export default function ProfessionalGooglePhotosGallery({
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [autosaveStatus, hasLocalChanges]);
+  }, [hasLocalChanges, saveStatus]);
 
-  const returnToPatientSelection = useCallback(async () => {
-    if (hasLocalChanges || autosaveStatus === 'pending' || autosaveStatus === 'error') {
-      setAutosaveStatus('switching');
-      const saved = await saveNow();
-      if (!saved) return;
-    }
-    if (savingRef.current) {
-      setAutosaveStatus('switching');
-      queuedSaveRef.current = true;
-      const saved = await saveNow();
-      if (!saved) return;
-    }
+  const returnToPatientSelection = useCallback(() => {
+    if (savingRef.current) return;
+    if (!confirmDiscardChanges()) return;
     setSelectedPatientId('');
     setPersistedCards([]);
     setDraftCards({});
     setRemovedCardIds([]);
     setEditingCardIds([]);
+    setExpandedObservationIds([]);
+    editorBaselineRef.current = {};
     setOwnerUserId('');
-    setAutosaveStatus('idle');
+    setSaveStatus('idle');
     setMessage('');
     setError('');
-  }, [autosaveStatus, hasLocalChanges, saveNow]);
+  }, [confirmDiscardChanges]);
 
   const cardsWithLinksCount = allCards.filter(card => card.url.trim()).length;
-  const autosaveLabel = autosaveStatus === 'saving'
+  const saveLabel = saveStatus === 'saving'
     ? 'Salvando...'
-    : autosaveStatus === 'pending'
+    : saveStatus === 'dirty'
       ? 'Alterações pendentes'
-      : autosaveStatus === 'invalid'
+      : saveStatus === 'invalid'
         ? 'Revise os campos destacados'
-        : autosaveStatus === 'error'
+        : saveStatus === 'error'
           ? 'Não foi possível salvar'
-          : autosaveStatus === 'switching'
-            ? 'Concluindo salvamento...'
-            : 'Tudo salvo';
-  const autosaveTone = autosaveStatus === 'error' || autosaveStatus === 'invalid'
+          : 'Tudo salvo';
+  const saveTone = saveStatus === 'error' || saveStatus === 'invalid'
     ? 'border-status-orange-text/30 bg-status-orange-bg text-status-orange-text'
-    : autosaveStatus === 'saving' || autosaveStatus === 'pending' || autosaveStatus === 'switching'
+    : saveStatus === 'saving' || saveStatus === 'dirty'
       ? 'border-status-blue-text/20 bg-status-blue-bg text-status-blue-text'
       : 'border-status-green-text/20 bg-status-green-bg text-status-green-text';
-  const showSaveNow = permissions.canEdit
-    && (autosaveStatus === 'pending' || autosaveStatus === 'error' || (hasLocalChanges && savableCardsSignature !== lastConfirmedSignatureRef.current));
+  const showSaveNow = permissions.canEdit && (saveStatus === 'dirty' || saveStatus === 'invalid' || saveStatus === 'error' || hasLocalChanges);
   const selectedPatientInitials = selectedPatientName.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase() || 'AT';
   const latestSelectedSession = packageSessions[0] || null;
 
@@ -638,7 +734,7 @@ export default function ProfessionalGooglePhotosGallery({
               </div>
             </div>
             <p className="mt-3 max-w-3xl text-sm text-clinic-text-muted">
-              Selecione explicitamente um atendente para abrir o pacote atual. Os links são salvos automaticamente em lote após alguns segundos sem novas alterações.
+              Selecione explicitamente um atendente para abrir o pacote atual. As publicações só são gravadas quando o botão Salvar é acionado.
             </p>
           </div>
         </div>
@@ -745,17 +841,17 @@ export default function ProfessionalGooglePhotosGallery({
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <span className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold ${autosaveTone}`}>
-                {autosaveStatus === 'saving' || autosaveStatus === 'switching' ? <Loader2 size={14} className="animate-spin" /> : autosaveStatus === 'error' || autosaveStatus === 'invalid' ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
-                {autosaveLabel}
+              <span className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold ${saveTone}`}>
+                {saveStatus === 'saving' ? <Loader2 size={14} className="animate-spin" /> : saveStatus === 'error' || saveStatus === 'invalid' ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
+                {saveLabel}
               </span>
               {showSaveNow && (
                 <button type="button" onClick={() => void saveNow()} disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wide text-clinic-primary disabled:opacity-50">
                   {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                  Salvar agora
+                  Salvar
                 </button>
               )}
-              <button type="button" onClick={() => void returnToPatientSelection()} disabled={autosaveStatus === 'switching'} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wide text-clinic-text-muted disabled:opacity-50">
+              <button type="button" onClick={() => returnToPatientSelection()} disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wide text-clinic-text-muted disabled:opacity-50">
                 Trocar atendente
               </button>
             </div>
@@ -805,8 +901,10 @@ export default function ProfessionalGooglePhotosGallery({
               const hasValidLink = Boolean(normalizedUrl);
               const cardHasInvalidLink = invalidCardIdSet.has(card.id);
               const editing = editingCardIds.includes(card.id);
-              const sameDateSessions = packageSessions.filter(session => session.date === card.activityDate);
               const sessionLabel = formatSessionNumbers(card.sessionNumbers);
+              const publishedAtDisplay = isSafeIsoDate(card.publishedAt) ? isoToDisplayDate(card.publishedAt) : card.publishedAt || '';
+              const observationExpanded = expandedObservationIds.includes(card.id);
+              const datePickerId = `google-photos-published-at-${encodeURIComponent(card.id)}`;
               return (
                 <article id={`google-photos-card-${encodeURIComponent(card.id)}`} key={card.id} className={`rounded-2xl border p-3 shadow-sm sm:p-4 ${cardHasInvalidLink ? 'border-status-orange-text/40 bg-status-orange-bg/70 ring-2 ring-status-orange-text/15' : card.status === 'hidden' ? 'border-amber-300 bg-amber-50/70' : hasValidLink ? 'border-clinic-border bg-white' : 'border-dashed border-clinic-border bg-clinic-bg/70'}`}>
                   <div className="flex items-start justify-between gap-3">
@@ -846,69 +944,103 @@ export default function ProfessionalGooglePhotosGallery({
                         Somente leitura
                       </span>
                     )}
-                    {hasValidLink && permissions.canEdit && <button type="button" onClick={() => openEditor(card)} className="rounded-xl border border-clinic-border bg-white p-2.5 text-clinic-primary" aria-label="Editar card"><Pencil size={16} /></button>}
+                    {hasValidLink && permissions.canEdit && <button type="button" onClick={() => editing ? closeEditor(card.id) : openEditor(card)} className="rounded-xl border border-clinic-border bg-white p-2.5 text-clinic-primary" aria-label={editing ? 'Fechar edição' : 'Editar card'} title={editing ? 'Fechar edição' : 'Editar card'}>{editing ? <X size={16} /> : <Pencil size={16} />}</button>}
                     {hasValidLink && card.status === 'active' && permissions.canHide && <button type="button" onClick={() => updateCard(card, { status: 'hidden' })} className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-amber-800" aria-label="Ocultar card"><EyeOff size={16} /></button>}
                     {hasValidLink && card.status === 'hidden' && permissions.canReactivate && <button type="button" onClick={() => updateCard(card, { status: 'active' })} className="rounded-xl border border-status-green-text/20 bg-status-green-bg p-2.5 text-status-green-text" aria-label="Reativar card"><RotateCcw size={16} /></button>}
                     {hasValidLink && permissions.canRemove && <button type="button" onClick={() => clearCardLink(card)} className="rounded-xl border border-status-red-text/20 bg-status-red-bg p-2.5 text-status-red-text" aria-label="Remover vínculo"><Trash2 size={16} /></button>}
                   </div>
 
                   {editing && (
-                    <div className="mt-3 space-y-3 rounded-xl border border-clinic-border bg-white p-3">
-                      <label className="block">
-                        <span className="mb-1 block text-xs font-black text-clinic-text">Título</span>
-                        <input value={card.title} maxLength={120} disabled={!permissions.canEdit} onChange={event => updateCard(card, { title: event.target.value })} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm text-clinic-text disabled:opacity-60" />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-xs font-black text-clinic-text">Categoria</span>
-                        <select value={card.category} disabled={!permissions.canEdit} onChange={event => updateCard(card, { category: event.target.value as ActivityRecordCategory })} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm font-bold text-clinic-text disabled:opacity-60">
-                          {ACTIVITY_RECORD_CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
-                        </select>
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-xs font-black text-clinic-text">Link</span>
-                        <input type="url" inputMode="url" maxLength={2048} value={card.url} disabled={!permissions.canEdit} onChange={event => updateCard(card, { url: event.target.value })} className={`w-full rounded-xl border bg-clinic-bg px-3 py-2.5 text-sm text-clinic-text disabled:opacity-60 ${cardHasInvalidLink ? 'border-status-orange-text/60' : 'border-clinic-border'}`} placeholder="https://photos.app.goo.gl/..." />
-                        {cardHasInvalidLink && <span className="mt-1 block text-xs font-bold text-status-orange-text">Use um link HTTPS válido de photos.app.goo.gl.</span>}
-                      </label>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label>
-                          <span className="mb-1 block text-xs font-black text-clinic-text">Data de publicação</span>
-                          <input type="date" value={card.publishedAt || todayIsoDate()} disabled={!permissions.canEdit} onChange={event => updateCard(card, { publishedAt: event.target.value })} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm font-bold text-clinic-text disabled:opacity-60" />
+                    <div className="mt-3 space-y-2 rounded-xl border border-clinic-border bg-white p-2.5">
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-black text-clinic-text">Título</span>
+                          <input value={card.title} maxLength={120} disabled={!permissions.canEdit} onChange={event => updateCard(card, { title: event.target.value })} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2 text-sm text-clinic-text disabled:opacity-60" />
                         </label>
-                        <label className="flex items-center gap-3 rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5">
-                          <input type="checkbox" checked={card.visibleToGuardian} disabled={!permissions.canEdit} onChange={event => updateCard(card, { visibleToGuardian: event.target.checked })} />
-                          <span className="text-sm font-bold text-clinic-text">Visível para o responsável</span>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-black text-clinic-text">Categoria</span>
+                          <select value={card.category} disabled={!permissions.canEdit} onChange={event => updateCard(card, { category: event.target.value as ActivityRecordCategory })} className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2 text-sm font-bold text-clinic-text disabled:opacity-60">
+                            {ACTIVITY_RECORD_CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
+                          </select>
                         </label>
                       </div>
-                      {sameDateSessions.length > 1 && (
-                        <fieldset className="rounded-xl border border-clinic-border bg-clinic-bg p-3">
-                          <legend className="px-1 text-xs font-black text-clinic-text">Sessões vinculadas</legend>
-                          <p className="mb-2 text-xs text-clinic-text-muted">Agrupe apenas sessões da mesma data que representam a mesma atividade.</p>
-                          <div className="grid gap-2">
-                            {sameDateSessions.map(session => (
-                              <label key={session.id} className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs text-clinic-text">
-                                <input
-                                  type="checkbox"
-                                  checked={card.sessionIds.includes(session.id)}
-                                  disabled={!permissions.canEdit}
-                                  onChange={event => {
-                                    const next = new Set<string>(card.sessionIds);
-                                    if (event.target.checked) next.add(session.id);
-                                    else next.delete(session.id);
-                                    updateCardSessions(card, [...next]);
-                                  }}
-                                />
-                                {safeFormatDate(session.date, 'dd/MM/yyyy')} às {session.time} • {session.status}
-                              </label>
-                            ))}
-                          </div>
-                        </fieldset>
-                      )}
-                      <label className="block">
-                        <span className="mb-1 block text-xs font-black text-clinic-text">Observação</span>
-                        <textarea maxLength={1000} rows={3} value={card.observation} disabled={!permissions.canEdit} onChange={event => updateCard(card, { observation: event.target.value })} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm text-clinic-text disabled:opacity-60" />
+
+                      <label className="flex items-center gap-3 rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2">
+                        <input type="checkbox" checked={card.visibleToGuardian} disabled={!permissions.canEdit} onChange={event => updateCard(card, { visibleToGuardian: event.target.checked })} />
+                        <span className="text-sm font-bold text-clinic-text">Visível para o responsável</span>
                       </label>
-                      <div className="flex justify-end">
-                        <button type="button" onClick={() => closeEditor(card.id)} className="rounded-xl border border-clinic-border bg-white px-4 py-2.5 text-xs font-black text-clinic-text-muted">Concluir edição local</button>
+
+                      <div className="rounded-lg border border-clinic-border bg-clinic-bg">
+                        <button
+                          type="button"
+                          onClick={() => toggleObservation(card.id)}
+                          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                          aria-expanded={observationExpanded}
+                          aria-controls={`google-photos-observation-${encodeURIComponent(card.id)}`}
+                        >
+                          <span className="text-[11px] font-black text-clinic-text">Observação</span>
+                          <span className="inline-flex items-center gap-1 text-xs font-bold text-clinic-primary">
+                            {observationExpanded ? 'Ocultar observação' : 'Mostrar observação'}
+                            {observationExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                          </span>
+                        </button>
+                        {observationExpanded && (
+                          <label id={`google-photos-observation-${encodeURIComponent(card.id)}`} className="block border-t border-clinic-border p-2">
+                            <span className="sr-only">Observação da publicação</span>
+                            <textarea maxLength={1000} rows={2} value={card.observation} disabled={!permissions.canEdit} onChange={event => updateCard(card, { observation: event.target.value })} className="w-full resize-y rounded-lg border border-clinic-border bg-white px-3 py-2 text-sm text-clinic-text disabled:opacity-60" placeholder="Digite uma observação somente quando necessário." />
+                          </label>
+                        )}
+                      </div>
+
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-black text-clinic-text">Data de publicação</span>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={10}
+                            value={publishedAtDisplay}
+                            disabled={!permissions.canEdit}
+                            onChange={event => {
+                              const normalized = normalizeDisplayDateInput(event.target.value);
+                              const parsed = displayDateToIso(normalized);
+                              updateCard(card, { publishedAt: parsed.iso || normalized });
+                              if (!parsed.error) setError('');
+                            }}
+                            onBlur={event => {
+                              const parsed = displayDateToIso(event.target.value);
+                              if (parsed.error) setError(parsed.error);
+                              else updateCard(card, { publishedAt: parsed.iso });
+                            }}
+                            className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2 pr-12 text-sm font-bold text-clinic-text disabled:opacity-60"
+                            placeholder="DD/MM/AAAA"
+                          />
+                          <label htmlFor={datePickerId} className="absolute inset-y-1 right-1 flex w-9 cursor-pointer items-center justify-center rounded-md text-clinic-primary transition hover:bg-clinic-surface" title="Abrir calendário" aria-label="Abrir calendário da Data de publicação">
+                            <CalendarDays size={17} />
+                            <input
+                              id={datePickerId}
+                              type="date"
+                              value={isSafeIsoDate(card.publishedAt) ? card.publishedAt : ''}
+                              disabled={!permissions.canEdit}
+                              onChange={event => updateCard(card, { publishedAt: event.target.value })}
+                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+                              aria-label="Selecionar Data de publicação no calendário"
+                            />
+                          </label>
+                        </div>
+                      </label>
+
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-black text-clinic-text">Link</span>
+                        <input type="url" inputMode="url" maxLength={2048} value={card.url} disabled={!permissions.canEdit} onChange={event => updateCard(card, { url: event.target.value })} className={`w-full rounded-lg border bg-clinic-bg px-3 py-2 text-sm text-clinic-text disabled:opacity-60 ${cardHasInvalidLink ? 'border-status-orange-text/60' : 'border-clinic-border'}`} placeholder="https://photos.app.goo.gl/..." />
+                        {cardHasInvalidLink && <span className="mt-1 block text-xs font-bold text-status-orange-text">Use um link HTTPS válido de photos.app.goo.gl.</span>}
+                      </label>
+
+                      <div className="flex justify-end pt-0.5">
+                        <button type="button" onClick={() => void saveNow()} disabled={saving || !permissions.canEdit} className="inline-flex items-center justify-center gap-2 rounded-lg bg-clinic-primary px-4 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-60">
+                          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                          Salvar
+                        </button>
                       </div>
                     </div>
                   )}

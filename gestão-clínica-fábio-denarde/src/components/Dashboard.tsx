@@ -1,26 +1,42 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
-import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, MessageCircle } from 'lucide-react';
+import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, ChevronDown } from 'lucide-react';
 import { formatCurrency, getStatusColor, cn, calculateAge, getSessionsForDate, normalizeTime, ProcessedSession } from '../lib/utils';
-import { format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
+import { addDays, format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
-import { getWhatsappReminderPlan } from '../lib/whatsappReminderPlan.js';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
-import { isPendingExternalRegistrationStatus } from '../lib/externalRegistration';
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
+import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
+import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
 
 interface DashboardProps {
   state: AppState;
   onUpdate: (newState: Partial<AppState>) => Promise<void>;
   onNavigateToPatient?: (patientId: string) => void;
   isPrimaryAdmin?: boolean;
+  canViewWhatsappReport?: boolean;
+  whatsappReportState: WhatsappOperationalReportState;
 }
 
-export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrimaryAdmin = false }: DashboardProps) {
+export default function Dashboard({
+  state,
+  onUpdate,
+  onNavigateToPatient,
+  isPrimaryAdmin = false,
+  canViewWhatsappReport = false,
+  whatsappReportState,
+}: DashboardProps) {
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
+  const [whatsappReportOpen, setWhatsappReportOpen] = useState(false);
+  const [renewalDetailsOpen, setRenewalDetailsOpen] = useState(false);
+  const currentSaoPauloDay = whatsappReportState.dateKey;
+
+  useEffect(() => {
+    setWhatsappReportOpen(false);
+  }, [currentSaoPauloDay]);
 
   useEffect(() => {
     for (const key of virtualActionLocksRef.current) {
@@ -358,9 +374,8 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
   }, [state]);
 
   const todaySessions = useMemo(() => {
-    const today = format(new Date(), 'yyyy-MM-dd');
     return getSessionsForDate({
-      dateStr: today,
+      dateStr: currentSaoPauloDay,
       patients: state.patients,
       sessions: state.sessions,
       settings: state.settings
@@ -372,17 +387,51 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
       }))
       .filter(s => s.patient && s.patient.status !== 'Concluído')
       .sort((a, b) => a.time.localeCompare(b.time));
-  }, [state.patients, state.sessions, state.settings]);
+  }, [currentSaoPauloDay, state.patients, state.sessions, state.settings]);
+
+  const nextSessionsPanel = useMemo(() => {
+    const currentDate = parseISO(currentSaoPauloDay);
+    for (let offset = 1; offset <= 90; offset += 1) {
+      const candidateDate = addDays(currentDate, offset);
+      const dateStr = format(candidateDate, 'yyyy-MM-dd');
+      const sessionsForCandidate = getSessionsForDate({
+        dateStr,
+        patients: state.patients,
+        sessions: state.sessions,
+        settings: state.settings,
+      })
+        .filter(session => !session.isBlocked)
+        .map(session => ({
+          ...session,
+          patient: state.patients.find(patient => patient.id === session.patientId),
+        }))
+        .filter(session => session.patient && session.patient.status !== 'Concluído')
+        .sort((left, right) => left.time.localeCompare(right.time));
+
+      if (sessionsForCandidate.length > 0) {
+        const formattedLabel = offset === 1
+          ? 'Amanhã'
+          : format(candidateDate, "EEEE, dd/MM", { locale: ptBR });
+        return {
+          dateStr,
+          label: formattedLabel.charAt(0).toUpperCase() + formattedLabel.slice(1),
+          sessions: sessionsForCandidate,
+        };
+      }
+    }
+
+    return {
+      dateStr: format(addDays(currentDate, 1), 'yyyy-MM-dd'),
+      label: 'Amanhã',
+      sessions: [] as typeof todaySessions,
+    };
+  }, [currentSaoPauloDay, state.patients, state.sessions, state.settings, todaySessions]);
 
   const operationalPanel = useMemo(() => {
-    const today = format(new Date(), 'yyyy-MM-dd');
     const todayPlanned = todaySessions.filter(s => s.status === SessionStatus.AGENDADA).length;
     const todayRealized = todaySessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
     const todayAbsences = todaySessions.filter(s => s.status === SessionStatus.FALTA || s.status === SessionStatus.FALTA_PROF).length;
     const pendingRepositions = state.repositions.filter(r => r.status === 'Pendente');
-    const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
-      isPendingExternalRegistrationStatus(form.status)
-    );
     const patientsNearRenewal = state.patients
       .filter(patient => patient.status === 'Ativo')
       .map(patient => {
@@ -395,52 +444,15 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
       })
       .filter(item => item.packageCount >= 8)
       .sort((a, b) => b.packageCount - a.packageCount);
-    const morningPlan = getWhatsappReminderPlan({
-      runDateStr: today,
-      tipo: 'HOJE_MANHA',
-      patients: state.patients,
-      sessions: state.sessions,
-      settings: state.settings
-    });
-    const afternoonPlan = getWhatsappReminderPlan({
-      runDateStr: today,
-      tipo: 'HOJE_TARDE',
-      patients: state.patients,
-      sessions: state.sessions,
-      settings: state.settings
-    });
-    const tomorrowPlan = getWhatsappReminderPlan({
-      runDateStr: today,
-      tipo: 'AMANHA',
-      patients: state.patients,
-      sessions: state.sessions,
-      settings: state.settings
-    });
-    const whatsappTodayCount = morningPlan.reminders.length + afternoonPlan.reminders.length;
-    const whatsappBlockedCount = morningPlan.diagnostics.length + afternoonPlan.diagnostics.length + tomorrowPlan.diagnostics.length;
-    const whatsappTooltip = [
-      'Monitor WhatsApp calculado pelo plano atual, sem enviar mensagens.',
-      `Hoje/manhã: ${morningPlan.reminders.length} envio(s) previsto(s), ${morningPlan.diagnostics.length} bloqueio(s)/ignorado(s).`,
-      `Hoje/tarde: ${afternoonPlan.reminders.length} envio(s) previsto(s), ${afternoonPlan.diagnostics.length} bloqueio(s)/ignorado(s).`,
-      `Véspera: ${tomorrowPlan.reminders.length} envio(s) previsto(s), ${tomorrowPlan.diagnostics.length} bloqueio(s)/ignorado(s).`,
-      morningPlan.isHoliday || afternoonPlan.isHoliday || tomorrowPlan.isHoliday
-        ? 'Há feriado/recesso em pelo menos uma rotina calculada.'
-        : 'Nenhum feriado/recesso bloqueando as rotinas calculadas.'
-    ].join('\n');
+    const uniquePatientsNearRenewal = [...new Map(
+      patientsNearRenewal.map(item => [item.patient.id, item]),
+    ).values()];
     return {
       todayPlanned,
       todayRealized,
       todayAbsences,
       pendingRepositions,
-      pendingExternalForms,
-      patientsNearRenewal,
-      whatsappTodayCount,
-      whatsappMorningCount: morningPlan.reminders.length,
-      whatsappAfternoonCount: afternoonPlan.reminders.length,
-      whatsappTomorrowCount: tomorrowPlan.reminders.length,
-      whatsappBlockedCount,
-      whatsappHoliday: morningPlan.isHoliday || afternoonPlan.isHoliday || tomorrowPlan.isHoliday,
-      whatsappTooltip
+      patientsNearRenewal: uniquePatientsNearRenewal,
     };
   }, [state, todaySessions]);
 
@@ -549,73 +561,75 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
           </div>
           <div className="space-y-3">
             <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
-              <span className="text-xs font-bold text-clinic-text-muted uppercase">Formulários recebidos</span>
-              <span className={cn("text-sm font-black", operationalPanel.pendingExternalForms.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
-                {operationalPanel.pendingExternalForms.length}
-              </span>
-            </div>
-            <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
               <span className="text-xs font-bold text-clinic-text-muted uppercase">Reposições pendentes</span>
               <span className={cn("text-sm font-black", operationalPanel.pendingRepositions.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
                 {operationalPanel.pendingRepositions.length}
               </span>
             </div>
-            <div className="flex justify-between items-center bg-clinic-bg rounded-lg px-3 py-2 border border-clinic-border/60">
-              <span className="text-xs font-bold text-clinic-text-muted uppercase">Pacotes para renovar</span>
-              <span className={cn("text-sm font-black", operationalPanel.patientsNearRenewal.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
-                {operationalPanel.patientsNearRenewal.length}
-              </span>
-            </div>
-            {operationalPanel.patientsNearRenewal.slice(0, 2).map(({ patient, packageCount }) => (
+            <div className="overflow-hidden rounded-lg border border-clinic-border/60 bg-clinic-bg">
               <button
-                key={patient.id}
-                onClick={() => onNavigateToPatient?.(patient.id)}
-                className="w-full text-left text-xs font-bold text-clinic-primary hover:underline"
+                type="button"
+                onClick={() => setRenewalDetailsOpen(open => !open)}
+                aria-expanded={renewalDetailsOpen}
+                aria-controls="dashboard-renewal-details"
+                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-clinic-surface/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/40"
               >
-                {patient.name}: {packageCount}/10 sessões
+                <span className="text-xs font-bold uppercase text-clinic-text-muted">Pacotes para renovar</span>
+                <span className="flex items-center gap-2">
+                  <span className={cn("text-sm font-black", operationalPanel.patientsNearRenewal.length > 0 ? "text-status-orange-text" : "text-status-green-text")}>
+                    {operationalPanel.patientsNearRenewal.length}
+                  </span>
+                  <ChevronDown
+                    size={16}
+                    aria-hidden="true"
+                    className={cn(
+                      "text-clinic-text-faint transition-transform duration-200",
+                      renewalDetailsOpen && "rotate-180",
+                    )}
+                  />
+                </span>
               </button>
-            ))}
+
+              {renewalDetailsOpen && (
+                <motion.div
+                  id="dashboard-renewal-details"
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.16 }}
+                  className="border-t border-clinic-border/60 bg-clinic-surface/55 p-2"
+                >
+                  <div className="max-h-36 space-y-1 overflow-y-auto pr-1 custom-scrollbar">
+                    {operationalPanel.patientsNearRenewal.map(({ patient, packageCount }) => (
+                      <button
+                        key={patient.id}
+                        type="button"
+                        onClick={() => onNavigateToPatient?.(patient.id)}
+                        className="flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left text-xs font-bold text-clinic-primary transition-colors hover:bg-clinic-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/35"
+                      >
+                        <span className="min-w-0 truncate">{patient.name}</span>
+                        <span className="shrink-0 text-clinic-text-muted">{packageCount}/10 sessões</span>
+                      </button>
+                    ))}
+                    {operationalPanel.patientsNearRenewal.length === 0 && (
+                      <p className="px-2.5 py-2 text-xs font-semibold text-clinic-text-faint">
+                        Nenhum pacote próximo da renovação.
+                      </p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </div>
           </div>
         </div>
 
-        <div
-          className="bg-clinic-surface border border-clinic-border rounded-xl p-5 shadow-clinic"
-          title={operationalPanel.whatsappTooltip}
-          aria-label={operationalPanel.whatsappTooltip}
-        >
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-bold text-clinic-text">WhatsApp</h3>
-            <MessageCircle size={18} className="text-status-green-text" title={operationalPanel.whatsappTooltip} />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div
-              className="bg-status-green-bg rounded-lg p-3 text-center border border-status-green-text/20"
-              title={`Mensagens do dia previstas: ${operationalPanel.whatsappTodayCount}\nManhã: ${operationalPanel.whatsappMorningCount}\nTarde: ${operationalPanel.whatsappAfternoonCount}`}
-            >
-              <p className="text-2xl font-bold text-status-green-text">{operationalPanel.whatsappTodayCount}</p>
-              <p className="text-[10px] font-black uppercase text-status-green-text">Hoje</p>
-            </div>
-            <div
-              className="bg-status-blue-bg rounded-lg p-3 text-center border border-status-blue-text/20"
-              title={`Mensagens de véspera previstas para o próximo dia útil calculado: ${operationalPanel.whatsappTomorrowCount}`}
-            >
-              <p className="text-2xl font-bold text-status-blue-text">{operationalPanel.whatsappTomorrowCount}</p>
-              <p className="text-[10px] font-black uppercase text-status-blue-text">Véspera</p>
-            </div>
-            <div
-              className="bg-clinic-bg rounded-lg p-3 text-center border border-clinic-border/60"
-              title={`Bloqueios/ignorados no plano calculado: ${operationalPanel.whatsappBlockedCount}\nInclui feriado, cancelamento, falta de WhatsApp, paciente inativo, fora do turno ou deduplicação.`}
-            >
-              <p className="text-2xl font-bold text-clinic-text">{operationalPanel.whatsappBlockedCount}</p>
-              <p className="text-[10px] font-black uppercase text-clinic-text-faint">Bloqueios</p>
-            </div>
-          </div>
-          {operationalPanel.whatsappHoliday && (
-            <p className="text-[11px] font-bold text-status-orange-text mt-3 bg-status-orange-bg border border-status-orange-text/20 rounded-lg px-3 py-2">
-              Há bloqueio por feriado/recesso em alguma rotina calculada.
-            </p>
-          )}
-        </div>
+        {canViewWhatsappReport && (
+          <WhatsappOperationalReportPanel
+            state={whatsappReportState}
+            expanded={whatsappReportOpen}
+            onToggle={() => setWhatsappReportOpen(open => !open)}
+            variant="dashboard"
+          />
+        )}
       </section>
 
       {/* Alertas Automáticos */}
@@ -718,6 +732,34 @@ export default function Dashboard({ state, onUpdate, onNavigateToPatient, isPrim
                 <p className="text-sm">Nenhuma sessão marcada para hoje.</p>
               </div>
             )}
+          </div>
+
+          <div className="mt-6 border-t border-clinic-border pt-4">
+            <h3 className="mb-3 text-lg font-bold text-clinic-text">Próximas Sessões — {nextSessionsPanel.label}</h3>
+            <div className="flex flex-col gap-2">
+              {nextSessionsPanel.sessions.length > 0 ? (
+                nextSessionsPanel.sessions.map(session => (
+                  <div key={`next-${session.id}`} className="flex items-center gap-4 rounded-lg border border-clinic-border bg-clinic-bg/55 p-3">
+                    <div className="w-16 text-lg font-black text-clinic-header">{session.time}</div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-bold text-clinic-text">{session.patient?.name}</p>
+                      <p className="text-xs text-clinic-text-muted">{getSessionCycleLabel(state.sessions, session) || 'Sessão sem número definido'}</p>
+                    </div>
+                    <span className={cn(
+                      'rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-widest',
+                      getStatusColor(session.status),
+                    )}>
+                      {session.status}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="flex min-h-24 flex-col items-center justify-center text-clinic-text-faint opacity-60">
+                  <Info size={26} className="mb-2" />
+                  <p className="text-sm">Nenhuma sessão futura encontrada.</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

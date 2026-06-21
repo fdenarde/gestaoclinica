@@ -16,6 +16,13 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isApprovedAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/accessProfiles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/accessProfiles/$(request.auth.uid)).data.status == 'approved'
+        && get(/databases/$(database)/documents/accessProfiles/$(request.auth.uid)).data.role == 'admin';
+    }
+
     function externalRegistrationOpenStatuses() {
       return ['Pendente de preenchimento', 'Pré-cadastro recebido', 'Atualização recebida'];
     }
@@ -74,6 +81,14 @@ service cloud.firestore {
         )
         && request.resource.data.submittedAt is string
         && isExpectedExternalRegistrationData(request.resource.data.submittedData);
+    }
+
+    // Relatorio operacional sanitizado do WhatsApp.
+    // O frontend administrativo pode somente ler o documento do dia.
+    // Escritas permanecem exclusivas do Firebase Admin SDK no backend.
+    match /whatsappOperationalReports/{reportDate} {
+      allow get: if isApprovedAdmin();
+      allow list, create, update, delete: if false;
     }
 
     // 1. Users Subcollections (Isolated Data Architecture)

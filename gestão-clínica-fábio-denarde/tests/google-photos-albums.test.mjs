@@ -4,15 +4,18 @@ import fs from 'node:fs';
 import {
   GOOGLE_PHOTOS_ALBUM_PACKAGE_COLLECTION,
   GOOGLE_PHOTOS_PROVIDER,
+  buildGooglePhotosAlbumEditorSignature,
   buildGooglePhotosAlbumGroupKey,
   buildGooglePhotosAlbumPackageKey,
   buildGooglePhotosVirtualAlbumCards,
   filterGooglePhotosAlbumsForViewer,
   getGooglePhotosAlbumDisplayTitle,
   getGooglePhotosAlbumCapabilities,
+  hasGooglePhotosAlbumEditorChanges,
   isGooglePhotosAlbumPatientAllowed,
   isValidGooglePhotosAlbumUrl,
   mergeGooglePhotosAlbumCards,
+  normalizeGooglePhotosSessionIds,
   normalizeGooglePhotosAlbumUrl,
 } from '../shared/googlePhotosAlbums.js';
 import { buildActivityMediaPackageModel } from '../shared/activityMediaPackages.js';
@@ -171,6 +174,61 @@ test('cards virtuais cobrem a primeira sessão do pacote atual até a sessão at
   assert.equal(cards.every(card => card.packageNumber === 2), true);
   assert.equal(cards.every(card => card.url === ''), true);
   assert.equal(cards.some(card => card.category === 'Atividade de Intervenção'), true);
+  assert.equal(cards.every(card => card.publishedAt === card.activityDate), true);
+});
+
+test('editor profissional salva somente por clique explícito e usa data manual DD/MM/AAAA', () => {
+  const professionalSource = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url), 'utf8');
+  const repositorySource = fs.readFileSync(new URL('../api/_lib/googlePhotosAlbumsRepository.js', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(professionalSource, /AUTOSAVE_DELAY_MS|performAutosave|queuedSave|Concluir edição local|Salvar agora|salvos automaticamente/);
+  assert.match(professionalSource, /confirm\('Existem alterações não salvas\. Deseja descartá-las\?'\)/);
+  assert.match(professionalSource, /type="text"[\s\S]*placeholder="DD\/MM\/AAAA"/);
+  assert.match(professionalSource, /aria-label="Abrir calendário da Data de publicação"[\s\S]*type="date"/);
+  assert.match(professionalSource, /type="date"[\s\S]*opacity-0/);
+  assert.match(professionalSource, /Mostrar observação/);
+  assert.match(professionalSource, /hasUnsavedChangesForCard/);
+  assert.match(professionalSource, /const parsed = displayDateToIso\(event\.target\.value\)/);
+  assert.match(professionalSource, /onClick=\{\(\) => void saveNow\(\)\}[\s\S]*Salvar/);
+  assert.doesNotMatch(repositorySource, /card\?\.publishedAt \|\| todayIsoDate\(\)/);
+  assert.match(repositorySource, /card\?\.publishedAt \|\| activityDate/);
+
+  const editorSource = professionalSource.slice(professionalSource.indexOf('{editing && ('));
+  const titleIndex = editorSource.indexOf('>Título<');
+  const categoryIndex = editorSource.indexOf('>Categoria<');
+  const visibilityIndex = editorSource.indexOf('>Visível para o responsável<');
+  const observationIndex = editorSource.indexOf('>Observação<');
+  const dateIndex = editorSource.indexOf('>Data de publicação<');
+  const linkIndex = editorSource.indexOf('>Link<');
+  const saveIndex = editorSource.lastIndexOf('Salvar');
+  assert.ok(titleIndex < categoryIndex);
+  assert.ok(categoryIndex < visibilityIndex);
+  assert.ok(visibilityIndex < observationIndex);
+  assert.ok(observationIndex < dateIndex);
+  assert.ok(dateIndex < linkIndex);
+  assert.ok(linkIndex < saveIndex);
+});
+
+test('comparação do editor só marca alteração quando o conteúdo realmente muda', () => {
+  const baseline = {
+    ...validAlbum,
+    title: 'Atividade de Intervenção - Sessão 8',
+    category: 'Atividade de Intervenção',
+    observation: '',
+    publishedAt: '2026-06-18',
+    sessionIds: ['session-b', 'session-a'],
+  };
+  const sameContent = {
+    ...baseline,
+    sessionIds: ['session-a', 'session-b'],
+  };
+  const changed = { ...baseline, observation: 'Anotação real' };
+  const restored = { ...changed, observation: '' };
+
+  assert.equal(buildGooglePhotosAlbumEditorSignature(baseline), buildGooglePhotosAlbumEditorSignature(sameContent));
+  assert.equal(hasGooglePhotosAlbumEditorChanges(sameContent, baseline), false);
+  assert.equal(hasGooglePhotosAlbumEditorChanges(changed, baseline), true);
+  assert.equal(hasGooglePhotosAlbumEditorChanges(restored, baseline), false);
 });
 
 test('sessões duplas usam IDs reais, agrupam automaticamente pares consecutivos e preservam grupos explícitos', () => {
@@ -196,6 +254,69 @@ test('sessões duplas usam IDs reais, agrupam automaticamente pares consecutivos
   ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-19T12:00:00Z') });
   assert.equal(separated.length, 2);
   assert.deepEqual(separated.map(card => card.sessionIds), [['activity-b'], ['activity-a']]);
+});
+
+test('vínculo automático cobre sessão única, dupla, paciente diferente, duplicidade e canceladas sem Firebase', () => {
+  const oneSession = buildGooglePhotosVirtualAlbumCards([
+    makeSession('single-1', '2026-06-21', 'Realizada', { type: 'Sessão simples (50 min)', time: '09:00' }),
+  ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-21T15:00:00Z') });
+  assert.equal(oneSession.length, 1);
+  assert.deepEqual(oneSession[0].sessionIds, ['single-1']);
+
+  const doubleSamePatient = buildGooglePhotosVirtualAlbumCards([
+    makeSession('double-same-a', '2026-06-22', 'Realizada', { type: 'Sessão dupla (2 x 50 min)', time: '10:00' }),
+    makeSession('double-same-b', '2026-06-22', 'Realizada', { type: 'Sessão dupla (2 x 50 min)', time: '11:00' }),
+  ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-22T18:00:00Z') });
+  assert.equal(doubleSamePatient.length, 1);
+  assert.deepEqual(doubleSamePatient[0].sessionIds, ['double-same-a', 'double-same-b']);
+  assert.equal(doubleSamePatient[0].sessionGroupKey, 'sessions:patient-1:2026-06-22:double-same-a,double-same-b');
+
+  const differentPatientIgnored = buildGooglePhotosVirtualAlbumCards([
+    makeSession('same-patient-a', '2026-06-23', 'Realizada', { type: 'Sessão dupla (2 x 50 min)', time: '10:00' }),
+    makeSession('other-patient-b', '2026-06-23', 'Realizada', {
+      patientId: 'patient-2',
+      type: 'Sessão dupla (2 x 50 min)',
+      time: '11:00',
+    }),
+  ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-23T18:00:00Z') });
+  assert.equal(differentPatientIgnored.length, 1);
+  assert.deepEqual(differentPatientIgnored[0].sessionIds, ['same-patient-a']);
+
+  const invalidOrCancelledExcluded = buildGooglePhotosVirtualAlbumCards([
+    makeSession('valid-done', '2026-06-24', 'Realizada', { time: '10:00' }),
+    makeSession('cancelled-session', '2026-06-24', 'Cancelada', { time: '11:00' }),
+    makeSession('blocked-session', '2026-06-24', 'Realizada', { time: '12:00', isBlocked: true }),
+    makeSession('invalid-status', '2026-06-24', 'Agendada', { time: '13:00' }),
+  ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-24T18:00:00Z') });
+  assert.deepEqual(invalidOrCancelledExcluded.map(card => card.sessionIds).flat(), ['valid-done']);
+
+  assert.deepEqual(
+    normalizeGooglePhotosSessionIds(['double-same-b', 'double-same-a', 'double-same-b', '', 'double-same-a']),
+    ['double-same-a', 'double-same-b'],
+  );
+
+  const persistedDouble = {
+    ...validAlbum,
+    id: doubleSamePatient[0].sessionGroupKey,
+    sessionGroupKey: doubleSamePatient[0].sessionGroupKey,
+    activityDate: '2026-06-22',
+    packageNumber: 1,
+    sessionIds: ['double-same-b', 'double-same-a', 'double-same-b'],
+    url: 'https://photos.app.goo.gl/PersistedDouble123',
+  };
+  const editedDraft = {
+    ...persistedDouble,
+    sessionIds: ['double-same-a', 'double-same-b'],
+    observation: 'editado novamente',
+  };
+  const mergedAfterRepeatedEdit = mergeGooglePhotosAlbumCards({
+    virtualCards: doubleSamePatient,
+    persistedCards: [persistedDouble],
+    draftCards: [editedDraft],
+  });
+  assert.equal(mergedAfterRepeatedEdit.length, 1);
+  assert.deepEqual(mergedAfterRepeatedEdit[0].sessionIds, ['double-same-a', 'double-same-b']);
+  assert.equal(mergedAfterRepeatedEdit[0].sessionGroupKey, 'sessions:patient-1:2026-06-22:double-same-a,double-same-b');
 });
 
 test('atendente configurado para sessão dupla reconstrói todos os pares históricos do pacote', () => {

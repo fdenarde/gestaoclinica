@@ -35,6 +35,10 @@ interface ApiErrorPayload {
   };
 }
 
+interface RequestOptions {
+  forceRefreshToken?: boolean;
+}
+
 interface AccessProfileResponse {
   profile: AccessProfile | null;
 }
@@ -168,12 +172,12 @@ function createApiError(code: string, message: string): Error & { code: string }
   return Object.assign(new Error(message), { code });
 }
 
-async function getToken(user?: User): Promise<string> {
+async function getToken(user?: User, forceRefreshToken = false): Promise<string> {
   const currentUser = user || auth.currentUser;
   if (!currentUser) {
     throw createApiError('access/missing-auth-token', 'Sua sessão não foi identificada. Entre novamente.');
   }
-  return currentUser.getIdToken();
+  return currentUser.getIdToken(forceRefreshToken);
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -199,13 +203,14 @@ async function request<T>(
   body?: unknown,
   user?: User | null,
   query = '',
+  options: RequestOptions = {},
 ): Promise<T> {
   try {
     const authenticatedUser = user === undefined ? auth.currentUser : user;
     const response = await fetch(`${API_ENDPOINT}${query}`, {
       method,
       headers: {
-        ...(authenticatedUser ? { Authorization: `Bearer ${await getToken(authenticatedUser)}` } : {}),
+        ...(authenticatedUser ? { Authorization: `Bearer ${await getToken(authenticatedUser, options.forceRefreshToken)}` } : {}),
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -221,26 +226,27 @@ async function request<T>(
   }
 }
 
-export async function getAccessProfile(user?: User): Promise<AccessProfile | null> {
+export async function getAccessProfile(user?: User, options: RequestOptions = {}): Promise<AccessProfile | null> {
   const currentUser = user || auth.currentUser;
-  const requestKey = currentUser?.uid || 'missing-user';
-  const backoff = accessProfileBackoffByUid.get(requestKey);
+  const userKey = currentUser?.uid || 'missing-user';
+  const requestKey = `${userKey}:${options.forceRefreshToken ? 'refresh' : 'default'}`;
+  const backoff = accessProfileBackoffByUid.get(userKey);
   if (backoff && backoff.until > Date.now()) throw backoff.error;
-  if (backoff) accessProfileBackoffByUid.delete(requestKey);
+  if (backoff) accessProfileBackoffByUid.delete(userKey);
 
   const existingRequest = accessProfileRequests.get(requestKey);
   if (existingRequest) return existingRequest;
 
   let profileRequest: Promise<AccessProfile | null>;
-  profileRequest = request<AccessProfileResponse>('GET', undefined, user)
+  profileRequest = request<AccessProfileResponse>('GET', undefined, user, '', options)
     .then(result => {
-      accessProfileBackoffByUid.delete(requestKey);
+      accessProfileBackoffByUid.delete(userKey);
       return result.profile;
     })
     .catch(error => {
       const apiError = error as Error & { code?: string };
       if (apiError.code === 'access/quota-temporarily-unavailable') {
-        accessProfileBackoffByUid.set(requestKey, {
+        accessProfileBackoffByUid.set(userKey, {
           until: Date.now() + ACCESS_PROFILE_QUOTA_BACKOFF_MS,
           error: createApiError(
             'access/quota-temporarily-unavailable',

@@ -33,6 +33,7 @@ interface AccessPortalProps {
   profileError: string;
   onAccessRequestSubmitted: (profile: AccessProfile | null) => void;
   onRetryProfile: () => void;
+  onLogout?: () => Promise<void> | void;
 }
 
 const EMPTY_REQUEST: AccessRequestInput = {
@@ -104,6 +105,7 @@ export default function AccessPortal({
   profileError,
   onAccessRequestSubmitted,
   onRetryProfile,
+  onLogout,
 }: AccessPortalProps) {
   const [view, setView] = useState<PortalView>(user ? 'request' : 'login');
   const [email, setEmail] = useState(user?.email || '');
@@ -227,7 +229,7 @@ export default function AccessPortal({
 
   const handleLogout = () => {
     void run(async () => {
-      await logout();
+      await (onLogout ? onLogout() : logout());
       setView('login');
       setPassword('');
       setConfirmPassword('');

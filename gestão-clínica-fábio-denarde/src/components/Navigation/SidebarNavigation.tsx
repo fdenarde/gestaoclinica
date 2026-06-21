@@ -31,6 +31,7 @@ interface SidebarNavigationProps {
   userEmail?: string | null;
   userPhotoUrl?: string | null;
   onSelect: (id: string) => void;
+  onHome: () => void;
   onToggleCollapsed: () => void;
   onCloseMobile: () => void;
   onLogout: () => void;
@@ -54,6 +55,7 @@ function SidebarBody({
   userEmail,
   userPhotoUrl,
   onSelect,
+  onHome,
   onToggleCollapsed,
   onCloseMobile,
   onLogout,
@@ -67,8 +69,8 @@ function SidebarBody({
   return (
     <aside
       className={cn(
-        'flex h-full flex-col border-r border-clinic-border-dark bg-clinic-nav-bg text-clinic-text shadow-xl transition-[width] duration-200',
-        effectiveCollapsed ? 'w-[76px]' : 'w-[380px]',
+        'relative flex h-full flex-col border-r border-clinic-border-dark bg-clinic-nav-bg text-clinic-text shadow-xl transition-[width] duration-200',
+        effectiveCollapsed ? 'w-[76px]' : 'w-[264px]',
       )}
       aria-label="Menu principal"
     >
@@ -79,28 +81,50 @@ function SidebarBody({
         )}
       >
         {effectiveCollapsed ? (
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/12 text-white shadow-sm ring-1 ring-white/20" title={clinicName || 'Gestão Clínica'}>
+          <button
+            type="button"
+            onClick={onHome}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/12 text-white shadow-sm ring-1 ring-white/20 transition hover:bg-white/18 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+            title={clinicName || 'Gestão Clínica'}
+            aria-label="Ir para a página inicial"
+          >
             <BrainCircuit size={27} />
-          </div>
+          </button>
         ) : (
-          <BrandLogo
-            variant="horizontal"
-            theme={theme}
-            name={clinicName}
-            subtitle={clinicSubtitle}
-            className="min-w-0 flex-1 whitespace-nowrap"
-          />
+          <button
+            type="button"
+            onClick={onHome}
+            className="min-w-0 flex-1 cursor-pointer rounded-xl text-left transition hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+            aria-label="Ir para a página inicial"
+          >
+            <BrandLogo
+              variant="horizontal"
+              theme={theme}
+              name={clinicName}
+              subtitle={clinicSubtitle}
+              className="min-w-0 flex-1 whitespace-nowrap"
+            />
+          </button>
         )}
-        {mobile ? (
+        {mobile && (
           <button type="button" onClick={onCloseMobile} className="rounded-xl p-2 text-white/80 hover:bg-white/10 hover:text-white" aria-label="Fechar menu lateral">
             <X size={20} />
           </button>
-        ) : !effectiveCollapsed ? (
-          <button type="button" onClick={onToggleCollapsed} className="rounded-xl p-2 text-white/80 hover:bg-white/10 hover:text-white" aria-label="Recolher menu lateral" title="Recolher menu">
-            <ChevronLeft size={19} />
-          </button>
-        ) : null}
+        )}
       </div>
+
+      {!mobile && (
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          className="absolute -right-3 top-[68px] z-10 flex h-7 w-7 items-center justify-center rounded-full border border-clinic-border-dark bg-clinic-surface text-clinic-primary shadow-md transition hover:bg-clinic-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/50"
+          aria-label={effectiveCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+          aria-expanded={!effectiveCollapsed}
+          title={effectiveCollapsed ? 'Expandir menu' : 'Recolher menu'}
+        >
+          {effectiveCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+        </button>
+      )}
 
       <nav className="custom-scrollbar flex-1 overflow-y-auto px-2 py-4">
         {GROUPS.map(group => {
@@ -171,11 +195,6 @@ function SidebarBody({
             <LogOut size={17} />
           </button>
         </div>
-        {!mobile && effectiveCollapsed && (
-          <button type="button" onClick={onToggleCollapsed} className="mt-2 flex w-full items-center justify-center rounded-xl py-2 text-clinic-primary hover:bg-clinic-bg" aria-label="Expandir menu lateral" title="Expandir menu">
-            <ChevronRight size={19} />
-          </button>
-        )}
       </footer>
     </aside>
   );
@@ -184,13 +203,13 @@ function SidebarBody({
 export default function SidebarNavigation(props: SidebarNavigationProps) {
   return (
     <>
-      <div className={cn('fixed inset-y-0 left-0 z-[70] hidden lg:block', props.collapsed ? 'w-[76px]' : 'w-[380px]')}>
+      <div className={cn('fixed inset-y-0 left-0 z-[70] hidden lg:block', props.collapsed ? 'w-[76px]' : 'w-[264px]')}>
         <SidebarBody {...props} mobile={false} />
       </div>
       {props.mobileOpen && (
         <div className="fixed inset-0 z-[100] lg:hidden" role="dialog" aria-modal="true" aria-label="Menu lateral">
           <button type="button" onClick={props.onCloseMobile} className="absolute inset-0 bg-black/55 backdrop-blur-sm" aria-label="Fechar menu" />
-          <div className="relative h-full w-[min(92vw,380px)]">
+          <div className="relative h-full w-[min(92vw,320px)]">
             <SidebarBody {...props} mobile />
           </div>
         </div>
