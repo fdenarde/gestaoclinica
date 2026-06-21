@@ -1,4 +1,5 @@
 import type { Patient, Session } from '../types';
+import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 
 function getDateKey(value: string | undefined | null): string {
   if (!value) return '';
@@ -31,6 +32,7 @@ export function getPatientSessionsThroughDate({
   const endDate = getDateKey(throughDate) || getLocalDateKey(new Date());
 
   return sessions.filter(session => {
+    if (isSessionRemovedFromAgenda(session)) return false;
     if (session.patientId !== patient.id) return false;
 
     const sessionDate = getDateKey(session.date);

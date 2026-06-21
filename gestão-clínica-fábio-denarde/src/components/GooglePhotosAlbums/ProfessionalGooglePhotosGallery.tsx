@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  FolderPlus,
   EyeOff,
   Images,
   Link2,
@@ -30,6 +31,7 @@ import type {
   GooglePhotosAlbumInput,
 } from '../../types/googlePhotosAlbums';
 import {
+  createGooglePhotosAlbum,
   listGooglePhotosAlbumPatientOptions,
   listGooglePhotosAlbumSessionOptions,
   listGooglePhotosAlbums,
@@ -193,9 +195,12 @@ export default function ProfessionalGooglePhotosGallery({
   const [loading, setLoading] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [creatingCardIds, setCreatingCardIds] = useState<string[]>([]);
+  const [quickCreateCardId, setQuickCreateCardId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const savingRef = useRef(false);
+  const creatingCardIdsRef = useRef(new Set<string>());
   const lastConfirmedSignatureRef = useRef('[]');
   const allCardsRef = useRef<GooglePhotosAlbum[]>([]);
   const selectedPatientIdRef = useRef('');
@@ -299,6 +304,24 @@ export default function ProfessionalGooglePhotosGallery({
       removedCardIds,
     }) as GooglePhotosAlbum[]
   ), [draftCards, persistedCards, removedCardIds, virtualCards]);
+
+  const canCreateAlbum = permissions.canCreate || permissions.canEdit;
+  const creatableCards = useMemo(() => allCards.filter(card => (
+    !normalizeAlbumUrl(card.url)
+    && card.status !== 'removed'
+    && Array.isArray(card.sessionIds)
+    && card.sessionIds.length > 0
+  )), [allCards]);
+  const quickCreateCard = useMemo(
+    () => creatableCards.find(card => card.id === quickCreateCardId) || null,
+    [creatableCards, quickCreateCardId],
+  );
+
+  useEffect(() => {
+    if (quickCreateCardId && !creatableCards.some(card => card.id === quickCreateCardId)) {
+      setQuickCreateCardId('');
+    }
+  }, [creatableCards, quickCreateCardId]);
 
   const editorSourceCards = useMemo(() => (
     mergeGooglePhotosAlbumCards({
@@ -424,6 +447,7 @@ export default function ProfessionalGooglePhotosGallery({
 
   const selectPatient = (patientId: string) => {
     setSelectedPatientId(patientId);
+    setQuickCreateCardId('');
     setPersistedCards([]);
     setDraftCards({});
     setRemovedCardIds([]);
@@ -581,6 +605,75 @@ export default function ProfessionalGooglePhotosGallery({
     .map(card => toPackageInput({ ...card, url: normalizeAlbumUrl(card.url) || '' }))
     .sort((left, right) => String(left.id || left.sessionGroupKey).localeCompare(String(right.id || right.sessionGroupKey))), []);
 
+  const createAlbumForCard = useCallback(async (card: GooglePhotosAlbum): Promise<void> => {
+    if (!(permissionsRef.current.canCreate || permissionsRef.current.canEdit) || normalizeAlbumUrl(card.url)) return;
+    if (creatingCardIdsRef.current.has(card.id)) return;
+    if (savingRef.current) {
+      setError('Aguarde o salvamento atual terminar antes de criar o álbum.');
+      return;
+    }
+    const title = String(card.title || '').trim();
+    if (!title) {
+      setError('Informe o título do álbum antes de criar.');
+      openEditor(card);
+      return;
+    }
+    if (!Array.isArray(card.sessionIds) || card.sessionIds.length === 0) {
+      setError('O card precisa estar vinculado a uma sessão válida.');
+      return;
+    }
+
+    creatingCardIdsRef.current.add(card.id);
+    setCreatingCardIds(current => current.includes(card.id) ? current : [...current, card.id]);
+    setError('');
+    setMessage('');
+    try {
+      const result = await createGooglePhotosAlbum({
+        patientId: card.patientId,
+        packageNumber: card.packageNumber,
+        sessionIds: card.sessionIds,
+        sessionGroupKey: card.sessionGroupKey,
+        activityDate: card.activityDate,
+        title,
+        category: card.category,
+        observation: card.observation,
+        publishedAt: card.publishedAt || card.activityDate,
+      });
+
+      if (
+        selectedPatientIdRef.current === card.patientId
+        && currentPackageNumberRef.current === card.packageNumber
+      ) {
+        setPersistedCards(result.albums);
+        setPermissions(result.permissions);
+        setOwnerUserId(result.ownerUserId || ownerUserId);
+        setDraftCards(current => {
+          if (!current[card.id]) return current;
+          const next = { ...current };
+          delete next[card.id];
+          return next;
+        });
+        setRemovedCardIds(current => current.filter(id => id !== card.id));
+        setEditingCardIds(current => current.filter(id => id !== card.id));
+        setExpandedObservationIds(current => current.filter(id => id !== card.id));
+        delete editorBaselineRef.current[card.id];
+        lastConfirmedSignatureRef.current = JSON.stringify(buildSavableInputs(result.albums));
+        if (draftStorageKey && typeof window !== 'undefined') window.sessionStorage.removeItem(draftStorageKey);
+      }
+      setQuickCreateCardId(current => current === card.id ? '' : current);
+      setSaveStatus('idle');
+      setMessage(result.createdAlbum.idempotent
+        ? 'Este álbum já havia sido criado. O link existente foi recuperado sem duplicação.'
+        : 'Álbum vazio criado com sucesso. Ele continua restrito à conta Google e ainda não foi compartilhado com o responsável.');
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível criar o álbum no Google Fotos.');
+      setSaveStatus('error');
+    } finally {
+      creatingCardIdsRef.current.delete(card.id);
+      setCreatingCardIds(current => current.filter(id => id !== card.id));
+    }
+  }, [buildSavableInputs, draftStorageKey, ownerUserId]);
+
   const validateEditedCards = useCallback((): string => {
     if (hasInvalidLinks) return 'Use um link HTTPS válido de photos.app.goo.gl antes de salvar.';
     const editedCards = allCardsRef.current.filter(card => draftCards[card.id] || card.url.trim());
@@ -690,6 +783,7 @@ export default function ProfessionalGooglePhotosGallery({
     if (savingRef.current) return;
     if (!confirmDiscardChanges()) return;
     setSelectedPatientId('');
+    setQuickCreateCardId('');
     setPersistedCards([]);
     setDraftCards({});
     setRemovedCardIds([]);
@@ -859,6 +953,61 @@ export default function ProfessionalGooglePhotosGallery({
         </section>
       )}
 
+      {selectedPatientId && !loading && canCreateAlbum && (
+        <section className="rounded-2xl border border-clinic-primary/25 bg-clinic-surface p-4 shadow-clinic sm:p-5">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-clinic-primary">
+                <FolderPlus size={20} />
+                <h2 className="text-base font-black">Criar álbum no Google Fotos</h2>
+              </div>
+              <p className="mt-1 text-sm text-clinic-text-muted">
+                Escolha a sessão deste atendente e pacote. A ação cria somente um álbum vazio, sem enviar ou compartilhar mídias.
+              </p>
+            </div>
+            {creatableCards.length > 0 ? (
+              <div className="grid w-full gap-2 sm:grid-cols-[minmax(220px,1fr)_auto] xl:max-w-2xl">
+                <label className="block">
+                  <span className="sr-only">Sessão para criação do álbum</span>
+                  <select
+                    value={quickCreateCardId}
+                    onChange={event => setQuickCreateCardId(event.target.value)}
+                    disabled={saving || creatingCardIds.length > 0}
+                    className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm font-bold text-clinic-text disabled:opacity-60"
+                  >
+                    <option value="">Selecione a sessão</option>
+                    {creatableCards.map(card => (
+                      <option key={card.id} value={card.id}>
+                        {formatSessionNumbers(card.sessionNumbers) || 'Sessão'} - {safeFormatDate(card.activityDate, 'dd/MM/yyyy')}{card.sessionTime ? ` às ${card.sessionTime}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (quickCreateCard) void createAlbumForCard(quickCreateCard);
+                  }}
+                  disabled={!quickCreateCard || saving || Boolean(quickCreateCard && creatingCardIds.includes(quickCreateCard.id))}
+                  className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {quickCreateCard && creatingCardIds.includes(quickCreateCard.id) ? <Loader2 size={16} className="animate-spin" /> : <FolderPlus size={16} />}
+                  {quickCreateCard && creatingCardIds.includes(quickCreateCard.id) ? 'Criando álbum...' : 'Criar álbum no Google Fotos'}
+                </button>
+              </div>
+            ) : allCards.length === 0 ? (
+              <div className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-sm font-bold text-clinic-text-muted">
+                Nenhuma sessão realizada ou em andamento está disponível para criar álbum neste pacote.
+              </div>
+            ) : (
+              <div className="rounded-xl border border-status-green-text/20 bg-status-green-bg px-4 py-3 text-sm font-bold text-status-green-text">
+                Todos os cards disponíveis deste pacote já possuem link de álbum.
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
       {message && <div className="rounded-xl border border-status-green-text/20 bg-status-green-bg px-4 py-3 text-sm font-bold text-status-green-text">{message}</div>}
       {error && <div className="rounded-xl border border-status-red-text/20 bg-status-red-bg px-4 py-3 text-sm font-bold text-status-red-text">{error}</div>}
       {selectedPatientId && (packageModel.awaitingPaymentSessions?.length || 0) > 0 && (
@@ -901,6 +1050,7 @@ export default function ProfessionalGooglePhotosGallery({
               const hasValidLink = Boolean(normalizedUrl);
               const cardHasInvalidLink = invalidCardIdSet.has(card.id);
               const editing = editingCardIds.includes(card.id);
+              const creatingAlbum = creatingCardIds.includes(card.id);
               const sessionLabel = formatSessionNumbers(card.sessionNumbers);
               const publishedAtDisplay = isSafeIsoDate(card.publishedAt) ? isoToDisplayDate(card.publishedAt) : card.publishedAt || '';
               const observationExpanded = expandedObservationIds.includes(card.id);
@@ -935,14 +1085,29 @@ export default function ProfessionalGooglePhotosGallery({
                       <a href={normalizedUrl || card.url} target="_blank" rel="noopener noreferrer" className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2.5 text-xs font-black text-white">
                         Abrir álbum <ExternalLink size={15} />
                       </a>
-                    ) : permissions.canEdit ? (
-                      <button type="button" onClick={() => openEditor(card)} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2.5 text-xs font-black text-white">
-                        {cardHasInvalidLink ? 'Corrigir link' : 'Adicionar link'} <Link2 size={15} />
-                      </button>
                     ) : (
-                      <span className="inline-flex flex-1 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs font-black text-clinic-text-muted">
-                        Somente leitura
-                      </span>
+                      <>
+                        {canCreateAlbum && (
+                          <button
+                            type="button"
+                            onClick={() => void createAlbumForCard(card)}
+                            disabled={creatingAlbum || saving}
+                            className="inline-flex flex-[2] items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2.5 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {creatingAlbum ? <Loader2 size={15} className="animate-spin" /> : <FolderPlus size={15} />}
+                            {creatingAlbum ? 'Criando álbum...' : 'Criar álbum no Google Fotos'}
+                          </button>
+                        )}
+                        {permissions.canEdit ? (
+                          <button type="button" onClick={() => openEditor(card)} disabled={creatingAlbum} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-black text-clinic-primary disabled:opacity-50">
+                            {cardHasInvalidLink ? 'Corrigir link' : 'Adicionar link'} <Link2 size={15} />
+                          </button>
+                        ) : !canCreateAlbum ? (
+                          <span className="inline-flex flex-1 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs font-black text-clinic-text-muted">
+                            Somente leitura
+                          </span>
+                        ) : null}
+                      </>
                     )}
                     {hasValidLink && permissions.canEdit && <button type="button" onClick={() => editing ? closeEditor(card.id) : openEditor(card)} className="rounded-xl border border-clinic-border bg-white p-2.5 text-clinic-primary" aria-label={editing ? 'Fechar edição' : 'Editar card'} title={editing ? 'Fechar edição' : 'Editar card'}>{editing ? <X size={16} /> : <Pencil size={16} />}</button>}
                     {hasValidLink && card.status === 'active' && permissions.canHide && <button type="button" onClick={() => updateCard(card, { status: 'hidden' })} className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-amber-800" aria-label="Ocultar card"><EyeOff size={16} /></button>}

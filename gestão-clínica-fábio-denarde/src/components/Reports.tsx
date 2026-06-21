@@ -9,6 +9,7 @@ import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
 import { getSessionCycleNumber } from '../lib/sessionSequence';
+import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
 
@@ -105,7 +106,7 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
       generateHeader(doc, `Relatório de Progresso: ${patient.name}`);
 
       const patientSessions = state.sessions
-        .filter(s => s.patientId === patient.id)
+        .filter(s => s.patientId === patient.id && !isSessionRemovedFromAgenda(s))
         .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
       const realized = patientSessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
@@ -182,6 +183,7 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
 
     const monthlySessions = state.sessions
       .filter(s => {
+        if (isSessionRemovedFromAgenda(s)) return false;
         const d = new Date(s.date);
         return d.getMonth() === Number(month) - 1 && d.getFullYear() === Number(year);
       })

@@ -2,6 +2,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format, addDays, parseISO, getDay } from 'date-fns';
 import { Session, Patient, ClinicSettings } from '../types';
+import { hasPersistedScheduleOccurrence, isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -288,6 +289,8 @@ export function getSessionsForDate({
   // 1. Process Real Sessions
   const dbSessions = sessions.filter(s => s.date === dateStr);
   for (const s of dbSessions) {
+    if (isSessionRemovedFromAgenda(s)) continue;
+
     if (s.isBlocked) {
       processed.push({
         ...s,
@@ -344,9 +347,11 @@ export function getSessionsForDate({
       if (fixedDayNorm === targetDayNorm && fixedSchedule.fixedTime) {
         const time1 = fixedSchedule.fixedTime;
         // Check if a real manual session exists for this patient, date, and time
-        const hasManual1 = dbSessions.some(
-          s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time1)
-        );
+        const hasManual1 = hasPersistedScheduleOccurrence(dbSessions, {
+          patientId: p.id,
+          date: dateStr,
+          time: time1,
+        });
         if (!hasManual1) {
           const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : undefined;
           processed.push({
@@ -366,9 +371,11 @@ export function getSessionsForDate({
         
         if (fixedSchedule.doubleSession) {
           const time2 = addOneHour(fixedSchedule.fixedTime);
-          const hasManual2 = dbSessions.some(
-            s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time2)
-          );
+          const hasManual2 = hasPersistedScheduleOccurrence(dbSessions, {
+            patientId: p.id,
+            date: dateStr,
+            time: time2,
+          });
           if (!hasManual2) {
             const blockedReason = (!p.whatsapp || !p.whatsapp.trim()) ? 'paciente sem WhatsApp' : undefined;
             processed.push({

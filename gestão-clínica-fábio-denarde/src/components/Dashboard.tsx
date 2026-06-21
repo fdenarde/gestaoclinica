@@ -7,6 +7,7 @@ import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
+import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
@@ -274,6 +275,7 @@ export default function Dashboard({
     endOfWeek.setDate(startOfWeek.getDate() + 6);
     
     const weeklySessions = state.sessions.filter(s => {
+      if (isSessionRemovedFromAgenda(s)) return false;
       const d = new Date(s.date);
       return d >= startOfWeek && d <= endOfWeek;
     }).length;
@@ -326,7 +328,7 @@ export default function Dashboard({
 
       // Rule: Inactivity
       const lastSession = [...state.sessions]
-        .filter(s => s.patientId === patient.id)
+        .filter(s => s.patientId === patient.id && !isSessionRemovedFromAgenda(s))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
       
       if (lastSession && differenceInDays(new Date(), new Date(lastSession.date)) > 14) {
@@ -335,7 +337,7 @@ export default function Dashboard({
 
       // Rule: Consecutive Absences
       const sortedSessions = [...state.sessions]
-        .filter(s => s.patientId === patient.id)
+        .filter(s => s.patientId === patient.id && !isSessionRemovedFromAgenda(s))
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       
       if (sortedSessions.length >= 2 && sortedSessions[0].status === SessionStatus.FALTA && sortedSessions[1].status === SessionStatus.FALTA) {

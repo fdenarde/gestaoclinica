@@ -1,7 +1,9 @@
-import { FieldValue } from 'firebase-admin/firestore';
+import crypto from 'node:crypto';
+import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAdminDb } from './firebaseAdmin.js';
 import { assertActivityPatientAccess } from './accessContext.js';
 import {
+  GOOGLE_PHOTOS_ALBUM_CREATION_COLLECTION,
   GOOGLE_PHOTOS_ALBUM_PACKAGE_COLLECTION,
   GOOGLE_PHOTOS_ALBUM_PACKAGE_SCHEMA_VERSION,
   GOOGLE_PHOTOS_PROVIDER,
@@ -18,6 +20,7 @@ import {
 } from '../../shared/googlePhotosAlbums.js';
 import { buildActivityMediaPackageModel } from '../../shared/activityMediaPackages.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
+import { createEmptyGooglePhotosAlbum } from './googlePhotosClient.js';
 
 const MAX_CARDS_PER_PACKAGE = 24;
 const MAX_PATIENTS = 500;
@@ -134,6 +137,9 @@ function serializeAlbumCard(rawCard, fallback = {}) {
     updatedAt: serializeDate(card.updatedAt),
     hiddenAt: serializeDate(card.hiddenAt),
     reactivatedAt: serializeDate(card.reactivatedAt),
+    providerAlbumId: sanitizeText(card.providerAlbumId, 512),
+    createdViaApi: card.createdViaApi === true,
+    creationOperationId: sanitizeText(card.creationOperationId, 128),
   };
 }
 
@@ -363,6 +369,9 @@ function normalizePackageCardInput({
     reactivatedAt: status === 'active' && existingStatus === 'hidden'
       ? now
       : existing?.reactivatedAt || null,
+    providerAlbumId: sanitizeText(existing?.providerAlbumId, 512),
+    createdViaApi: existing?.createdViaApi === true,
+    creationOperationId: sanitizeText(existing?.creationOperationId, 128),
   };
 }
 
@@ -546,6 +555,409 @@ export async function saveGooglePhotosAlbumPackage(context, input) {
     readUpperBound: MAX_SESSIONS_PER_PATIENT + MAX_PAYMENTS_PER_PATIENT + 2,
     scope: 'manage',
   };
+}
+
+
+function creationOperationCollection(context) {
+  return getAdminDb().collection(`users/${context.ownerUserId}/${GOOGLE_PHOTOS_ALBUM_CREATION_COLLECTION}`);
+}
+
+export function buildGooglePhotosAlbumCreationOperationId({ patientId, packageNumber, sessionGroupKey } = {}) {
+  const normalizedPatientId = sanitizeText(patientId, 160);
+  const normalizedPackageNumber = normalizeGooglePhotosPackageNumber(packageNumber);
+  const normalizedGroupKey = sanitizeText(sessionGroupKey, 700);
+  if (!normalizedPatientId || !normalizedPackageNumber || !normalizedGroupKey) return '';
+  return crypto
+    .createHash('sha256')
+    .update(`${normalizedPatientId}\n${normalizedPackageNumber}\n${normalizedGroupKey}`, 'utf8')
+    .digest('hex');
+}
+
+function normalizeAlbumCreationInput({ context, input, patient, packageKey, packageNumber, packageContext }) {
+  const sessionIds = normalizeGooglePhotosSessionIds(input?.sessionIds);
+  if (sessionIds.length === 0) {
+    throw albumError(
+      'google-photos-albums/missing-session-binding',
+      'Selecione ao menos uma sessão válida antes de criar o álbum.',
+    );
+  }
+
+  const selectedSessions = sessionIds.map(sessionId => packageContext.selectableById.get(sessionId));
+  if (selectedSessions.some(session => !session)) {
+    throw albumError(
+      'google-photos-albums/invalid-session-binding',
+      'O álbum só pode ser criado para sessões realizadas ou em andamento do pacote atual.',
+      409,
+    );
+  }
+
+  const dates = [...new Set(selectedSessions.map(session => sanitizeText(session.date, 10)))];
+  if (dates.length !== 1 || !isSafeGooglePhotosAlbumDate(dates[0])) {
+    throw albumError(
+      'google-photos-albums/invalid-session-binding',
+      'Sessões agrupadas no mesmo álbum precisam pertencer à mesma data.',
+      409,
+    );
+  }
+
+  const activityDate = dates[0];
+  if (sanitizeText(input?.activityDate, 10) && sanitizeText(input.activityDate, 10) !== activityDate) {
+    throw albumError(
+      'google-photos-albums/session-date-mismatch',
+      'A data enviada não corresponde às sessões selecionadas.',
+      409,
+    );
+  }
+
+  const sessionGroupKey = buildGooglePhotosAlbumGroupKey({
+    patientId: patient.id,
+    activityDate,
+    sessionIds,
+  });
+  if (!sessionGroupKey) {
+    throw albumError('google-photos-albums/invalid-group', 'Não foi possível relacionar o álbum à atividade.');
+  }
+  const requestedGroupKey = sanitizeText(input?.sessionGroupKey, 700);
+  if (requestedGroupKey && requestedGroupKey !== sessionGroupKey) {
+    throw albumError(
+      'google-photos-albums/session-group-mismatch',
+      'O contexto do card foi alterado. Atualize a galeria e tente novamente.',
+      409,
+    );
+  }
+
+  const title = sanitizeText(input?.title, MAX_TITLE_LENGTH);
+  if (!title) throw albumError('google-photos-albums/missing-title', 'Informe o título do álbum.');
+
+  const publishedAt = sanitizeText(input?.publishedAt || activityDate, 10);
+  if (!isSafeGooglePhotosAlbumDate(publishedAt)) {
+    throw albumError('google-photos-albums/invalid-published-date', 'Informe uma data de publicação válida.');
+  }
+
+  const sortedSessions = selectedSessions
+    .slice()
+    .sort((left, right) => normalizeSessionSortKey(left).localeCompare(normalizeSessionSortKey(right)));
+  const sessionNumbers = [...new Set(sortedSessions
+    .map(session => Number(session.activitySessionNumber ?? session.packageNumber))
+    .filter(value => Number.isFinite(value) && value > 0))]
+    .sort((a, b) => a - b);
+
+  return {
+    id: sessionGroupKey,
+    schemaVersion: GOOGLE_PHOTOS_ALBUM_PACKAGE_SCHEMA_VERSION,
+    provider: GOOGLE_PHOTOS_PROVIDER,
+    packageKey,
+    packageNumber,
+    patientId: patient.id,
+    patientName: patient.name,
+    source: 'session',
+    sessionId: sessionIds[0] || null,
+    sessionIds,
+    sessionGroupKey,
+    activityDate,
+    sessionTime: normalizeTime(sortedSessions[0]?.time) || null,
+    sessionNumbers,
+    title,
+    category: normalizeGooglePhotosCategory(input?.category),
+    observation: sanitizeText(input?.observation, MAX_OBSERVATION_LENGTH),
+    publishedAt,
+    requestedByUserId: context.userId,
+    requestedByName: context.actorName,
+  };
+}
+
+function existingCardFromPackageSnapshot(snapshot, sessionGroupKey, fallback) {
+  const rawCard = snapshot?.exists ? snapshot.data()?.cards?.[sessionGroupKey] : null;
+  if (!rawCard) return null;
+  const card = serializeAlbumCard(rawCard, fallback);
+  return card.url ? card : null;
+}
+
+function creationInProgressError(status) {
+  if (status === 'unknown') {
+    return albumError(
+      'google-photos-albums/creation-outcome-unknown',
+      'O Google não confirmou o resultado da tentativa anterior. Para evitar álbum duplicado, uma nova criação foi bloqueada e precisa de conferência manual.',
+      409,
+    );
+  }
+  return albumError(
+    'google-photos-albums/creation-in-progress',
+    'Este álbum já está sendo criado. Aguarde a conclusão antes de tentar novamente.',
+    409,
+  );
+}
+
+function buildCreatedAlbumCard(context, normalized, operationId, externalAlbum, now) {
+  return {
+    ...normalized,
+    url: externalAlbum.productUrl,
+    visibleToGuardian: false,
+    status: 'active',
+    createdByUserId: context.userId,
+    createdByName: context.actorName,
+    createdAt: now,
+    updatedByUserId: context.userId,
+    updatedByName: context.actorName,
+    updatedAt: now,
+    hiddenAt: null,
+    reactivatedAt: null,
+    providerAlbumId: externalAlbum.id,
+    createdViaApi: true,
+    creationOperationId: operationId,
+  };
+}
+
+function creationResponse({ context, permissions, packageSnapshot, patient, packageNumber, createdAlbum, idempotent }) {
+  const saved = serializePackage(packageSnapshot, {
+    patientId: patient.id,
+    patientName: patient.name,
+    packageNumber,
+  });
+  return {
+    albums: filterGooglePhotosAlbumsForViewer(saved.cards, {
+      patientId: patient.id,
+      packageNumber,
+      role: context.role,
+      activeContext: context.activeContext,
+      scope: 'manage',
+    }),
+    ownerUserId: context.ownerUserId,
+    packageKey: saved.packageKey,
+    packageNumber,
+    permissions,
+    queryCount: 6,
+    readUpperBound: MAX_SESSIONS_PER_PATIENT + MAX_PAYMENTS_PER_PATIENT + 5,
+    scope: 'manage',
+    createdAlbum: {
+      id: sanitizeText(createdAlbum?.id, 512),
+      productUrl: normalizeGooglePhotosAlbumUrl(createdAlbum?.productUrl) || '',
+      title: sanitizeText(createdAlbum?.title, MAX_TITLE_LENGTH),
+      idempotent: idempotent === true,
+    },
+  };
+}
+
+export async function createGooglePhotosAlbumForPackage(
+  context,
+  input,
+  { createAlbum = createEmptyGooglePhotosAlbum } = {},
+) {
+  const permissions = assertCapability(context, 'canCreate');
+  const patient = await getPatient(context, input?.patientId);
+  const packageNumber = normalizeGooglePhotosPackageNumber(input?.packageNumber);
+  const ref = packageRef(context, patient.id, packageNumber);
+  const [sessions, payments] = await Promise.all([
+    listPatientSessions(context, patient.id),
+    listPatientPayments(context, patient.id),
+  ]);
+  const packageContext = resolvePackageForSave(sessions, payments, patient.id, packageNumber);
+  const normalized = normalizeAlbumCreationInput({
+    context,
+    input,
+    patient,
+    packageKey: ref.id,
+    packageNumber,
+    packageContext,
+  });
+  const operationId = buildGooglePhotosAlbumCreationOperationId({
+    patientId: patient.id,
+    packageNumber,
+    sessionGroupKey: normalized.sessionGroupKey,
+  });
+  const operationRef = creationOperationCollection(context).doc(operationId);
+  const db = getAdminDb();
+
+  const reservation = await db.runTransaction(async transaction => {
+    const operationSnapshot = await transaction.get(operationRef);
+    const packageSnapshot = await transaction.get(ref);
+    const existingCard = existingCardFromPackageSnapshot(packageSnapshot, normalized.sessionGroupKey, {
+      patientId: patient.id,
+      patientName: patient.name,
+      packageKey: ref.id,
+      packageNumber,
+    });
+    if (existingCard) {
+      return {
+        kind: 'existing',
+        createdAlbum: {
+          id: existingCard.providerAlbumId || '',
+          productUrl: existingCard.url,
+          title: existingCard.title,
+        },
+      };
+    }
+
+    if (operationSnapshot.exists) {
+      const operation = operationSnapshot.data() || {};
+      if (operation.status === 'completed' && normalizeGooglePhotosAlbumUrl(operation.productUrl)) {
+        return {
+          kind: 'completed',
+          createdAlbum: {
+            id: sanitizeText(operation.providerAlbumId, 512),
+            productUrl: normalizeGooglePhotosAlbumUrl(operation.productUrl),
+            title: sanitizeText(operation.title, MAX_TITLE_LENGTH),
+          },
+        };
+      }
+      if (operation.status === 'creating' || operation.status === 'unknown') {
+        return { kind: 'blocked', status: operation.status };
+      }
+      if (operation.status === 'failed' && operation.retryable !== true) {
+        return { kind: 'blocked', status: 'unknown' };
+      }
+    }
+
+    const now = Timestamp.now();
+    transaction.set(operationRef, {
+      id: operationId,
+      schemaVersion: 1,
+      provider: GOOGLE_PHOTOS_PROVIDER,
+      packageKey: ref.id,
+      packageNumber,
+      patientId: patient.id,
+      patientName: patient.name,
+      sessionGroupKey: normalized.sessionGroupKey,
+      sessionIds: normalized.sessionIds,
+      activityDate: normalized.activityDate,
+      title: normalized.title,
+      status: 'creating',
+      retryable: false,
+      attemptCount: Number(operationSnapshot.data()?.attemptCount || 0) + 1,
+      requestedByUserId: context.userId,
+      requestedByName: context.actorName,
+      createdAt: operationSnapshot.exists ? operationSnapshot.data()?.createdAt || now : now,
+      updatedAt: now,
+      providerAlbumId: FieldValue.delete(),
+      productUrl: FieldValue.delete(),
+      failureCode: FieldValue.delete(),
+    }, { merge: true });
+    return { kind: 'claimed' };
+  });
+
+  if (reservation.kind === 'blocked') throw creationInProgressError(reservation.status);
+  if (reservation.kind === 'existing' || reservation.kind === 'completed') {
+    const packageSnapshot = await ref.get();
+    return creationResponse({
+      context,
+      permissions,
+      packageSnapshot,
+      patient,
+      packageNumber,
+      createdAlbum: reservation.createdAlbum,
+      idempotent: true,
+    });
+  }
+
+  let externalAlbum;
+  try {
+    externalAlbum = await createAlbum({ title: normalized.title });
+  } catch (error) {
+    const outcomeUnknown = error?.creationOutcome === 'unknown';
+    try {
+      await operationRef.set({
+        status: outcomeUnknown ? 'unknown' : 'failed',
+        retryable: !outcomeUnknown,
+        failureCode: sanitizeText(error?.code || 'google-photos-albums/google-create-failed', 160),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } catch (persistenceError) {
+      console.error('[GOOGLE PHOTOS ALBUMS] Falha ao registrar resultado da criação:', persistenceError?.message || persistenceError);
+    }
+    throw error;
+  }
+
+  try {
+    await db.runTransaction(async transaction => {
+      const operationSnapshot = await transaction.get(operationRef);
+      const packageSnapshot = await transaction.get(ref);
+      const existingCard = existingCardFromPackageSnapshot(packageSnapshot, normalized.sessionGroupKey, {
+        patientId: patient.id,
+        patientName: patient.name,
+        packageKey: ref.id,
+        packageNumber,
+      });
+      if (existingCard) {
+        transaction.set(operationRef, {
+          status: 'completed',
+          retryable: false,
+          providerAlbumId: existingCard.providerAlbumId || externalAlbum.id,
+          productUrl: existingCard.url,
+          title: existingCard.title,
+          updatedAt: Timestamp.now(),
+          completedAt: operationSnapshot.data()?.completedAt || Timestamp.now(),
+        }, { merge: true });
+        return;
+      }
+
+      const operation = operationSnapshot.exists ? operationSnapshot.data() || {} : {};
+      if (operation.status === 'unknown') throw creationInProgressError('unknown');
+      const now = Timestamp.now();
+      const createdCard = buildCreatedAlbumCard(context, normalized, operationId, externalAlbum, now);
+      const currentPackage = packageSnapshot.exists ? packageSnapshot.data() || {} : {};
+      const cards = currentPackage.cards && typeof currentPackage.cards === 'object'
+        ? { ...currentPackage.cards, [normalized.sessionGroupKey]: createdCard }
+        : { [normalized.sessionGroupKey]: createdCard };
+      const packageSessions = packageContext.targetPackage.sessions || [];
+
+      transaction.set(ref, {
+        id: ref.id,
+        schemaVersion: GOOGLE_PHOTOS_ALBUM_PACKAGE_SCHEMA_VERSION,
+        provider: GOOGLE_PHOTOS_PROVIDER,
+        packageKey: ref.id,
+        patientId: patient.id,
+        patientName: patient.name,
+        packageNumber,
+        packageStartDate: packageContext.targetPackage.startDate || packageSessions[0]?.date || '',
+        packageEndDate: packageContext.targetPackage.endDate || packageSessions.at(-1)?.date || '',
+        cards,
+        createdAt: packageSnapshot.exists ? currentPackage.createdAt || now : now,
+        updatedAt: now,
+        updatedByUserId: context.userId,
+        updatedByName: context.actorName,
+      });
+      transaction.set(operationRef, {
+        status: 'completed',
+        retryable: false,
+        providerAlbumId: externalAlbum.id,
+        productUrl: externalAlbum.productUrl,
+        title: externalAlbum.title,
+        updatedAt: now,
+        completedAt: now,
+        failureCode: FieldValue.delete(),
+      }, { merge: true });
+    });
+  } catch (error) {
+    try {
+      await operationRef.set({
+        status: 'unknown',
+        retryable: false,
+        providerAlbumId: sanitizeText(externalAlbum?.id, 512),
+        productUrl: normalizeGooglePhotosAlbumUrl(externalAlbum?.productUrl) || '',
+        title: normalized.title,
+        failureCode: 'google-photos-albums/persistence-unknown',
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    } catch (persistenceError) {
+      console.error('[GOOGLE PHOTOS ALBUMS] Falha ao preservar resultado externo:', persistenceError?.message || persistenceError);
+    }
+    throw albumError(
+      'google-photos-albums/persistence-unknown',
+      'O álbum pode ter sido criado, mas o sistema não confirmou o registro. Para evitar duplicidade, uma nova criação foi bloqueada.',
+      503,
+    );
+  }
+
+  const packageSnapshot = await ref.get();
+  return creationResponse({
+    context,
+    permissions,
+    packageSnapshot,
+    patient,
+    packageNumber,
+    createdAlbum: externalAlbum,
+    idempotent: false,
+  });
 }
 
 export async function listGooglePhotosAlbumPatientOptions(context) {

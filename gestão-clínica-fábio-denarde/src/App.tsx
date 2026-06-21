@@ -885,7 +885,7 @@ export default function App() {
       )}
       <div className={cn(
         'min-h-screen flex flex-col pb-10 transition-[padding] duration-200',
-        navigationMode === 'sidebar' && (sidebarCollapsed ? 'lg:pl-[76px]' : 'lg:pl-[264px]'),
+        navigationMode === 'sidebar' && (sidebarCollapsed ? 'lg:pl-[76px]' : 'lg:pl-[320px]'),
       )}>
       <header className={cn(
         'sticky top-0 z-50 flex shrink-0 items-center justify-between bg-clinic-header px-3 py-2 text-white shadow-lg sm:px-5 lg:min-h-[66px] xl:px-7',
@@ -928,7 +928,7 @@ export default function App() {
             </div>
           </>
         ) : (
-          <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
             <button
               type="button"
               onClick={() => setMobileSidebarOpen(true)}
@@ -937,7 +937,27 @@ export default function App() {
             >
               <Menu size={21} />
             </button>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1 lg:hidden">
+              <button
+                type="button"
+                onClick={navigateToProfileHome}
+                className="block max-w-full rounded-lg text-left transition hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                aria-label="Ir para a página inicial"
+              >
+                <BrandLogo
+                  variant="mobile-header"
+                  theme={state.settings.visualTheme}
+                  name={state.settings.name}
+                  subtitle={state.settings.title}
+                  showSubtitle={false}
+                  className="max-w-full min-w-0"
+                />
+              </button>
+              <h1 className="mt-0.5 truncate text-[10px] font-black uppercase tracking-[0.12em] text-white/80 sm:text-[11px]">
+                {activeNavigationItem.label}
+              </h1>
+            </div>
+            <div className="hidden min-w-0 lg:block">
               <p className="text-[9px] font-black uppercase tracking-[0.18em] text-white/65">Gestão Clínica</p>
               <h1 className="truncate text-base font-black sm:text-lg">{activeNavigationItem.label}</h1>
             </div>

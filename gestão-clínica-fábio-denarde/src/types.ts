@@ -235,6 +235,10 @@ export interface Session {
   noReplacementRecordedAt?: string;
   noReplacementRecordedBy?: string;
   noReplacementHistory?: SessionNoReplacementHistoryEntry[];
+  removedFromAgenda?: boolean; // tombstone de ocorrência fixa removida, preserva auditoria e impede recriação virtual
+  removedFromAgendaAt?: string;
+  removedFromAgendaBy?: string;
+  removalReason?: 'removed_after_cancellation';
 }
 
 export interface Reposition {

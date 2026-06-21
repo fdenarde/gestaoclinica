@@ -3,6 +3,7 @@ import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, R
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera, Eye } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import { getPatientSessionsThroughDate } from '../lib/sessionVisibility';
+import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import Modal from './Common/Modal';
 import PatientPhoto from './Common/PatientPhoto';
 import { showToast } from './Common/Toast';
@@ -860,7 +861,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
 
   if (!patient) return null;
 
-  const patientSessions = state.sessions.filter(s => s.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const patientSessions = state.sessions.filter(s => s.patientId === patient.id && !isSessionRemovedFromAgenda(s)).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const visiblePatientSessions = getPatientSessionsThroughDate({
     patient,
     sessions: state.sessions,

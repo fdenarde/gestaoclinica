@@ -1,5 +1,7 @@
 import { auth } from '../firebase';
 import type {
+  CreateGooglePhotosAlbumInput,
+  CreateGooglePhotosAlbumResponse,
   GooglePhotosAlbumPackageInput,
   GooglePhotosAlbumsResponse,
 } from '../types/googlePhotosAlbums';
@@ -249,6 +251,29 @@ export async function saveGooglePhotosAlbumPackage(
     packageKey: result.packageKey,
   });
   storeGooglePhotosAlbumsCache({ patientId: payload.patientId, packageNumber: payload.packageNumber, scope: 'manage' }, result);
+  emitGooglePhotosAlbumsChanged(result, payload.patientId);
+  return result;
+}
+
+
+export async function createGooglePhotosAlbum(
+  payload: CreateGooglePhotosAlbumInput,
+): Promise<CreateGooglePhotosAlbumResponse> {
+  const result = await request<CreateGooglePhotosAlbumResponse>('POST', '', {
+    action: 'createAlbum',
+    album: payload,
+  });
+  invalidateGooglePhotosAlbumsCache({
+    ownerUserId: result.ownerUserId,
+    patientId: payload.patientId,
+    packageNumber: payload.packageNumber,
+    packageKey: result.packageKey,
+  });
+  storeGooglePhotosAlbumsCache({
+    patientId: payload.patientId,
+    packageNumber: payload.packageNumber,
+    scope: 'manage',
+  }, result);
   emitGooglePhotosAlbumsChanged(result, payload.patientId);
   return result;
 }

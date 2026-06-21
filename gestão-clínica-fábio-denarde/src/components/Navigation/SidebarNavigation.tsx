@@ -70,13 +70,13 @@ function SidebarBody({
     <aside
       className={cn(
         'relative flex h-full flex-col border-r border-clinic-border-dark bg-clinic-nav-bg text-clinic-text shadow-xl transition-[width] duration-200',
-        effectiveCollapsed ? 'w-[76px]' : 'w-[264px]',
+        effectiveCollapsed ? 'w-[76px]' : 'w-[320px]',
       )}
       aria-label="Menu principal"
     >
       <div
         className={cn(
-          'flex min-h-[88px] items-center border-b border-white/15 bg-clinic-header px-3 text-white shadow-sm',
+          'flex min-h-[92px] items-center border-b border-white/15 bg-clinic-header px-4 text-white shadow-sm',
           effectiveCollapsed ? 'justify-center' : 'justify-between gap-2',
         )}
       >
@@ -98,11 +98,11 @@ function SidebarBody({
             aria-label="Ir para a página inicial"
           >
             <BrandLogo
-              variant="horizontal"
+              variant="sidebar"
               theme={theme}
               name={clinicName}
               subtitle={clinicSubtitle}
-              className="min-w-0 flex-1 whitespace-nowrap"
+              className="w-full min-w-0"
             />
           </button>
         )}
@@ -203,7 +203,7 @@ function SidebarBody({
 export default function SidebarNavigation(props: SidebarNavigationProps) {
   return (
     <>
-      <div className={cn('fixed inset-y-0 left-0 z-[70] hidden lg:block', props.collapsed ? 'w-[76px]' : 'w-[264px]')}>
+      <div className={cn('fixed inset-y-0 left-0 z-[70] hidden lg:block', props.collapsed ? 'w-[76px]' : 'w-[320px]')}>
         <SidebarBody {...props} mobile={false} />
       </div>
       {props.mobileOpen && (

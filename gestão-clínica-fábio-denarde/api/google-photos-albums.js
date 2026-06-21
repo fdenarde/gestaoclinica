@@ -1,5 +1,6 @@
 import { resolveAccessContext } from './_lib/accessContext.js';
 import {
+  createGooglePhotosAlbumForPackage,
   listGooglePhotosAlbumPatientOptions,
   listGooglePhotosAlbumSessionOptions,
   listGooglePhotosAlbums,
@@ -83,6 +84,9 @@ export default async function handler(req, res) {
     const body = parseBody(req);
     if (body.action === 'savePackage') {
       return res.status(200).json(await saveGooglePhotosAlbumPackage(context, body.package));
+    }
+    if (body.action === 'createAlbum') {
+      return res.status(200).json(await createGooglePhotosAlbumForPackage(context, body.album));
     }
 
     const error = new Error('A ação solicitada é inválida.');

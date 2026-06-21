@@ -33,6 +33,9 @@ export interface GooglePhotosAlbum {
   updatedAt: string | null;
   hiddenAt: string | null;
   reactivatedAt: string | null;
+  providerAlbumId?: string;
+  createdViaApi?: boolean;
+  creationOperationId?: string;
   isVirtual?: boolean;
 }
 
@@ -77,4 +80,25 @@ export interface GooglePhotosAlbumPackageInput {
   patientId: string;
   packageNumber: number;
   cards: GooglePhotosAlbumInput[];
+}
+
+export interface CreateGooglePhotosAlbumInput {
+  patientId: string;
+  packageNumber: number;
+  sessionIds: string[];
+  sessionGroupKey: string;
+  activityDate: string;
+  title: string;
+  category: ActivityRecordCategory;
+  observation: string;
+  publishedAt: string;
+}
+
+export interface CreateGooglePhotosAlbumResponse extends GooglePhotosAlbumsResponse {
+  createdAlbum: {
+    id: string;
+    productUrl: string;
+    title: string;
+    idempotent: boolean;
+  };
 }

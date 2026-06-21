@@ -6,6 +6,7 @@ import { buildActivityMediaPackageModel } from './activityMediaPackages.js';
 
 export const GOOGLE_PHOTOS_PROVIDER = 'google_photos';
 export const GOOGLE_PHOTOS_ALBUM_PACKAGE_COLLECTION = 'googlePhotosAlbumPackages';
+export const GOOGLE_PHOTOS_ALBUM_CREATION_COLLECTION = 'googlePhotosAlbumCreationOperations';
 export const GOOGLE_PHOTOS_ALBUM_PACKAGE_SCHEMA_VERSION = 2;
 export const GOOGLE_PHOTOS_ALBUM_STATUSES = Object.freeze(['active', 'hidden', 'removed']);
 export const GOOGLE_PHOTOS_ALLOWED_HOSTNAMES = Object.freeze([

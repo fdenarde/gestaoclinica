@@ -352,21 +352,25 @@ test('sessão inicial é pré-selecionada e o dropdown continua editável durant
 });
 
 
-test('marca do menu lateral usa a mesma escala do cabeçalho e permanece em uma única linha', () => {
+test('marca expandida permanece contida na barra lateral e alinhada ao cabeçalho principal', () => {
   const sidebarSource = fs.readFileSync(new URL('../src/components/Navigation/SidebarNavigation.tsx', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 
   assert.match(sidebarSource, /bg-clinic-header/);
-  assert.match(sidebarSource, /variant="horizontal"/);
-  assert.doesNotMatch(sidebarSource, /variant="sidebar"/);
-  assert.match(sidebarSource, /w-\[264px\]/);
+  assert.match(sidebarSource, /variant="sidebar"/);
+  assert.match(sidebarSource, /className="w-full min-w-0"/);
+  assert.doesNotMatch(sidebarSource, /variant="horizontal"/);
+  assert.match(sidebarSource, /w-\[320px\]/);
   assert.match(sidebarSource, /w-\[min\(92vw,320px\)\]/);
-  assert.match(appSource, /lg:pl-\[264px\]/);
+  assert.match(appSource, /lg:pl-\[320px\]/);
   assert.match(sidebarSource, /aria-expanded=\{!effectiveCollapsed\}/);
   assert.match(sidebarSource, /Expandir menu lateral/);
   assert.match(sidebarSource, /Recolher menu lateral/);
-  assert.match(sidebarSource, /whitespace-nowrap/);
-  assert.match(sidebarSource, /min-h-\[88px\]/);
+  const brandSource = fs.readFileSync(new URL('../src/components/Common/BrandLogo.tsx', import.meta.url), 'utf8');
+  assert.match(brandSource, /isSidebar[\s\S]*?max-w-full truncate text-\[22px\]/);
+  assert.match(sidebarSource, /name=\{clinicName\}/);
+  assert.match(sidebarSource, /subtitle=\{clinicSubtitle\}/);
+  assert.match(sidebarSource, /min-h-\[92px\]/);
   assert.match(sidebarSource, /text-white\/80/);
 });
 

@@ -8,6 +8,7 @@ import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
 import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
+import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
@@ -132,6 +133,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+  const [deletingSession, setDeletingSession] = useState(false);
 
   // Form State
   const [patientId, setPatientId] = useState('');
@@ -193,7 +195,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   const getPatientSessions = (targetPatientId: string) =>
     state.sessions
-      .filter(s => s.patientId === targetPatientId && !s.isBlocked)
+      .filter(s => s.patientId === targetPatientId && !s.isBlocked && !isSessionRemovedFromAgenda(s))
       .sort((a, b) => `${a.date}T${a.time}|${a.id}`.localeCompare(`${b.date}T${b.time}|${b.id}`));
 
   const getPatientRecentSessions = (targetPatientId: string) =>
@@ -800,13 +802,30 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     setSessionToDelete(id);
   };
 
-  const confirmDeleteSession = () => {
-    if (sessionToDelete) {
-      const updatedSessions = state.sessions.filter(s => s.id !== sessionToDelete);
-      const updatedRepositions = state.repositions.filter(r => r.originalSessionId !== sessionToDelete);
-      onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
-      showToast('Sessão removida com sucesso');
+  const confirmDeleteSession = async () => {
+    if (!sessionToDelete || deletingSession) return;
+
+    const removal = removeSessionFromAgenda(state.sessions, sessionToDelete, {
+      removedAt: new Date().toISOString(),
+      removedBy: currentUserName || 'Profissional',
+    });
+    if (!removal.changed) {
       setSessionToDelete(null);
+      showToast('A sessão já havia sido removida da agenda.');
+      return;
+    }
+
+    const updatedRepositions = state.repositions.filter(r => r.originalSessionId !== sessionToDelete);
+    setDeletingSession(true);
+    try {
+      await onUpdate({ sessions: removal.sessions, repositions: updatedRepositions });
+      showToast('Sessão removida com sucesso.');
+      setSessionToDelete(null);
+    } catch (error) {
+      console.error('Falha ao remover sessão:', error);
+      showToast('Não foi possível remover a sessão. Nenhuma alteração foi confirmada.', 'error');
+    } finally {
+      setDeletingSession(false);
     }
   };
 
@@ -1858,10 +1877,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               Cancelar
             </button>
             <button
-              onClick={confirmDeleteSession}
-              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
+              onClick={() => void confirmDeleteSession()}
+              disabled={deletingSession}
+              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Excluir Sessão
+              {deletingSession ? 'Removendo...' : 'Excluir Sessão'}
             </button>
           </div>
         </div>
