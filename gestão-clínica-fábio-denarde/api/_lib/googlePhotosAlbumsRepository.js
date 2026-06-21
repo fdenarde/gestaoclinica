@@ -562,6 +562,14 @@ function creationOperationCollection(context) {
   return getAdminDb().collection(`users/${context.ownerUserId}/${GOOGLE_PHOTOS_ALBUM_CREATION_COLLECTION}`);
 }
 
+export function buildGooglePhotosProviderAlbumTitle(patientName = '', activityDate = '') {
+  const firstName = sanitizeText(patientName, 80).split(/\s+/u).filter(Boolean)[0] || 'Atendente';
+  const normalizedDate = sanitizeText(activityDate, 10);
+  if (!isSafeGooglePhotosAlbumDate(normalizedDate)) return firstName;
+  const [year, month, day] = normalizedDate.split('-');
+  return `${firstName} - ${day}/${month}/${year}`;
+}
+
 export function buildGooglePhotosAlbumCreationOperationId({ patientId, packageNumber, sessionGroupKey } = {}) {
   const normalizedPatientId = sanitizeText(patientId, 160);
   const normalizedPackageNumber = normalizeGooglePhotosPackageNumber(packageNumber);
@@ -627,7 +635,11 @@ function normalizeAlbumCreationInput({ context, input, patient, packageKey, pack
   }
 
   const title = sanitizeText(input?.title, MAX_TITLE_LENGTH);
-  if (!title) throw albumError('google-photos-albums/missing-title', 'Informe o título do álbum.');
+  if (!title) throw albumError('google-photos-albums/missing-title', 'Informe o título da publicação.');
+  const providerAlbumTitle = sanitizeText(
+    buildGooglePhotosProviderAlbumTitle(patient.name, activityDate),
+    MAX_TITLE_LENGTH,
+  );
 
   const publishedAt = sanitizeText(input?.publishedAt || activityDate, 10);
   if (!isSafeGooglePhotosAlbumDate(publishedAt)) {
@@ -658,6 +670,7 @@ function normalizeAlbumCreationInput({ context, input, patient, packageKey, pack
     sessionTime: normalizeTime(sortedSessions[0]?.time) || null,
     sessionNumbers,
     title,
+    providerAlbumTitle,
     category: normalizeGooglePhotosCategory(input?.category),
     observation: sanitizeText(input?.observation, MAX_OBSERVATION_LENGTH),
     publishedAt,
@@ -689,10 +702,12 @@ function creationInProgressError(status) {
 }
 
 function buildCreatedAlbumCard(context, normalized, operationId, externalAlbum, now) {
+  const cardInput = { ...normalized };
+  delete cardInput.providerAlbumTitle;
   return {
-    ...normalized,
+    ...cardInput,
     url: externalAlbum.productUrl,
-    visibleToGuardian: false,
+    visibleToGuardian: true,
     status: 'active',
     createdByUserId: context.userId,
     createdByName: context.actorName,
@@ -783,7 +798,7 @@ export async function createGooglePhotosAlbumForPackage(
         createdAlbum: {
           id: existingCard.providerAlbumId || '',
           productUrl: existingCard.url,
-          title: existingCard.title,
+          title: normalized.providerAlbumTitle,
         },
       };
     }
@@ -796,7 +811,7 @@ export async function createGooglePhotosAlbumForPackage(
           createdAlbum: {
             id: sanitizeText(operation.providerAlbumId, 512),
             productUrl: normalizeGooglePhotosAlbumUrl(operation.productUrl),
-            title: sanitizeText(operation.title, MAX_TITLE_LENGTH),
+            title: sanitizeText(operation.providerAlbumTitle || operation.title, MAX_TITLE_LENGTH),
           },
         };
       }
@@ -820,7 +835,9 @@ export async function createGooglePhotosAlbumForPackage(
       sessionGroupKey: normalized.sessionGroupKey,
       sessionIds: normalized.sessionIds,
       activityDate: normalized.activityDate,
-      title: normalized.title,
+      title: normalized.providerAlbumTitle,
+      cardTitle: normalized.title,
+      providerAlbumTitle: normalized.providerAlbumTitle,
       status: 'creating',
       retryable: false,
       attemptCount: Number(operationSnapshot.data()?.attemptCount || 0) + 1,
@@ -851,7 +868,7 @@ export async function createGooglePhotosAlbumForPackage(
 
   let externalAlbum;
   try {
-    externalAlbum = await createAlbum({ title: normalized.title });
+    externalAlbum = await createAlbum({ title: normalized.providerAlbumTitle });
   } catch (error) {
     const outcomeUnknown = error?.creationOutcome === 'unknown';
     try {
@@ -883,7 +900,9 @@ export async function createGooglePhotosAlbumForPackage(
           retryable: false,
           providerAlbumId: existingCard.providerAlbumId || externalAlbum.id,
           productUrl: existingCard.url,
-          title: existingCard.title,
+          title: normalized.providerAlbumTitle,
+          cardTitle: existingCard.title,
+          providerAlbumTitle: normalized.providerAlbumTitle,
           updatedAt: Timestamp.now(),
           completedAt: operationSnapshot.data()?.completedAt || Timestamp.now(),
         }, { merge: true });
@@ -922,6 +941,8 @@ export async function createGooglePhotosAlbumForPackage(
         providerAlbumId: externalAlbum.id,
         productUrl: externalAlbum.productUrl,
         title: externalAlbum.title,
+        cardTitle: normalized.title,
+        providerAlbumTitle: externalAlbum.title,
         updatedAt: now,
         completedAt: now,
         failureCode: FieldValue.delete(),

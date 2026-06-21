@@ -7,7 +7,10 @@ import {
   createEmptyGooglePhotosAlbum,
   getGooglePhotosCredentialPresence,
 } from '../api/_lib/googlePhotosClient.js';
-import { buildGooglePhotosAlbumCreationOperationId } from '../api/_lib/googlePhotosAlbumsRepository.js';
+import {
+  buildGooglePhotosAlbumCreationOperationId,
+  buildGooglePhotosProviderAlbumTitle,
+} from '../api/_lib/googlePhotosAlbumsRepository.js';
 
 const testPlaceholder = (label) => ['placeholder', label, 'not-a-credential'].join('-');
 
@@ -23,6 +26,18 @@ function jsonResponse(payload, status = 200) {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+
+test('somente o álbum externo usa primeiro nome e data da sessão', () => {
+  assert.equal(
+    buildGooglePhotosProviderAlbumTitle('Alícia Maria da Silva', '2026-06-20'),
+    'Alícia - 20/06/2026',
+  );
+  assert.equal(
+    buildGooglePhotosProviderAlbumTitle('Alícia Maria da Silva', ''),
+    'Alícia',
+  );
+});
 
 test('cliente privado preserva exatamente o título pronto e cria somente álbum vazio', async () => {
   const calls = [];
@@ -124,7 +139,11 @@ test('backend exige permissão, vínculo e reserva antes de chamar o Google', ()
   assert.match(repositorySource, /status: 'creating'/);
   assert.match(repositorySource, /operation\.status === 'creating' \|\| operation\.status === 'unknown'/);
   assert.match(repositorySource, /await db\.runTransaction/);
-  assert.match(repositorySource, /externalAlbum = await createAlbum\(\{ title: normalized\.title \}\)/);
+  assert.match(repositorySource, /externalAlbum = await createAlbum\(\{ title: normalized\.providerAlbumTitle \}\)/);
+  assert.match(repositorySource, /const title = sanitizeText\(input\?\.title, MAX_TITLE_LENGTH\)/);
+  assert.match(repositorySource, /buildGooglePhotosProviderAlbumTitle\(patient\.name, activityDate\)/);
+  assert.match(repositorySource, /delete cardInput\.providerAlbumTitle/);
+  assert.match(repositorySource, /visibleToGuardian: true/);
   assert.match(endpointSource, /body\.action === 'createAlbum'/);
   assert.match(endpointSource, /resolveAccessContext/);
 });
