@@ -92,6 +92,7 @@ export interface CreateGooglePhotosAlbumInput {
   category: ActivityRecordCategory;
   observation: string;
   publishedAt: string;
+  recreateDeletedAlbum?: boolean;
 }
 
 export interface CreateGooglePhotosAlbumResponse extends GooglePhotosAlbumsResponse {
@@ -100,5 +101,7 @@ export interface CreateGooglePhotosAlbumResponse extends GooglePhotosAlbumsRespo
     productUrl: string;
     title: string;
     idempotent: boolean;
+    recreationAvailable: boolean;
+    recreated: boolean;
   };
 }

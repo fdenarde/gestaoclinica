@@ -628,7 +628,7 @@ export default function ProfessionalGooglePhotosGallery({
     setError('');
     setMessage('');
     try {
-      const result = await createGooglePhotosAlbum({
+      const creationPayload = {
         patientId: card.patientId,
         packageNumber: card.packageNumber,
         sessionIds: card.sessionIds,
@@ -638,7 +638,24 @@ export default function ProfessionalGooglePhotosGallery({
         category: card.category,
         observation: card.observation,
         publishedAt: card.publishedAt || card.activityDate,
-      });
+      };
+      let result = await createGooglePhotosAlbum(creationPayload);
+      if (result.createdAlbum.idempotent && result.createdAlbum.recreationAvailable) {
+        const confirmed = typeof window !== 'undefined' && window.confirm(
+          'O sistema encontrou o registro de uma criação anterior, mas este card está sem link. '
+          + 'Use esta opção somente se o álbum anterior foi excluído manualmente no Google Fotos. '
+          + 'Deseja criar um novo álbum vazio para esta mesma sessão?',
+        );
+        if (!confirmed) {
+          setMessage('A criação anterior foi mantida. Nenhum novo álbum foi criado.');
+          setSaveStatus('idle');
+          return;
+        }
+        result = await createGooglePhotosAlbum({
+          ...creationPayload,
+          recreateDeletedAlbum: true,
+        });
+      }
 
       if (
         selectedPatientIdRef.current === card.patientId
@@ -662,9 +679,11 @@ export default function ProfessionalGooglePhotosGallery({
       }
       setQuickCreateCardId(current => current === card.id ? '' : current);
       setSaveStatus('idle');
-      setMessage(result.createdAlbum.idempotent
-        ? 'Este álbum já havia sido criado. O link existente foi recuperado sem duplicação.'
-        : 'Álbum vazio criado com sucesso. Ele continua restrito à conta Google e ainda não foi compartilhado com o responsável.');
+      setMessage(result.createdAlbum.recreated
+        ? 'Novo álbum vazio criado para substituir o álbum que havia sido excluído manualmente.'
+        : result.createdAlbum.idempotent
+          ? 'Este álbum já havia sido criado. O link existente foi recuperado sem duplicação.'
+          : 'Álbum vazio criado com sucesso. Ele continua restrito à conta Google e ainda não foi compartilhado com o responsável.');
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível criar o álbum no Google Fotos.');
       setSaveStatus('error');

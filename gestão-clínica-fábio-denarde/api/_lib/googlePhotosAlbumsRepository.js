@@ -674,6 +674,7 @@ function normalizeAlbumCreationInput({ context, input, patient, packageKey, pack
     category: normalizeGooglePhotosCategory(input?.category),
     observation: sanitizeText(input?.observation, MAX_OBSERVATION_LENGTH),
     publishedAt,
+    recreateDeletedAlbum: input?.recreateDeletedAlbum === true,
     requestedByUserId: context.userId,
     requestedByName: context.actorName,
   };
@@ -723,7 +724,17 @@ function buildCreatedAlbumCard(context, normalized, operationId, externalAlbum, 
   };
 }
 
-function creationResponse({ context, permissions, packageSnapshot, patient, packageNumber, createdAlbum, idempotent }) {
+function creationResponse({
+  context,
+  permissions,
+  packageSnapshot,
+  patient,
+  packageNumber,
+  createdAlbum,
+  idempotent,
+  recreationAvailable = false,
+  recreated = false,
+}) {
   const saved = serializePackage(packageSnapshot, {
     patientId: patient.id,
     patientName: patient.name,
@@ -749,6 +760,8 @@ function creationResponse({ context, permissions, packageSnapshot, patient, pack
       productUrl: normalizeGooglePhotosAlbumUrl(createdAlbum?.productUrl) || '',
       title: sanitizeText(createdAlbum?.title, MAX_TITLE_LENGTH),
       idempotent: idempotent === true,
+      recreationAvailable: recreationAvailable === true,
+      recreated: recreated === true,
     },
   };
 }
@@ -803,17 +816,22 @@ export async function createGooglePhotosAlbumForPackage(
       };
     }
 
+    let recreateFromCompletedOperation = null;
     if (operationSnapshot.exists) {
       const operation = operationSnapshot.data() || {};
       if (operation.status === 'completed' && normalizeGooglePhotosAlbumUrl(operation.productUrl)) {
-        return {
-          kind: 'completed',
-          createdAlbum: {
-            id: sanitizeText(operation.providerAlbumId, 512),
-            productUrl: normalizeGooglePhotosAlbumUrl(operation.productUrl),
-            title: sanitizeText(operation.providerAlbumTitle || operation.title, MAX_TITLE_LENGTH),
-          },
-        };
+        if (!normalized.recreateDeletedAlbum) {
+          return {
+            kind: 'completed',
+            recreationAvailable: true,
+            createdAlbum: {
+              id: sanitizeText(operation.providerAlbumId, 512),
+              productUrl: normalizeGooglePhotosAlbumUrl(operation.productUrl),
+              title: sanitizeText(operation.providerAlbumTitle || operation.title, MAX_TITLE_LENGTH),
+            },
+          };
+        }
+        recreateFromCompletedOperation = operation;
       }
       if (operation.status === 'creating' || operation.status === 'unknown') {
         return { kind: 'blocked', status: operation.status };
@@ -848,8 +866,17 @@ export async function createGooglePhotosAlbumForPackage(
       providerAlbumId: FieldValue.delete(),
       productUrl: FieldValue.delete(),
       failureCode: FieldValue.delete(),
+      ...(recreateFromCompletedOperation ? {
+        recreationCount: Number(recreateFromCompletedOperation.recreationCount || 0) + 1,
+        recreatedByUserId: context.userId,
+        recreatedByName: context.actorName,
+        recreatedAt: now,
+        previousProviderAlbumId: sanitizeText(recreateFromCompletedOperation.providerAlbumId, 512),
+        previousProductUrl: normalizeGooglePhotosAlbumUrl(recreateFromCompletedOperation.productUrl) || '',
+        previousCompletedAt: recreateFromCompletedOperation.completedAt || null,
+      } : {}),
     }, { merge: true });
-    return { kind: 'claimed' };
+    return { kind: 'claimed', recreated: Boolean(recreateFromCompletedOperation) };
   });
 
   if (reservation.kind === 'blocked') throw creationInProgressError(reservation.status);
@@ -863,6 +890,7 @@ export async function createGooglePhotosAlbumForPackage(
       packageNumber,
       createdAlbum: reservation.createdAlbum,
       idempotent: true,
+      recreationAvailable: reservation.recreationAvailable === true,
     });
   }
 
@@ -978,6 +1006,7 @@ export async function createGooglePhotosAlbumForPackage(
     packageNumber,
     createdAlbum: externalAlbum,
     idempotent: false,
+    recreated: reservation.recreated === true,
   });
 }
 

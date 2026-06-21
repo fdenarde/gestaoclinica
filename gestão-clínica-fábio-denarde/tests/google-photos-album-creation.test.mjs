@@ -106,6 +106,25 @@ test('falha antes da criação é retryable, mas resposta externa ambígua bloqu
   );
 });
 
+test('recriação exige confirmação explícita e só substitui operação concluída sem card salvo', () => {
+  const repositorySource = fs.readFileSync(new URL('../api/_lib/googlePhotosAlbumsRepository.js', import.meta.url), 'utf8');
+  const professionalSource = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url), 'utf8');
+  const typesSource = fs.readFileSync(new URL('../src/types/googlePhotosAlbums.ts', import.meta.url), 'utf8');
+
+  assert.match(repositorySource, /recreateDeletedAlbum: input\?\.recreateDeletedAlbum === true/);
+  assert.match(repositorySource, /if \(!normalized\.recreateDeletedAlbum\)/);
+  assert.match(repositorySource, /recreationAvailable: true/);
+  assert.match(repositorySource, /recreationCount: Number\(recreateFromCompletedOperation\.recreationCount \|\| 0\) \+ 1/);
+  assert.match(repositorySource, /previousProductUrl:/);
+  assert.match(repositorySource, /return \{ kind: 'claimed', recreated: Boolean\(recreateFromCompletedOperation\) \}/);
+  assert.match(professionalSource, /window\.confirm\(/);
+  assert.match(professionalSource, /recreateDeletedAlbum: true/);
+  assert.match(professionalSource, /Novo álbum vazio criado para substituir o álbum que havia sido excluído manualmente/);
+  assert.match(typesSource, /recreateDeletedAlbum\?: boolean/);
+  assert.match(typesSource, /recreationAvailable: boolean/);
+  assert.match(typesSource, /recreated: boolean/);
+});
+
 test('chave de criação é determinística por atendente, pacote e grupo de sessões', () => {
   const first = buildGooglePhotosAlbumCreationOperationId({
     patientId: 'patient-1',
