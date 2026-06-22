@@ -87,6 +87,25 @@ function emailDocumentId(email) {
   return crypto.createHash('sha256').update(normalizeEmail(email)).digest('hex');
 }
 
+function accessRoleKey(role) {
+  const normalized = normalizeText(role, 40);
+  return ACCESS_ROLES.has(normalized) ? normalized : '';
+}
+
+function accessRoleLabel(role) {
+  const normalizedRole = accessRoleKey(role);
+  if (normalizedRole === 'monitoring') return 'Monitoramento';
+  if (normalizedRole === 'responsible') return 'Responsável';
+  return 'Profissional';
+}
+
+function approvalDocumentId(email, role) {
+  const normalizedRole = accessRoleKey(role);
+  return normalizedRole
+    ? `${emailDocumentId(email)}_${normalizedRole}`
+    : emailDocumentId(email);
+}
+
 function parseSaoPauloEndOfDay(value) {
   const normalized = normalizeText(value, 20);
   if (!normalized) return null;
@@ -114,7 +133,11 @@ function serializeExpirationLabel(value) {
   return iso;
 }
 
-function requestDocumentId(email, uid) {
+function requestDocumentId(email, uid, role = '') {
+  return crypto.createHash('sha256').update(`${normalizeEmail(email)}:${String(uid)}:${accessRoleKey(role) || 'legacy'}`).digest('hex');
+}
+
+function legacyRequestDocumentId(email, uid) {
   return crypto.createHash('sha256').update(`${normalizeEmail(email)}:${String(uid)}`).digest('hex');
 }
 
@@ -278,11 +301,224 @@ function serializeProfileLinkedPatientIds(value) {
     : [];
 }
 
+function serializeRoleProfile(role, data = {}) {
+  const normalizedRole = accessRoleKey(role);
+  if (!normalizedRole) return null;
+  return {
+    role: normalizedRole,
+    status: ACCESS_STATUSES.has(data.status) ? data.status : 'pending',
+    approvedAt: serializeDate(data.approvedAt),
+    approvedBy: data.approvedBy ? String(data.approvedBy) : null,
+    approvedByEmail: data.approvedByEmail ? normalizeEmail(data.approvedByEmail) : null,
+    revokedAt: serializeDate(data.revokedAt),
+    revokedBy: data.revokedBy ? String(data.revokedBy) : null,
+    revokedByEmail: data.revokedByEmail ? normalizeEmail(data.revokedByEmail) : null,
+    suspendedAt: serializeDate(data.suspendedAt || data.suspension?.startedAt),
+    suspendedBy: data.suspendedBy ? String(data.suspendedBy) : null,
+    suspendedByEmail: data.suspendedByEmail ? normalizeEmail(data.suspendedByEmail) : null,
+    suspensionReason: data.suspensionReason || data.suspension?.reason ? normalizeText(data.suspensionReason || data.suspension?.reason, 500) : null,
+    reactivatedAt: serializeDate(data.reactivatedAt),
+    reactivatedBy: data.reactivatedBy ? String(data.reactivatedBy) : null,
+    reactivatedByEmail: data.reactivatedByEmail ? normalizeEmail(data.reactivatedByEmail) : null,
+    expiresAt: serializeExpirationLabel(data.expiresAt || data.temporaryAccess?.endsAt),
+    linkedPatientIds: normalizedRole === 'monitoring' ? [] : serializeProfileLinkedPatientIds(data.linkedPatientIds),
+    requestId: data.requestId ? String(data.requestId) : null,
+    workspaceId: normalizeText(data.workspaceId, 160) || undefined,
+    enabledContexts: serializeProfileContexts(data.enabledContexts, normalizedRole),
+    permissionOverrides: normalizePermissionOverrides(data.permissionOverrides),
+    suspension: data.suspension && typeof data.suspension === 'object'
+      ? {
+        active: data.suspension.active === true,
+        reason: normalizeText(data.suspension.reason, 300) || undefined,
+        startedAt: serializeDate(data.suspension.startedAt),
+        endsAt: serializeDate(data.suspension.endsAt),
+      }
+      : null,
+    temporaryAccess: data.temporaryAccess && typeof data.temporaryAccess === 'object'
+      ? {
+        startsAt: serializeDate(data.temporaryAccess.startsAt),
+        endsAt: serializeDate(data.temporaryAccess.endsAt),
+      }
+      : null,
+  };
+}
+
+function serializeProfileMap(data = {}) {
+  const result = {};
+  const sourceProfiles = data.profiles && typeof data.profiles === 'object' ? data.profiles : {};
+  for (const role of Object.keys(sourceProfiles)) {
+    const serialized = serializeRoleProfile(role, sourceProfiles[role]);
+    if (serialized) result[serialized.role] = serialized;
+  }
+  const legacyRole = accessRoleKey(data.role);
+  if (legacyRole && !result[legacyRole]) result[legacyRole] = serializeRoleProfile(legacyRole, data);
+  return result;
+}
+
+function profileDataForActiveRole(data = {}, requestedRole = '') {
+  const role = accessRoleKey(requestedRole);
+  if (!role) {
+    throw accessError('access/invalid-active-role', 'Selecione um modo de entrada válido.', 400);
+  }
+  const entry = getProfileEntry(data, role);
+  if (!entry) {
+    throw accessError(
+      'access/profile-not-configured',
+      `O perfil ${accessRoleLabel(role)} não está cadastrado nesta conta. Escolha outro modo de entrada.`,
+      403,
+    );
+  }
+  return {
+    ...data,
+    ...entry,
+    role,
+    status: entry.status || 'pending',
+    linkedPatientIds: role === 'monitoring' ? [] : (entry.linkedPatientIds || []),
+    profiles: data.profiles,
+  };
+}
+
+function selectedProfileStatusMessage(role, status) {
+  const label = accessRoleLabel(role);
+  if (status === 'pending') return `O perfil ${label} ainda está aguardando aprovação.`;
+  if (status === 'information_requested') return `O perfil ${label} está aguardando informações adicionais.`;
+  if (status === 'rejected') return `O perfil ${label} não foi autorizado.`;
+  if (status === 'revoked') return `O perfil ${label} foi revogado.`;
+  if (status === 'disabled' || status === 'canceled') return `O perfil ${label} está desativado.`;
+  return `O perfil ${label} não está ativo nesta conta.`;
+}
+
+function dateValueToMillis(value) {
+  if (!value) return null;
+  if (typeof value.toMillis === 'function') {
+    const millis = Number(value.toMillis());
+    return Number.isFinite(millis) ? millis : null;
+  }
+  if (typeof value.toDate === 'function') {
+    const millis = value.toDate().getTime();
+    return Number.isFinite(millis) ? millis : null;
+  }
+  if (value instanceof Date) {
+    const millis = value.getTime();
+    return Number.isFinite(millis) ? millis : null;
+  }
+  const millis = new Date(String(value)).getTime();
+  return Number.isFinite(millis) ? millis : null;
+}
+
+function assertSelectedProfileIsActive(data = {}, requestedRole = '') {
+  const role = accessRoleKey(requestedRole);
+  const selected = profileDataForActiveRole(data, role);
+  const status = ACCESS_STATUSES.has(selected.status) ? selected.status : 'pending';
+  if (status !== 'approved') {
+    throw accessError(
+      'access/selected-profile-not-active',
+      selectedProfileStatusMessage(role, status),
+      403,
+    );
+  }
+
+  const suspension = selected.suspension && typeof selected.suspension === 'object'
+    ? selected.suspension
+    : null;
+  if (suspension?.active === true) {
+    const endsAt = dateValueToMillis(suspension.endsAt);
+    if (endsAt === null || endsAt > Date.now()) {
+      throw accessError(
+        'access/selected-profile-suspended',
+        `O perfil ${accessRoleLabel(role)} está temporariamente suspenso.`,
+        403,
+      );
+    }
+  }
+
+  const expiresAt = dateValueToMillis(selected.expiresAt || selected.temporaryAccess?.endsAt);
+  if (expiresAt !== null && expiresAt <= Date.now()) {
+    throw accessError(
+      'access/selected-profile-expired',
+      `O perfil ${accessRoleLabel(role)} está expirado.`,
+      403,
+    );
+  }
+
+  return selected;
+}
+
+function profileDataForSingleActiveRole(data = {}) {
+  const profiles = serializeProfileMap(data);
+  const activeRoles = Object.values(profiles)
+    .filter(profile => profile.status === 'approved')
+    .map(profile => profile.role);
+  return activeRoles.length === 1 ? profileDataForActiveRole(data, activeRoles[0]) : data;
+}
+
+function profilePatchForRole(role, patch = {}) {
+  const normalizedRole = accessRoleKey(role);
+  return normalizedRole ? { [`profiles.${normalizedRole}`]: patch } : {};
+}
+
+function profileDeletePatchForRole(role) {
+  const normalizedRole = accessRoleKey(role);
+  return normalizedRole ? { [`profiles.${normalizedRole}`]: FieldValue.delete() } : {};
+}
+
+function getProfileEntry(profile = {}, role) {
+  const normalizedRole = accessRoleKey(role);
+  if (!normalizedRole) return null;
+  const mapped = profile.profiles && typeof profile.profiles === 'object' && profile.profiles[normalizedRole]
+    ? profile.profiles[normalizedRole]
+    : null;
+  if (mapped && typeof mapped === 'object') return { ...profile, ...mapped, role: normalizedRole };
+  return profile.role === normalizedRole ? { ...profile, role: normalizedRole } : null;
+}
+
+function isActiveAccessStatus(status) {
+  return ['pending', 'information_requested', 'approved'].includes(String(status || ''));
+}
+
+function isProfileApproved(profile = {}, role) {
+  return getProfileEntry(profile, role)?.status === 'approved';
+}
+
+function chooseLegacySummaryRole(profile = {}, preferredRole = '') {
+  const preferred = accessRoleKey(preferredRole);
+  if (preferred && getProfileEntry(profile, preferred)) return preferred;
+  const profiles = profile.profiles && typeof profile.profiles === 'object' ? profile.profiles : {};
+  const priority = ['admin', 'professional', 'monitoring', 'responsible'];
+  return priority.find(role => profiles[role]?.status === 'approved') || accessRoleKey(profile.role) || preferred || 'professional';
+}
+
+function legacySummaryPatchForRole(profile = {}, role, patch = {}) {
+  const summaryRole = chooseLegacySummaryRole(profile, role);
+  const baseEntry = role === summaryRole ? getProfileEntry(profile, role) : getProfileEntry(profile, summaryRole);
+  const entry = role === summaryRole ? { ...(baseEntry || {}), ...patch } : baseEntry;
+  if (!entry) return {};
+  return {
+    role: summaryRole,
+    status: entry.status || 'pending',
+    approvedAt: entry.approvedAt || null,
+    approvedBy: entry.approvedBy || null,
+    approvedByEmail: entry.approvedByEmail || null,
+    revokedAt: entry.revokedAt || null,
+    revokedBy: entry.revokedBy || null,
+    revokedByEmail: entry.revokedByEmail || null,
+    expiresAt: entry.expiresAt || null,
+    temporaryAccess: entry.temporaryAccess || null,
+    suspension: entry.suspension || null,
+    linkedPatientIds: summaryRole === 'monitoring' ? [] : (entry.linkedPatientIds || []),
+    requestId: entry.requestId || null,
+    workspaceId: entry.workspaceId || profile.workspaceId || null,
+    enabledContexts: entry.enabledContexts || [],
+    permissionOverrides: entry.permissionOverrides || {},
+  };
+}
+
 function serializeProfile(data) {
   if (!data) return null;
   const role = ACCESS_PROFILE_ROLES.has(data.role) ? data.role : 'professional';
   const workspaceId = normalizeText(data.workspaceId, 160);
   const permissionOverrides = normalizePermissionOverrides(data.permissionOverrides);
+  const profiles = serializeProfileMap(data);
   return {
     uid: String(data.uid || ''),
     email: normalizeEmail(data.email),
@@ -300,6 +536,10 @@ function serializeProfile(data) {
     linkedProfessionalIds: serializeProfileLinkedPatientIds(data.linkedProfessionalIds),
     provider: normalizeText(data.provider, 80),
     requestId: data.requestId ? String(data.requestId) : null,
+    profiles,
+    activeProfiles: Object.values(profiles)
+      .filter(profile => profile.status === 'approved')
+      .map(profile => profile.role),
     schemaVersion: Number.isFinite(Number(data.schemaVersion)) ? Number(data.schemaVersion) : 1,
     workspaceId: workspaceId || undefined,
     enabledContexts: serializeProfileContexts(data.enabledContexts, role),
@@ -444,6 +684,18 @@ async function ensurePrimaryAdminProfile(db, decodedToken, existingSnapshot = nu
       phone: normalizeText(existing.phone, 24),
       role: 'admin',
       status: 'approved',
+      profiles: {
+        ...(existing.profiles && typeof existing.profiles === 'object' ? existing.profiles : {}),
+        admin: {
+          role: 'admin',
+          status: 'approved',
+          approvedAt: existing.approvedAt || FieldValue.serverTimestamp(),
+          approvedBy: existing.approvedBy || 'system:primary-admin',
+          approvedByEmail: PRIMARY_ADMIN_EMAIL,
+          linkedPatientIds: [],
+          requestId: existing.requestId || null,
+        },
+      },
       createdAt: existing.createdAt || FieldValue.serverTimestamp(),
       approvedAt: existing.approvedAt || FieldValue.serverTimestamp(),
       approvedBy: existing.approvedBy || 'system:primary-admin',
@@ -457,15 +709,34 @@ async function ensurePrimaryAdminProfile(db, decodedToken, existingSnapshot = nu
   return ref.get();
 }
 
-async function findRequestByEmail(db, email) {
-  const directSnapshot = await db.collection('accessRequests').doc(emailDocumentId(email)).get();
+async function findRequestByEmail(db, email, role = '') {
+  const normalizedRole = accessRoleKey(role);
+  const directSnapshot = normalizedRole
+    ? await db.collection('accessRequests').doc(requestDocumentId(email, '', normalizedRole)).get()
+    : await db.collection('accessRequests').doc(emailDocumentId(email)).get();
   if (directSnapshot.exists) return directSnapshot;
 
-  const legacySnapshot = await db.collection('accessRequests')
-    .where('email', '==', normalizeEmail(email))
-    .limit(1)
-    .get();
+  let query = db.collection('accessRequests').where('email', '==', normalizeEmail(email));
+  if (normalizedRole) query = query.where('role', '==', normalizedRole);
+  const legacySnapshot = await query.limit(5).get();
   return legacySnapshot.empty ? null : legacySnapshot.docs[0];
+}
+
+async function findApprovalByEmail(db, email, role = '') {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedRole = accessRoleKey(role);
+  const directSnapshot = normalizedRole
+    ? await db.collection('accessApprovals').doc(approvalDocumentId(normalizedEmail, normalizedRole)).get()
+    : await db.collection('accessApprovals').doc(emailDocumentId(normalizedEmail)).get();
+  if (directSnapshot.exists) return directSnapshot;
+
+  let query = db.collection('accessApprovals').where('normalizedEmail', '==', normalizedEmail);
+  if (normalizedRole) query = query.where('role', '==', normalizedRole);
+  const snapshot = await query.limit(10).get();
+  if (snapshot.empty) return null;
+  return snapshot.docs.find(doc => doc.data()?.status === 'approved')
+    || snapshot.docs.find(doc => isActiveAccessStatus(doc.data()?.status))
+    || snapshot.docs[0];
 }
 
 async function findProfilesByEmail(db, email) {
@@ -511,13 +782,14 @@ async function migrateLegacyReviewedRequest(db, requestSnapshot) {
   if (!['approved', 'rejected', 'revoked', 'disabled', 'canceled'].includes(request.status)) return null;
 
   const normalizedEmail = normalizeEmail(request.email);
-  const approvalRef = db.collection('accessApprovals').doc(emailDocumentId(normalizedEmail));
+  const role = accessRoleKey(request.role) || 'professional';
+  const approvalRef = db.collection('accessApprovals').doc(approvalDocumentId(normalizedEmail, role));
   await approvalRef.set({
     email: normalizedEmail,
     normalizedEmail,
     displayName: normalizeText(request.displayName, 120),
     phone: normalizeText(request.phone, 24),
-    role: ACCESS_ROLES.has(request.role) ? request.role : 'professional',
+    role,
     status: request.status,
     linkedPatientIds: [],
     requestId: requestSnapshot.id,
@@ -551,6 +823,7 @@ async function materializeProfileFromApproval(db, decodedToken, approvalSnapshot
 
     const approval = latestApproval.data();
     const currentProfile = latestProfile.exists ? latestProfile.data() : {};
+    const role = accessRoleKey(approval.role) || 'professional';
     const status = ACCESS_STATUSES.has(approval.status)
       ? approval.status
       : 'pending';
@@ -560,14 +833,9 @@ async function materializeProfileFromApproval(db, decodedToken, approvalSnapshot
         ? currentProfile.linkedPatientIds
         : [];
 
-    transaction.set(profileRef, {
-      uid: decodedToken.uid,
-      email: normalizeEmail(decodedToken.email),
-      displayName: normalizeText(approval.displayName || decodedToken.name, 120),
-      phone: normalizeText(approval.phone, 24),
-      role: ACCESS_ROLES.has(approval.role) ? approval.role : 'professional',
+    const rolePatch = {
+      role,
       status,
-      createdAt: currentProfile.createdAt || approval.createdAt || FieldValue.serverTimestamp(),
       approvedAt: status === 'approved' ? approval.approvedAt || FieldValue.serverTimestamp() : null,
       approvedBy: status === 'approved' ? approval.approvedBy || PRIMARY_ADMIN_EMAIL : null,
       approvedByEmail: status === 'approved' ? approval.approvedByEmail || PRIMARY_ADMIN_EMAIL : null,
@@ -589,9 +857,21 @@ async function materializeProfileFromApproval(db, decodedToken, approvalSnapshot
       informationRequestedBy: approval.informationRequestedBy || null,
       informationResponseMessage: approval.informationResponseMessage || null,
       informationRespondedAt: approval.informationRespondedAt || null,
-      linkedPatientIds,
+      linkedPatientIds: role === 'monitoring' ? [] : linkedPatientIds,
       provider: providerFromToken(decodedToken),
       requestId: approval.requestId || null,
+      workspaceId: approval.workspaceId || currentProfile.workspaceId || null,
+      enabledContexts: [],
+      permissionOverrides: {},
+    };
+    transaction.set(profileRef, {
+      uid: decodedToken.uid,
+      email: normalizeEmail(decodedToken.email),
+      displayName: normalizeText(approval.displayName || decodedToken.name, 120),
+      phone: normalizeText(approval.phone, 24),
+      ...profilePatchForRole(role, rolePatch),
+      ...legacySummaryPatchForRole(currentProfile, role, rolePatch),
+      createdAt: currentProfile.createdAt || approval.createdAt || FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
@@ -617,15 +897,13 @@ async function materializeProfileFromApproval(db, decodedToken, approvalSnapshot
 
 async function createPendingProfileFromRequest(db, decodedToken, requestSnapshot) {
   const request = requestSnapshot.data();
+  const role = accessRoleKey(request.role) || 'professional';
   const profileRef = db.collection('accessProfiles').doc(decodedToken.uid);
-  await profileRef.set({
-    uid: decodedToken.uid,
-    email: normalizeEmail(decodedToken.email),
-    displayName: normalizeText(request.displayName || decodedToken.name, 120),
-    phone: normalizeText(request.phone, 24),
-    role: ACCESS_ROLES.has(request.role) ? request.role : 'professional',
+  const currentSnapshot = await profileRef.get();
+  const currentProfile = currentSnapshot.exists ? currentSnapshot.data() : {};
+  const rolePatch = {
+    role,
     status: request.status === 'information_requested' ? 'information_requested' : 'pending',
-    createdAt: request.createdAt || FieldValue.serverTimestamp(),
     approvedAt: null,
     approvedBy: null,
     revokedAt: null,
@@ -639,6 +917,15 @@ async function createPendingProfileFromRequest(db, decodedToken, requestSnapshot
     linkedPatientIds: [],
     provider: providerFromToken(decodedToken),
     requestId: requestSnapshot.id,
+  };
+  await profileRef.set({
+    uid: decodedToken.uid,
+    email: normalizeEmail(decodedToken.email),
+    displayName: normalizeText(request.displayName || decodedToken.name, 120),
+    phone: normalizeText(request.phone, 24),
+    ...profilePatchForRole(role, rolePatch),
+    ...legacySummaryPatchForRole(currentProfile, role, rolePatch),
+    createdAt: currentProfile.createdAt || request.createdAt || FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   await requestSnapshot.ref.set({
@@ -662,9 +949,7 @@ async function getProfile(db, decodedToken) {
     return profileSnapshot;
   }
 
-  let approvalSnapshot = await db.collection('accessApprovals')
-    .doc(emailDocumentId(normalizedEmail))
-    .get();
+  let approvalSnapshot = await findApprovalByEmail(db, normalizedEmail);
 
   const requestSnapshot = await findRequestByEmail(db, normalizedEmail);
   if (!approvalSnapshot.exists) {
@@ -689,30 +974,69 @@ async function createPendingRequest(db, decodedToken, input) {
     );
   }
 
-  const requestRef = db.collection('accessRequests').doc(requestDocumentId(input.email, decodedToken.uid));
-  const approvalRef = db.collection('accessApprovals').doc(emailDocumentId(input.email));
+  const role = accessRoleKey(input.role) || 'professional';
+  const requestRef = db.collection('accessRequests').doc(requestDocumentId(input.email, decodedToken.uid, role));
+  const approvalRef = db.collection('accessApprovals').doc(approvalDocumentId(input.email, role));
   const profileRef = db.collection('accessProfiles').doc(decodedToken.uid);
+  const discoveredRequestSnapshot = await findRequestByEmail(db, input.email, role);
+  const discoveredApprovalSnapshot = await findApprovalByEmail(db, input.email, role);
 
   await db.runTransaction(async transaction => {
     const requestSnapshot = await transaction.get(requestRef);
     const approvalSnapshot = await transaction.get(approvalRef);
     const currentRequest = requestSnapshot.exists ? requestSnapshot.data() : {};
     const approval = approvalSnapshot.exists ? approvalSnapshot.data() : {};
+    const discoveredRequest = discoveredRequestSnapshot?.exists
+      && discoveredRequestSnapshot.ref.path !== requestRef.path
+      ? discoveredRequestSnapshot.data()
+      : {};
+    const discoveredApproval = discoveredApprovalSnapshot?.exists
+      && discoveredApprovalSnapshot.ref.path !== approvalRef.path
+      ? discoveredApprovalSnapshot.data()
+      : {};
     const profileSnapshot = await transaction.get(profileRef);
     const currentProfile = profileSnapshot.exists ? profileSnapshot.data() : {};
+    const currentRoleProfile = getProfileEntry(currentProfile, role);
+    const requestStatuses = [currentRequest.status, discoveredRequest.status].filter(Boolean);
+    const approvalStatuses = [approval.status, discoveredApproval.status].filter(Boolean);
+    const hasPersistedRoleRecord = Boolean(
+      requestSnapshot.exists
+      || approvalSnapshot.exists
+      || (discoveredRequestSnapshot?.exists && discoveredRequestSnapshot.ref.path !== requestRef.path)
+      || (discoveredApprovalSnapshot?.exists && discoveredApprovalSnapshot.ref.path !== approvalRef.path)
+    );
+    const orphanedRevokedProfile = currentRoleProfile?.status === 'revoked' && !hasPersistedRoleRecord;
 
-    if (approval.status === 'approved' || currentProfile.status === 'approved' || currentProfile.role === 'admin') {
+    if (currentProfile.role === 'admin') {
       throw accessError('access/already-approved', 'Este acesso já está aprovado.', 409);
     }
+    if (approvalStatuses.includes('approved') || currentRoleProfile?.status === 'approved') {
+      throw accessError('access/already-approved', `Este acesso de ${role === 'monitoring' ? 'Monitoramento' : role === 'responsible' ? 'Responsável' : 'Profissional'} já está aprovado.`, 409);
+    }
     if (
-      approval.status === 'information_requested'
-      || currentProfile.status === 'information_requested'
-      || currentRequest.status === 'information_requested'
+      approvalStatuses.includes('information_requested')
+      || currentRoleProfile?.status === 'information_requested'
+      || requestStatuses.includes('information_requested')
     ) {
       throw accessError('access/information-response-required', 'Sua solicitação precisa de informações adicionais antes de voltar para análise.', 409);
     }
-    if (['disabled', 'revoked'].includes(approval.status) || ['disabled', 'revoked'].includes(currentProfile.status)) {
-      throw accessError('access/disabled', 'Este acesso está desativado ou revogado. Entre em contato com a administração.', 403);
+    if (
+      approvalStatuses.includes('revoked')
+      || requestStatuses.includes('revoked')
+      || (currentRoleProfile?.status === 'revoked' && !orphanedRevokedProfile)
+    ) {
+      throw accessError(
+        'access/revoked-registration-must-be-deleted',
+        'O cadastro anterior deste perfil foi revogado. O administrador precisa excluir somente esse cadastro de acesso antes de uma nova solicitação.',
+        409,
+      );
+    }
+    if (
+      approvalStatuses.some(isActiveAccessStatus)
+      || requestStatuses.some(isActiveAccessStatus)
+      || isActiveAccessStatus(currentRoleProfile?.status)
+    ) {
+      throw accessError('access/duplicate-request', 'Já existe uma solicitação ativa para este tipo de acesso.', 409);
     }
 
     transaction.set(requestRef, {
@@ -722,7 +1046,7 @@ async function createPendingRequest(db, decodedToken, input) {
       normalizedEmail: input.email,
       displayName: input.displayName,
       phone: input.phone,
-      role: input.role,
+      role,
       linkedPatientName: input.linkedPatientName,
       notes: input.notes,
       provider: providerFromToken(decodedToken),
@@ -766,7 +1090,7 @@ async function createPendingRequest(db, decodedToken, input) {
       normalizedEmail: input.email,
       displayName: input.displayName,
       phone: input.phone,
-      role: input.role,
+      role,
       status: 'pending',
       linkedPatientIds: [],
       requestId: requestRef.id,
@@ -805,33 +1129,42 @@ async function createPendingRequest(db, decodedToken, input) {
       email: input.email,
       displayName: input.displayName,
       phone: input.phone,
-      role: input.role,
-      status: 'pending',
+      ...profilePatchForRole(role, {
+        role,
+        status: 'pending',
+        approvedAt: null,
+        approvedBy: null,
+        approvedByEmail: null,
+        revokedAt: null,
+        revokedBy: null,
+        revokedByEmail: null,
+        suspendedAt: null,
+        suspendedBy: null,
+        suspendedByEmail: null,
+        suspensionReason: null,
+        reactivatedAt: null,
+        reactivatedBy: null,
+        reactivatedByEmail: null,
+        expiresAt: null,
+        temporaryAccess: null,
+        suspension: null,
+        informationRequestMessage: null,
+        informationRequestedAt: null,
+        informationRequestedBy: null,
+        informationResponseMessage: null,
+        informationRespondedAt: null,
+        linkedPatientIds: [],
+        provider: providerFromToken(decodedToken),
+        requestId: requestRef.id,
+      }),
+      ...legacySummaryPatchForRole(currentProfile, role, {
+        role,
+        status: 'pending',
+        requestId: requestRef.id,
+        provider: providerFromToken(decodedToken),
+        linkedPatientIds: [],
+      }),
       createdAt: currentProfile.createdAt || FieldValue.serverTimestamp(),
-      approvedAt: null,
-      approvedBy: null,
-      approvedByEmail: null,
-      revokedAt: null,
-      revokedBy: null,
-      revokedByEmail: null,
-      suspendedAt: null,
-      suspendedBy: null,
-      suspendedByEmail: null,
-      suspensionReason: null,
-      reactivatedAt: null,
-      reactivatedBy: null,
-      reactivatedByEmail: null,
-      expiresAt: null,
-      temporaryAccess: null,
-      suspension: null,
-      informationRequestMessage: null,
-      informationRequestedAt: null,
-      informationRequestedBy: null,
-      informationResponseMessage: null,
-      informationRespondedAt: null,
-      linkedPatientIds: [],
-      provider: providerFromToken(decodedToken),
-      requestId: requestRef.id,
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
   });
@@ -915,7 +1248,8 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
 
   const initialRequest = initialRequestSnapshot.data();
   const normalizedEmail = normalizeEmail(initialRequest.email);
-  const approvalRef = db.collection('accessApprovals').doc(emailDocumentId(normalizedEmail));
+  const role = accessRoleKey(initialRequest.role) || 'professional';
+  const approvalRef = db.collection('accessApprovals').doc(approvalDocumentId(normalizedEmail, role));
   const resolvedUid = await resolveUidForEmail(normalizedEmail, initialRequest.uid);
   const matchingProfiles = await findProfilesByEmail(db, normalizedEmail);
   const profileRefs = new Map(matchingProfiles.map(snapshot => [snapshot.id, snapshot.ref]));
@@ -950,6 +1284,27 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
       );
     }
     const status = approved ? 'approved' : 'rejected';
+    const profileDataByUid = new Map();
+    for (const [uid, profileRef] of profileRefs) {
+      const currentProfileSnapshot = await transaction.get(profileRef);
+      profileDataByUid.set(uid, currentProfileSnapshot.exists ? currentProfileSnapshot.data() : {});
+    }
+    const rolePatch = {
+      role,
+      status,
+      approvedAt: approved ? FieldValue.serverTimestamp() : null,
+      approvedBy: approved ? reviewedBy : null,
+      approvedByEmail: approved ? reviewedByEmail : null,
+      rejectedAt: approved ? null : FieldValue.serverTimestamp(),
+      rejectedBy: approved ? null : reviewedBy,
+      rejectedByEmail: approved ? null : reviewedByEmail,
+      expiresAt: approvedExpiresAt,
+      temporaryAccess: approvedExpiresAt ? { startsAt: null, endsAt: approvedExpiresAt } : null,
+      suspension: null,
+      linkedPatientIds: role === 'monitoring' ? [] : (Array.isArray(approval.linkedPatientIds) ? approval.linkedPatientIds : []),
+      provider: normalizeText(request.provider, 80) || 'approved-request',
+      requestId,
+    };
 
     transaction.set(requestRef, {
       uid: resolvedUid || request.uid || null,
@@ -976,7 +1331,7 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
       normalizedEmail,
       displayName: normalizeText(request.displayName, 120),
       phone: normalizeText(request.phone, 24),
-      role: ACCESS_ROLES.has(request.role) ? request.role : 'professional',
+      role,
       status,
       linkedPatientIds: Array.isArray(approval.linkedPatientIds) ? approval.linkedPatientIds : [],
       requestId,
@@ -995,23 +1350,15 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
     }, { merge: true });
 
     for (const [uid, profileRef] of profileRefs) {
+      const currentProfile = profileDataByUid.get(uid) || {};
       transaction.set(profileRef, {
         uid,
         email: normalizedEmail,
         displayName: normalizeText(request.displayName, 120),
         phone: normalizeText(request.phone, 24),
-        role: ACCESS_ROLES.has(request.role) ? request.role : 'professional',
-        status,
+        ...profilePatchForRole(role, rolePatch),
+        ...legacySummaryPatchForRole(currentProfile, role, rolePatch),
         createdAt: request.createdAt || FieldValue.serverTimestamp(),
-        approvedAt: approved ? FieldValue.serverTimestamp() : null,
-        approvedBy: approved ? reviewedBy : null,
-        approvedByEmail: approved ? reviewedByEmail : null,
-        expiresAt: approvedExpiresAt,
-        temporaryAccess: approvedExpiresAt ? { startsAt: null, endsAt: approvedExpiresAt } : null,
-        suspension: null,
-        linkedPatientIds: Array.isArray(approval.linkedPatientIds) ? approval.linkedPatientIds : [],
-        provider: normalizeText(request.provider, 80) || 'approved-request',
-        requestId,
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     }
@@ -1107,6 +1454,11 @@ async function linkResponsiblePatient(db, decodedToken, body) {
     }
     const currentRequest = latestRequest.data();
     const approval = latestApproval.exists ? latestApproval.data() : {};
+    const profileDataByUid = new Map();
+    for (const [uid, profileRef] of profileRefs) {
+      const profileSnapshot = await transaction.get(profileRef);
+      profileDataByUid.set(uid, profileSnapshot.exists ? profileSnapshot.data() : {});
+    }
     const existingLinkedPatientIds = serializeLinkedPatientIds(
       Array.isArray(currentRequest.linkedPatientIds) && currentRequest.linkedPatientIds.length > 0
         ? currentRequest.linkedPatientIds
@@ -1148,15 +1500,20 @@ async function linkResponsiblePatient(db, decodedToken, body) {
     }, { merge: true });
 
     for (const [uid, profileRef] of profileRefs) {
+      const currentProfile = profileDataByUid.get(uid) || {};
+      const rolePatch = {
+        role: 'responsible',
+        status: ACCESS_STATUSES.has(currentRequest.status) ? currentRequest.status : 'pending',
+        linkedPatientIds,
+        requestId,
+      };
       transaction.set(profileRef, {
         uid,
         email: normalizedEmail,
         displayName: normalizeText(currentRequest.displayName, 120),
         phone: normalizeText(currentRequest.phone, 24),
-        role: 'responsible',
-        status: ACCESS_STATUSES.has(currentRequest.status) ? currentRequest.status : 'pending',
-        linkedPatientIds,
-        requestId,
+        ...profilePatchForRole('responsible', rolePatch),
+        ...legacySummaryPatchForRole(currentProfile, 'responsible', rolePatch),
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     }
@@ -1167,7 +1524,8 @@ async function linkResponsiblePatient(db, decodedToken, body) {
 
 async function collectAccessMutationRefs(db, request, requestId) {
   const normalizedEmail = normalizeEmail(request.email);
-  const approvalRef = db.collection('accessApprovals').doc(emailDocumentId(normalizedEmail));
+  const role = accessRoleKey(request.role) || 'professional';
+  const approvalRef = db.collection('accessApprovals').doc(approvalDocumentId(normalizedEmail, role));
   const resolvedUid = await resolveUidForEmail(normalizedEmail, request.uid);
   const matchingProfiles = await findProfilesByEmail(db, normalizedEmail);
   const profileRefs = new Map(matchingProfiles.map(snapshot => [snapshot.id, snapshot.ref]));
@@ -1175,7 +1533,7 @@ async function collectAccessMutationRefs(db, request, requestId) {
   const approvalSnapshot = await approvalRef.get();
   const approval = approvalSnapshot.exists ? approvalSnapshot.data() : {};
   if (approval.linkedUid) profileRefs.set(String(approval.linkedUid), db.collection('accessProfiles').doc(String(approval.linkedUid)));
-  return { normalizedEmail, approvalRef, approval, profileRefs, linkedUid: resolvedUid || approval.linkedUid || request.uid || null, requestId };
+  return { normalizedEmail, role, approvalRef, approval, profileRefs, linkedUid: resolvedUid || approval.linkedUid || request.uid || null, requestId };
 }
 
 async function mutateAccessState(db, decodedToken, body, operation) {
@@ -1208,6 +1566,11 @@ async function mutateAccessState(db, decodedToken, body, operation) {
       actorUid,
       actorEmail,
     });
+    const profileDataByUid = new Map();
+    for (const [uid, profileRef] of refs.profileRefs) {
+      const profileSnapshot = await transaction.get(profileRef);
+      profileDataByUid.set(uid, profileSnapshot.exists ? profileSnapshot.data() : {});
+    }
 
     transaction.set(requestRef, {
       ...patch.request,
@@ -1219,7 +1582,7 @@ async function mutateAccessState(db, decodedToken, body, operation) {
       normalizedEmail: refs.normalizedEmail,
       displayName: normalizeText(currentRequest.displayName, 120),
       phone: normalizeText(currentRequest.phone, 24),
-      role: ACCESS_ROLES.has(currentRequest.role) ? currentRequest.role : 'professional',
+      role: refs.role,
       requestId,
       linkedUid: refs.linkedUid,
       createdAt: refs.approval.createdAt || currentRequest.createdAt || FieldValue.serverTimestamp(),
@@ -1228,14 +1591,19 @@ async function mutateAccessState(db, decodedToken, body, operation) {
     }, { merge: true });
 
     for (const [uid, profileRef] of refs.profileRefs) {
+      const currentProfile = profileDataByUid.get(uid) || {};
+      const rolePatch = {
+        role: refs.role,
+        requestId,
+        ...patch.profile,
+      };
       transaction.set(profileRef, {
         uid,
         email: refs.normalizedEmail,
         displayName: normalizeText(currentRequest.displayName, 120),
         phone: normalizeText(currentRequest.phone, 24),
-        role: ACCESS_ROLES.has(currentRequest.role) ? currentRequest.role : 'professional',
-        requestId,
-        ...patch.profile,
+        ...profilePatchForRole(refs.role, rolePatch),
+        ...legacySummaryPatchForRole(currentProfile, refs.role, rolePatch),
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     }
@@ -1564,7 +1932,9 @@ function aggregateMediaInteractions(snapshots, responsibleUid) {
 async function requireInternalNotificationContext(db, decodedToken) {
   const profileSnapshot = await getProfile(db, decodedToken);
   const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
-  if (!profile || profile.status !== 'approved' || !['admin', 'professional'].includes(profile.role)) {
+  const professionalProfile = getProfileEntry(profile || {}, 'professional');
+  const adminProfile = getProfileEntry(profile || {}, 'admin');
+  if (!profile || (!adminProfile && professionalProfile?.status !== 'approved')) {
     throw accessError('access/internal-approved-required', 'Acesso profissional aprovado obrigatório.', 403);
   }
   return {
@@ -1859,7 +2229,8 @@ async function markProfessionalNotificationsRead(db, decodedToken, body) {
 async function requireResponsibleContext(db, decodedToken) {
   const profileSnapshot = await getProfile(db, decodedToken);
   const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
-  if (!profile || profile.status !== 'approved' || profile.role !== 'responsible') {
+  const responsibleProfile = getProfileEntry(profile || {}, 'responsible');
+  if (!profile || responsibleProfile?.status !== 'approved') {
     throw accessError(
       'access/responsible-approved-required',
       'Favor entrar em contato com a clínica responsável.',
@@ -1867,8 +2238,8 @@ async function requireResponsibleContext(db, decodedToken) {
     );
   }
   return {
-    profile,
-    linkedPatientIds: serializeLinkedPatientIds(profile.linkedPatientIds),
+    profile: { ...profile, ...responsibleProfile, role: 'responsible' },
+    linkedPatientIds: serializeLinkedPatientIds(responsibleProfile.linkedPatientIds),
     ownerUserId: await getPrimaryAdminUid(),
   };
 }
@@ -3328,6 +3699,7 @@ async function revokeRequest(db, decodedToken, body) {
   }
 
   const normalizedEmail = normalizeEmail(initialRequest.email);
+  const role = accessRoleKey(initialRequest.role) || 'professional';
   if (normalizedEmail === PRIMARY_ADMIN_EMAIL) {
     throw accessError(
       'access/primary-admin-protected',
@@ -3336,7 +3708,7 @@ async function revokeRequest(db, decodedToken, body) {
     );
   }
 
-  const approvalRef = db.collection('accessApprovals').doc(emailDocumentId(normalizedEmail));
+  const approvalRef = db.collection('accessApprovals').doc(approvalDocumentId(normalizedEmail, role));
   const matchingProfiles = await findProfilesByEmail(db, normalizedEmail);
   const initialApprovalSnapshot = await approvalRef.get();
   const initialApproval = initialApprovalSnapshot.exists ? initialApprovalSnapshot.data() : {};
@@ -3358,6 +3730,11 @@ async function revokeRequest(db, decodedToken, body) {
     }
 
     const request = requestSnapshot.data();
+    const profileDataByPath = new Map();
+    for (const profileRef of profileRefs.values()) {
+      const profileSnapshot = await transaction.get(profileRef);
+      profileDataByPath.set(profileRef.path, profileSnapshot.exists ? profileSnapshot.data() : {});
+    }
     if (request.status !== 'approved') {
       throw accessError(
         'access/not-approved',
@@ -3382,7 +3759,7 @@ async function revokeRequest(db, decodedToken, body) {
       normalizedEmail,
       displayName: normalizeText(request.displayName, 120),
       phone: normalizeText(request.phone, 24),
-      role: ACCESS_ROLES.has(request.role) ? request.role : 'professional',
+      role,
       status: 'revoked',
       linkedPatientIds: Array.isArray(approval.linkedPatientIds) ? approval.linkedPatientIds : [],
       requestId,
@@ -3395,17 +3772,225 @@ async function revokeRequest(db, decodedToken, body) {
     }, { merge: true });
 
     for (const profileRef of profileRefs.values()) {
-      transaction.set(profileRef, {
+      const currentProfile = profileDataByPath.get(profileRef.path) || {};
+      const rolePatch = {
+        role,
         status: 'revoked',
         revokedAt: FieldValue.serverTimestamp(),
         revokedBy,
         revokedByEmail,
+      };
+      transaction.set(profileRef, {
+        ...profilePatchForRole(role, rolePatch),
+        ...legacySummaryPatchForRole(currentProfile, role, rolePatch),
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
     }
   });
 
   return requestRef.get();
+}
+
+async function collectAccessRequestRefsForDeletion(db, normalizedEmail, role, selectedRequestRef, request = {}, resolvedUid = '') {
+  const refs = new Map([[selectedRequestRef.path, selectedRequestRef]]);
+  const collection = db.collection('accessRequests');
+  const candidateUids = [...new Set([request.uid, resolvedUid].filter(Boolean).map(String))];
+
+  refs.set(
+    collection.doc(requestDocumentId(normalizedEmail, '', role)).path,
+    collection.doc(requestDocumentId(normalizedEmail, '', role)),
+  );
+  for (const uid of candidateUids) {
+    const canonicalRef = collection.doc(requestDocumentId(normalizedEmail, uid, role));
+    refs.set(canonicalRef.path, canonicalRef);
+
+    const legacyRef = collection.doc(legacyRequestDocumentId(normalizedEmail, uid));
+    const legacySnapshot = await legacyRef.get();
+    if (legacySnapshot.exists && (accessRoleKey(legacySnapshot.data()?.role) || 'professional') === role) {
+      refs.set(legacyRef.path, legacyRef);
+    }
+  }
+
+  const oldestLegacyRef = collection.doc(emailDocumentId(normalizedEmail));
+  const oldestLegacySnapshot = await oldestLegacyRef.get();
+  if (oldestLegacySnapshot.exists && (accessRoleKey(oldestLegacySnapshot.data()?.role) || 'professional') === role) {
+    refs.set(oldestLegacyRef.path, oldestLegacyRef);
+  }
+
+  for (const field of ['email', 'normalizedEmail']) {
+    const snapshot = await collection.where(field, '==', normalizedEmail).limit(100).get();
+    for (const document of snapshot.docs) {
+      const documentRole = accessRoleKey(document.data()?.role) || 'professional';
+      if (documentRole === role) refs.set(document.ref.path, document.ref);
+    }
+  }
+
+  return refs;
+}
+
+async function collectAccessApprovalRefsForDeletion(db, normalizedEmail, role) {
+  const collection = db.collection('accessApprovals');
+  const roleApprovalRef = collection.doc(approvalDocumentId(normalizedEmail, role));
+  const refs = new Map([[roleApprovalRef.path, roleApprovalRef]]);
+
+  const legacyApprovalRef = collection.doc(emailDocumentId(normalizedEmail));
+  const legacyApprovalSnapshot = await legacyApprovalRef.get();
+  if (legacyApprovalSnapshot.exists && (accessRoleKey(legacyApprovalSnapshot.data()?.role) || 'professional') === role) {
+    refs.set(legacyApprovalRef.path, legacyApprovalRef);
+  }
+
+  for (const field of ['email', 'normalizedEmail']) {
+    const snapshot = await collection.where(field, '==', normalizedEmail).limit(100).get();
+    for (const document of snapshot.docs) {
+      const documentRole = accessRoleKey(document.data()?.role) || 'professional';
+      if (documentRole === role) refs.set(document.ref.path, document.ref);
+    }
+  }
+
+  return refs;
+}
+
+async function deleteAccessRegistration(db, decodedToken, body) {
+  const requestId = normalizeText(body.requestId, 128);
+  const confirmation = normalizeText(body.confirmation, 80).toUpperCase();
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)) {
+    throw accessError('access/invalid-request-id', 'A solicitação informada é inválida.');
+  }
+
+  const requestRef = db.collection('accessRequests').doc(requestId);
+  const initialRequestSnapshot = await requestRef.get();
+  if (!initialRequestSnapshot.exists) {
+    throw accessError('access/request-not-found', 'A solicitação não foi encontrada.', 404);
+  }
+  const request = initialRequestSnapshot.data();
+  const role = accessRoleKey(request.role) || 'professional';
+  const expectedConfirmation = `EXCLUIR ${role === 'monitoring' ? 'MONITORAMENTO' : role === 'responsible' ? 'RESPONSAVEL' : 'PROFISSIONAL'}`;
+  if (confirmation !== expectedConfirmation) {
+    throw accessError('access/delete-confirmation-required', `Digite ${expectedConfirmation} para confirmar.`, 400);
+  }
+
+  const normalizedEmail = normalizeEmail(request.email);
+  if (normalizedEmail === PRIMARY_ADMIN_EMAIL) {
+    throw accessError('access/primary-admin-protected', 'O acesso do administrador principal não pode ser excluído.', 403);
+  }
+
+  const resolvedUid = await resolveUidForEmail(normalizedEmail, request.uid);
+  const matchingProfiles = await findProfilesByEmail(db, normalizedEmail);
+  const profileRefs = new Map(matchingProfiles.map(snapshot => [snapshot.id, snapshot.ref]));
+  if (resolvedUid) profileRefs.set(resolvedUid, db.collection('accessProfiles').doc(resolvedUid));
+
+  const requestRefsToDelete = await collectAccessRequestRefsForDeletion(
+    db,
+    normalizedEmail,
+    role,
+    requestRef,
+    request,
+    resolvedUid,
+  );
+  const approvalRefsToDelete = await collectAccessApprovalRefsForDeletion(db, normalizedEmail, role);
+
+  const auditRef = db.collection('accessDeletionAudit').doc();
+  await db.runTransaction(async transaction => {
+    const latestRequest = await transaction.get(requestRef);
+    const profileSnapshots = new Map();
+    for (const [uid, profileRef] of profileRefs) {
+      profileSnapshots.set(uid, await transaction.get(profileRef));
+    }
+    if (!latestRequest.exists) throw accessError('access/request-not-found', 'A solicitação não foi encontrada.', 404);
+
+    const latestRequestData = latestRequest.data();
+    if (!['rejected', 'revoked', 'disabled', 'canceled'].includes(String(latestRequestData.status || ''))) {
+      throw accessError(
+        'access/delete-requires-inactive-profile',
+        'Revogue ou rejeite este perfil antes de excluir o cadastro de acesso.',
+        409,
+      );
+    }
+
+    for (const ref of requestRefsToDelete.values()) transaction.delete(ref);
+    for (const ref of approvalRefsToDelete.values()) transaction.delete(ref);
+
+    for (const [uid, profileRef] of profileRefs) {
+      const profileSnapshot = profileSnapshots.get(uid);
+      if (!profileSnapshot?.exists) continue;
+
+      const currentProfile = profileSnapshot.data() || {};
+      const nextProfile = {
+        ...currentProfile,
+        profiles: { ...(currentProfile.profiles && typeof currentProfile.profiles === 'object' ? currentProfile.profiles : {}) },
+      };
+      delete nextProfile.profiles[role];
+
+      const remainingRole = ['admin', 'professional', 'monitoring', 'responsible']
+        .find(candidate => nextProfile.profiles[candidate]?.status === 'approved')
+        || ['admin', 'professional', 'monitoring', 'responsible']
+          .find(candidate => nextProfile.profiles[candidate]);
+      const remainingEntry = remainingRole ? getProfileEntry(nextProfile, remainingRole) : null;
+      const legacyPatch = remainingEntry
+        ? legacySummaryPatchForRole(nextProfile, remainingRole, remainingEntry)
+        : {
+          role,
+          status: 'canceled',
+          approvedAt: null,
+          approvedBy: null,
+          approvedByEmail: null,
+          rejectedAt: null,
+          rejectedBy: null,
+          rejectedByEmail: null,
+          revokedAt: null,
+          revokedBy: null,
+          revokedByEmail: null,
+          suspendedAt: null,
+          suspendedBy: null,
+          suspendedByEmail: null,
+          suspensionReason: null,
+          reactivatedAt: null,
+          reactivatedBy: null,
+          reactivatedByEmail: null,
+          informationRequestMessage: null,
+          informationRequestedAt: null,
+          informationRequestedBy: null,
+          informationRequestedByEmail: null,
+          informationResponseMessage: null,
+          informationRespondedAt: null,
+          linkedPatientIds: [],
+          requestId: null,
+          expiresAt: null,
+          temporaryAccess: null,
+          suspension: null,
+          enabledContexts: [],
+          permissionOverrides: {},
+        };
+
+      transaction.update(profileRef, {
+        ...profileDeletePatchForRole(role),
+        ...legacyPatch,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    transaction.set(auditRef, {
+      id: auditRef.id,
+      requestId,
+      removedRequestIds: [...requestRefsToDelete.values()].map(ref => ref.id),
+      removedApprovalIds: [...approvalRefsToDelete.values()].map(ref => ref.id),
+      role,
+      email: normalizedEmail,
+      uid: request.uid || resolvedUid || null,
+      deletedBy: decodedToken.uid,
+      deletedByEmail: normalizeEmail(decodedToken.email),
+      deletedAt: FieldValue.serverTimestamp(),
+      scope: 'access-profile-only',
+      preserved: ['firebaseAuth', 'patients', 'sessions', 'payments', 'media', 'clinicalRecords', 'activities'],
+    });
+  });
+
+  return {
+    deleted: true,
+    requestId,
+    role,
+    removedRequestIds: [...requestRefsToDelete.values()].map(ref => ref.id),
+  };
 }
 
 function isQuotaExceededError(error) {
@@ -3470,7 +4055,16 @@ export default async function handler(req, res) {
         return res.status(200).json(await listPatientProfileChangeRequests(db, decodedToken, req));
       }
       const snapshot = await getProfile(db, decodedToken);
-      return res.status(200).json({ profile: snapshot.exists ? serializeProfile(snapshot.data()) : null });
+      const activeRole = normalizeText(req.query?.activeRole, 40);
+      let profileData = null;
+      if (snapshot.exists) {
+        const sourceProfile = snapshot.data();
+        const isPrimaryAdmin = normalizeEmail(decodedToken?.email) === PRIMARY_ADMIN_EMAIL;
+        profileData = activeRole && !isPrimaryAdmin
+          ? assertSelectedProfileIsActive(sourceProfile, activeRole)
+          : sourceProfile;
+      }
+      return res.status(200).json({ profile: profileData ? serializeProfile(profileData) : null });
     }
 
     const body = parseBody(req);
@@ -3486,6 +4080,12 @@ export default async function handler(req, res) {
       requirePrimaryAdmin(decodedToken);
       const snapshot = await revokeRequest(db, decodedToken, body);
       return res.status(200).json({ request: serializeRequest(snapshot), profile: null });
+    }
+
+    if (body.action === 'deleteAccessRegistration') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      return res.status(200).json(await deleteAccessRegistration(db, decodedToken, body));
     }
 
     if (body.action === 'suspendAccess') {

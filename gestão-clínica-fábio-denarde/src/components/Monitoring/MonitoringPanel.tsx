@@ -3,6 +3,7 @@ import {
   Calendar,
   CalendarDays,
   Clock3,
+  Copy,
   Images,
   Info,
   LayoutDashboard,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { getMonitoringPanelData } from '../../lib/accessApi';
 import { calculateAge, cn, getStatusColor, safeFormatDate } from '../../lib/utils';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import type { MonitoringPanelData, MonitoringPatient, MonitoringSession } from '../../types/access';
 import {
   buildMonitoringPatientSummary,
@@ -23,8 +25,14 @@ import {
   isMonitoringPatientVisible,
   normalizeMonitoringText,
 } from '../../../shared/monitoringPanel.js';
+import {
+  buildCurrentPackageSessionSummaries,
+  formatCurrentPackageSessionSummaries,
+  formatCurrentPackageSessionSummary,
+} from '../../../shared/sessionPackageSummary.js';
 import BrandLogo from '../Common/BrandLogo';
 import PatientPhoto from '../Common/PatientPhoto';
+import { showToast } from '../Common/Toast';
 import ResponsibleGooglePhotosGallery from '../GooglePhotosAlbums/ResponsibleGooglePhotosGallery';
 
 type MonitoringTab = 'dashboard' | 'agenda' | 'galeria';
@@ -35,6 +43,7 @@ interface MonitoringPanelProps {
   embedded?: boolean;
   onExitPreview?: () => void;
   onLogout?: () => void;
+  onSwitchProfile?: () => void;
 }
 
 function patientDisplayName(patient: MonitoringPatient): string {
@@ -71,6 +80,15 @@ function formatDayHeading(date: string): string {
   return formatted.charAt(0).toUpperCase() + formatted.slice(1);
 }
 
+function formatSaoPauloToday(): string {
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date());
+}
+
 function getPackageNumber(summary: MonitoringSummary): number {
   const realized = Number(summary.sessionsRealized) || 0;
   return Math.max(1, Math.ceil(Math.max(realized, 1) / 10));
@@ -97,6 +115,7 @@ export default function MonitoringPanel({
   embedded = false,
   onExitPreview,
   onLogout,
+  onSwitchProfile,
 }: MonitoringPanelProps) {
   const [data, setData] = useState<MonitoringPanelData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -153,6 +172,18 @@ export default function MonitoringPanel({
     summaries.filter(summary => isMonitoringPatientVisible(summary.patient))
   ), [summaries]);
 
+  const currentPackageSummaries = useMemo(() => (
+    buildCurrentPackageSessionSummaries(
+      visibleSummaries.map(summary => summary.patient),
+      data?.sessions || [],
+      {
+        plannedSessions: 10,
+        onlyActive: true,
+        includePatient: isMonitoringPatientVisible,
+      },
+    )
+  ), [data?.sessions, visibleSummaries]);
+
   const visiblePatientIds = useMemo(() => (
     new Set(visibleSummaries.map(summary => summary.patient.id))
   ), [visibleSummaries]);
@@ -201,6 +232,23 @@ export default function MonitoringPanel({
   const shellClass = embedded
     ? 'py-6'
     : 'min-h-screen bg-clinic-bg px-3 py-4 sm:px-5 lg:px-8';
+
+  const copyPackageSummary = async (text: string, successMessage: string) => {
+    try {
+      await copyTextToClipboard(text);
+      showToast(successMessage);
+    } catch (copyError) {
+      console.error('[MonitoringPanel] Falha ao copiar resumo de sessões:', copyError);
+      showToast('Não foi possível copiar o resumo de sessões.', 'error');
+    }
+  };
+
+  const copyAllPackageSummaries = async () => {
+    const text = formatCurrentPackageSessionSummaries(currentPackageSummaries, {
+      reportDate: formatSaoPauloToday(),
+    });
+    await copyPackageSummary(text, 'Resumo de todos os atendentes copiado!');
+  };
 
   const renderUpcomingSession = (session: MonitoringSession) => {
     const summary = summariesByPatientId.get(session.patientId);
@@ -259,6 +307,11 @@ export default function MonitoringPanel({
               {adminPreview && onExitPreview && (
                 <button type="button" onClick={onExitPreview} className="rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase text-white">
                   Retornar ao modo Administrador
+                </button>
+              )}
+              {onSwitchProfile && (
+                <button type="button" onClick={onSwitchProfile} className="rounded-xl bg-status-green-text px-4 py-2.5 text-xs font-black uppercase text-white">
+                  Trocar perfil
                 </button>
               )}
               {!embedded && onLogout && (
@@ -376,36 +429,127 @@ export default function MonitoringPanel({
                 )}
               </section>
 
-              <section className="rounded-xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
-                <div className="border-b border-clinic-border pb-3">
-                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-clinic-primary">Agenda resumida</p>
-                  <h2 className="mt-1 text-xl font-black text-clinic-text">Próximas Sessões — Hoje</h2>
-                </div>
+              <div className="flex min-w-0 flex-col gap-4">
+                <section className="rounded-xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
+                  <div className="border-b border-clinic-border pb-3">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-clinic-primary">Agenda resumida</p>
+                    <h2 className="mt-1 text-xl font-black text-clinic-text">Próximas Sessões — Hoje</h2>
+                  </div>
 
-                <div className="mt-4 space-y-3">
-                  {upcoming.todaySessions.length > 0 ? (
-                    upcoming.todaySessions.map(renderUpcomingSession)
-                  ) : (
-                    <div className="flex min-h-32 flex-col items-center justify-center rounded-xl border border-dashed border-clinic-border bg-clinic-bg p-5 text-center">
-                      <Info size={28} className="text-clinic-text-faint" />
-                      <p className="mt-3 text-sm font-bold text-clinic-text-muted">Nenhuma sessão marcada para hoje.</p>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-5 border-t border-clinic-border pt-4">
-                  <h3 className="font-black text-clinic-text">
-                    {upcoming.nextDate ? `Próximas Sessões — ${formatDayHeading(upcoming.nextDate)}` : 'Próximas Sessões'}
-                  </h3>
-                  <div className="mt-3 space-y-3">
-                    {upcoming.nextSessions.length > 0 ? (
-                      upcoming.nextSessions.map(renderUpcomingSession)
+                  <div className="mt-4 space-y-3">
+                    {upcoming.todaySessions.length > 0 ? (
+                      upcoming.todaySessions.map(renderUpcomingSession)
                     ) : (
-                      <p className="rounded-xl bg-clinic-bg p-4 text-sm text-clinic-text-muted">Nenhuma sessão futura encontrada.</p>
+                      <div className="flex min-h-32 flex-col items-center justify-center rounded-xl border border-dashed border-clinic-border bg-clinic-bg p-5 text-center">
+                        <Info size={28} className="text-clinic-text-faint" />
+                        <p className="mt-3 text-sm font-bold text-clinic-text-muted">Nenhuma sessão marcada para hoje.</p>
+                      </div>
                     )}
                   </div>
-                </div>
-              </section>
+
+                  <div className="mt-5 border-t border-clinic-border pt-4">
+                    <h3 className="font-black text-clinic-text">
+                      {upcoming.nextDate ? `Próximas Sessões — ${formatDayHeading(upcoming.nextDate)}` : 'Próximas Sessões'}
+                    </h3>
+                    <div className="mt-3 space-y-3">
+                      {upcoming.nextSessions.length > 0 ? (
+                        upcoming.nextSessions.map(renderUpcomingSession)
+                      ) : (
+                        <p className="rounded-xl bg-clinic-bg p-4 text-sm text-clinic-text-muted">Nenhuma sessão futura encontrada.</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-clinic-border pb-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-clinic-primary">Pacote atual</p>
+                      <h2 className="mt-1 flex items-center gap-2 text-lg font-black text-clinic-text">
+                        <Clock3 size={18} className="text-clinic-primary" />
+                        Sessões Restantes (Pacote atual)
+                      </h2>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={copyAllPackageSummaries}
+                      disabled={currentPackageSummaries.length === 0}
+                      className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg bg-clinic-primary px-3 py-2 text-xs font-black text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Copiar resumo de todos os atendentes"
+                      aria-label="Copiar resumo de todos os atendentes"
+                    >
+                      <Copy size={14} />
+                      Copiar todos
+                    </button>
+                  </div>
+
+                  {currentPackageSummaries.length === 0 ? (
+                    <div className="mt-4 rounded-xl border border-dashed border-clinic-border bg-clinic-bg p-5 text-center text-sm text-clinic-text-muted">
+                      Nenhum atendente ativo disponível para o resumo do pacote atual.
+                    </div>
+                  ) : (
+                    <div className="custom-scrollbar mt-4 max-h-[420px] space-y-3 overflow-y-auto pr-1.5">
+                      {currentPackageSummaries.map(packageSummary => {
+                        const patientName = patientDisplayName(packageSummary.patient);
+                        const individualText = formatCurrentPackageSessionSummary(packageSummary, {
+                          includeReportHeader: true,
+                          reportDate: formatSaoPauloToday(),
+                        });
+
+                        return (
+                          <article key={packageSummary.patient.id} className="rounded-xl border border-clinic-border bg-white p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <p className="truncate text-sm font-black text-clinic-text">{patientName}</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => copyPackageSummary(individualText, `Resumo de ${patientName} copiado!`)}
+                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-clinic-text-muted transition hover:bg-clinic-bg hover:text-clinic-primary focus:outline-none focus:ring-2 focus:ring-clinic-primary/30"
+                                    title={`Copiar resumo de sessões de ${patientName}`}
+                                    aria-label={`Copiar resumo de sessões de ${patientName}`}
+                                  >
+                                    <Copy size={14} />
+                                  </button>
+                                </div>
+
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {packageSummary.sessions.slice(-packageSummary.plannedSessions).map(session => (
+                                    <div key={session.id} className="flex flex-col items-center gap-0.5">
+                                      <span className={cn(
+                                        'h-3 w-3 rounded-full',
+                                        session.status === 'Reposição' ? 'bg-[#E67E22]' : 'bg-clinic-primary',
+                                      )} />
+                                      <span className="text-[8px] font-medium text-clinic-text-muted">{safeFormatDate(session.date, 'dd/MM')}</span>
+                                    </div>
+                                  ))}
+                                  {Array.from({ length: packageSummary.remaining }).map((_, index) => (
+                                    <div key={`remaining-${packageSummary.patient.id}-${index}`} className="flex flex-col items-center gap-0.5">
+                                      <span className="h-3 w-3 rounded-full border border-clinic-border bg-clinic-bg" />
+                                      <span className="text-[8px] text-clinic-text-faint">&nbsp;</span>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-clinic-text-muted">
+                                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-clinic-primary" />Normal</span>
+                                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#E67E22]" />Reposição</span>
+                                  <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full border border-clinic-border bg-clinic-bg" />Restante</span>
+                                </div>
+                              </div>
+
+                              <div className="shrink-0 text-right">
+                                <p className="text-xs font-black text-clinic-primary">{packageSummary.count}/{packageSummary.plannedSessions}</p>
+                                <p className="mt-1 text-[10px] font-black text-clinic-text-faint">{packageSummary.remaining} rest.</p>
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              </div>
             </div>
           </section>
         )}

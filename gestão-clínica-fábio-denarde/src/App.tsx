@@ -20,12 +20,15 @@ import AccessPortal from './components/Auth/AccessPortal';
 import ResponsiblePortal from './components/Auth/ResponsiblePortal';
 import NotificationCenter from './components/Notifications/NotificationCenter';
 import {
+  clearAccessApiCaches,
   getAccessProfile,
   getProfessionalPortalNotifications,
   manageProfessionalPortalNotifications,
 } from './lib/accessApi';
 import type {
   AccessProfile,
+  AccessRequestRole,
+  AccessRole,
   ProfessionalNotificationAction,
   ProfessionalNotificationBulkScope,
   ProfessionalPortalNotification,
@@ -76,6 +79,88 @@ const DEFAULT_STATE: AppState = {
   personalAppointments: [],
   externalRegistrationForms: [],
 };
+
+const PROFILE_LABELS: Record<AccessRole, string> = {
+  admin: 'Administrador',
+  professional: 'Profissional',
+  monitoring: 'Monitoramento',
+  responsible: 'Responsável',
+};
+
+const PROFILE_DESCRIPTIONS: Record<AccessRole, string> = {
+  admin: 'Acesso administrativo completo da clínica.',
+  professional: 'Agenda, atendentes e gestão clínica profissional.',
+  monitoring: 'Painel somente leitura de acompanhamento.',
+  responsible: 'Portal do Responsável e materiais autorizados.',
+};
+
+function profileIsCurrentlyActive(profileState: NonNullable<AccessProfile['profiles']>[AccessRole] | undefined): boolean {
+  if (!profileState || profileState.status !== 'approved') return false;
+  if (profileState.suspension?.active === true) return false;
+  if (profileState.expiresAt && new Date(profileState.expiresAt).getTime() <= Date.now()) return false;
+  return true;
+}
+
+function getActiveProfileRoles(profile: AccessProfile | null): AccessRole[] {
+  if (!profile) return [];
+  const roles = Object.entries(profile.profiles || {})
+    .filter((entry): entry is [AccessRole, NonNullable<AccessProfile['profiles']>[AccessRole]] => Boolean(entry[1]))
+    .filter(([, state]) => profileIsCurrentlyActive(state))
+    .map(([role]) => role);
+  if (roles.length > 0) return roles;
+  return profile.status === 'approved' ? [profile.role] : [];
+}
+
+function ProfileChoiceScreen({
+  profile,
+  onChoose,
+  onLogout,
+}: {
+  profile: AccessProfile;
+  onChoose: (role: AccessRole) => void;
+  onLogout: () => void;
+}) {
+  const roles = getActiveProfileRoles(profile);
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-clinic-bg p-4">
+      <section className="w-full max-w-3xl rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-7">
+        <BrandLogo
+          variant="horizontal"
+          theme="health-balance"
+          name="Fábio Denarde"
+          subtitle="Gestão Clínica e Acompanhamento"
+          className="mb-6"
+        />
+        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-clinic-primary">Perfil de acesso</p>
+        <h1 className="mt-2 text-3xl font-black text-clinic-text">Como deseja entrar?</h1>
+        <p className="mt-2 text-sm text-clinic-text-muted">
+          Escolha o perfil aprovado que deseja usar nesta sessão.
+        </p>
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          {roles.map(role => (
+            <button
+              key={role}
+              type="button"
+              onClick={() => onChoose(role)}
+              className="rounded-xl border border-clinic-border bg-white p-4 text-left shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg focus:outline-none focus:ring-2 focus:ring-clinic-primary/35"
+            >
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-status-green-bg text-status-green-text">
+                {role === 'monitoring' ? <Monitor size={21} /> : <UserRound size={21} />}
+              </span>
+              <span className="mt-4 block text-lg font-black text-clinic-text">
+                Entrar {role === 'monitoring' ? 'no' : 'como'} {PROFILE_LABELS[role]}
+              </span>
+              <span className="mt-1 block text-sm text-clinic-text-muted">{PROFILE_DESCRIPTIONS[role]}</span>
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={onLogout} className="mt-6 text-sm font-bold text-clinic-text-muted hover:text-clinic-primary">
+          Sair desta conta
+        </button>
+      </section>
+    </div>
+  );
+}
 
 const APP_VERSION = `v${packageJson.version}`;
 const NOTIFICATION_MANUAL_MIN_INTERVAL_MS = 5 * 1000;
@@ -131,6 +216,7 @@ export default function App() {
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessError, setAccessError] = useState('');
   const [accessRetryKey, setAccessRetryKey] = useState(0);
+  const [selectedAccessRole, setSelectedAccessRole] = useState<AccessRole | null>(null);
   const [state, setState] = useState<AppState>(DEFAULT_STATE);
   const [dataLoading, setDataLoading] = useState(false);
   
@@ -222,6 +308,7 @@ export default function App() {
       setUser(currentUser);
       if (!currentUser) {
         setAccessProfile(null);
+        setSelectedAccessRole(null);
         setAccessLoading(false);
         setAccessError('');
       }
@@ -239,7 +326,7 @@ export default function App() {
 
     setAccessLoading(true);
     setAccessError('');
-    void getAccessProfile(user, { forceRefreshToken })
+    void getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole })
       .then(profile => {
         if (!cancelled) setAccessProfile(profile);
       })
@@ -256,7 +343,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [accessRetryKey, user]);
+  }, [accessRetryKey, selectedAccessRole, user]);
 
   const handleRetryAccessProfile = useCallback(() => {
     forceAccessTokenRefreshRef.current = true;
@@ -269,9 +356,43 @@ export default function App() {
     forceAccessTokenRefreshRef.current = false;
     setUser(null);
     setAccessProfile(null);
+    setSelectedAccessRole(null);
     setAccessLoading(false);
     setAccessError('');
   }, []);
+
+  const resetSessionScopedData = useCallback(() => {
+    clearAccessApiCaches();
+    setState(DEFAULT_STATE);
+    setNotifications([]);
+    setNotificationsOpen(false);
+    setNotificationCenterOpen(false);
+    setNotificationHasMore(false);
+    setSelectedPortalNotification(null);
+    setSelectedPatientId(null);
+    setSelectedPatientSubTab(null);
+    setSelectedGalleryPatientId(null);
+    setSelectedGallerySessionId(null);
+    setActiveTab('dashboard');
+    loadedCollectionsRef.current.clear();
+    notificationCursorRef.current = null;
+    notificationOldestCursorRef.current = null;
+    notificationInFlightRef.current = null;
+  }, []);
+
+  const chooseAccessRole = useCallback((role: AccessRole) => {
+    resetSessionScopedData();
+    setSelectedAccessRole(role);
+    setAccessProfile(null);
+    setAccessLoading(true);
+    setAccessRetryKey(current => current + 1);
+  }, [resetSessionScopedData]);
+
+  const switchAccessRole = useCallback(() => {
+    resetSessionScopedData();
+    setSelectedAccessRole(null);
+    setAccessProfile(current => current ? { ...current } : current);
+  }, [resetSessionScopedData]);
 
   const canAccessInternalSystem =
     accessProfile?.status === 'approved'
@@ -690,14 +811,40 @@ export default function App() {
     );
   }
 
+  const activeProfileRoles = getActiveProfileRoles(accessProfile);
+  const hasMultipleActiveProfiles = activeProfileRoles.length > 1;
+
+  if (user && accessProfile && activeProfileRoles.length > 0 && !selectedAccessRole) {
+    return (
+      <ProfileChoiceScreen
+        profile={accessProfile}
+        onChoose={chooseAccessRole}
+        onLogout={() => void handleAccessPortalLogout()}
+      />
+    );
+  }
+
   if (user && canAccessResponsiblePortal) {
-    return <ResponsiblePortal user={user} />;
+    return (
+      <>
+        {hasMultipleActiveProfiles && (
+          <button
+            type="button"
+            onClick={switchAccessRole}
+            className="fixed bottom-4 right-4 z-[220] rounded-xl bg-status-green-text px-4 py-3 text-xs font-black uppercase text-white shadow-lg"
+          >
+            Trocar perfil
+          </button>
+        )}
+        <ResponsiblePortal user={user} />
+      </>
+    );
   }
 
   if (user && canAccessMonitoringPanel) {
     return (
       <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-clinic-bg"><Loader2 className="h-10 w-10 animate-spin text-clinic-primary" /></div>}>
-        <MonitoringPanel onLogout={() => void logout()} />
+        <MonitoringPanel onLogout={() => void handleAccessPortalLogout()} onSwitchProfile={hasMultipleActiveProfiles ? switchAccessRole : undefined} />
       </Suspense>
     );
   }
@@ -709,12 +856,15 @@ export default function App() {
         profile={accessProfile}
         profileLoading={accessLoading}
         profileError={accessError}
+        selectedLoginRole={selectedAccessRole && selectedAccessRole !== 'admin' ? selectedAccessRole as AccessRequestRole : null}
+        onSelectedLoginRoleChange={role => setSelectedAccessRole(role)}
         onAccessRequestSubmitted={profile => {
           setAccessProfile(profile);
           setAccessLoading(false);
           setAccessError('');
         }}
         onRetryProfile={handleRetryAccessProfile}
+        onChooseAnotherRole={switchAccessRole}
         onLogout={handleAccessPortalLogout}
       />
     );
@@ -998,6 +1148,9 @@ export default function App() {
             <div className="flex items-center gap-2 sm:gap-3">
               <div className="hidden flex-col text-right sm:flex">
                 <span className="max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-bold uppercase tracking-wider opacity-80">{user.displayName}</span>
+                {hasMultipleActiveProfiles && (
+                  <button onClick={switchAccessRole} className="text-xs font-bold text-clinic-nav-bg transition-colors hover:text-white">Trocar perfil</button>
+                )}
                 <button onClick={logout} className="text-xs font-bold text-clinic-nav-bg transition-colors hover:text-white">Sair</button>
               </div>
               <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} alt="User" className="h-9 w-9 rounded-full border-2 border-white/20 shadow-md sm:h-10 sm:w-10" />

@@ -1069,3 +1069,105 @@ Nenhum commit, push, deploy, publicação de rules, PM2 ou WhatsApp foi executad
 - Adicionada regressão estrutural para impedir retorno ao tema azul e impedir remoção da opção Monitoramento.
 - Nenhuma conta, solicitação, paciente, sessão, pagamento ou dado real foi alterado.
 - Nenhum commit, push, deploy, Firebase Rules, WhatsApp ou PM2 foi executado.
+
+---
+
+# Separação entre identidade e perfil — 2026-06-21 22:01:11 -03:00
+
+## Protocolo inicial
+
+- Branch atual: `main`.
+- HEAD atual: `bcd77f13719d0d682d37f3fec84d2479d26733d0`.
+- Stage: vazio.
+- Status encontrado antes desta correção:
+  - `M ../.gitignore` preexistente;
+  - `?? docs/VALIDACAO_VISUAL_MONITORAMENTO.md`;
+  - `?? logs/audit/`;
+  - `?? relatorios/`;
+  - `?? src/components/Monitoring/MonitoringUiPreview.tsx`;
+  - `?? ../q`.
+- Diff local na área de acesso antes desta correção: nenhum.
+- Restrições reiteradas: sem commit, push, deploy, Firebase Rules, PM2, WhatsApp ou exclusão de dados reais/Firebase Auth.
+
+## Auditoria da arquitetura atual
+
+- `accessProfiles/{uid}` usa um documento único com campos principais `role`, `status`, `expiresAt`, `suspension`, `linkedPatientIds`, `enabledContexts` e `permissionOverrides`.
+- `accessApprovals` usa `emailDocumentId(email)` como chave única, sem distinguir Profissional, Monitoramento ou Responsável.
+- `requestDocumentId(email, uid)` também não inclui o perfil, então a mesma conta/e-mail só tem um documento operacional por solicitação ativa.
+- `reviewRequest` aprova uma solicitação gravando `role/status` no mesmo `accessProfiles/{uid}`. Uma aprovação posterior substitui o perfil anterior.
+- `createPendingRequest` bloqueia qualquer novo pedido quando encontra `approval.status === approved` ou `currentProfile.status === approved`, mesmo que o pedido seja para outro perfil.
+- `revokeRequest`, `suspendAccess`, `reactivateAccess` e `updateAccessValidity` propagam a ação para o documento de perfil inteiro, afetando a conta/perfil principal em vez de um papel específico.
+- `getProfile` retorna apenas um `profile` e o `App.tsx` roteia diretamente por `profile.role`; não existe etapa de escolha “Como deseja entrar?” quando há mais de um perfil aprovado.
+- `buildEffectiveAccessContext` aceita `requestedContext`, mas o modelo atual trata Monitoramento como contexto adicional de um Profissional ou como `role` único; não valida uma coleção/mapa de perfis independentes por tipo.
+- O frontend não envia um perfil ativo explícito para as APIs gerais; o backend só usa o documento único de perfil.
+- O cache de `getAccessProfile` é por UID/refresh, não por perfil ativo. O cache do Monitoramento já considera `adminPreview/weekStart/weekEnd`, mas não um perfil ativo geral.
+- O cadastro público tenta criar conta Auth quando não há usuário autenticado; se o e-mail já existir no Firebase Auth, a criação falha e ainda não existe fluxo completo para “Solicitar outro tipo de acesso” autenticado.
+
+## Respostas objetivas da auditoria solicitada
+
+1. O perfil principal é armazenado em `accessProfiles/{uid}` nos campos únicos `role/status`.
+2. Sim, `accessProfiles/{uid}` suporta apenas um perfil efetivo no modelo atual.
+3. Sim, existe campo único `role`.
+4. Sim, `accessApprovals` usa somente hash do e-mail.
+5. Sim, uma nova aprovação substitui a aprovação/perfil anterior para a mesma conta/e-mail.
+6. Sim, o login escolhe automaticamente o único `profile.role` retornado.
+7. Existe fallback perigoso: normalizações usam `professional` como fallback quando `role` é inválido.
+8. Existe lógica que considera Admin/Profissional como sistema interno e separa Responsável/Monitoramento, mas o documento único pode fazer um perfil tomar o lugar do outro.
+9. O backend diferencia parcialmente `role` e `activeContext`, mas ambos derivam do documento único.
+10. O frontend ainda não envia um perfil ativo geral para o backend.
+11. O backend valida aprovação do documento único, não de um perfil específico dentro da conta.
+12. Caches não estão isolados por perfil ativo geral.
+13. Revogação/suspensão/validade atuam sobre o documento de perfil inteiro.
+14. Revogação/exclusão lógica pode impedir novo cadastro porque Auth e docs por e-mail continuam existindo.
+15. O cadastro público cria Auth quando não há usuário autenticado; se o e-mail já existe, precisa orientar login e permitir solicitação adicional autenticada.
+
+## Estratégia escolhida
+
+- Adotar modelo transitório compatível com o legado: `accessProfiles/{uid}.profiles.{role}` e `accessApprovals/{emailHash_role}` para novas gravações, mantendo leitura de documentos antigos.
+- Preservar campos legados `role/status` para compatibilidade, usando-os apenas como fallback e resumo.
+- Fazer o backend validar `activeRole`/perfil solicitado contra `profiles.{role}` aprovado, sem confiar em estado do navegador.
+- Alterar duplicidade para ser por e-mail/uid + perfil.
+- Implementar seletor de perfil no login para múltiplos perfis ativos e ação “Trocar perfil” em sessão.
+- Adicionar exclusão administrativa somente do cadastro de acesso de um perfil, sem excluir Firebase Auth ou dados clínicos.
+
+## Implementação da separação por perfil — 2026-06-21 22:20:11 -03:00
+
+- `api/access.js` passou a gravar solicitações e aprovações com chave por papel (`requestDocumentId(email, uid, role)` e `approvalDocumentId(email, role)`).
+- `accessProfiles/{uid}` agora recebe subdocumentos lógicos em `profiles.{professional|monitoring|responsible|admin}`, mantendo `role/status` de topo apenas como resumo/fallback legado.
+- Aprovar, rejeitar, suspender, reativar, alterar validade, solicitar informação, responder informação e revogar agora atualizam o perfil específico do papel, não a conta inteira.
+- `getProfile` passou a materializar aprovações por papel e a aceitar `activeRole` para retornar o perfil ativo da sessão.
+- `buildEffectiveAccessContext` passou a selecionar `profiles.{requestedContext}` quando uma API pede Monitoramento/Responsável/Profissional, impedindo que um Profissional herde Monitoramento por `enabledContexts`.
+- `accessContext` aceita documentos novos baseados em `profiles` mesmo quando o resumo legado ainda está ausente ou defasado.
+- Frontend passou a enviar `activeRole` em `getAccessProfile`, isolar cache por papel ativo e limpar caches/dados de sessão ao trocar perfil.
+- `App.tsx` ganhou a tela “Como deseja entrar?” quando há múltiplos perfis aprovados, além de ação “Trocar perfil” no Monitoramento, Portal do Responsável e cabeçalho interno.
+- `AccessPortal` permite que usuário autenticado solicite outro tipo de acesso, inclusive quando já existe um perfil carregado.
+- Mensagem `auth/email-already-in-use` orienta entrar na conta existente e solicitar outro tipo de acesso.
+- Admin ganhou ação “Excluir cadastro” por solicitação/perfil com confirmação digitada (`EXCLUIR MONITORAMENTO`, `EXCLUIR RESPONSAVEL` ou `EXCLUIR PROFISSIONAL`), removendo somente `accessRequests`, a aprovação daquele papel e `profiles.{role}`. Firebase Auth, outros perfis, pacientes, agenda, pagamentos, mídias, registros clínicos e atividades são preservados.
+- A exclusão administrativa registra auditoria mínima em `accessDeletionAudit`.
+- Tipos TypeScript e testes focados foram atualizados para representar `profiles` e `activeProfiles`.
+
+### Validações executadas
+
+- `npm run lint` — aprovado.
+- `node --test tests/access-permissions.test.mjs tests/access-admin-controls.test.mjs` — 27 testes aprovados.
+- `npm run build` — aprovado, build local gerado em `dist/`.
+- `git diff --check` — sem erros; apenas avisos esperados de conversão LF/CRLF no Windows.
+
+### Restrições mantidas
+
+- Nenhum commit, push, deploy ou publicação de Firebase Rules foi executado.
+- Nenhum PM2, WhatsApp, envio real de mensagem ou automação externa foi acionado.
+- Nenhum dado real de Firebase Auth, pacientes, agenda, pagamentos, mídias, registros clínicos ou atividades foi excluído.
+
+## Sessoes Restantes no Dashboard do Monitoramento
+
+- Objetivo: inserir no Dashboard do Monitoramento o bloco **Sessoes Restantes (Pacote atual)** abaixo de Proximas Sessoes.
+- Sincronizacao: Relatorios e Monitoramento passaram a reutilizar shared/sessionPackageSummary.js, preservando o mesmo calculo do ciclo atual de 10 sessoes.
+- Copia geral: botao **Copiar todos** copia o resumo de todos os atendentes ativos e visiveis no bloco.
+- Copia individual: cada atendente possui botao acessivel para copiar somente o proprio resumo.
+- Seguranca: o filtro de visibilidade do Monitoramento continua sendo aplicado; Jacinto Melaco (Teste) permanece oculto.
+- Interface: card verde, responsivo e com rolagem interna para listas extensas.
+- Arquivos alterados: src/components/Reports.tsx e src/components/Monitoring/MonitoringPanel.tsx.
+- Arquivos criados: shared/sessionPackageSummary.js, src/lib/clipboard.ts e 	ests/session-package-summary.test.mjs.
+- Testes previstos nesta aplicacao: testes do pacote atual, testes do Monitoramento, lint, build e git diff --check.
+- Publicacao: commit, push e deploy permanecem bloqueados ate validacao visual local do usuario.

@@ -8,10 +8,16 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { getSessionCycleNumber } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
+import {
+  buildCurrentPackageSessionSummaries,
+  formatCurrentPackageSessionSummaries,
+  formatCurrentPackageSessionSummary,
+} from '../../shared/sessionPackageSummary.js';
 
 interface ReportsProps {
   state: AppState;
@@ -251,42 +257,28 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
     showToast('Planilha Financeira gerada!');
   };
 
-  const copyAllSessionsSummary = () => {
-    const formattedCurrentDate = format(new Date(), 'dd/MM/yyyy');
-    const allSummaries = state.patients
-      .filter(p => p.status === 'Ativo')
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map(patient => {
-        const realizedSessions = state.sessions
-          .filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
-          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const currentPackageSummaries = useMemo(() => (
+    buildCurrentPackageSessionSummaries(state.patients, state.sessions, {
+      plannedSessions: 10,
+      onlyActive: true,
+    })
+  ), [state.patients, state.sessions]);
 
-        const totalRealized = realizedSessions.length;
-        const currentPackageIndex = totalRealized > 0 ? Math.floor((totalRealized - 1) / 10) * 10 : 0;
-        const packageStartDate = realizedSessions[currentPackageIndex] ? realizedSessions[currentPackageIndex].date : (patient.startDate || '');
+  const copyPackageSummary = async (text: string, successMessage: string) => {
+    try {
+      await copyTextToClipboard(text);
+      showToast(successMessage);
+    } catch (copyError) {
+      console.error('[Reports] Falha ao copiar resumo de sessões:', copyError);
+      showToast('Não foi possível copiar o resumo de sessões.', 'error');
+    }
+  };
 
-        const patientSessions = realizedSessions.filter(s => s.date >= packageStartDate);
-        const count = patientSessions.length;
-        const remaining = Math.max(0, 10 - count);
-
-        const lines = [
-          `👦 Paciente: ${patient.name}`,
-          `👤 Responsável: ${patient.guardianName}`,
-          `✅ Sessões realizadas (${count}/10):`
-        ];
-        patientSessions.slice(-10).forEach((s, index) => {
-          const isReposicao = s.status === SessionStatus.REPOSICAO;
-          const tipoLabel = isReposicao ? 'reposição' : 'OK';
-          lines.push(`${index + 1}. ${safeFormatDate(s.date, 'dd/MM')} - ${tipoLabel}`);
-        });
-        lines.push(`⏳ Restantes: ${remaining} sessões`);
-        return lines.join('\n');
-      })
-      .join('\n━━━━━━━━━━━━━━━━\n');
-
-    const finalReport = `📋 Relatório de Sessões — ${formattedCurrentDate}\n\n${allSummaries}`;
-    navigator.clipboard.writeText(finalReport);
-    showToast('Resumo de todos os atendentes copiado!');
+  const copyAllSessionsSummary = async () => {
+    const finalReport = formatCurrentPackageSessionSummaries(currentPackageSummaries, {
+      reportDate: format(new Date(), 'dd/MM/yyyy'),
+    });
+    await copyPackageSummary(finalReport, 'Resumo de todos os atendentes copiado!');
   };
 
   const reportTabHeader = (
@@ -344,42 +336,29 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
               Sessões Restantes (Pacote atual)
              </h3>
              <button
+               type="button"
                onClick={copyAllSessionsSummary}
-               className="flex items-center gap-1 px-2 py-1 bg-clinic-primary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity"
+               disabled={currentPackageSummaries.length === 0}
+               className="flex items-center gap-1 px-2 py-1 bg-clinic-primary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
                title="Copiar resumo de todos os atendentes"
+               aria-label="Copiar resumo de todos os atendentes"
              >
                <Copy size={12} />
                Copiar todos
              </button>
            </div>
            <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-             {state.patients.filter(p => p.status === 'Ativo').sort((a,b) => a.name.localeCompare(b.name)).map(patient => {
-               const realizedSessions = state.sessions
-                 .filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO))
-                 .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-               const totalRealized = realizedSessions.length;
-               const currentPackageIndex = totalRealized > 0 ? Math.floor((totalRealized - 1) / 10) * 10 : 0;
-               const packageStartDate = realizedSessions[currentPackageIndex] ? realizedSessions[currentPackageIndex].date : (patient.startDate || '');
-
-               const patientSessions = realizedSessions.filter(s => s.date >= packageStartDate);
-               const count = patientSessions.length;
-               const remaining = Math.max(0, 10 - count);
-
-               // Copy summary to clipboard
-               const summaryLines = [
-                 `📋 Relatório de Sessões — ${format(new Date(), 'dd/MM/yyyy')}\n`,
-                 `👦 Paciente: ${patient.name}`,
-                 `👤 Responsável: ${patient.guardianName}`,
-                 `✅ Sessões realizadas (${count}/10):`
-               ];
-               patientSessions.slice(-10).forEach((s, index) => {
-                 const isReposicao = s.status === SessionStatus.REPOSICAO;
-                 const tipoLabel = isReposicao ? 'reposição' : 'OK';
-                 summaryLines.push(`${index + 1}. ${safeFormatDate(s.date, 'dd/MM')} - ${tipoLabel}`);
+             {currentPackageSummaries.length === 0 && (
+               <p className="rounded-lg border border-dashed border-clinic-border bg-clinic-bg p-4 text-center text-sm text-clinic-text-muted">
+                 Nenhum atendente ativo disponível para o pacote atual.
+               </p>
+             )}
+             {currentPackageSummaries.map(summary => {
+               const patient = summary.patient;
+               const summaryText = formatCurrentPackageSessionSummary(summary, {
+                 includeReportHeader: true,
+                 reportDate: format(new Date(), 'dd/MM/yyyy'),
                });
-               summaryLines.push(`⏳ Restantes: ${remaining} sessões`);
-               const summaryText = summaryLines.join('\n');
 
                return (
                  <div key={patient.id} className="flex justify-between items-center p-3 rounded-lg border border-clinic-border bg-white gap-3">
@@ -387,33 +366,32 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
                       <div className="flex items-center gap-2 mb-1">
                          <span className="text-sm font-bold truncate">{patient.name}</span>
                          <button
-                            onClick={() => {
-                              navigator.clipboard.writeText(summaryText);
-                              showToast('Resumo copiado!');
-                            }}
+                            type="button"
+                            onClick={() => copyPackageSummary(summaryText, `Resumo de ${patient.name} copiado!`)}
                             className="p-1 hover:bg-clinic-bg/50 rounded flex-shrink-0 transition-colors"
-                            title="Copiar resumo de sessões"
+                            title={`Copiar resumo de sessões de ${patient.name}`}
+                            aria-label={`Copiar resumo de sessões de ${patient.name}`}
                          >
                            <Copy size={14} className="text-clinic-text-muted" />
                          </button>
                       </div>
                       <div className="flex flex-wrap gap-1 mb-1">
-                        {patientSessions.slice(-10).map(s => {
-                           const isReposicao = s.status === SessionStatus.REPOSICAO;
+                        {summary.sessions.slice(-summary.plannedSessions).map(session => {
+                           const isReposicao = session.status === SessionStatus.REPOSICAO;
                            return (
-                             <div key={s.id} className="flex flex-col items-center gap-0.5">
+                             <div key={session.id} className="flex flex-col items-center gap-0.5">
                                <div className={cn(
                                  "w-3 h-3 rounded-full",
                                  isReposicao ? "bg-[#E67E22]" : "bg-clinic-primary"
                                )} />
                                <span className="text-[8px] text-clinic-text-muted font-medium">
-                                 {safeFormatDate(s.date, 'dd/MM')}
+                                 {safeFormatDate(session.date, 'dd/MM')}
                                </span>
                              </div>
                            );
                         })}
-                        {Array.from({ length: remaining }).map((_, i) => (
-                           <div key={`rem-${i}`} className="flex flex-col items-center gap-0.5">
+                        {Array.from({ length: summary.remaining }).map((_, index) => (
+                           <div key={`rem-${patient.id}-${index}`} className="flex flex-col items-center gap-0.5">
                              <div className="w-3 h-3 rounded-full bg-clinic-bg border border-clinic-border" />
                              <span className="text-[8px] text-clinic-text-faint">&nbsp;</span>
                            </div>
@@ -435,8 +413,8 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1">
-                      <span className="text-[10px] font-bold text-clinic-primary">{count}/10</span>
-                      <span className="text-[10px] font-bold text-clinic-text-faint">{remaining} rest.</span>
+                      <span className="text-[10px] font-bold text-clinic-primary">{summary.count}/{summary.plannedSessions}</span>
+                      <span className="text-[10px] font-bold text-clinic-text-faint">{summary.remaining} rest.</span>
                     </div>
                  </div>
                );

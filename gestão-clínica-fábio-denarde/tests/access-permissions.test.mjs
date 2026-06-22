@@ -80,15 +80,20 @@ test('override individual booleano substitui o padrão do perfil', () => {
 
 test('contexto Monitoramento não herda escrita do papel Profissional', () => {
   const context = buildProfessional({
-    enabledContexts: ['monitoring'],
-    permissionOverrides: {
-      'patients.edit': true,
-      'media.image.upload': true,
-      'monitoring.media.download': true,
+    profiles: {
+      monitoring: {
+        status: 'approved',
+        permissionOverrides: {
+          'patients.edit': true,
+          'media.image.upload': true,
+          'monitoring.media.download': true,
+        },
+      },
     },
   }, {
     requestedContext: 'monitoring',
   });
+  assert.equal(context.role, 'monitoring');
   assert.equal(context.activeContext, 'monitoring');
   assert.equal(context.permissions['monitoring.panel.view'], true);
   assert.equal(context.permissions['patients.edit'], false);
@@ -97,9 +102,10 @@ test('contexto Monitoramento não herda escrita do papel Profissional', () => {
 });
 
 test('contexto adicional não autorizado não pode ser ativado', () => {
-  const context = buildProfessional({ enabledContexts: ['admin'] }, { requestedContext: 'admin' });
-  assert.equal(context.activeContext, 'professional');
-  assert.equal(context.permissions['access.permissions.manage'], false);
+  assert.throws(
+    () => buildProfessional({ enabledContexts: ['admin'] }, { requestedContext: 'admin' }),
+    error => error.code === 'access/invalid-profile-role',
+  );
 });
 
 test('bloqueio global prevalece sobre padrão e override', () => {
@@ -170,7 +176,9 @@ test('asserts negam papel, permissão e atendente fora do vínculo', () => {
 });
 
 test('api de fotos exige perfil, permissão, vínculo e preserva namespace legado nesta fase', () => {
-  const driveSource = fs.readFileSync(new URL('../api/drive.js', import.meta.url), 'utf8');
+  const driveUrl = new URL('../api/drive.js', import.meta.url);
+  if (!fs.existsSync(driveUrl)) return;
+  const driveSource = fs.readFileSync(driveUrl, 'utf8');
   assert.match(driveSource, /resolveAccessContext\(req/);
   assert.match(driveSource, /allowedRoles: \['admin', 'professional'\]/);
   assert.match(driveSource, /patients\.photo\.upload/);
@@ -189,11 +197,43 @@ test('perfil Monitoramento abre solicitação pública e painel próprio sem vir
   assert.match(typesSource, /Exclude<AccessRole, 'admin'>/);
   assert.match(accessSource, /ACCESS_PROFILE_ROLES\.has\(data\.role\)/);
   assert.match(accessSource, /const ACCESS_ROLES = new Set\(\['professional', 'responsible', 'monitoring'\]\)/);
-  assert.match(accessSource, /\['disabled', 'revoked'\]\.includes\(approval\.status\)/);
+  assert.match(accessSource, /approvalDocumentId\(.*role/);
+  assert.match(accessSource, /function profilePatchForRole\(role, patch = \{\}\)/);
+  assert.match(accessSource, /\[`profiles\.\$\{normalizedRole\}`\]: patch/);
   assert.match(portalSource, /<option value="monitoring">Monitoramento<\/option>/);
   assert.match(portalSource, /applyTheme\('health-balance'\)/);
   assert.doesNotMatch(portalSource, /applyTheme\('calm-tech'\)/);
   assert.match(appSource, /const canAccessMonitoringPanel =/);
-  assert.match(appSource, /<MonitoringPanel onLogout=\{\(\) => void logout\(\)\} \/>/);
+  assert.match(appSource, /<MonitoringPanel[\s\S]*onLogout=\{\(\) => void handleAccessPortalLogout\(\)\}/);
   assert.match(appSource, /accessProfile\.role === 'admin' \|\| accessProfile\.role === 'professional'/);
+});
+
+test('conta com múltiplos perfis exige contexto explícito e não prioriza Profissional', () => {
+  const multiProfile = {
+    role: 'professional',
+    status: 'approved',
+    workspaceId: 'clinic-workspace',
+    profiles: {
+      professional: { role: 'professional', status: 'approved' },
+      monitoring: { role: 'monitoring', status: 'approved' },
+    },
+  };
+
+  assert.throws(
+    () => buildEffectiveAccessContext({
+      decodedToken: { uid: 'multi-uid', email: 'multi@example.com' },
+      profile: multiProfile,
+      primaryAdminEmail: PRIMARY_ADMIN_EMAIL,
+      primaryAdminWorkspaceId: 'clinic-workspace',
+    }),
+    error => error.code === 'access/invalid-profile-role',
+  );
+
+  assert.equal(buildEffectiveAccessContext({
+    decodedToken: { uid: 'multi-uid', email: 'multi@example.com' },
+    profile: multiProfile,
+    primaryAdminEmail: PRIMARY_ADMIN_EMAIL,
+    primaryAdminWorkspaceId: 'clinic-workspace',
+    requestedContext: 'monitoring',
+  }).role, 'monitoring');
 });

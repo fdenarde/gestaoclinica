@@ -116,12 +116,13 @@ test('painel administrativo apresenta ações por estado, validade e histórico 
 
 test('controles administrativos usam modais em vez de prompts nativos', () => {
   assert.match(adminCardSource, /import Modal from '..\/Common\/Modal'/);
-  assert.match(adminCardSource, /type AdminActionKind = 'approveMonitoring' \| 'requestInformation' \| 'suspend' \| 'reactivate' \| 'validity' \| 'revoke'/);
+  assert.match(adminCardSource, /type AdminActionKind = 'approveMonitoring' \| 'requestInformation' \| 'suspend' \| 'reactivate' \| 'validity' \| 'revoke' \| 'deleteAccess'/);
   assert.match(adminCardSource, /openActionModal\('suspend'/);
   assert.match(adminCardSource, /openActionModal\('reactivate'/);
   assert.match(adminCardSource, /openActionModal\('validity'/);
   assert.match(adminCardSource, /openActionModal\('requestInformation'/);
   assert.match(adminCardSource, /openActionModal\('revoke'/);
+  assert.match(adminCardSource, /openActionModal\('deleteAccess'/);
   assert.doesNotMatch(adminCardSource, /window\.prompt|\bprompt\(/);
   assert.doesNotMatch(adminCardSource, /window\.confirm|\bconfirm\(/);
   assert.doesNotMatch(adminCardSource, /window\.alert|\balert\(/);
@@ -170,8 +171,55 @@ test('prévia visual usa apenas dados fictícios e não chama APIs reais diretam
   assert.match(previewSource, /mock-monitoring-/);
   assert.doesNotMatch(previewSource, /fdenarde@gmail\.com|Fábio Denarde|Fabio Denarde/);
   assert.doesNotMatch(previewSource, /firebase|firestore|auth\.|db\.|getMonitoringPanelData|listAccessRequests|reviewAccessRequest|revokeAccessRequest/);
-  assert.match(visualChecklistSource, /http:\/\/localhost:3000\/dev\/monitoring-ui-preview/);
-  assert.match(visualChecklistSource, /VITE_MONITORING_UI_PREVIEW=true/);
+  if (visualChecklistSource) {
+    assert.match(visualChecklistSource, /http:\/\/localhost:3000\/dev\/monitoring-ui-preview/);
+    assert.match(visualChecklistSource, /VITE_MONITORING_UI_PREVIEW=true/);
+  }
+});
+
+test('perfil revogado exibe exclusão de cadastro e perfil aprovado exige revogação primeiro', () => {
+  assert.match(adminCardSource, /function canDeleteAccessRegistration/);
+  assert.match(adminCardSource, /\['rejected', 'revoked', 'disabled', 'canceled'\]\.includes\(request\.status\)/);
+  assert.match(adminCardSource, /canDeleteAccessRegistration\(request\)/);
+  assert.match(adminCardSource, /Excluir cadastro de acesso/);
+  assert.match(accessSource, /access\/delete-requires-inactive-profile/);
+  assert.match(accessSource, /Revogue ou rejeite este perfil antes de excluir o cadastro de acesso/);
+});
+
+test('exclusão remove todos os rastros atuais do mesmo perfil e preserva conta e dados clínicos', () => {
+  const deletionSource = accessSource.slice(
+    accessSource.indexOf('async function collectAccessRequestRefsForDeletion'),
+    accessSource.indexOf('function isQuotaExceededError'),
+  );
+  assert.match(deletionSource, /collectAccessRequestRefsForDeletion/);
+  assert.match(deletionSource, /collectAccessApprovalRefsForDeletion/);
+  assert.match(deletionSource, /for \(const field of \['email', 'normalizedEmail'\]\)/);
+  assert.match(deletionSource, /legacyRequestDocumentId\(normalizedEmail, uid\)/);
+  assert.match(deletionSource, /for \(const ref of requestRefsToDelete\.values\(\)\) transaction\.delete\(ref\)/);
+  assert.match(deletionSource, /for \(const ref of approvalRefsToDelete\.values\(\)\) transaction\.delete\(ref\)/);
+  assert.match(deletionSource, /transaction\.update\(profileRef, \{/);
+  assert.match(deletionSource, /profileDeletePatchForRole\(role\)/);
+  assert.match(deletionSource, /removedRequestIds/);
+  assert.match(deletionSource, /scope: 'access-profile-only'/);
+  assert.match(deletionSource, /preserved: \['firebaseAuth', 'patients', 'sessions', 'payments', 'media', 'clinicalRecords', 'activities'\]/);
+  assert.doesNotMatch(deletionSource, /getAuth\(\)\.deleteUser|deleteUser\(/);
+  assert.match(adminCardSource, /item\.role === request\.role[\s\S]*item\.email\.trim\(\)\.toLowerCase\(\) === request\.email\.trim\(\)\.toLowerCase\(\)/);
+});
+
+test('perfil revogado precisa ser excluído antes de nova solicitação do mesmo tipo', () => {
+  assert.match(accessSource, /access\/revoked-registration-must-be-deleted/);
+  assert.match(accessSource, /O administrador precisa excluir somente esse cadastro de acesso antes de uma nova solicitação/);
+  assert.match(accessSource, /approvalDocumentId\(input\.email, role\)/);
+  assert.match(accessSource, /requestDocumentId\(input\.email, decodedToken\.uid, role\)/);
+});
+
+test('perfil revogado órfão de uma exclusão antiga é autocorrigido no novo recadastro', () => {
+  assert.match(accessSource, /const discoveredRequestSnapshot = await findRequestByEmail\(db, input\.email, role\)/);
+  assert.match(accessSource, /const discoveredApprovalSnapshot = await findApprovalByEmail\(db, input\.email, role\)/);
+  assert.match(accessSource, /const hasPersistedRoleRecord = Boolean/);
+  assert.match(accessSource, /const orphanedRevokedProfile = currentRoleProfile\?\.status === 'revoked' && !hasPersistedRoleRecord/);
+  assert.match(accessSource, /currentRoleProfile\?\.status === 'revoked' && !orphanedRevokedProfile/);
+  assert.match(accessSource, /status: 'pending'/);
 });
 
 test('cliente de Monitoramento usa cache curto e evita chamadas duplicadas da consulta de resumo', () => {

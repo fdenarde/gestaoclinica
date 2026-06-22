@@ -86,7 +86,10 @@ export async function resolveAccessContext(req, options = {}) {
   if (!isPrimaryAdmin) {
     const profileSnapshot = await db.collection('accessProfiles').doc(decodedToken.uid).get();
     profile = profileSnapshot.exists ? profileSnapshot.data() || {} : null;
-    if (!profile || !ACCESS_ROLES.has(String(profile.role || '').trim())) {
+    const hasLegacyRole = ACCESS_ROLES.has(String(profile?.role || '').trim());
+    const hasMappedProfile = profile?.profiles && typeof profile.profiles === 'object'
+      && Object.keys(profile.profiles).some(role => ACCESS_ROLES.has(role));
+    if (!profile || (!hasLegacyRole && !hasMappedProfile)) {
       throw accessContextError(
         'activity-records/internal-approved-required',
         'Acesso profissional aprovado obrigatório.',

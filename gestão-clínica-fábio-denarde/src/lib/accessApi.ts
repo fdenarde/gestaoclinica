@@ -38,6 +38,7 @@ interface ApiErrorPayload {
 
 interface RequestOptions {
   forceRefreshToken?: boolean;
+  activeRole?: AccessProfile['role'] | null;
 }
 
 interface AccessProfileResponse {
@@ -51,6 +52,12 @@ interface AccessRequestResponse {
 
 interface AccessRequestsResponse {
   requests: AccessRequestRecord[];
+}
+
+interface DeleteAccessRegistrationResponse {
+  deleted: true;
+  requestId: string;
+  role: AccessProfile['role'];
 }
 
 export interface ProfessionalPortalNotificationsResponse {
@@ -141,6 +148,13 @@ const ACCESS_PROFILE_QUOTA_BACKOFF_MS = 60 * 1000;
 const MONITORING_PANEL_CACHE_MS = 60 * 1000;
 const monitoringPanelCache = new Map<string, { value: MonitoringPanelData; expiresAt: number }>();
 const monitoringPanelRequests = new Map<string, Promise<MonitoringPanelData>>();
+
+export function clearAccessApiCaches(): void {
+  accessProfileRequests.clear();
+  accessProfileBackoffByUid.clear();
+  monitoringPanelCache.clear();
+  monitoringPanelRequests.clear();
+}
 
 function getResponsiblePortalSessionId(user?: User): string {
   const currentUser = user || auth.currentUser;
@@ -233,7 +247,7 @@ async function request<T>(
 export async function getAccessProfile(user?: User, options: RequestOptions = {}): Promise<AccessProfile | null> {
   const currentUser = user || auth.currentUser;
   const userKey = currentUser?.uid || 'missing-user';
-  const requestKey = `${userKey}:${options.forceRefreshToken ? 'refresh' : 'default'}`;
+  const requestKey = `${userKey}:${options.forceRefreshToken ? 'refresh' : 'default'}:${options.activeRole || 'selector'}`;
   const backoff = accessProfileBackoffByUid.get(userKey);
   if (backoff && backoff.until > Date.now()) throw backoff.error;
   if (backoff) accessProfileBackoffByUid.delete(userKey);
@@ -242,7 +256,8 @@ export async function getAccessProfile(user?: User, options: RequestOptions = {}
   if (existingRequest) return existingRequest;
 
   let profileRequest: Promise<AccessProfile | null>;
-  profileRequest = request<AccessProfileResponse>('GET', undefined, user, '', options)
+  const query = options.activeRole ? `?activeRole=${encodeURIComponent(options.activeRole)}` : '';
+  profileRequest = request<AccessProfileResponse>('GET', undefined, user, query, options)
     .then(result => {
       accessProfileBackoffByUid.delete(userKey);
       return result.profile;
@@ -301,6 +316,17 @@ export async function revokeAccessRequest(requestId: string): Promise<AccessRequ
     requestId,
   });
   return result.request;
+}
+
+export async function deleteAccessRegistration(
+  requestId: string,
+  confirmation: string,
+): Promise<DeleteAccessRegistrationResponse> {
+  return request<DeleteAccessRegistrationResponse>('POST', {
+    action: 'deleteAccessRegistration',
+    requestId,
+    confirmation,
+  });
 }
 
 export async function linkResponsiblePatient(

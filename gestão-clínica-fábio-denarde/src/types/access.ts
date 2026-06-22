@@ -92,12 +92,14 @@ export interface AccessTemporaryWindow {
 }
 
 export interface AccessProfile {
+  role: AccessRole;
+  status: AccessStatus;
+  profiles?: Partial<Record<AccessRequestRole | 'admin', AccessProfileRoleState>>;
+  activeProfiles?: AccessRole[];
   uid: string;
   email: string;
   displayName: string;
   phone: string;
-  role: AccessRole;
-  status: AccessStatus;
   createdAt: string | null;
   approvedAt: string | null;
   approvedBy: string | null;
@@ -123,6 +125,32 @@ export interface AccessProfile {
   informationResponseMessage?: string | null;
   informationRespondedAt?: string | null;
   configurationVersion?: number;
+}
+
+export interface AccessProfileRoleState {
+  role: AccessRole;
+  status: AccessStatus;
+  approvedAt: string | null;
+  approvedBy: string | null;
+  approvedByEmail?: string | null;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  revokedByEmail: string | null;
+  suspendedAt?: string | null;
+  suspendedBy?: string | null;
+  suspendedByEmail?: string | null;
+  suspensionReason?: string | null;
+  reactivatedAt?: string | null;
+  reactivatedBy?: string | null;
+  reactivatedByEmail?: string | null;
+  expiresAt?: string | null;
+  linkedPatientIds: string[];
+  requestId: string | null;
+  workspaceId?: string;
+  enabledContexts?: AccessContext[];
+  permissionOverrides?: AccessPermissionOverrides;
+  suspension?: AccessSuspension | null;
+  temporaryAccess?: AccessTemporaryWindow | null;
 }
 
 export interface AccessRequestInput {

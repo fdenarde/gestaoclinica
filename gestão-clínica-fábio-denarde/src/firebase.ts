@@ -27,7 +27,7 @@ interface CreateEmailAccountInput {
 }
 
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
-  'auth/email-already-in-use': 'Já existe uma conta com este e-mail. Volte ao login e entre com e-mail e senha. Se seu acesso ainda estiver pendente, aguarde a aprovação da administração.',
+  'auth/email-already-in-use': 'Já existe uma conta com este e-mail. Entre com a conta existente e use “Solicitar outro tipo de acesso” para pedir um novo perfil. Não é necessário criar outra conta.',
   'auth/invalid-credential': 'E-mail ou senha incorretos.',
   'auth/invalid-email': 'Informe um endereço de e-mail válido.',
   'auth/missing-password': 'Informe sua senha.',

@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  deleteAccessRegistration,
   linkResponsiblePatient,
   listAccessRequests,
   reactivateAccessRequest,
@@ -30,7 +31,7 @@ import Modal from '../Common/Modal';
 import { showToast } from '../Common/Toast';
 
 type RequestTab = 'pending' | 'information_requested' | 'approved' | 'rejected' | 'revoked';
-type AdminActionKind = 'approveMonitoring' | 'requestInformation' | 'suspend' | 'reactivate' | 'validity' | 'revoke';
+type AdminActionKind = 'approveMonitoring' | 'requestInformation' | 'suspend' | 'reactivate' | 'validity' | 'revoke' | 'deleteAccess';
 type AccessAdminMockActionKind = AdminActionKind | 'approve' | 'reject' | 'linkPatient';
 
 export interface AccessAdminMockActionInput {
@@ -38,6 +39,7 @@ export interface AccessAdminMockActionInput {
   request: AccessRequestRecord;
   expiresAt?: string | null;
   message?: string;
+  confirmation?: string;
   patientId?: string;
 }
 
@@ -144,6 +146,10 @@ function validityLabel(request: AccessRequestRecord): string {
   return isExpired(request)
     ? `Expirado em ${formatDateOnly(request.expiresAt)}`
     : `Válido até ${formatDateOnly(request.expiresAt)}`;
+}
+
+function canDeleteAccessRegistration(request: AccessRequestRecord): boolean {
+  return ['rejected', 'revoked', 'disabled', 'canceled'].includes(request.status);
 }
 
 function dateInputValue(value: string | null): string {
@@ -276,6 +282,10 @@ export default function AccessRequestsAdminCard({
     if (input.kind === 'reactivate') return reactivateAccessRequest(input.request.id);
     if (input.kind === 'validity') return updateAccessValidity(input.request.id, input.expiresAt ?? null);
     if (input.kind === 'linkPatient') return linkResponsiblePatient(input.request.id, input.patientId || '');
+    if (input.kind === 'deleteAccess') {
+      await deleteAccessRegistration(input.request.id, input.confirmation || '');
+      return { ...input.request, status: 'canceled' };
+    }
     return revokeAccessRequest(input.request.id);
   };
 
@@ -310,6 +320,13 @@ export default function AccessRequestsAdminCard({
       setModalError('Informe a mensagem que será enviada ao solicitante.');
       return;
     }
+    if (kind === 'deleteAccess') {
+      const expected = `EXCLUIR ${request.role === 'monitoring' ? 'MONITORAMENTO' : request.role === 'responsible' ? 'RESPONSAVEL' : 'PROFISSIONAL'}`;
+      if (normalizedText.toUpperCase() !== expected) {
+        setModalError(`Digite ${expected} para confirmar.`);
+        return;
+      }
+    }
 
     actionSubmittingRef.current = true;
     setReviewingId(request.id);
@@ -331,11 +348,19 @@ export default function AccessRequestsAdminCard({
       } else if (kind === 'validity') {
         updatedRequest = await runAccessAction({ kind, request, expiresAt });
         showToast(updatedRequest.expiresAt ? 'Validade atualizada.' : 'Validade removida.');
+      } else if (kind === 'deleteAccess') {
+        updatedRequest = await runAccessAction({ kind, request, confirmation: normalizedText.toUpperCase() });
+        showToast(`Cadastro de acesso ${roleLabel(request.role)} excluído. A conta Auth e os demais perfis foram preservados.`);
       } else {
         updatedRequest = await runAccessAction({ kind, request });
         showToast('Acesso revogado. O histórico foi mantido.');
       }
-      setRequests(current => current.map(item => item.id === request.id ? updatedRequest : item));
+      setRequests(current => kind === 'deleteAccess'
+        ? current.filter(item => !(
+          item.role === request.role
+          && item.email.trim().toLowerCase() === request.email.trim().toLowerCase()
+        ))
+        : current.map(item => item.id === request.id ? updatedRequest : item));
       setActionModal(null);
       setModalText('');
       setValidityMode('none');
@@ -374,7 +399,7 @@ export default function AccessRequestsAdminCard({
   const actionRequest = actionModal?.request || null;
   const modalBusy = !!actionRequest && reviewingId === actionRequest.id;
   const showValidityFields = actionModal?.kind === 'approveMonitoring' || actionModal?.kind === 'validity';
-  const showTextArea = actionModal?.kind === 'requestInformation' || actionModal?.kind === 'suspend';
+  const showTextArea = actionModal?.kind === 'requestInformation' || actionModal?.kind === 'suspend' || actionModal?.kind === 'deleteAccess';
   const textAreaMaxLength = actionModal?.kind === 'suspend'
     ? SUSPENSION_REASON_MAX_LENGTH
     : INFORMATION_MESSAGE_MAX_LENGTH;
@@ -394,6 +419,8 @@ export default function AccessRequestsAdminCard({
                 : 'Definir validade'
             : actionModal?.kind === 'revoke'
               ? 'Revogar acesso'
+              : actionModal?.kind === 'deleteAccess'
+                ? `Excluir cadastro de ${actionRequest ? roleLabel(actionRequest.role) : 'acesso'}`
               : '';
   const modalSubmitLabel = actionModal?.kind === 'approveMonitoring'
     ? 'Aprovar acesso'
@@ -405,8 +432,10 @@ export default function AccessRequestsAdminCard({
           ? 'Reativar acesso'
           : actionModal?.kind === 'validity'
             ? 'Salvar validade'
+            : actionModal?.kind === 'deleteAccess'
+              ? 'Excluir cadastro'
             : 'Revogar acesso';
-  const modalSubmitClass = actionModal?.kind === 'suspend' || actionModal?.kind === 'revoke'
+  const modalSubmitClass = actionModal?.kind === 'suspend' || actionModal?.kind === 'revoke' || actionModal?.kind === 'deleteAccess'
     ? 'bg-status-red-text hover:bg-red-700'
     : actionModal?.kind === 'requestInformation'
       ? 'bg-status-orange-text hover:opacity-90'
@@ -737,6 +766,20 @@ export default function AccessRequestsAdminCard({
                         </button>
                       </div>
                     )}
+
+                    {canDeleteAccessRegistration(request) && (
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openActionModal('deleteAccess', request)}
+                          disabled={reviewing || !!reviewingId}
+                          className="flex items-center justify-center gap-2 rounded-lg border border-status-red-text/30 bg-status-red-bg px-4 py-2 text-xs font-black text-status-red-text transition hover:bg-red-100 disabled:opacity-50"
+                        >
+                          <X size={15} />
+                          Excluir cadastro de acesso
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </article>
               );
@@ -804,6 +847,29 @@ export default function AccessRequestsAdminCard({
               <p className="text-sm leading-relaxed text-clinic-text-muted">
                 {REVOCATION_CONFIRMATION}
               </p>
+            )}
+
+            {actionModal.kind === 'deleteAccess' && (
+              <>
+                <div className="space-y-2 rounded-xl border border-status-red-text/20 bg-status-red-bg p-4 text-sm text-status-red-text">
+                  <p className="font-black">Esta ação excluirá somente o cadastro de acesso do perfil {roleLabel(actionRequest.role)}.</p>
+                  <p>A conta de autenticação Firebase, os demais perfis, pacientes, agenda, pagamentos, mídias, registros clínicos e atividades permanecerão.</p>
+                  <p>Revogar mantém histórico; excluir remove este cadastro de acesso e permite nova solicitação futura deste perfil.</p>
+                </div>
+                <label className="block">
+                  <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">
+                    Digite EXCLUIR {actionRequest.role === 'monitoring' ? 'MONITORAMENTO' : actionRequest.role === 'responsible' ? 'RESPONSAVEL' : 'PROFISSIONAL'}
+                  </span>
+                  <input
+                    ref={element => { modalPrimaryRef.current = element; }}
+                    value={modalText}
+                    onChange={event => setModalText(event.target.value)}
+                    disabled={modalBusy}
+                    required
+                    className="clinic-input bg-white"
+                  />
+                </label>
+              </>
             )}
 
             {actionModal.kind === 'requestInformation' && (

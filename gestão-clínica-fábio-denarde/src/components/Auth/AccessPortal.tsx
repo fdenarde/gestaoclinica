@@ -9,7 +9,10 @@ import {
   Loader2,
   LockKeyhole,
   Mail,
+  Monitor,
   ShieldCheck,
+  UserRound,
+  UsersRound,
   UserPlus,
 } from 'lucide-react';
 import {
@@ -31,10 +34,39 @@ interface AccessPortalProps {
   profile: AccessProfile | null;
   profileLoading: boolean;
   profileError: string;
+  selectedLoginRole: AccessRequestRole | null;
+  onSelectedLoginRoleChange: (role: AccessRequestRole | null) => void;
   onAccessRequestSubmitted: (profile: AccessProfile | null) => void;
   onRetryProfile: () => void;
+  onChooseAnotherRole?: () => void;
   onLogout?: () => Promise<void> | void;
 }
+
+const LOGIN_ROLE_OPTIONS: Array<{
+  role: AccessRequestRole;
+  label: string;
+  description: string;
+  icon: typeof UserRound;
+}> = [
+  {
+    role: 'professional',
+    label: 'Profissional',
+    description: 'Agenda, atendentes e gestão clínica profissional.',
+    icon: UserRound,
+  },
+  {
+    role: 'monitoring',
+    label: 'Monitoramento',
+    description: 'Painel de acompanhamento em modo somente leitura.',
+    icon: Monitor,
+  },
+  {
+    role: 'responsible',
+    label: 'Responsável',
+    description: 'Portal do Responsável e materiais autorizados.',
+    icon: UsersRound,
+  },
+];
 
 const EMPTY_REQUEST: AccessRequestInput = {
   displayName: '',
@@ -53,6 +85,16 @@ function normalizePhone(value: string): string {
     return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   }
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+function authErrorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code || '')
+    : '';
+}
+
+function isEmailAlreadyInUseError(error: unknown): boolean {
+  return authErrorCode(error) === 'auth/email-already-in-use';
 }
 
 function accessRoleLabel(role: AccessProfile['role']): string {
@@ -110,8 +152,11 @@ export default function AccessPortal({
   profile,
   profileLoading,
   profileError,
+  selectedLoginRole,
+  onSelectedLoginRoleChange,
   onAccessRequestSubmitted,
   onRetryProfile,
+  onChooseAnotherRole,
   onLogout,
 }: AccessPortalProps) {
   const [view, setView] = useState<PortalView>(user ? 'request' : 'login');
@@ -165,12 +210,18 @@ export default function AccessPortal({
   const handleEmailLogin = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
+      if (!selectedLoginRole) {
+        throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
+      }
       await loginWithEmail(email, password);
     });
   };
 
   const handleGoogleLogin = () => {
     void run(async () => {
+      if (!selectedLoginRole) {
+        throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
+      }
       await loginWithGoogle();
     });
   };
@@ -211,24 +262,35 @@ export default function AccessPortal({
 
       let authenticatedUser = user;
       let createdEmailAccount = false;
+      let reusedExistingAccount = false;
       if (!authenticatedUser) {
-        if (password.length < 6) throw new Error('Crie uma senha com pelo menos 6 caracteres.');
-        if (!confirmPassword) throw new Error('Confirme a senha criada.');
+        if (password.length < 6) throw new Error('Informe uma senha com pelo menos 6 caracteres.');
+        if (!confirmPassword) throw new Error('Confirme a senha informada.');
         if (password !== confirmPassword) throw new Error('As senhas informadas não coincidem.');
 
-        const credential = await createEmailAccount({
-          displayName: normalized.displayName,
-          email: normalized.email,
-          password,
-        });
-        authenticatedUser = credential.user;
-        createdEmailAccount = true;
+        try {
+          const credential = await createEmailAccount({
+            displayName: normalized.displayName,
+            email: normalized.email,
+            password,
+          });
+          authenticatedUser = credential.user;
+          createdEmailAccount = true;
+        } catch (accountError) {
+          if (!isEmailAlreadyInUseError(accountError)) throw accountError;
+
+          const credential = await loginWithEmail(normalized.email, password);
+          authenticatedUser = credential.user;
+          reusedExistingAccount = true;
+        }
       }
 
       const result = await submitAccessRequest(normalized, authenticatedUser);
       onAccessRequestSubmitted(result.profile);
       setRequestSubmitted(true);
-      setMessage('Cadastro enviado com sucesso. Aguarde a aprovação da administração.');
+      setMessage(reusedExistingAccount
+        ? 'Conta existente confirmada. A nova solicitação de perfil foi enviada para aprovação.'
+        : 'Cadastro enviado com sucesso. Aguarde a aprovação da administração.');
       setPassword('');
       setConfirmPassword('');
       if (createdEmailAccount) await logout();
@@ -283,6 +345,46 @@ export default function AccessPortal({
 
       {renderFeedback()}
 
+      <fieldset className="space-y-3">
+        <legend className="text-xs font-bold uppercase tracking-wider text-clinic-text-muted">Entrar como</legend>
+        <p className="text-xs leading-relaxed text-clinic-text-muted">
+          Escolha o perfil que deseja usar nesta entrada. A autorização será confirmada depois do login.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {LOGIN_ROLE_OPTIONS.map(option => {
+            const Icon = option.icon;
+            const selected = selectedLoginRole === option.role;
+            return (
+              <button
+                key={option.role}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                onClick={() => {
+                  clearFeedback();
+                  onSelectedLoginRoleChange(option.role);
+                }}
+                className={`rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-clinic-primary/35 ${selected
+                  ? 'border-clinic-primary bg-status-green-bg shadow-sm'
+                  : 'border-clinic-border bg-white hover:border-clinic-primary hover:bg-clinic-bg'}`}
+              >
+                <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${selected
+                  ? 'bg-clinic-primary text-white'
+                  : 'bg-clinic-bg text-clinic-primary'}`}
+                >
+                  <Icon size={18} />
+                </span>
+                <span className="mt-3 block text-sm font-black text-clinic-text">{option.label}</span>
+                <span className="mt-1 block text-[11px] leading-relaxed text-clinic-text-muted">{option.description}</span>
+              </button>
+            );
+          })}
+        </div>
+        {!selectedLoginRole && (
+          <p className="text-xs font-semibold text-status-orange-text">Nenhum modo de entrada selecionado.</p>
+        )}
+      </fieldset>
+
       <label className="block">
         <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">E-mail</span>
         <div className="relative">
@@ -332,7 +434,7 @@ export default function AccessPortal({
 
       <button
         type="submit"
-        disabled={busy}
+        disabled={busy || !selectedLoginRole}
         className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60"
       >
         {busy ? <Loader2 size={19} className="animate-spin" /> : <LockKeyhole size={19} />}
@@ -348,7 +450,7 @@ export default function AccessPortal({
       <button
         type="button"
         onClick={handleGoogleLogin}
-        disabled={busy}
+        disabled={busy || !selectedLoginRole}
         className="flex w-full items-center justify-center gap-3 rounded-xl border border-clinic-border bg-white px-4 py-3.5 font-bold text-clinic-text shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg disabled:cursor-wait disabled:opacity-60"
       >
         <Mail size={19} className="text-clinic-primary" />
@@ -576,12 +678,27 @@ export default function AccessPortal({
         <button type="button" onClick={handleLogout} disabled={busy} className="w-full rounded-xl border border-clinic-border px-4 py-3 font-bold text-clinic-text hover:border-clinic-primary hover:bg-clinic-bg disabled:opacity-60">
           Sair
         </button>
+        {user && (
+          <button
+            type="button"
+            onClick={() => {
+              clearFeedback();
+              setRequestSubmitted(false);
+              setView('request');
+            }}
+            disabled={busy}
+            className="w-full rounded-xl bg-status-green-bg px-4 py-3 font-bold text-status-green-text hover:bg-green-100 disabled:opacity-60"
+          >
+            Solicitar outro tipo de acesso
+          </button>
+        )}
       </div>
     );
   };
 
   const renderProfileState = () => {
     if (!user) return view === 'request' ? renderRequest() : view === 'reset' ? renderReset() : renderLogin();
+    if (view === 'request') return renderRequest();
     if (profileLoading) {
       return (
         <div className="flex min-h-72 flex-col items-center justify-center gap-4 text-center">
@@ -604,6 +721,15 @@ export default function AccessPortal({
           <button type="button" onClick={onRetryProfile} className="w-full rounded-xl bg-clinic-primary px-4 py-3 font-bold text-white hover:bg-clinic-primary-hover">
             Tentar novamente
           </button>
+          {user && selectedLoginRole && onChooseAnotherRole && (
+            <button
+              type="button"
+              onClick={onChooseAnotherRole}
+              className="w-full rounded-xl border border-clinic-border px-4 py-3 font-bold text-clinic-text hover:border-clinic-primary hover:bg-clinic-bg"
+            >
+              Escolher outro modo de entrada
+            </button>
+          )}
           <button type="button" onClick={handleLogout} className="w-full text-sm font-semibold text-clinic-text-muted hover:text-clinic-primary">
             Sair desta conta
           </button>

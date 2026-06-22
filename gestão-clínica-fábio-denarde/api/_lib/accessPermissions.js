@@ -402,13 +402,70 @@ function assertProfileAvailability(sourceProfile, now = Date.now()) {
   }
 }
 
+function normalizeProfileEntry(sourceProfile = {}, role) {
+  if (!role || !ACCESS_ROLES.has(role)) return null;
+  const profileMap = sourceProfile?.profiles && typeof sourceProfile.profiles === 'object'
+    ? sourceProfile.profiles
+    : {};
+  const roleProfile = profileMap[role] && typeof profileMap[role] === 'object'
+    ? profileMap[role]
+    : {};
+  const hasMappedProfile = Object.keys(roleProfile).length > 0;
+  const legacyMatchesRole = normalizeText(sourceProfile?.role, 40) === role;
+
+  if (!hasMappedProfile && !legacyMatchesRole) return null;
+
+  return {
+    ...sourceProfile,
+    ...roleProfile,
+    role,
+    email: sourceProfile.email || roleProfile.email,
+    displayName: sourceProfile.displayName || roleProfile.displayName,
+    phone: sourceProfile.phone || roleProfile.phone,
+    workspaceId: roleProfile.workspaceId || sourceProfile.workspaceId,
+    linkedPatientIds: roleProfile.linkedPatientIds || sourceProfile.linkedPatientIds || [],
+    enabledContexts: roleProfile.enabledContexts || sourceProfile.enabledContexts || [],
+    permissionOverrides: roleProfile.permissionOverrides || sourceProfile.permissionOverrides || {},
+    globalBlocks: roleProfile.globalBlocks || sourceProfile.globalBlocks || [],
+  };
+}
+
+function listProfileEntries(sourceProfile = {}) {
+  const entries = [];
+  const seen = new Set();
+  const profileMap = sourceProfile?.profiles && typeof sourceProfile.profiles === 'object'
+    ? sourceProfile.profiles
+    : {};
+  for (const role of Object.keys(profileMap)) {
+    if (!ACCESS_ROLES.has(role)) continue;
+    const entry = normalizeProfileEntry(sourceProfile, role);
+    if (entry) {
+      entries.push(entry);
+      seen.add(role);
+    }
+  }
+  const legacyRole = normalizeText(sourceProfile?.role, 40);
+  if (ACCESS_ROLES.has(legacyRole) && !seen.has(legacyRole)) {
+    const entry = normalizeProfileEntry(sourceProfile, legacyRole);
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+function selectProfileEntry(sourceProfile = {}, requestedContext) {
+  const requestedRole = ACCESS_ROLES.has(requestedContext) ? requestedContext : '';
+  if (requestedRole) {
+    return normalizeProfileEntry(sourceProfile, requestedRole);
+  }
+  const entries = listProfileEntries(sourceProfile);
+  const approvedEntries = entries.filter(entry => normalizeAccessStatus(entry.status) === 'approved');
+  if (approvedEntries.length === 1) return approvedEntries[0];
+  return entries.length === 1 ? entries[0] : null;
+}
+
 function resolveActiveContext({ role, enabledContexts, requestedContext }) {
   const normalizedRequested = ACCESS_CONTEXTS.has(requestedContext) ? requestedContext : role;
-  if (normalizedRequested === role) return role;
-  const permittedAdditionalContexts = ADDITIONAL_CONTEXTS_BY_ROLE[role] || [];
-  return permittedAdditionalContexts.includes(normalizedRequested) && enabledContexts.includes(normalizedRequested)
-    ? normalizedRequested
-    : role;
+  return normalizedRequested === role ? role : role;
 }
 
 function applyPermissionOverrides(basePermissions, overrides, ceiling) {
@@ -472,11 +529,14 @@ export function buildEffectiveAccessContext({
   const normalizedPrimaryAdminEmail = normalizeEmail(primaryAdminEmail);
   const isPrimaryAdmin = Boolean(normalizedPrimaryAdminEmail && email === normalizedPrimaryAdminEmail);
   const sourceProfile = profile && typeof profile === 'object' ? profile : {};
-  if (!isPrimaryAdmin && !ACCESS_ROLES.has(normalizeText(sourceProfile.role, 40))) {
+  const selectedProfile = isPrimaryAdmin
+    ? { ...sourceProfile, role: 'admin', status: 'approved' }
+    : selectProfileEntry(sourceProfile, requestedContext);
+  if (!isPrimaryAdmin && !selectedProfile) {
     throw accessPermissionError('access/invalid-profile-role', 'O perfil desta conta é inválido.', 403);
   }
-  const role = isPrimaryAdmin ? 'admin' : normalizeAccessRole(sourceProfile.role);
-  const status = isPrimaryAdmin ? 'approved' : normalizeAccessStatus(sourceProfile.status);
+  const role = isPrimaryAdmin ? 'admin' : normalizeAccessRole(selectedProfile.role);
+  const status = isPrimaryAdmin ? 'approved' : normalizeAccessStatus(selectedProfile.status);
   if (status !== 'approved') {
     throw accessPermissionError(
       'access/approved-profile-required',
@@ -484,14 +544,14 @@ export function buildEffectiveAccessContext({
       403,
     );
   }
-  if (!isPrimaryAdmin) assertProfileAvailability(sourceProfile);
+  if (!isPrimaryAdmin) assertProfileAvailability(selectedProfile);
 
   const permittedAdditionalContexts = ADDITIONAL_CONTEXTS_BY_ROLE[role] || [];
-  const enabledContexts = normalizeStringArray(sourceProfile.enabledContexts, 4, 40)
+  const enabledContexts = normalizeStringArray(selectedProfile.enabledContexts, 4, 40)
     .filter(context => permittedAdditionalContexts.includes(context));
   const activeContext = resolveActiveContext({ role, enabledContexts, requestedContext });
   const workspaceId = normalizeText(
-    sourceProfile.workspaceId || (isPrimaryAdmin ? uid : primaryAdminWorkspaceId),
+    selectedProfile.workspaceId || (isPrimaryAdmin ? uid : primaryAdminWorkspaceId),
     160,
   );
   if (!workspaceId) {
@@ -502,12 +562,12 @@ export function buildEffectiveAccessContext({
     );
   }
 
-  const permissionOverrides = normalizePermissionOverrides(sourceProfile.permissionOverrides);
+  const permissionOverrides = normalizePermissionOverrides(selectedProfile.permissionOverrides);
   const permissions = resolveEffectivePermissions({
     role,
     activeContext,
     permissionOverrides,
-    globalBlocks,
+    globalBlocks: [...normalizeStringArray(selectedProfile.globalBlocks, ACCESS_PERMISSION_KEYS.length, 120), ...normalizeStringArray(globalBlocks, ACCESS_PERMISSION_KEYS.length, 120)],
   });
 
   return Object.freeze({
@@ -519,15 +579,15 @@ export function buildEffectiveAccessContext({
     status,
     activeContext,
     enabledContexts: Object.freeze(enabledContexts),
-    actorName: normalizeText(sourceProfile.displayName || decodedToken?.name || decodedToken?.email || 'Usuário', 120),
+    actorName: normalizeText(selectedProfile.displayName || decodedToken?.name || decodedToken?.email || 'Usuário', 120),
     actorEmail: email,
     allowedPatientIds: role === 'admin' || activeContext === 'monitoring'
       ? null
-      : Object.freeze(normalizeStringArray(sourceProfile.linkedPatientIds, 200, 160)),
+      : Object.freeze(normalizeStringArray(selectedProfile.linkedPatientIds, 200, 160)),
     permissionOverrides: Object.freeze(permissionOverrides),
     permissions,
-    profileSchemaVersion: Number.isFinite(Number(sourceProfile.schemaVersion))
-      ? Number(sourceProfile.schemaVersion)
+    profileSchemaVersion: Number.isFinite(Number(selectedProfile.schemaVersion || sourceProfile.schemaVersion))
+      ? Number(selectedProfile.schemaVersion || sourceProfile.schemaVersion)
       : 1,
   });
 }
