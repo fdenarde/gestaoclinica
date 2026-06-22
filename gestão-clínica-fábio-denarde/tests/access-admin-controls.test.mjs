@@ -11,13 +11,6 @@ const accessApiSource = fs.readFileSync(new URL('../src/lib/accessApi.ts', impor
 const accessPortalSource = fs.readFileSync(new URL('../src/components/Auth/AccessPortal.tsx', import.meta.url), 'utf8');
 const adminCardSource = fs.readFileSync(new URL('../src/components/Auth/AccessRequestsAdminCard.tsx', import.meta.url), 'utf8');
 const modalSource = fs.readFileSync(new URL('../src/components/Common/Modal.tsx', import.meta.url), 'utf8');
-const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-const previewSource = fs.existsSync(new URL('../src/components/Monitoring/MonitoringUiPreview.tsx', import.meta.url))
-  ? fs.readFileSync(new URL('../src/components/Monitoring/MonitoringUiPreview.tsx', import.meta.url), 'utf8')
-  : '';
-const visualChecklistSource = fs.existsSync(new URL('../docs/VALIDACAO_VISUAL_MONITORAMENTO.md', import.meta.url))
-  ? fs.readFileSync(new URL('../docs/VALIDACAO_VISUAL_MONITORAMENTO.md', import.meta.url), 'utf8')
-  : '';
 const typesSource = fs.readFileSync(new URL('../src/types/access.ts', import.meta.url), 'utf8');
 
 function buildMonitoring(profileOverrides = {}) {
@@ -153,29 +146,7 @@ test('modal comum oferece semântica acessível, escape, foco e bloqueio durante
   assert.match(modalSource, /disabled=\{closeDisabled\}/);
 });
 
-test('prévia visual local é protegida por DEV e variável explícita', () => {
-  assert.match(appSource, /import\.meta\.env\.DEV && import\.meta\.env\.VITE_MONITORING_UI_PREVIEW === 'true'/);
-  assert.match(appSource, /\/dev\/monitoring-ui-preview/);
-  assert.match(appSource, /MonitoringUiPreview/);
-  assert.match(previewSource, /MONITORING_UI_PREVIEW_LOCAL_ONLY/);
-  assert.match(previewSource, /previewRequests=\{requests\}/);
-  assert.match(previewSource, /onPreviewAction=\{handlePreviewAction\}/);
-  assert.match(adminCardSource, /previewRequests\?: AccessRequestRecord\[\]/);
-  assert.match(adminCardSource, /onPreviewAction\?: \(input: AccessAdminMockActionInput\) => Promise<AccessRequestRecord>/);
-});
 
-test('prévia visual usa apenas dados fictícios e não chama APIs reais diretamente', () => {
-  assert.match(previewSource, /usuario\.teste@example\.invalid/);
-  assert.match(previewSource, /admin\.teste@example\.invalid/);
-  assert.match(previewSource, /27999990000/);
-  assert.match(previewSource, /mock-monitoring-/);
-  assert.doesNotMatch(previewSource, /fdenarde@gmail\.com|Fábio Denarde|Fabio Denarde/);
-  assert.doesNotMatch(previewSource, /firebase|firestore|auth\.|db\.|getMonitoringPanelData|listAccessRequests|reviewAccessRequest|revokeAccessRequest/);
-  if (visualChecklistSource) {
-    assert.match(visualChecklistSource, /http:\/\/localhost:3000\/dev\/monitoring-ui-preview/);
-    assert.match(visualChecklistSource, /VITE_MONITORING_UI_PREVIEW=true/);
-  }
-});
 
 test('perfil revogado exibe exclusão de cadastro e perfil aprovado exige revogação primeiro', () => {
   assert.match(adminCardSource, /function canDeleteAccessRegistration/);

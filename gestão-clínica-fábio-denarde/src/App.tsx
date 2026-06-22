@@ -54,10 +54,6 @@ const Settings = lazy(() => import('./components/Settings'));
 const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
 const ProfessionalGooglePhotosGallery = lazy(() => import('./components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery'));
 const MonitoringPanel = lazy(() => import('./components/Monitoring/MonitoringPanel'));
-const MONITORING_UI_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_MONITORING_UI_PREVIEW === 'true';
-const MonitoringUiPreview = MONITORING_UI_PREVIEW_ENABLED
-  ? lazy(() => import('./components/Monitoring/MonitoringUiPreview'))
-  : null;
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -203,13 +199,6 @@ function formatAuditDuration(value?: number): string {
 
 export default function App() {
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
-  if (MONITORING_UI_PREVIEW_ENABLED && MonitoringUiPreview && window.location.pathname === '/dev/monitoring-ui-preview') {
-    return (
-      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-clinic-bg"><Loader2 className="h-10 w-10 animate-spin text-clinic-primary" /></div>}>
-        <MonitoringUiPreview />
-      </Suspense>
-    );
-  }
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [accessProfile, setAccessProfile] = useState<AccessProfile | null>(null);
