@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { JsonReminderLedger, buildWhatsappHealthSnapshot, detectMissedRoutineCheckpoints, resolveWhatsappOperationMode } from '../src/lib/whatsappReminderOperations.js';
+import { JsonReminderLedger, buildWhatsappHealthSnapshot, createMemoryReminderLedger, detectMissedRoutineCheckpoints, resolveWhatsappOperationMode } from '../src/lib/whatsappReminderOperations.js';
 import { parseAndSanitizePm2Json, readPm2JsonUtf8 } from './read-pm2-whatsapp-state.js';
 
 const PROCESS_NAME = 'RoboClinicaWatchdog';
@@ -10,7 +10,8 @@ const HEARTBEAT_INTERVAL_MS = Number(process.env.WHATSAPP_HEARTBEAT_INTERVAL_MS 
 const HEARTBEAT_MAX_AGE_MS = Number(process.env.WHATSAPP_HEARTBEAT_MAX_AGE_MS || 10 * 60 * 1000);
 const EXPECTED_SCRIPT_PATH = path.resolve('server.js');
 const mode = resolveWhatsappOperationMode();
-const ledger = new JsonReminderLedger();
+const isSelfCheck = process.argv.includes('--self-check');
+const ledger = isSelfCheck ? createMemoryReminderLedger() : new JsonReminderLedger();
 
 function recordHeartbeat(extra = {}) {
   ledger.appendHeartbeat({
@@ -136,30 +137,47 @@ async function runWatchdogCheck() {
   return { health, incidents };
 }
 
-if (process.argv.includes('--self-check')) {
+if (isSelfCheck) {
+  const now = new Date();
   recordHeartbeat({ event: 'self-check' });
-  try {
-    await runWatchdogCheck();
-  } catch (error) {
-    ledger.appendIncident({
-      type: 'watchdog-self-check-error',
-      severity: 'high',
-      process: PROCESS_NAME,
-      message: error?.message || String(error),
-    });
-    ledger.reconcileTechnicalAlerts({
-      scope: 'watchdog-runtime',
-      incidents: [{
-        type: 'watchdog-check-error',
-        severity: 'high',
-        process: PROCESS_NAME,
-        stateCode: 'self-check-error',
-        message: 'Falha na verificação interna do watchdog.',
-      }],
-    });
-    console.error(`[${PROCESS_NAME}] self-check com alerta:`, error?.message || error);
+  const health = buildWhatsappHealthSnapshot({
+    expectedScriptPath: EXPECTED_SCRIPT_PATH,
+    pm2Process: {
+      pid: process.pid,
+      pm2_env: {
+        status: 'online',
+        pm_exec_path: EXPECTED_SCRIPT_PATH,
+        restart_time: 0,
+      },
+    },
+    whatsappReady: true,
+    schedulerRegistered: true,
+    lastHeartbeat: {
+      process: 'RoboClinica',
+      recordedAt: now.toISOString(),
+      whatsappReady: true,
+    },
+    lastRoutineCheckpoints: [],
+    logFiles: [],
+    restarts: 0,
+  });
+  const checkpointId = `watchdog:self-check:${process.pid}`;
+  ledger.upsertCheckpoint(checkpointId, {
+    routine: 'WATCHDOG_SELF_CHECK',
+    status: health.status === 'healthy' ? 'healthy' : 'attention',
+    checkedAt: now.toISOString(),
+    incidentCount: 0,
+  });
+
+  const snapshot = ledger.read();
+  const isolatedHeartbeat = snapshot.heartbeats.some(item => item.process === PROCESS_NAME && item.event === 'self-check');
+  const isolatedCheckpoint = snapshot.checkpoints[checkpointId]?.status === 'healthy';
+  const noOperationalNotifications = Object.keys(snapshot.adminNotifications || {}).length === 0;
+  if (!isolatedHeartbeat || !isolatedCheckpoint || !noOperationalNotifications) {
+    throw new Error('Self-check isolado do watchdog não produziu as evidências seguras esperadas em memória.');
   }
-  console.log(`[${PROCESS_NAME}] self-check concluído em modo ${mode}.`);
+
+  console.log(`[${PROCESS_NAME}] self-check concluído em ambiente isolado; PM2, ledger operacional e fila administrativa preservados.`);
   process.exit(0);
 }
 

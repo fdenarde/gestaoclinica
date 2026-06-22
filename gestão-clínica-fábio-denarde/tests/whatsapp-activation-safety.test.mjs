@@ -220,3 +220,67 @@ test('ativador preserva exatamente uma quebra final no ecosystem sem criar linha
   assert.match(activator, /UTF8Encoding\]::new\(\$false\)/);
   assert.match(activator, /WriteAllText\(\$ecosystem, \$normalized, \$utf8WithoutBom\)/);
 });
+
+
+test('self-checks usam ledger em memória e não executam verificações operacionais', () => {
+  const scheduler = fs.readFileSync(path.join(runtimeProjectRoot, 'scripts', 'whatsapp-reminder-scheduler.js'), 'utf8');
+  const watchdog = fs.readFileSync(path.join(runtimeProjectRoot, 'scripts', 'whatsapp-reminder-watchdog.js'), 'utf8');
+
+  assert.match(scheduler, /isSelfCheck \? createMemoryReminderLedger\(\) : new JsonReminderLedger\(\)/);
+  assert.match(watchdog, /isSelfCheck \? createMemoryReminderLedger\(\) : new JsonReminderLedger\(\)/);
+
+  const schedulerSelfCheck = scheduler.slice(
+    scheduler.indexOf('if (isSelfCheck)'),
+    scheduler.indexOf('recordStartupMissedRoutines();')
+  );
+  const watchdogSelfCheck = watchdog.slice(
+    watchdog.indexOf('if (isSelfCheck)'),
+    watchdog.indexOf("recordHeartbeat({ event: 'startup' });")
+  );
+
+  assert.match(schedulerSelfCheck, /ambiente isolado; ledger operacional preservado/);
+  assert.match(watchdogSelfCheck, /ambiente isolado; PM2, ledger operacional e fila administrativa preservados/);
+  assert.doesNotMatch(watchdogSelfCheck, /runWatchdogCheck\(/);
+  assert.doesNotMatch(watchdogSelfCheck, /reconcileTechnicalAlerts\(/);
+  assert.doesNotMatch(watchdogSelfCheck, /appendIncident\(/);
+});
+
+test('ativador lê propriedades opcionais sem acesso direto incompatível com modo estrito', () => {
+  const activator = fs.readFileSync(path.join(runtimeProjectRoot, 'scripts', 'activate-whatsapp-robust-live.ps1'), 'utf8');
+  const runtimeEvidence = activator.slice(
+    activator.indexOf('function Wait-LiveRuntimeEvidence'),
+    activator.indexOf('function Save-PreActivationBackup')
+  );
+
+  assert.match(activator, /Set-StrictMode -Version Latest/);
+  assert.match(activator, /function Get-OptionalObjectValue/);
+  assert.match(activator, /function Convert-ToOptionalUtcDate/);
+  assert.match(activator, /function Get-OptionalCollectionValues/);
+  for (const property of ['process', 'mode', 'whatsappReady', 'qrBlocked', 'event', 'recordedAt', 'schedulerRegistered']) {
+    assert.doesNotMatch(runtimeEvidence, new RegExp(`\\$_\\.${property}\\b`));
+    assert.match(runtimeEvidence, new RegExp(`Get-OptionalObjectValue[^\\n]+-Name "${property}"`));
+  }
+  assert.match(runtimeEvidence, /-Name "event"\) -eq "ready"/);
+  assert.match(runtimeEvidence, /-Name "qrBlocked"\) -ne \$true/);
+  assert.match(runtimeEvidence, /Convert-ToOptionalUtcDate/);
+});
+
+test('ativador normaliza DateTime, DateTimeOffset e texto ISO sem conversão cultural frágil', () => {
+  const activator = fs.readFileSync(path.join(runtimeProjectRoot, 'scripts', 'activate-whatsapp-robust-live.ps1'), 'utf8');
+  const converter = activator.slice(
+    activator.indexOf('function Convert-ToOptionalUtcDate'),
+    activator.indexOf('function Get-OptionalCollectionValues')
+  );
+  const runtimeEvidence = activator.slice(
+    activator.indexOf('function Wait-LiveRuntimeEvidence'),
+    activator.indexOf('function Save-PreActivationBackup')
+  );
+
+  assert.match(converter, /\$Value -is \[DateTimeOffset\]/);
+  assert.match(converter, /\$Value -is \[DateTime\]/);
+  assert.match(converter, /CultureInfo\]::InvariantCulture/);
+  assert.match(converter, /DateTimeStyles\]::RoundtripKind/);
+  assert.match(converter, /CultureInfo\]::CurrentCulture/);
+  assert.match(runtimeEvidence, /\$startedUtc = Convert-ToOptionalUtcDate -Value \$StartedAt/);
+  assert.doesNotMatch(runtimeEvidence, /\$startedUtc = \$StartedAt\.ToUniversalTime\(\)/);
+});

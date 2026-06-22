@@ -413,6 +413,99 @@ function Read-LedgerSnapshot {
   }
 }
 
+function Get-OptionalObjectValue {
+  param(
+    [AllowNull()]$InputObject,
+    [Parameter(Mandatory)][string]$Name
+  )
+
+  if ($null -eq $InputObject) { return $null }
+
+  if ($InputObject -is [System.Collections.IDictionary]) {
+    foreach ($key in $InputObject.Keys) {
+      if ([string]::Equals([string]$key, $Name, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $InputObject[$key]
+      }
+    }
+    return $null
+  }
+
+  $property = @(
+    $InputObject.PSObject.Properties |
+      Where-Object {
+        [string]::Equals($_.Name, $Name, [System.StringComparison]::OrdinalIgnoreCase)
+      } |
+      Select-Object -First 1
+  )
+
+  if ($property.Count -eq 0) { return $null }
+  return $property[0].Value
+}
+
+function Convert-ToOptionalUtcDate {
+  param([AllowNull()]$Value)
+
+  if ($null -eq $Value) { return $null }
+
+  if ($Value -is [DateTimeOffset]) {
+    return ([DateTimeOffset]$Value).ToUniversalTime()
+  }
+
+  if ($Value -is [DateTime]) {
+    $dateTimeValue = [DateTime]$Value
+    if ($dateTimeValue.Kind -eq [DateTimeKind]::Unspecified) {
+      $dateTimeValue = [DateTime]::SpecifyKind($dateTimeValue, [DateTimeKind]::Local)
+    }
+    return ([DateTimeOffset]$dateTimeValue).ToUniversalTime()
+  }
+
+  $textValue = [string]$Value
+  if ([string]::IsNullOrWhiteSpace($textValue)) { return $null }
+
+  $parsed = [DateTimeOffset]::MinValue
+  $roundtripStyles = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces -bor
+    [System.Globalization.DateTimeStyles]::RoundtripKind
+
+  if (
+    [DateTimeOffset]::TryParse(
+      $textValue,
+      [System.Globalization.CultureInfo]::InvariantCulture,
+      $roundtripStyles,
+      [ref]$parsed
+    )
+  ) {
+    return $parsed.ToUniversalTime()
+  }
+
+  if (
+    [DateTimeOffset]::TryParse(
+      $textValue,
+      [System.Globalization.CultureInfo]::CurrentCulture,
+      [System.Globalization.DateTimeStyles]::AllowWhiteSpaces,
+      [ref]$parsed
+    )
+  ) {
+    return $parsed.ToUniversalTime()
+  }
+
+  return $null
+}
+
+function Get-OptionalCollectionValues {
+  param([AllowNull()]$Value)
+
+  if ($null -eq $Value) { return @() }
+  if ($Value -is [System.Collections.IDictionary]) { return @($Value.Values) }
+  if ($Value -is [System.Array]) { return @($Value) }
+
+  $properties = @($Value.PSObject.Properties)
+  if ($properties.Count -gt 0) {
+    return @($properties | ForEach-Object { $_.Value })
+  }
+
+  return @($Value)
+}
+
 function Wait-LiveRuntimeEvidence {
   param(
     [Parameter(Mandatory)][string]$LedgerPath,
@@ -421,69 +514,89 @@ function Wait-LiveRuntimeEvidence {
   )
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-  $startedUtc = $StartedAt.ToUniversalTime()
+  $startedUtc = Convert-ToOptionalUtcDate -Value $StartedAt
+  if ($null -eq $startedUtc) {
+    throw "O horário inicial da ativação não pôde ser normalizado para UTC."
+  }
   $lastReason = "ledger ainda sem evidência"
 
   do {
     $ledger = Read-LedgerSnapshot -LedgerPath $LedgerPath
     if ($ledger) {
-      $heartbeats = @($ledger.heartbeats)
+      $heartbeats = @(Get-OptionalObjectValue -InputObject $ledger -Name "heartbeats")
       $senderReady = @(
         $heartbeats |
           Where-Object {
-            $_.process -eq "RoboClinica" -and
-            $_.mode -eq "live" -and
-            $_.whatsappReady -eq $true -and
-            $_.qrBlocked -ne $true -and
-            $_.event -eq "ready" -and
-            $_.recordedAt -and
-            ([datetime]$_.recordedAt).ToUniversalTime() -ge $startedUtc
+            $recordedAtUtc = Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+            (Get-OptionalObjectValue -InputObject $_ -Name "process") -eq "RoboClinica" -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "mode") -eq "live" -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "whatsappReady") -eq $true -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "qrBlocked") -ne $true -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "event") -eq "ready" -and
+            $null -ne $recordedAtUtc -and
+            $recordedAtUtc -ge $startedUtc
           } |
-          Sort-Object { [datetime]$_.recordedAt } -Descending |
+          Sort-Object {
+            Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+          } -Descending |
           Select-Object -First 1
       )
 
       $schedulerLive = @(
         $heartbeats |
           Where-Object {
-            $_.process -eq "RoboClinicaScheduler" -and
-            $_.mode -eq "live" -and
-            $_.schedulerRegistered -eq $true -and
-            $_.recordedAt -and
-            ([datetime]$_.recordedAt).ToUniversalTime() -ge $startedUtc
+            $recordedAtUtc = Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+            (Get-OptionalObjectValue -InputObject $_ -Name "process") -eq "RoboClinicaScheduler" -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "mode") -eq "live" -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "schedulerRegistered") -eq $true -and
+            $null -ne $recordedAtUtc -and
+            $recordedAtUtc -ge $startedUtc
           } |
+          Sort-Object {
+            Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+          } -Descending |
           Select-Object -First 1
       )
 
       $watchdogLive = @(
         $heartbeats |
           Where-Object {
-            $_.process -eq "RoboClinicaWatchdog" -and
-            $_.mode -eq "live" -and
-            $_.recordedAt -and
-            ([datetime]$_.recordedAt).ToUniversalTime() -ge $startedUtc
+            $recordedAtUtc = Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+            (Get-OptionalObjectValue -InputObject $_ -Name "process") -eq "RoboClinicaWatchdog" -and
+            (Get-OptionalObjectValue -InputObject $_ -Name "mode") -eq "live" -and
+            $null -ne $recordedAtUtc -and
+            $recordedAtUtc -ge $startedUtc
           } |
+          Sort-Object {
+            Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+          } -Descending |
           Select-Object -First 1
       )
 
+      $checkpointContainer = Get-OptionalObjectValue -InputObject $ledger -Name "checkpoints"
       $watchdogCheckpoint = @(
-        $ledger.checkpoints.PSObject.Properties |
-          ForEach-Object { $_.Value } |
+        (Get-OptionalCollectionValues -Value $checkpointContainer) |
           Where-Object {
-            $_.routine -eq "WATCHDOG" -and
-            $_.checkedAt -and
-            ([datetime]$_.checkedAt).ToUniversalTime() -ge $startedUtc
+            $checkedAtUtc = Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "checkedAt")
+            (Get-OptionalObjectValue -InputObject $_ -Name "routine") -eq "WATCHDOG" -and
+            $null -ne $checkedAtUtc -and
+            $checkedAtUtc -ge $startedUtc
           } |
-          Sort-Object { [datetime]$_.checkedAt } -Descending |
+          Sort-Object {
+            Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "checkedAt")
+          } -Descending |
           Select-Object -First 1
       )
 
+      $incidentContainer = Get-OptionalObjectValue -InputObject $ledger -Name "incidents"
       $fatalIncidents = @(
-        @($ledger.incidents) |
+        @($incidentContainer) |
           Where-Object {
-            $_.recordedAt -and
-            ([datetime]$_.recordedAt).ToUniversalTime() -ge $startedUtc -and
-            $_.type -in @(
+            $recordedAtUtc = Convert-ToOptionalUtcDate (Get-OptionalObjectValue -InputObject $_ -Name "recordedAt")
+            $incidentType = Get-OptionalObjectValue -InputObject $_ -Name "type"
+            $null -ne $recordedAtUtc -and
+            $recordedAtUtc -ge $startedUtc -and
+            $incidentType -in @(
               "qr-blocked",
               "auth-failure",
               "whatsapp-disconnected",
@@ -513,7 +626,6 @@ function Wait-LiveRuntimeEvidence {
 
   throw "Runtime live não foi comprovado no prazo: $lastReason"
 }
-
 
 function Save-PreActivationBackup {
   param(

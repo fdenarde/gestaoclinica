@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   WHATSAPP_OPERATION_MODES,
   JsonReminderLedger,
@@ -392,4 +394,88 @@ test('alerta técnico administrativo é sanitizado e não expõe caminho, PID ou
   assert.match(message, /ALERTA TÉCNICO/);
   assert.match(message, /Configuração do processo divergente/);
   assert.doesNotMatch(message, /D:\\Projeto|12345|server\.js|RoboClinicaWatchdog/);
+});
+
+
+test('ledger em arquivo preserva mutações concorrentes de processos distintos', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wpp-ledger-concurrency-'));
+  const ledgerPath = path.join(tempDir, 'ledger.json');
+  const workerPath = path.join(tempDir, 'ledger-worker.mjs');
+  const operationsModuleUrl = pathToFileURL(path.resolve('src/lib/whatsappReminderOperations.js')).href;
+  const iterations = 8;
+  const workers = ['RoboClinica', 'RoboClinicaScheduler', 'RoboClinicaWatchdog'];
+
+  fs.writeFileSync(workerPath, `
+    import { JsonReminderLedger } from ${JSON.stringify(operationsModuleUrl)};
+    const [ledgerPath, workerName, iterationsRaw] = process.argv.slice(2);
+    const ledger = new JsonReminderLedger(ledgerPath);
+    const iterations = Number(iterationsRaw);
+    for (let index = 0; index < iterations; index += 1) {
+      const suffix = workerName + ':' + index;
+      ledger.appendHeartbeat({ process: workerName, event: 'concurrency-test', sequence: index });
+      ledger.appendIncident({ type: 'concurrency-test', process: workerName, sequence: index });
+      ledger.upsertCheckpoint('checkpoint:' + suffix, { routine: 'TEST', status: 'healthy' });
+      ledger.updateAdminNotification('notification:' + suffix, { status: 'skipped', source: workerName });
+      ledger.upsertReminder('reminder:' + suffix, { status: 'skipped', source: workerName });
+      await new Promise(resolve => setTimeout(resolve, index % 3));
+    }
+  `);
+
+  const runWorker = workerName => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [workerPath, ledgerPath, workerName, String(iterations)], {
+      cwd: process.cwd(),
+      env: { ...process.env, TZ: 'America/Sao_Paulo' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('exit', code => {
+      if (code === 0) resolve();
+      else reject(new Error(`Worker ${workerName} falhou com código ${code}: ${stderr}`));
+    });
+  });
+
+  await Promise.all(workers.map(runWorker));
+
+  const raw = fs.readFileSync(ledgerPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  const expectedEntries = workers.length * iterations;
+
+  assert.equal(parsed.heartbeats.length, expectedEntries);
+  assert.equal(parsed.incidents.length, expectedEntries);
+  assert.equal(Object.keys(parsed.checkpoints).length, expectedEntries);
+  assert.equal(Object.keys(parsed.adminNotifications).length, expectedEntries);
+  assert.equal(Object.keys(parsed.reminders).length, expectedEntries);
+  for (const workerName of workers) {
+    assert.equal(parsed.heartbeats.filter(item => item.process === workerName).length, iterations);
+  }
+
+  const temporaryFiles = fs.readdirSync(tempDir).filter(name => name.endsWith('.tmp'));
+  assert.deepEqual(temporaryFiles, []);
+  const lockDir = path.join(tempDir, '.locks');
+  const remainingLocks = fs.existsSync(lockDir)
+    ? fs.readdirSync(lockDir).filter(name => name.endsWith('.lock'))
+    : [];
+  assert.deepEqual(remainingLocks, []);
+});
+
+test('histórico persistente de heartbeat continua limitado aos 288 registros mais recentes', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wpp-ledger-heartbeats-'));
+  const ledgerPath = path.join(tempDir, 'ledger.json');
+  const ledger = new JsonReminderLedger(ledgerPath);
+
+  for (let index = 0; index < 300; index += 1) {
+    ledger.appendHeartbeat({
+      process: 'RoboClinica',
+      sequence: index,
+      recordedAt: new Date(Date.UTC(2026, 5, 22, 18, 0, index)).toISOString(),
+    });
+  }
+
+  const heartbeats = ledger.read().heartbeats;
+  assert.equal(heartbeats.length, 288);
+  assert.equal(heartbeats[0].sequence, 12);
+  assert.equal(heartbeats.at(-1).sequence, 299);
+  assert.deepEqual(fs.readdirSync(tempDir).filter(name => name.endsWith('.tmp')), []);
 });

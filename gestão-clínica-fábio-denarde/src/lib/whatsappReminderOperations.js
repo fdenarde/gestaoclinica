@@ -32,6 +32,25 @@ export const ROUTINE_DEFINITIONS = Object.freeze({
 export const DEFAULT_LEDGER_PATH = path.resolve('logs', 'audit', 'whatsapp-reminder-ledger.json');
 export const DEFAULT_LOCK_DIRECTORY = path.resolve('logs', 'locks');
 
+const DEFAULT_LEDGER_LOCK_NAME = 'whatsapp-ledger';
+const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
+const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 15 * 1000;
+const DEFAULT_LOCK_RETRY_DELAY_MS = 25;
+const LOCK_WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(milliseconds) {
+  const delay = Math.max(1, Number(milliseconds) || 1);
+  if (typeof Atomics?.wait === 'function') {
+    Atomics.wait(LOCK_WAIT_BUFFER, 0, 0, delay);
+    return;
+  }
+
+  const deadline = Date.now() + delay;
+  while (Date.now() < deadline) {
+    // Fallback síncrono apenas para ambientes sem Atomics.wait.
+  }
+}
+
 const SAFE_RETRY_MESSAGES = [
   'timeout',
   'timed out',
@@ -277,8 +296,14 @@ export function buildReminderLedgerId({
 }
 
 export class JsonReminderLedger {
-  constructor(filePath = DEFAULT_LEDGER_PATH) {
-    this.filePath = filePath;
+  constructor(filePath = DEFAULT_LEDGER_PATH, { lockDirectory } = {}) {
+    this.filePath = path.resolve(filePath);
+    const usesOperationalLedger = this.filePath === path.resolve(DEFAULT_LEDGER_PATH);
+    this.lockDirectory = path.resolve(
+      lockDirectory || (usesOperationalLedger
+        ? DEFAULT_LOCK_DIRECTORY
+        : path.join(path.dirname(this.filePath), '.locks'))
+    );
   }
 
   read() {
@@ -320,9 +345,14 @@ export class JsonReminderLedger {
   write(data) {
     const directory = path.dirname(this.filePath);
     fs.mkdirSync(directory, { recursive: true });
-    const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`);
-    fs.renameSync(tmpPath, this.filePath);
+    const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
+
+    try {
+      fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`);
+      fs.renameSync(tmpPath, this.filePath);
+    } finally {
+      if (fs.existsSync(tmpPath)) fs.rmSync(tmpPath, { force: true });
+    }
   }
 
   getReminder(id) {
@@ -330,29 +360,33 @@ export class JsonReminderLedger {
   }
 
   upsertReminder(id, patch) {
-    const data = this.read();
-    const previous = data.reminders[id] || {};
-    data.reminders[id] = {
-      ...previous,
-      ...patch,
-      id,
-      updatedAt: patch.updatedAt || new Date().toISOString(),
-      attemptsLog: patch.attemptsLog || previous.attemptsLog || [],
-    };
-    this.write(data);
-    return data.reminders[id];
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
+      const data = this.read();
+      const previous = data.reminders[id] || {};
+      data.reminders[id] = {
+        ...previous,
+        ...patch,
+        id,
+        updatedAt: patch.updatedAt || new Date().toISOString(),
+        attemptsLog: patch.attemptsLog || previous.attemptsLog || [],
+      };
+      this.write(data);
+      return data.reminders[id];
+    });
   }
 
   appendAttempt(id, attempt) {
-    const data = this.read();
-    const previous = data.reminders[id] || { id, attemptsLog: [] };
-    data.reminders[id] = {
-      ...previous,
-      attemptsLog: [...(previous.attemptsLog || []), attempt],
-      updatedAt: attempt.finishedAt || attempt.startedAt || new Date().toISOString(),
-    };
-    this.write(data);
-    return data.reminders[id];
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
+      const data = this.read();
+      const previous = data.reminders[id] || { id, attemptsLog: [] };
+      data.reminders[id] = {
+        ...previous,
+        attemptsLog: [...(previous.attemptsLog || []), attempt],
+        updatedAt: attempt.finishedAt || attempt.startedAt || new Date().toISOString(),
+      };
+      this.write(data);
+      return data.reminders[id];
+    });
   }
 
   getCheckpoint(id) {
@@ -360,19 +394,21 @@ export class JsonReminderLedger {
   }
 
   upsertCheckpoint(id, patch) {
-    const data = this.read();
-    data.checkpoints[id] = {
-      ...(data.checkpoints[id] || {}),
-      ...patch,
-      id,
-      updatedAt: patch.updatedAt || new Date().toISOString(),
-    };
-    this.write(data);
-    return data.checkpoints[id];
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
+      const data = this.read();
+      data.checkpoints[id] = {
+        ...(data.checkpoints[id] || {}),
+        ...patch,
+        id,
+        updatedAt: patch.updatedAt || new Date().toISOString(),
+      };
+      this.write(data);
+      return data.checkpoints[id];
+    });
   }
 
   queueRoutine(id, patch) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const previous = data.checkpoints[id] || {};
       if (['completed', 'completed-with-failures', 'failed', 'skipped', 'expired'].includes(previous.status)) {
@@ -392,7 +428,7 @@ export class JsonReminderLedger {
   }
 
   claimNextQueuedRoutine({ ownerId = String(process.pid), now = new Date() } = {}) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const nowMs = now.getTime();
       const candidate = Object.values(data.checkpoints)
@@ -414,7 +450,7 @@ export class JsonReminderLedger {
   }
 
   expireOverdueQueuedRoutines(now = new Date()) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const nowMs = now.getTime();
       const expired = [];
@@ -440,24 +476,28 @@ export class JsonReminderLedger {
   }
 
   appendIncident(incident) {
-    const data = this.read();
-    data.incidents.push({
-      ...incident,
-      recordedAt: incident.recordedAt || new Date().toISOString(),
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
+      const data = this.read();
+      data.incidents.push({
+        ...incident,
+        recordedAt: incident.recordedAt || new Date().toISOString(),
+      });
+      this.write(data);
+      return data.incidents[data.incidents.length - 1];
     });
-    this.write(data);
-    return data.incidents[data.incidents.length - 1];
   }
 
   appendHeartbeat(heartbeat) {
-    const data = this.read();
-    data.heartbeats.push({
-      ...heartbeat,
-      recordedAt: heartbeat.recordedAt || new Date().toISOString(),
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
+      const data = this.read();
+      data.heartbeats.push({
+        ...heartbeat,
+        recordedAt: heartbeat.recordedAt || new Date().toISOString(),
+      });
+      data.heartbeats = data.heartbeats.slice(-288);
+      this.write(data);
+      return data.heartbeats[data.heartbeats.length - 1];
     });
-    data.heartbeats = data.heartbeats.slice(-288);
-    this.write(data);
-    return data.heartbeats[data.heartbeats.length - 1];
   }
 
   getAdminNotification(id) {
@@ -465,7 +505,7 @@ export class JsonReminderLedger {
   }
 
   reconcileTechnicalAlerts(options = {}) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const result = reconcileTechnicalAlertData(data, options);
       if (result.queued.length > 0 || result.resolved.length > 0 || result.suppressed.length > 0) {
@@ -476,7 +516,7 @@ export class JsonReminderLedger {
   }
 
   queueAdminNotification(id, patch) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const previous = data.adminNotifications?.[id] || {};
       if (['sent', 'skipped', 'failed', 'expired'].includes(previous.status)) return previous;
@@ -495,7 +535,7 @@ export class JsonReminderLedger {
   }
 
   claimNextQueuedAdminNotification({ ownerId = String(process.pid), now = new Date() } = {}) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       data.adminNotifications = data.adminNotifications || {};
       const candidate = Object.values(data.adminNotifications)
@@ -515,43 +555,70 @@ export class JsonReminderLedger {
   }
 
   updateAdminNotification(id, patch) {
-    const data = this.read();
-    data.adminNotifications = data.adminNotifications || {};
-    data.adminNotifications[id] = {
-      ...(data.adminNotifications[id] || {}),
-      ...patch,
-      id,
-      updatedAt: patch.updatedAt || new Date().toISOString(),
-    };
-    this.write(data);
-    return data.adminNotifications[id];
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
+      const data = this.read();
+      data.adminNotifications = data.adminNotifications || {};
+      data.adminNotifications[id] = {
+        ...(data.adminNotifications[id] || {}),
+        ...patch,
+        id,
+        updatedAt: patch.updatedAt || new Date().toISOString(),
+      };
+      this.write(data);
+      return data.adminNotifications[id];
+    });
   }
 
-  withExclusiveLock(lockName, callback, { staleMs = 10 * 60 * 1000 } = {}) {
-    fs.mkdirSync(DEFAULT_LOCK_DIRECTORY, { recursive: true });
-    const lockPath = path.join(DEFAULT_LOCK_DIRECTORY, `${lockName}.lock`);
-    const now = Date.now();
+  withExclusiveLock(lockName, callback, {
+    staleMs = DEFAULT_LOCK_STALE_MS,
+    waitTimeoutMs = DEFAULT_LOCK_WAIT_TIMEOUT_MS,
+    retryDelayMs = DEFAULT_LOCK_RETRY_DELAY_MS,
+  } = {}) {
+    fs.mkdirSync(this.lockDirectory, { recursive: true });
+    const lockPath = path.join(this.lockDirectory, `${lockName}.lock`);
+    const ownerToken = `${process.pid}:${Date.now()}:${crypto.randomUUID()}`;
+    const waitDeadline = Date.now() + waitTimeoutMs;
 
-    try {
-      const stats = fs.existsSync(lockPath) ? fs.statSync(lockPath) : null;
-      if (stats && now - stats.mtimeMs > staleMs) fs.rmSync(lockPath, { force: true });
-      const fd = fs.openSync(lockPath, 'wx');
-      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
-      fs.closeSync(fd);
-    } catch (error) {
-      if (error?.code === 'EEXIST') return null;
-      throw error;
+    while (true) {
+      try {
+        const now = Date.now();
+        const stats = fs.existsSync(lockPath) ? fs.statSync(lockPath) : null;
+        if (stats && now - stats.mtimeMs > staleMs) fs.rmSync(lockPath, { force: true });
+
+        const fd = fs.openSync(lockPath, 'wx');
+        try {
+          fs.writeFileSync(fd, JSON.stringify({
+            pid: process.pid,
+            ownerToken,
+            createdAt: new Date().toISOString(),
+          }));
+        } finally {
+          fs.closeSync(fd);
+        }
+        break;
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+        if (Date.now() >= waitDeadline) {
+          throw new Error(`Tempo limite ao aguardar lock do ledger: ${lockName}`);
+        }
+        sleepSync(retryDelayMs);
+      }
     }
 
     try {
       return callback();
     } finally {
-      fs.rmSync(lockPath, { force: true });
+      try {
+        const currentLock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        if (currentLock?.ownerToken === ownerToken) fs.rmSync(lockPath, { force: true });
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
     }
   }
 
   queueReminder(id, patch) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const previous = data.reminders[id] || {};
       if (previous.status && isTerminalLedgerStatus(previous.status)) return previous;
@@ -573,7 +640,7 @@ export class JsonReminderLedger {
   }
 
   claimNextQueuedReminder({ ownerId = String(process.pid), now = new Date() } = {}) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const nowMs = now.getTime();
       const candidate = Object.values(data.reminders)
@@ -595,7 +662,7 @@ export class JsonReminderLedger {
   }
 
   expireOverdueQueuedReminders(now = new Date()) {
-    return this.withExclusiveLock('whatsapp-ledger', () => {
+    return this.withExclusiveLock(DEFAULT_LEDGER_LOCK_NAME, () => {
       const data = this.read();
       const nowMs = now.getTime();
       const expired = [];

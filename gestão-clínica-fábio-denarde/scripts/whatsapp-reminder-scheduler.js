@@ -1,12 +1,13 @@
 import cron from 'node-cron';
 import path from 'node:path';
-import { JsonReminderLedger, ROUTINE_DEFINITIONS, createRoutineCheckpointId, createRoutineWindow, detectMissedRoutineCheckpoints, formatLocalDateStr, isGlobalActivationLocked, resolveWhatsappOperationMode, WHATSAPP_OPERATION_MODES } from '../src/lib/whatsappReminderOperations.js';
+import { JsonReminderLedger, ROUTINE_DEFINITIONS, createMemoryReminderLedger, createRoutineCheckpointId, createRoutineWindow, detectMissedRoutineCheckpoints, formatLocalDateStr, isGlobalActivationLocked, resolveWhatsappOperationMode, WHATSAPP_OPERATION_MODES } from '../src/lib/whatsappReminderOperations.js';
 
 const PROCESS_NAME = 'RoboClinicaScheduler';
 const TIMEZONE = 'America/Sao_Paulo';
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WHATSAPP_HEARTBEAT_INTERVAL_MS || 5 * 60 * 1000);
 const mode = resolveWhatsappOperationMode();
-const ledger = new JsonReminderLedger();
+const isSelfCheck = process.argv.includes('--self-check');
+const ledger = isSelfCheck ? createMemoryReminderLedger() : new JsonReminderLedger();
 
 function reconcileSchedulerAlert(scope, incidents = []) {
   return ledger.reconcileTechnicalAlerts({
@@ -175,7 +176,7 @@ function recordStartupMissedRoutines() {
   }
 }
 
-if (process.argv.includes('--self-check')) {
+if (isSelfCheck) {
   recordHeartbeat({ event: 'self-check' });
   const dateStr = formatLocalDateStr(new Date());
   const id = `self-check:${dateStr}:${process.pid}`;
@@ -186,7 +187,15 @@ if (process.argv.includes('--self-check')) {
     completedAt: new Date().toISOString(),
     source: PROCESS_NAME,
   });
-  console.log(`[${PROCESS_NAME}] self-check concluído em modo ${mode}.`);
+
+  const snapshot = ledger.read();
+  const isolatedHeartbeat = snapshot.heartbeats.some(item => item.process === PROCESS_NAME && item.event === 'self-check');
+  const isolatedCheckpoint = snapshot.checkpoints[id]?.status === 'completed';
+  if (!isolatedHeartbeat || !isolatedCheckpoint) {
+    throw new Error('Self-check isolado do scheduler não produziu as evidências esperadas em memória.');
+  }
+
+  console.log(`[${PROCESS_NAME}] self-check concluído em ambiente isolado; ledger operacional preservado.`);
   process.exit(0);
 }
 
