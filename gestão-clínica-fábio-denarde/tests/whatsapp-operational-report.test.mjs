@@ -6,6 +6,7 @@ import {
   createExecutionAudit,
   finishExecutionAudit,
   formatExecutionReportMessage,
+  registerAgendaChanges,
   registerPlanDiagnostics,
   registerSendFailure,
   registerSuccessfulSend,
@@ -30,7 +31,7 @@ function reminder(id, patientName, phone = '27999995476') {
   };
 }
 
-function buildAudit({ tipo = 'HOJE_MANHA', failures = false, incomplete = false } = {}) {
+function buildAudit({ tipo = 'HOJE_MANHA', failures = false, incomplete = false, agendaChanges = false } = {}) {
   const startedAt = new Date('2026-06-20T12:00:00.000Z');
   const first = reminder('r-1', 'Paciente Confidencial');
   const second = reminder('r-2', 'Outro Paciente', '27988884321');
@@ -42,6 +43,20 @@ function buildAudit({ tipo = 'HOJE_MANHA', failures = false, incomplete = false 
   registerPlanDiagnostics(audit, planContexts[0].plan);
   registerSuccessfulSend(audit, first, { confirmedAt: '2026-06-20T12:00:10.000Z' });
   if (failures) registerSendFailure(audit, second, new Error('WhatsApp desconectado para Paciente Confidencial'));
+  if (agendaChanges) {
+    registerAgendaChanges(audit, [{
+      key: 'snapshot-private',
+      patientFirstName: 'Paciente',
+      responsibleFirstName: 'Responsável',
+      phoneLast4: '5476',
+      previousSessionDate: '2026-06-20',
+      previousSessionTime: '10:00',
+      sessionDate: '2026-06-20',
+      sessionTime: '10:30',
+      changeCode: 'rescheduled',
+      changeLabel: 'Sessão reagendada depois da prévia.',
+    }]);
+  }
   finishExecutionAudit(audit, new Date('2026-06-20T12:00:20.000Z'));
   return audit;
 }
@@ -207,4 +222,22 @@ test('regra local permite somente get de admin aprovado e bloqueia escrita front
   assert.match(rules, /match \/whatsappOperationalReports\/\{reportDate\}/);
   assert.match(rules, /allow get: if isApprovedAdmin\(\)/);
   assert.match(rules, /allow list, create, update, delete: if false/);
+});
+
+test('alteração de agenda é agregada de forma sanitizada no relatório diário', () => {
+  const execution = buildExecutionReportData(buildAudit({ agendaChanges: true }));
+  const message = formatExecutionReportMessage(execution);
+  const sanitized = sanitizeExecutionForDailyReport({
+    execution,
+    deliveryStatus: 'sent',
+    recipient: '27999072659',
+    message,
+    updatedAt: new Date('2026-06-20T12:00:21.000Z'),
+  });
+
+  assert.equal(execution.counts.agendaChanges, 1);
+  assert.equal(sanitized.counts.agendaChanges, 1);
+  assert.equal(sanitized.status, 'partial');
+  assert.match(sanitized.alerts.join(' '), /alteração/);
+  assert.doesNotMatch(JSON.stringify(sanitized), /snapshot-private|Paciente|Responsável|5476/);
 });

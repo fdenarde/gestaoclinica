@@ -103,13 +103,27 @@ async function runWatchdogCheck() {
     }
   }
 
-  for (const incident of incidents) {
-    ledger.appendIncident({
+  const technicalAlertResult = ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: incidents.map(incident => ({
       ...incident,
       process: PROCESS_NAME,
+    })),
+    now: new Date(),
+  });
+
+  for (const queued of technicalAlertResult.queued) {
+    ledger.appendIncident({
+      ...queued.incident,
+      process: PROCESS_NAME,
       host: os.hostname(),
+      technicalAlertKey: queued.key,
     });
-    console.error(`[${PROCESS_NAME}] ${incident.type}: ${incident.message}`);
+    console.error(`[${PROCESS_NAME}] ${queued.incident.type}: ${queued.incident.message}`);
+  }
+
+  for (const resolved of technicalAlertResult.resolved) {
+    console.log(`[${PROCESS_NAME}] alerta técnico resolvido: ${resolved.state.type}.`);
   }
 
   ledger.upsertCheckpoint(`watchdog:last-check:${process.pid}`, {
@@ -133,6 +147,16 @@ if (process.argv.includes('--self-check')) {
       process: PROCESS_NAME,
       message: error?.message || String(error),
     });
+    ledger.reconcileTechnicalAlerts({
+      scope: 'watchdog-runtime',
+      incidents: [{
+        type: 'watchdog-check-error',
+        severity: 'high',
+        process: PROCESS_NAME,
+        stateCode: 'self-check-error',
+        message: 'Falha na verificação interna do watchdog.',
+      }],
+    });
     console.error(`[${PROCESS_NAME}] self-check com alerta:`, error?.message || error);
   }
   console.log(`[${PROCESS_NAME}] self-check concluído em modo ${mode}.`);
@@ -147,6 +171,16 @@ runWatchdogCheck().catch(error => {
     process: PROCESS_NAME,
     message: error?.message || String(error),
   });
+  ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-runtime',
+    incidents: [{
+      type: 'watchdog-check-error',
+      severity: 'high',
+      process: PROCESS_NAME,
+      stateCode: 'startup-check-error',
+      message: 'Falha na verificação do watchdog.',
+    }],
+  });
 });
 setInterval(recordHeartbeat, HEARTBEAT_INTERVAL_MS).unref();
 setInterval(() => {
@@ -156,6 +190,16 @@ setInterval(() => {
       severity: 'high',
       process: PROCESS_NAME,
       message: error?.message || String(error),
+    });
+    ledger.reconcileTechnicalAlerts({
+      scope: 'watchdog-runtime',
+      incidents: [{
+        type: 'watchdog-check-error',
+        severity: 'high',
+        process: PROCESS_NAME,
+        stateCode: 'periodic-check-error',
+        message: 'Falha na verificação periódica do watchdog.',
+      }],
     });
     console.error(`[${PROCESS_NAME}] erro na verificação:`, error);
   });

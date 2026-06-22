@@ -8,6 +8,17 @@ const HEARTBEAT_INTERVAL_MS = Number(process.env.WHATSAPP_HEARTBEAT_INTERVAL_MS 
 const mode = resolveWhatsappOperationMode();
 const ledger = new JsonReminderLedger();
 
+function reconcileSchedulerAlert(scope, incidents = []) {
+  return ledger.reconcileTechnicalAlerts({
+    scope,
+    incidents: incidents.map(incident => ({
+      ...incident,
+      process: PROCESS_NAME,
+    })),
+    now: new Date(),
+  });
+}
+
 function recordHeartbeat(extra = {}) {
   ledger.appendHeartbeat({
     process: PROCESS_NAME,
@@ -105,6 +116,7 @@ function registerRoutineCron(routine) {
   cron.schedule(expression, () => {
     try {
       queueRoutine(routine, new Date());
+      reconcileSchedulerAlert(`scheduler-routine:${routine}`, []);
     } catch (error) {
       ledger.appendIncident({
         type: 'scheduler-error',
@@ -113,6 +125,13 @@ function registerRoutineCron(routine) {
         routine,
         message: error?.message || String(error),
       });
+      reconcileSchedulerAlert(`scheduler-routine:${routine}`, [{
+        type: 'scheduler-runtime-error',
+        severity: 'high',
+        routine,
+        stateCode: 'routine-queue-error',
+        message: 'Falha ao enfileirar uma rotina de lembretes.',
+      }]);
       console.error(`[${PROCESS_NAME}] erro ao enfileirar ${routine}:`, error);
     }
   }, { timezone: TIMEZONE });
@@ -123,6 +142,7 @@ function registerRoutineCron(routine) {
   cron.schedule(previewExpression, () => {
     try {
       queuePreventivePreview(routine, new Date());
+      reconcileSchedulerAlert(`scheduler-preview:${routine}`, []);
     } catch (error) {
       ledger.appendIncident({
         type: 'scheduler-preview-error',
@@ -131,6 +151,13 @@ function registerRoutineCron(routine) {
         routine,
         message: error?.message || String(error),
       });
+      reconcileSchedulerAlert(`scheduler-preview:${routine}`, [{
+        type: 'scheduler-runtime-error',
+        severity: 'high',
+        routine,
+        stateCode: 'preview-queue-error',
+        message: 'Falha ao enfileirar a prévia administrativa.',
+      }]);
       console.error(`[${PROCESS_NAME}] erro ao enfileirar prévia ${routine}:`, error);
     }
   }, { timezone: TIMEZONE });

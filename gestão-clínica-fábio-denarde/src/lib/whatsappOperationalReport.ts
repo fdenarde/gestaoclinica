@@ -22,6 +22,7 @@ export interface WhatsappOperationalRoutineReport {
     pending: number;
     failures: number;
     blocked: number;
+    agendaChanges: number;
   };
   summary: string[];
   alerts: string[];
@@ -50,6 +51,7 @@ export interface WhatsappOperationalReport {
     incomplete: number;
     pending: number;
     failures: number;
+    agendaChanges: number;
   };
   summary: string[];
   alerts: string[];
@@ -149,6 +151,7 @@ export function normalizeWhatsappOperationalReport(
       incomplete: numberValue(countsSource.incomplete),
       pending: numberValue(countsSource.pending),
       failures: numberValue(countsSource.failures),
+      agendaChanges: numberValue(countsSource.agendaChanges),
     },
     summary: stringList(source.summary),
     alerts: stringList(source.alerts),
@@ -166,7 +169,7 @@ export function getWhatsappReportStatusLabel(report: WhatsappOperationalReport |
   if (report.status === 'sent') return `Relatório enviado hoje às ${time}.`;
   if (report.status === 'failed') return `Falha no envio do relatório às ${time}.`;
   if (report.status === 'partial') return `Relatório parcialmente concluído às ${time}.`;
-  return `Rotina concluída sem mensagens necessárias às ${time}.`;
+  return `Nenhuma atividade operacional registrada hoje até ${time}.`;
 }
 
 export function buildSafePreviewWhatsappReport(
@@ -193,18 +196,19 @@ export function buildSafePreviewWhatsappReport(
       confirmed: status === 'failed' ? 0 : 8,
       ruleSkipped: 1,
       incomplete: 0,
-      pending: status === 'partial' ? 1 : 0,
+      pending: 0,
       failures: status === 'failed' ? 1 : 0,
+      agendaChanges: status === 'partial' ? 1 : 0,
     },
     summary: [
-      'Atendimentos da manhã: 3 planejadas, 3 confirmadas e nenhum bloqueio.',
-      'Atendimentos da tarde: 2 planejadas, 2 confirmadas e 1 bloqueio.',
-      'Véspera: 4 planejadas, 3 confirmadas e nenhuma falha.',
+      'Atendimentos da manhã: 3 planejadas, 3 enviadas e nenhum bloqueio.',
+      'Atendimentos da tarde: 2 planejadas, 2 enviadas e 1 bloqueio.',
+      'Véspera: 4 planejadas, 3 enviadas e nenhuma falha.',
     ],
     alerts: status === 'failed'
       ? ['Falha no envio do relatório administrativo.']
       : status === 'partial'
-        ? ['Uma confirmação permaneceu pendente.']
+        ? ['Existe uma pendência operacional que requer conferência.']
         : [],
     source: 'whatsapp-sender',
     messageHash: 'preview-ficticio',

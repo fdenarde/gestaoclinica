@@ -1,6 +1,6 @@
 export const WHATSAPP_OPERATIONAL_REPORT_COLLECTION = 'whatsappOperationalReports';
 export const WHATSAPP_OPERATIONAL_REPORT_TIME_ZONE = 'America/Sao_Paulo';
-export const WHATSAPP_OPERATIONAL_REPORT_SCHEMA_VERSION = 1;
+export const WHATSAPP_OPERATIONAL_REPORT_SCHEMA_VERSION = 2;
 
 const ROUTINE_ORDER = ['HOJE_MANHA', 'HOJE_TARDE', 'AMANHA'];
 
@@ -29,7 +29,11 @@ export function stableOperationalMessageHash(value = '') {
 function normalizeDeliveryStatus(execution, deliveryStatus) {
   if (deliveryStatus !== 'sent') return 'failed';
   if (execution.noReport) return 'no-report';
-  if (execution.counts.failures > 0 || execution.counts.pending > 0 || execution.counts.incomplete > 0) {
+  if (
+    execution.counts.failures > 0
+    || execution.counts.incomplete > 0
+    || execution.counts.agendaChanges > 0
+  ) {
     return 'partial';
   }
   return 'sent';
@@ -37,15 +41,15 @@ function normalizeDeliveryStatus(execution, deliveryStatus) {
 
 function buildRunSummary(execution) {
   const { counts } = execution;
-  return `${execution.routineLabel}: ${counts.planned} planejada(s), ${counts.confirmed} confirmada(s), ${counts.blocked} bloqueio(s) e ${counts.failures} falha(s).`;
+  return `${execution.routineLabel}: ${counts.planned} planejada(s), ${counts.confirmed} enviada(s), ${counts.blocked} bloqueio(s) e ${counts.failures} falha(s).`;
 }
 
 function buildRunAlerts(execution, deliveryStatus) {
   const alerts = [];
   if (deliveryStatus !== 'sent') alerts.push('Falha no envio do relatório administrativo.');
   if (execution.counts.failures > 0) alerts.push(`${execution.counts.failures} lembrete(s) falharam.`);
-  if (execution.counts.pending > 0) alerts.push(`${execution.counts.pending} confirmação(ões) permaneceram pendentes.`);
   if (execution.counts.incomplete > 0) alerts.push(`${execution.counts.incomplete} cadastro(s) precisam de conferência.`);
+  if (execution.counts.agendaChanges > 0) alerts.push(`${execution.counts.agendaChanges} alteração(ões) na agenda ocorreram após a prévia.`);
   return alerts;
 }
 
@@ -74,9 +78,10 @@ export function sanitizeExecutionForDailyReport({
       confirmed: Number(execution.counts.confirmed || 0),
       ruleSkipped: Number(execution.counts.ruleSkipped || 0),
       incomplete: Number(execution.counts.incomplete || 0),
-      pending: Number(execution.counts.pending || 0),
+      pending: 0,
       failures: Number(execution.counts.failures || 0),
       blocked: Number(execution.counts.blocked || 0),
+      agendaChanges: Number(execution.counts.agendaChanges || 0),
     },
     summary: [buildRunSummary(execution)],
     alerts: buildRunAlerts(execution, deliveryStatus),
@@ -99,6 +104,7 @@ function emptyAggregateCounts() {
     incomplete: 0,
     pending: 0,
     failures: 0,
+    agendaChanges: 0,
   };
 }
 
@@ -114,6 +120,7 @@ function aggregateRoutines(routines) {
     counts.pending += run.counts.pending;
     counts.failures += run.counts.failures;
     counts.blocked += run.counts.blocked;
+    counts.agendaChanges += Number(run.counts.agendaChanges || 0);
     if (run.routine === 'HOJE_MANHA') counts.morning = run.counts.planned;
     if (run.routine === 'HOJE_TARDE') counts.afternoon = run.counts.planned;
     if (run.routine === 'AMANHA') counts.tomorrow = run.counts.planned;

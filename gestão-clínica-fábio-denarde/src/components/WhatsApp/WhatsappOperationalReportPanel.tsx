@@ -46,6 +46,7 @@ export default function WhatsappOperationalReportPanel({
     incomplete: 0,
     pending: 0,
     failures: 0,
+    agendaChanges: 0,
   };
   const statusText = state.error || getWhatsappReportStatusLabel(report);
 
@@ -95,11 +96,11 @@ export default function WhatsappOperationalReportPanel({
           <div className="mt-5 rounded-xl border border-clinic-border bg-clinic-bg p-4 text-sm text-clinic-text-muted">
             {report ? (
               <div className="space-y-4">
-                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
                   <span>Planejadas: <strong>{counts.planned}</strong></span>
-                  <span>Confirmadas: <strong>{counts.confirmed}</strong></span>
+                  <span>Enviadas: <strong>{counts.confirmed}</strong></span>
                   <span>Bloqueios: <strong>{counts.blocked}</strong></span>
-                  <span>Pendentes: <strong>{counts.pending}</strong></span>
+                  <span>Alterações: <strong>{counts.agendaChanges}</strong></span>
                   <span>Falhas: <strong>{counts.failures}</strong></span>
                   <span>Rotina: <strong>{report.latestRoutine || '-'}</strong></span>
                 </div>

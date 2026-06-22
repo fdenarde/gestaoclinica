@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   WHATSAPP_OPERATION_MODES,
   JsonReminderLedger,
+  buildTechnicalAlertMessage,
   buildWhatsappHealthSnapshot,
   createMemoryReminderLedger,
   createReminderDeliveryService,
@@ -316,4 +317,79 @@ test('ledger tolera arquivo parcial sem apagar evidência', () => {
   assert.equal(data.reminders && Object.keys(data.reminders).length, 0);
   assert.equal(data.incidents[0]?.type, 'ledger-read-error');
   assert.equal(fs.existsSync(ledgerPath), true);
+});
+
+test('alerta técnico persistente é enfileirado uma vez enquanto o estado permanece igual', () => {
+  const ledger = createMemoryReminderLedger();
+  const incident = {
+    type: 'pm2-process-missing',
+    severity: 'critical',
+    process: 'RoboClinicaWatchdog',
+    message: 'RoboClinica não encontrado no PM2.',
+  };
+
+  const first = ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: [incident],
+    now: new Date('2026-06-20T10:00:00.000Z'),
+  });
+  const repeated = ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: [incident],
+    now: new Date('2026-06-20T10:01:00.000Z'),
+  });
+
+  assert.equal(first.queued.length, 1);
+  assert.equal(repeated.queued.length, 0);
+  assert.equal(repeated.suppressed.length, 1);
+  assert.equal(Object.values(ledger.read().adminNotifications).length, 1);
+});
+
+test('mudança de estado e nova ocorrência após resolução geram novo alerta sem spam', () => {
+  const ledger = createMemoryReminderLedger();
+  const base = {
+    type: 'sender-heartbeat-stale',
+    severity: 'high',
+    process: 'RoboClinicaWatchdog',
+    message: 'Heartbeat do remetente vencido ou ausente.',
+  };
+
+  ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: [base],
+    now: new Date('2026-06-20T10:00:00.000Z'),
+  });
+  const changed = ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: [{ ...base, severity: 'critical', stateCode: 'multiple-heartbeats-missed' }],
+    now: new Date('2026-06-20T10:05:00.000Z'),
+  });
+  const resolved = ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: [],
+    now: new Date('2026-06-20T10:10:00.000Z'),
+  });
+  const recurrence = ledger.reconcileTechnicalAlerts({
+    scope: 'watchdog-health',
+    incidents: [base],
+    now: new Date('2026-06-20T10:15:00.000Z'),
+  });
+
+  assert.equal(changed.queued.length, 1);
+  assert.equal(resolved.resolved.length, 1);
+  assert.equal(recurrence.queued.length, 1);
+  assert.equal(Object.values(ledger.read().adminNotifications).length, 3);
+});
+
+test('alerta técnico administrativo é sanitizado e não expõe caminho, PID ou identificador interno', () => {
+  const message = buildTechnicalAlertMessage({
+    type: 'script-path-mismatch',
+    severity: 'critical',
+    process: 'RoboClinicaWatchdog',
+    message: 'Script path incorreto: D:\\Projeto\\segredo\\server.js PID 12345',
+  }, new Date('2026-06-20T10:00:00.000Z'));
+
+  assert.match(message, /ALERTA TÉCNICO/);
+  assert.match(message, /Configuração do processo divergente/);
+  assert.doesNotMatch(message, /D:\\Projeto|12345|server\.js|RoboClinicaWatchdog/);
 });

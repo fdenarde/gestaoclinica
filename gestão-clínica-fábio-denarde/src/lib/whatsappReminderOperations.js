@@ -24,9 +24,9 @@ export const REMINDER_LEDGER_STATUSES = Object.freeze({
 });
 
 export const ROUTINE_DEFINITIONS = Object.freeze({
-  HOJE_MANHA: { scheduledTime: '06:30', preventiveTime: '06:00', skipWeekdays: [0], windowMinutes: 45 },
-  AMANHA: { scheduledTime: '09:00', preventiveTime: '08:30', skipWeekdays: [6], windowMinutes: 60 },
-  HOJE_TARDE: { scheduledTime: '12:30', preventiveTime: '12:00', skipWeekdays: [0], windowMinutes: 45 },
+  HOJE_MANHA: { scheduledTime: '06:30', preventiveTime: '06:15', skipWeekdays: [0], windowMinutes: 45 },
+  AMANHA: { scheduledTime: '09:00', preventiveTime: '08:45', skipWeekdays: [6], windowMinutes: 60 },
+  HOJE_TARDE: { scheduledTime: '12:30', preventiveTime: '12:15', skipWeekdays: [0], windowMinutes: 45 },
 });
 
 export const DEFAULT_LEDGER_PATH = path.resolve('logs', 'audit', 'whatsapp-reminder-ledger.json');
@@ -88,6 +88,170 @@ export function maskPhone(phone) {
   return digits.length > 4 ? `***${digits.slice(-4)}` : '***';
 }
 
+const TECHNICAL_ALERT_LABELS = Object.freeze({
+  'whatsapp-connectivity-failure': 'Conexão do WhatsApp indisponível',
+  'pm2-process-missing': 'Processo do robô indisponível',
+  'script-path-mismatch': 'Configuração do processo divergente',
+  'sender-heartbeat-stale': 'Heartbeat do remetente ausente',
+  'scheduler-heartbeat-stale': 'Heartbeat do agendador ausente',
+  'watchdog-heartbeat-stale': 'Heartbeat do watchdog ausente',
+  'missed-routine': 'Rotina não iniciada',
+  'incomplete-routine': 'Rotina interrompida',
+  'ledger-attempting-stale': 'Tentativa de envio travada',
+  'sender-routine-error': 'Falha durante a rotina',
+  'sender-runtime-error': 'Falha no processo remetente',
+  'scheduler-runtime-error': 'Falha no agendador do robô',
+  'watchdog-check-error': 'Falha na verificação do watchdog',
+});
+
+function stableTechnicalHash(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function sanitizeTechnicalField(value, maxLength = 80) {
+  return String(value || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[A-Za-z]:[\\/][^\s]+/g, '[caminho local]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+export function createTechnicalAlertStateKey({
+  scope = 'system',
+  type = 'technical-alert',
+  process = '',
+  routine = '',
+  date = '',
+  affectedSessionKey = '',
+} = {}) {
+  return stableTechnicalHash([
+    sanitizeTechnicalField(scope),
+    sanitizeTechnicalField(type),
+    sanitizeTechnicalField(process),
+    sanitizeTechnicalField(routine),
+    sanitizeTechnicalField(date),
+    sanitizeTechnicalField(affectedSessionKey),
+  ].join('|'));
+}
+
+export function createTechnicalAlertFingerprint(alert = {}) {
+  return stableTechnicalHash([
+    sanitizeTechnicalField(alert.type),
+    sanitizeTechnicalField(alert.severity),
+    sanitizeTechnicalField(alert.stateCode),
+    sanitizeTechnicalField(alert.message, 240),
+  ].join('|'));
+}
+
+export function buildTechnicalAlertMessage(alert = {}, now = new Date()) {
+  const label = TECHNICAL_ALERT_LABELS[alert.type] || 'Falha técnica do robô';
+  const severity = String(alert.severity || 'high').toLowerCase();
+  const icon = severity === 'critical' ? '🚨' : '⚠️';
+  const lines = [
+    `${icon} ALERTA TÉCNICO — ${label}`,
+    '',
+    `Data/Hora: ${new Intl.DateTimeFormat('pt-BR', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      timeZone: 'America/Sao_Paulo',
+    }).format(now)}`,
+  ];
+
+  if (alert.routine) lines.push(`Rotina: ${sanitizeTechnicalField(alert.routine)}`);
+  if (alert.date) lines.push(`Data da rotina: ${sanitizeTechnicalField(alert.date)}`);
+  lines.push('', 'Situação: requer verificação administrativa.');
+  return lines.join('\n');
+}
+
+function reconcileTechnicalAlertData(data, {
+  scope = 'system',
+  incidents = [],
+  now = new Date(),
+} = {}) {
+  const timestamp = now.toISOString();
+  data.adminNotifications = data.adminNotifications || {};
+  data.adminAlertStates = data.adminAlertStates || {};
+  const activeKeys = new Set();
+  const queued = [];
+  const suppressed = [];
+  const resolved = [];
+
+  for (const rawIncident of incidents || []) {
+    const incident = {
+      type: sanitizeTechnicalField(rawIncident?.type) || 'technical-alert',
+      severity: sanitizeTechnicalField(rawIncident?.severity) || 'high',
+      process: sanitizeTechnicalField(rawIncident?.process),
+      routine: sanitizeTechnicalField(rawIncident?.routine),
+      date: sanitizeTechnicalField(rawIncident?.date),
+      affectedSessionKey: sanitizeTechnicalField(rawIncident?.affectedSessionKey),
+      stateCode: sanitizeTechnicalField(rawIncident?.stateCode),
+      message: sanitizeTechnicalField(rawIncident?.message, 240),
+    };
+    const key = createTechnicalAlertStateKey({ scope, ...incident });
+    const fingerprint = createTechnicalAlertFingerprint(incident);
+    const previous = data.adminAlertStates[key] || null;
+    const generation = Number(previous?.generation || 0);
+    const shouldQueue = !previous || previous.status === 'resolved' || previous.fingerprint !== fingerprint;
+    activeKeys.add(key);
+
+    if (shouldQueue) {
+      const nextGeneration = generation + 1;
+      const notificationId = `technical-alert:${key.slice(0, 24)}:${nextGeneration}`;
+      data.adminNotifications[notificationId] = {
+        id: notificationId,
+        type: 'technical-alert',
+        status: REMINDER_LEDGER_STATUSES.QUEUED,
+        message: buildTechnicalAlertMessage(incident, now),
+        source: incident.process || scope,
+        technicalAlertKey: key,
+        technicalAlertFingerprint: fingerprint,
+        queuedAt: timestamp,
+        updatedAt: timestamp,
+      };
+      data.adminAlertStates[key] = {
+        key,
+        scope,
+        type: incident.type,
+        process: incident.process,
+        routine: incident.routine,
+        date: incident.date,
+        status: 'open',
+        fingerprint,
+        generation: nextGeneration,
+        notificationId,
+        firstSeenAt: previous?.firstSeenAt || timestamp,
+        lastSeenAt: timestamp,
+        occurrenceCount: Number(previous?.occurrenceCount || 0) + 1,
+        updatedAt: timestamp,
+      };
+      queued.push({ key, notificationId, incident });
+    } else {
+      data.adminAlertStates[key] = {
+        ...previous,
+        status: 'open',
+        lastSeenAt: timestamp,
+        occurrenceCount: Number(previous?.occurrenceCount || 0) + 1,
+        updatedAt: timestamp,
+      };
+      suppressed.push({ key, incident });
+    }
+  }
+
+  for (const [key, state] of Object.entries(data.adminAlertStates)) {
+    if (state.scope !== scope || state.status !== 'open' || activeKeys.has(key)) continue;
+    data.adminAlertStates[key] = {
+      ...state,
+      status: 'resolved',
+      resolvedAt: timestamp,
+      updatedAt: timestamp,
+    };
+    resolved.push({ key, state: data.adminAlertStates[key] });
+  }
+
+  return { queued, suppressed, resolved };
+}
+
 export function buildReminderLedgerId({
   accountId,
   patientId,
@@ -119,7 +283,7 @@ export class JsonReminderLedger {
 
   read() {
     if (!fs.existsSync(this.filePath)) {
-      return { version: 1, reminders: {}, checkpoints: {}, adminNotifications: {}, incidents: [], heartbeats: [] };
+      return { version: 2, reminders: {}, checkpoints: {}, adminNotifications: {}, adminAlertStates: {}, incidents: [], heartbeats: [] };
     }
 
     let parsed;
@@ -127,10 +291,11 @@ export class JsonReminderLedger {
       parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
     } catch (error) {
       return {
-        version: 1,
+        version: 2,
         reminders: {},
         checkpoints: {},
         adminNotifications: {},
+        adminAlertStates: {},
         incidents: [{
           type: 'ledger-read-error',
           severity: 'critical',
@@ -142,10 +307,11 @@ export class JsonReminderLedger {
       };
     }
     return {
-      version: 1,
+      version: 2,
       reminders: parsed.reminders || {},
       checkpoints: parsed.checkpoints || {},
       adminNotifications: parsed.adminNotifications || {},
+      adminAlertStates: parsed.adminAlertStates || {},
       incidents: parsed.incidents || [],
       heartbeats: parsed.heartbeats || [],
     };
@@ -292,6 +458,21 @@ export class JsonReminderLedger {
     data.heartbeats = data.heartbeats.slice(-288);
     this.write(data);
     return data.heartbeats[data.heartbeats.length - 1];
+  }
+
+  getAdminNotification(id) {
+    return this.read().adminNotifications?.[id] || null;
+  }
+
+  reconcileTechnicalAlerts(options = {}) {
+    return this.withExclusiveLock('whatsapp-ledger', () => {
+      const data = this.read();
+      const result = reconcileTechnicalAlertData(data, options);
+      if (result.queued.length > 0 || result.resolved.length > 0 || result.suppressed.length > 0) {
+        this.write(data);
+      }
+      return result;
+    }) || { queued: [], suppressed: [], resolved: [] };
   }
 
   queueAdminNotification(id, patch) {
@@ -442,10 +623,11 @@ export class JsonReminderLedger {
 
 export function createMemoryReminderLedger(initialData = {}) {
   let data = {
-    version: 1,
+    version: 2,
     reminders: {},
     checkpoints: {},
     adminNotifications: {},
+    adminAlertStates: {},
     incidents: [],
     heartbeats: [],
     ...initialData,
@@ -494,6 +676,8 @@ export function createMemoryReminderLedger(initialData = {}) {
       data.heartbeats = data.heartbeats.slice(-288);
       return data.heartbeats[data.heartbeats.length - 1];
     },
+    getAdminNotification: id => data.adminNotifications[id] || null,
+    reconcileTechnicalAlerts: (options = {}) => reconcileTechnicalAlertData(data, options),
     queueAdminNotification: (id, patch) => {
       const previous = data.adminNotifications[id] || {};
       if (['sent', 'skipped', 'failed', 'expired'].includes(previous.status)) return previous;
