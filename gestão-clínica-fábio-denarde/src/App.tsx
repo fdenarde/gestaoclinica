@@ -50,6 +50,11 @@ const Reports = lazy(() => import('./components/Reports'));
 const Settings = lazy(() => import('./components/Settings'));
 const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
 const ProfessionalGooglePhotosGallery = lazy(() => import('./components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery'));
+const MonitoringPanel = lazy(() => import('./components/Monitoring/MonitoringPanel'));
+const MONITORING_UI_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_MONITORING_UI_PREVIEW === 'true';
+const MonitoringUiPreview = MONITORING_UI_PREVIEW_ENABLED
+  ? lazy(() => import('./components/Monitoring/MonitoringUiPreview'))
+  : null;
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -113,6 +118,13 @@ function formatAuditDuration(value?: number): string {
 
 export default function App() {
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
+  if (MONITORING_UI_PREVIEW_ENABLED && MonitoringUiPreview && window.location.pathname === '/dev/monitoring-ui-preview') {
+    return (
+      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-clinic-bg"><Loader2 className="h-10 w-10 animate-spin text-clinic-primary" /></div>}>
+        <MonitoringUiPreview />
+      </Suspense>
+    );
+  }
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [accessProfile, setAccessProfile] = useState<AccessProfile | null>(null);
@@ -267,6 +279,9 @@ export default function App() {
   const canAccessResponsiblePortal =
     accessProfile?.status === 'approved'
     && accessProfile.role === 'responsible';
+  const canAccessMonitoringPanel =
+    accessProfile?.status === 'approved'
+    && accessProfile.role === 'monitoring';
 
   const refreshPortalNotifications = useCallback(async (options?: {
     initial?: boolean;
@@ -679,6 +694,14 @@ export default function App() {
     return <ResponsiblePortal user={user} />;
   }
 
+  if (user && canAccessMonitoringPanel) {
+    return (
+      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-clinic-bg"><Loader2 className="h-10 w-10 animate-spin text-clinic-primary" /></div>}>
+        <MonitoringPanel onLogout={() => void logout()} />
+      </Suspense>
+    );
+  }
+
   if (!user || !canAccessInternalSystem) {
     return (
       <AccessPortal
@@ -849,6 +872,9 @@ export default function App() {
 
   const tabs: AppNavigationItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ...(accessProfile?.role === 'admin'
+      ? [{ id: 'monitoramento', label: 'Visão do Monitoramento', icon: Monitor }]
+      : []),
     { id: 'agenda', label: 'Agenda', icon: Calendar },
     { id: 'agenda-pessoal', label: 'Agenda Pessoal', icon: BookOpen },
     { id: 'atendentes', label: 'Atendentes', icon: Users },
@@ -1178,6 +1204,14 @@ export default function App() {
                   isPrimaryAdmin={accessProfile?.role === 'admin' && accessProfile.email === 'fdenarde@gmail.com'}
                   canViewWhatsappReport={accessProfile?.role === 'admin'}
                   whatsappReportState={whatsappOperationalReportState}
+                  onOpenMonitoringPreview={() => setActiveTab('monitoramento')}
+                />
+              )}
+              {activeTab === 'monitoramento' && (
+                <MonitoringPanel
+                  adminPreview
+                  embedded
+                  onExitPreview={() => setActiveTab('dashboard')}
                 />
               )}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}

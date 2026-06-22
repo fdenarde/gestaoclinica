@@ -371,3 +371,35 @@
     }
   }
 }
+
+/* MONITORING_GREEN_THEME_START */
+@layer utilities {
+  .monitoring-theme-green {
+    --color-clinic-bg: #F5FAF8;
+    --color-clinic-header: #1E7B56;
+    --color-clinic-nav-bg: #D9F0E8;
+    --color-clinic-primary: #1E7B56;
+    --color-clinic-primary-hover: #176445;
+    --color-clinic-surface: #FFFFFF;
+    --color-clinic-border: #CBE5DA;
+    --color-clinic-border-dark: #A9D3C2;
+    --color-clinic-text: #19372D;
+    --color-clinic-text-muted: #4D6B60;
+    --color-clinic-text-faint: #789589;
+
+    --logo-brain-base: #82D6B7;
+    --logo-brain-light: #E5FFF5;
+    --logo-brain-shadow: #176247;
+    --logo-brain-stroke: #124F3A;
+    --logo-brain-glow: #70DCB2;
+    --logo-text: #FFFFFF;
+    --logo-accent: #66D9B1;
+    --logo-subtitle: rgba(255, 255, 255, 0.9);
+    --logo-divider: rgba(229, 255, 246, 0.72);
+
+    --shadow-clinic:
+      0 4px 6px -1px rgba(30, 123, 86, 0.05),
+      0 2px 4px -1px rgba(30, 123, 86, 0.03);
+  }
+}
+/* MONITORING_GREEN_THEME_END */

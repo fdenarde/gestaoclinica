@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
-import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, ChevronDown } from 'lucide-react';
+import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, ChevronDown, Monitor } from 'lucide-react';
 import { formatCurrency, getStatusColor, cn, calculateAge, getSessionsForDate, normalizeTime, ProcessedSession } from '../lib/utils';
 import { addDays, format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -20,6 +20,7 @@ interface DashboardProps {
   isPrimaryAdmin?: boolean;
   canViewWhatsappReport?: boolean;
   whatsappReportState: WhatsappOperationalReportState;
+  onOpenMonitoringPreview?: () => void;
 }
 
 export default function Dashboard({
@@ -29,6 +30,7 @@ export default function Dashboard({
   isPrimaryAdmin = false,
   canViewWhatsappReport = false,
   whatsappReportState,
+  onOpenMonitoringPreview,
 }: DashboardProps) {
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
   const [whatsappReportOpen, setWhatsappReportOpen] = useState(false);
@@ -461,6 +463,27 @@ export default function Dashboard({
   return (
     <div className="flex flex-col gap-6 py-6">
       {isPrimaryAdmin && <AccessRequestsAdminCard patients={state.patients} />}
+
+      {isPrimaryAdmin && onOpenMonitoringPreview && (
+        <section className="flex flex-col gap-3 rounded-xl border border-status-blue-text/20 bg-status-blue-bg p-4 shadow-clinic sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-white p-2 text-status-blue-text shadow-sm"><Monitor size={20} /></span>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-status-blue-text">Pré-visualização segura</p>
+              <h2 className="text-lg font-black text-clinic-text">Visão do Monitoramento</h2>
+              <p className="mt-1 text-sm text-clinic-text-muted">Abra o mesmo ambiente somente leitura disponível para o perfil Monitoramento.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenMonitoringPreview}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase text-white shadow-sm"
+          >
+            <Monitor size={16} />
+            Acessar visão
+          </button>
+        </section>
+      )}
 
 
 

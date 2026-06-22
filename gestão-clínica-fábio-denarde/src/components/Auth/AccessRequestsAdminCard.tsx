@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   CircleAlert,
@@ -17,17 +17,41 @@ import {
 import {
   linkResponsiblePatient,
   listAccessRequests,
+  reactivateAccessRequest,
+  requestAdditionalAccessInformation,
   reviewAccessRequest,
   revokeAccessRequest,
+  suspendAccessRequest,
+  updateAccessValidity,
 } from '../../lib/accessApi';
 import type { Patient } from '../../types';
 import type { AccessRequestRecord, AccessRequestStatus } from '../../types/access';
+import Modal from '../Common/Modal';
 import { showToast } from '../Common/Toast';
 
-type RequestTab = 'pending' | 'approved' | 'rejected' | 'revoked';
+type RequestTab = 'pending' | 'information_requested' | 'approved' | 'rejected' | 'revoked';
+type AdminActionKind = 'approveMonitoring' | 'requestInformation' | 'suspend' | 'reactivate' | 'validity' | 'revoke';
+type AccessAdminMockActionKind = AdminActionKind | 'approve' | 'reject' | 'linkPatient';
+
+export interface AccessAdminMockActionInput {
+  kind: AccessAdminMockActionKind;
+  request: AccessRequestRecord;
+  expiresAt?: string | null;
+  message?: string;
+  patientId?: string;
+}
+
+interface AdminActionModalState {
+  kind: AdminActionKind;
+  request: AccessRequestRecord;
+}
+
+const SUSPENSION_REASON_MAX_LENGTH = 500;
+const INFORMATION_MESSAGE_MAX_LENGTH = 1200;
 
 const TABS: Array<{ id: RequestTab; label: string }> = [
   { id: 'pending', label: 'Pendentes' },
+  { id: 'information_requested', label: 'Informações' },
   { id: 'approved', label: 'Aprovados' },
   { id: 'rejected', label: 'Rejeitados' },
   { id: 'revoked', label: 'Revogados' },
@@ -46,8 +70,17 @@ function formatDateTime(value: string | null): string {
   }).format(date);
 }
 
+function formatDateOnly(value: string | null): string {
+  if (!value) return 'Sem prazo';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Data inválida';
+  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(date);
+}
+
 function roleLabel(role: AccessRequestRecord['role']): string {
-  return role === 'responsible' ? 'Responsável' : 'Profissional';
+  if (role === 'responsible') return 'Responsável';
+  if (role === 'monitoring') return 'Monitoramento';
+  return 'Profissional';
 }
 
 function notificationLabel(request: AccessRequestRecord) {
@@ -75,6 +108,9 @@ function notificationLabel(request: AccessRequestRecord) {
 }
 
 function statusBadge(status: AccessRequestRecord['status']) {
+  if (status === 'information_requested') {
+    return { icon: CircleAlert, label: 'Aguardando informações', className: 'text-status-orange-text bg-status-orange-bg' };
+  }
   if (status === 'approved') {
     return { icon: CircleCheck, label: 'Aprovado', className: 'text-status-green-text bg-status-green-bg' };
   }
@@ -91,11 +127,61 @@ function tabForStatus(status: AccessRequestStatus): RequestTab {
   return ['revoked', 'disabled', 'canceled'].includes(status) ? 'revoked' : status as RequestTab;
 }
 
-interface AccessRequestsAdminCardProps {
-  patients: Patient[];
+function isSuspended(request: AccessRequestRecord): boolean {
+  if (!request.suspendedAt) return false;
+  if (!request.reactivatedAt) return true;
+  return new Date(request.suspendedAt).getTime() > new Date(request.reactivatedAt).getTime();
 }
 
-export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdminCardProps) {
+function isExpired(request: AccessRequestRecord): boolean {
+  if (!request.expiresAt) return false;
+  const expiresAt = new Date(request.expiresAt).getTime();
+  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+}
+
+function validityLabel(request: AccessRequestRecord): string {
+  if (!request.expiresAt) return 'Sem prazo';
+  return isExpired(request)
+    ? `Expirado em ${formatDateOnly(request.expiresAt)}`
+    : `Válido até ${formatDateOnly(request.expiresAt)}`;
+}
+
+function dateInputValue(value: string | null): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return value.slice(0, 10);
+}
+
+function isValidDateInput(value: string): boolean {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const localNoon = new Date(Date.UTC(year, month - 1, day, 15, 0, 0));
+  return localNoon.getUTCFullYear() === year
+    && localNoon.getUTCMonth() === month - 1
+    && localNoon.getUTCDate() === day;
+}
+
+function normalizeModalText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+interface AccessRequestsAdminCardProps {
+  patients: Patient[];
+  previewRequests?: AccessRequestRecord[];
+  previewActiveTab?: RequestTab;
+  onPreviewAction?: (input: AccessAdminMockActionInput) => Promise<AccessRequestRecord>;
+}
+
+export default function AccessRequestsAdminCard({
+  patients,
+  previewRequests,
+  previewActiveTab,
+  onPreviewAction,
+}: AccessRequestsAdminCardProps) {
   const [requests, setRequests] = useState<AccessRequestRecord[]>([]);
   const [activeTab, setActiveTab] = useState<RequestTab>('pending');
   const [loading, setLoading] = useState(true);
@@ -103,10 +189,22 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
   const [reviewingId, setReviewingId] = useState('');
   const [linkingId, setLinkingId] = useState('');
   const [patientSelections, setPatientSelections] = useState<Record<string, string>>({});
+  const [actionModal, setActionModal] = useState<AdminActionModalState | null>(null);
+  const [modalText, setModalText] = useState('');
+  const [validityMode, setValidityMode] = useState<'none' | 'date'>('none');
+  const [validityDate, setValidityDate] = useState('');
+  const [modalError, setModalError] = useState('');
+  const modalPrimaryRef = useRef<HTMLElement | null>(null);
+  const actionSubmittingRef = useRef(false);
 
   const loadRequests = useCallback(async () => {
     setLoading(true);
     setError('');
+    if (previewRequests) {
+      setRequests(previewRequests);
+      setLoading(false);
+      return;
+    }
     try {
       setRequests(await listAccessRequests());
     } catch (caughtError) {
@@ -114,11 +212,19 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [previewRequests]);
 
   useEffect(() => {
     void loadRequests();
   }, [loadRequests]);
+
+  useEffect(() => {
+    if (!previewRequests) return;
+    setRequests(previewRequests);
+    setLoading(false);
+    setError('');
+    if (previewActiveTab) setActiveTab(previewActiveTab);
+  }, [previewActiveTab, previewRequests]);
 
   const visibleRequests = useMemo(
     () => requests.filter(request => tabForStatus(request.status) === activeTab),
@@ -137,15 +243,46 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
         result[tab] += 1;
         return result;
       },
-      { pending: 0, approved: 0, rejected: 0, revoked: 0 },
+      { pending: 0, information_requested: 0, approved: 0, rejected: 0, revoked: 0 },
     ),
     [requests],
   );
 
-  const review = async (request: AccessRequestRecord, decision: 'approve' | 'reject') => {
+  const closeActionModal = () => {
+    if (reviewingId || actionSubmittingRef.current) return;
+    setActionModal(null);
+    setModalText('');
+    setValidityMode('none');
+    setValidityDate('');
+    setModalError('');
+  };
+
+  const openActionModal = (kind: AdminActionKind, request: AccessRequestRecord) => {
+    setModalError('');
+    setModalText('');
+    setValidityMode(request.expiresAt ? 'date' : 'none');
+    setValidityDate(dateInputValue(request.expiresAt));
+    setActionModal({ kind, request });
+  };
+
+  const runAccessAction = async (input: AccessAdminMockActionInput): Promise<AccessRequestRecord> => {
+    if (onPreviewAction) return onPreviewAction(input);
+    if (input.kind === 'approve' || input.kind === 'approveMonitoring') {
+      return reviewAccessRequest(input.request.id, 'approve', { expiresAt: input.expiresAt ?? null });
+    }
+    if (input.kind === 'reject') return reviewAccessRequest(input.request.id, 'reject');
+    if (input.kind === 'requestInformation') return requestAdditionalAccessInformation(input.request.id, input.message || '');
+    if (input.kind === 'suspend') return suspendAccessRequest(input.request.id, input.message || '');
+    if (input.kind === 'reactivate') return reactivateAccessRequest(input.request.id);
+    if (input.kind === 'validity') return updateAccessValidity(input.request.id, input.expiresAt ?? null);
+    if (input.kind === 'linkPatient') return linkResponsiblePatient(input.request.id, input.patientId || '');
+    return revokeAccessRequest(input.request.id);
+  };
+
+  const review = async (request: AccessRequestRecord, decision: 'approve' | 'reject', expiresAt: string | null = null) => {
     setReviewingId(request.id);
     try {
-      const reviewedRequest = await reviewAccessRequest(request.id, decision);
+      const reviewedRequest = await runAccessAction({ kind: decision, request, expiresAt });
       setRequests(current => current.map(item => item.id === request.id ? reviewedRequest : item));
       showToast(decision === 'approve' ? 'Acesso aprovado.' : 'Solicitação rejeitada.');
     } catch (caughtError) {
@@ -158,20 +295,55 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
     }
   };
 
-  const revoke = async (request: AccessRequestRecord) => {
-    if (!window.confirm(REVOCATION_CONFIRMATION)) return;
+  const submitActionModal = async () => {
+    if (!actionModal || reviewingId || actionSubmittingRef.current) return;
 
+    const { kind, request } = actionModal;
+    const normalizedText = normalizeModalText(modalText);
+    const expiresAt = validityMode === 'date' ? validityDate : null;
+
+    if ((kind === 'approveMonitoring' || kind === 'validity') && validityMode === 'date' && !isValidDateInput(validityDate)) {
+      setModalError('Informe uma data válida no formato AAAA-MM-DD.');
+      return;
+    }
+    if (kind === 'requestInformation' && !normalizedText) {
+      setModalError('Informe a mensagem que será enviada ao solicitante.');
+      return;
+    }
+
+    actionSubmittingRef.current = true;
     setReviewingId(request.id);
+    setModalError('');
     try {
-      const revokedRequest = await revokeAccessRequest(request.id);
-      setRequests(current => current.map(item => item.id === request.id ? revokedRequest : item));
-      showToast('Acesso revogado. O histórico foi mantido.');
+      let updatedRequest: AccessRequestRecord;
+      if (kind === 'approveMonitoring') {
+        updatedRequest = await runAccessAction({ kind, request, expiresAt });
+        showToast('Acesso aprovado.');
+      } else if (kind === 'requestInformation') {
+        updatedRequest = await runAccessAction({ kind, request, message: normalizedText });
+        showToast('Informações adicionais solicitadas.');
+      } else if (kind === 'suspend') {
+        updatedRequest = await runAccessAction({ kind, request, message: normalizedText });
+        showToast('Acesso suspenso.');
+      } else if (kind === 'reactivate') {
+        updatedRequest = await runAccessAction({ kind, request });
+        showToast(isExpired(updatedRequest) ? 'Acesso reativado, mas permanece expirado até renovar a validade.' : 'Acesso reativado.');
+      } else if (kind === 'validity') {
+        updatedRequest = await runAccessAction({ kind, request, expiresAt });
+        showToast(updatedRequest.expiresAt ? 'Validade atualizada.' : 'Validade removida.');
+      } else {
+        updatedRequest = await runAccessAction({ kind, request });
+        showToast('Acesso revogado. O histórico foi mantido.');
+      }
+      setRequests(current => current.map(item => item.id === request.id ? updatedRequest : item));
+      setActionModal(null);
+      setModalText('');
+      setValidityMode('none');
+      setValidityDate('');
     } catch (caughtError) {
-      showToast(
-        caughtError instanceof Error ? caughtError.message : 'Não foi possível revogar o acesso.',
-        'error',
-      );
+      setModalError(caughtError instanceof Error ? caughtError.message : 'Não foi possível concluir a ação.');
     } finally {
+      actionSubmittingRef.current = false;
       setReviewingId('');
     }
   };
@@ -185,7 +357,7 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
 
     setLinkingId(request.id);
     try {
-      const linkedRequest = await linkResponsiblePatient(request.id, patientId);
+      const linkedRequest = await runAccessAction({ kind: 'linkPatient', request, patientId });
       setRequests(current => current.map(item => item.id === request.id ? linkedRequest : item));
       setPatientSelections(current => ({ ...current, [request.id]: '' }));
       showToast('Atendente vinculado ao responsável.');
@@ -198,6 +370,47 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
       setLinkingId('');
     }
   };
+
+  const actionRequest = actionModal?.request || null;
+  const modalBusy = !!actionRequest && reviewingId === actionRequest.id;
+  const showValidityFields = actionModal?.kind === 'approveMonitoring' || actionModal?.kind === 'validity';
+  const showTextArea = actionModal?.kind === 'requestInformation' || actionModal?.kind === 'suspend';
+  const textAreaMaxLength = actionModal?.kind === 'suspend'
+    ? SUSPENSION_REASON_MAX_LENGTH
+    : INFORMATION_MESSAGE_MAX_LENGTH;
+  const modalTitle = actionModal?.kind === 'approveMonitoring'
+    ? 'Definir validade'
+    : actionModal?.kind === 'requestInformation'
+      ? 'Solicitar mais informações'
+      : actionModal?.kind === 'suspend'
+        ? 'Suspender acesso'
+        : actionModal?.kind === 'reactivate'
+          ? 'Reativar acesso'
+          : actionModal?.kind === 'validity'
+            ? actionRequest && isExpired(actionRequest)
+              ? 'Renovar acesso'
+              : actionRequest?.expiresAt
+                ? 'Alterar validade'
+                : 'Definir validade'
+            : actionModal?.kind === 'revoke'
+              ? 'Revogar acesso'
+              : '';
+  const modalSubmitLabel = actionModal?.kind === 'approveMonitoring'
+    ? 'Aprovar acesso'
+    : actionModal?.kind === 'requestInformation'
+      ? 'Enviar solicitação'
+      : actionModal?.kind === 'suspend'
+        ? 'Suspender acesso'
+        : actionModal?.kind === 'reactivate'
+          ? 'Reativar acesso'
+          : actionModal?.kind === 'validity'
+            ? 'Salvar validade'
+            : 'Revogar acesso';
+  const modalSubmitClass = actionModal?.kind === 'suspend' || actionModal?.kind === 'revoke'
+    ? 'bg-status-red-text hover:bg-red-700'
+    : actionModal?.kind === 'requestInformation'
+      ? 'bg-status-orange-text hover:opacity-90'
+      : 'bg-clinic-primary hover:bg-clinic-primary-hover';
 
   return (
     <section className="overflow-hidden rounded-xl border border-status-blue-text/20 bg-clinic-surface shadow-clinic">
@@ -268,7 +481,11 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
           <div className="space-y-4">
             {visibleRequests.map(request => {
               const reviewing = reviewingId === request.id;
-              const status = statusBadge(request.status);
+              const status = request.status === 'approved' && isSuspended(request)
+                ? { icon: ShieldOff, label: 'Suspenso', className: 'text-status-orange-text bg-status-orange-bg' }
+                : request.status === 'approved' && isExpired(request)
+                  ? { icon: CircleAlert, label: 'Expirado', className: 'text-status-red-text bg-status-red-bg' }
+                  : statusBadge(request.status);
               const StatusIcon = status.icon;
               const notification = notificationLabel(request);
               const NotificationIcon = notification?.icon;
@@ -293,6 +510,8 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                         <span><strong>Perfil:</strong> {roleLabel(request.role)}</span>
                         <span><strong>Solicitado:</strong> {formatDateTime(request.submittedAt)}</span>
                         <span><strong>UID:</strong> {request.uid || 'Ainda não vinculado'}</span>
+                        {request.status === 'approved' && <span><strong>Validade:</strong> {validityLabel(request)}</span>}
+                        {request.status === 'approved' && isSuspended(request) && <span><strong>Situação:</strong> Suspenso</span>}
                       </div>
 
                       {request.status === 'approved' && !request.uid && (
@@ -334,6 +553,31 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                       {request.emailNotificationError && (
                         <p className="rounded-lg border border-status-red-text/20 bg-status-red-bg px-3 py-2 text-xs text-status-red-text">
                           {request.emailNotificationError}
+                        </p>
+                      )}
+
+                      {request.informationRequestMessage && (
+                        <div className="rounded-xl border border-status-orange-text/25 bg-status-orange-bg p-3 text-sm">
+                          <p className="text-[10px] font-black uppercase tracking-wide text-status-orange-text">
+                            Informações solicitadas em {formatDateTime(request.informationRequestedAt)}
+                          </p>
+                          <p className="mt-2 whitespace-pre-wrap text-clinic-text">{request.informationRequestMessage}</p>
+                          {request.informationResponseMessage ? (
+                            <div className="mt-3 rounded-lg bg-white/70 p-3">
+                              <p className="text-[10px] font-black uppercase tracking-wide text-status-blue-text">
+                                Resposta recebida em {formatDateTime(request.informationRespondedAt)}
+                              </p>
+                              <p className="mt-2 whitespace-pre-wrap text-clinic-text-muted">{request.informationResponseMessage}</p>
+                            </div>
+                          ) : (
+                            <p className="mt-2 text-xs font-bold text-status-orange-text">Aguardando resposta do solicitante.</p>
+                          )}
+                        </div>
+                      )}
+
+                      {request.status === 'approved' && request.suspensionReason && isSuspended(request) && (
+                        <p className="rounded-lg border border-status-orange-text/25 bg-status-orange-bg px-3 py-2 text-xs text-status-orange-text">
+                          <strong>Motivo da suspensão:</strong> {request.suspensionReason}
                         </p>
                       )}
 
@@ -413,10 +657,16 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                     </div>
 
                     {request.status === 'pending' && (
-                      <div className="flex shrink-0 gap-2">
+                      <div className="flex shrink-0 flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => void review(request, 'approve')}
+                          onClick={() => {
+                            if (request.role === 'monitoring') {
+                              openActionModal('approveMonitoring', request);
+                            } else {
+                              void review(request, 'approve');
+                            }
+                          }}
                           disabled={reviewing || !!reviewingId}
                           className="flex items-center gap-2 rounded-lg bg-status-green-text px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 disabled:opacity-50"
                         >
@@ -432,19 +682,60 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
                           <X size={15} />
                           Rejeitar
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => openActionModal('requestInformation', request)}
+                          disabled={reviewing || !!reviewingId}
+                          className="flex items-center gap-2 rounded-lg border border-status-orange-text/30 bg-white px-4 py-2 text-xs font-bold text-status-orange-text transition hover:bg-status-orange-bg disabled:opacity-50"
+                        >
+                          <CircleAlert size={15} />
+                          Solicitar mais informações
+                        </button>
                       </div>
                     )}
 
                     {request.status === 'approved' && (
-                      <button
-                        type="button"
-                        onClick={() => void revoke(request)}
-                        disabled={reviewing || !!reviewingId}
-                        className="flex shrink-0 items-center justify-center gap-2 rounded-lg border border-status-red-text/30 bg-white px-4 py-2 text-xs font-bold text-status-red-text transition hover:bg-status-red-bg disabled:opacity-50"
-                      >
-                        {reviewing ? <Loader2 size={15} className="animate-spin" /> : <ShieldOff size={15} />}
-                        Revogar acesso
-                      </button>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        {isSuspended(request) ? (
+                          <button
+                            type="button"
+                            onClick={() => openActionModal('reactivate', request)}
+                            disabled={reviewing || !!reviewingId}
+                            className="flex items-center justify-center gap-2 rounded-lg bg-status-green-text px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 disabled:opacity-50"
+                          >
+                            {reviewing ? <Loader2 size={15} className="animate-spin" /> : <CircleCheck size={15} />}
+                            Reativar acesso
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openActionModal('suspend', request)}
+                            disabled={reviewing || !!reviewingId}
+                            className="flex items-center justify-center gap-2 rounded-lg border border-status-orange-text/30 bg-white px-4 py-2 text-xs font-bold text-status-orange-text transition hover:bg-status-orange-bg disabled:opacity-50"
+                          >
+                            {reviewing ? <Loader2 size={15} className="animate-spin" /> : <ShieldOff size={15} />}
+                            Suspender acesso
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openActionModal('validity', request)}
+                          disabled={reviewing || !!reviewingId}
+                          className="flex items-center justify-center gap-2 rounded-lg border border-status-blue-text/30 bg-white px-4 py-2 text-xs font-bold text-status-blue-text transition hover:bg-status-blue-bg disabled:opacity-50"
+                        >
+                          <Clock3 size={15} />
+                          {isExpired(request) ? 'Renovar acesso' : request.expiresAt ? 'Alterar validade' : 'Definir validade'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openActionModal('revoke', request)}
+                          disabled={reviewing || !!reviewingId}
+                          className="flex items-center justify-center gap-2 rounded-lg border border-status-red-text/30 bg-white px-4 py-2 text-xs font-bold text-status-red-text transition hover:bg-status-red-bg disabled:opacity-50"
+                        >
+                          {reviewing ? <Loader2 size={15} className="animate-spin" /> : <ShieldOff size={15} />}
+                          Revogar acesso
+                        </button>
+                      </div>
                     )}
                   </div>
                 </article>
@@ -453,6 +744,184 @@ export default function AccessRequestsAdminCard({ patients }: AccessRequestsAdmi
           </div>
         )}
       </div>
+
+      <Modal
+        isOpen={!!actionModal}
+        onClose={closeActionModal}
+        title={modalTitle}
+        width="max-w-lg"
+        closeDisabled={modalBusy}
+        initialFocusRef={modalPrimaryRef}
+      >
+        {actionModal && actionRequest && (
+          <form
+            className="space-y-5"
+            onSubmit={event => {
+              event.preventDefault();
+              void submitActionModal();
+            }}
+          >
+            <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
+              <p className="text-sm font-bold text-clinic-text">{actionRequest.displayName}</p>
+              <p className="mt-1 break-all text-xs text-clinic-text-muted">{actionRequest.email}</p>
+              <p className="mt-2 text-xs text-clinic-text-muted">
+                Perfil: <strong>{roleLabel(actionRequest.role)}</strong>
+                {actionRequest.status === 'approved' && <> · Validade: <strong>{validityLabel(actionRequest)}</strong></>}
+              </p>
+            </div>
+
+            {actionModal.kind === 'suspend' && (
+              <>
+                <p className="text-sm leading-relaxed text-clinic-text-muted">
+                  O usuário perderá temporariamente o acesso ao Monitoramento. A suspensão poderá ser revertida posteriormente.
+                </p>
+                <label className="block">
+                  <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">
+                    Motivo da suspensão — opcional
+                  </span>
+                  <textarea
+                    ref={element => { modalPrimaryRef.current = element; }}
+                    value={modalText}
+                    onChange={event => setModalText(event.target.value)}
+                    maxLength={SUSPENSION_REASON_MAX_LENGTH}
+                    disabled={modalBusy}
+                    className="clinic-input min-h-28 resize-y bg-white"
+                  />
+                  <span className="mt-1 block text-right text-[11px] font-bold text-clinic-text-muted">
+                    {modalText.length}/{SUSPENSION_REASON_MAX_LENGTH}
+                  </span>
+                </label>
+              </>
+            )}
+
+            {actionModal.kind === 'reactivate' && (
+              <p className="text-sm leading-relaxed text-clinic-text-muted">
+                O usuário voltará a acessar o Monitoramento, desde que o acesso não esteja expirado ou revogado. Validade e revogação continuam sendo verificadas pelo backend.
+              </p>
+            )}
+
+            {actionModal.kind === 'revoke' && (
+              <p className="text-sm leading-relaxed text-clinic-text-muted">
+                {REVOCATION_CONFIRMATION}
+              </p>
+            )}
+
+            {actionModal.kind === 'requestInformation' && (
+              <>
+                <p className="text-sm leading-relaxed text-clinic-text-muted">
+                  Escreva de forma objetiva qual informação o solicitante deverá enviar antes de uma nova análise.
+                </p>
+                <label className="block">
+                  <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">
+                    Informação solicitada
+                  </span>
+                  <textarea
+                    ref={element => { modalPrimaryRef.current = element; }}
+                    value={modalText}
+                    onChange={event => setModalText(event.target.value)}
+                    maxLength={INFORMATION_MESSAGE_MAX_LENGTH}
+                    disabled={modalBusy}
+                    required
+                    className="clinic-input min-h-32 resize-y bg-white"
+                  />
+                  <span className="mt-1 block text-right text-[11px] font-bold text-clinic-text-muted">
+                    {modalText.length}/{INFORMATION_MESSAGE_MAX_LENGTH}
+                  </span>
+                </label>
+              </>
+            )}
+
+            {showValidityFields && (
+              <div className="space-y-4">
+                {actionModal.kind === 'validity' && actionRequest.expiresAt && (
+                  <p className={`rounded-lg px-3 py-2 text-xs font-bold ${isExpired(actionRequest) ? 'bg-status-red-bg text-status-red-text' : 'bg-status-blue-bg text-status-blue-text'}`}>
+                    {validityLabel(actionRequest)}
+                  </p>
+                )}
+                <fieldset className="space-y-3">
+                  <legend className="mb-2 text-xs font-black uppercase tracking-wider text-clinic-text-muted">Validade do acesso</legend>
+                  <label className="flex items-center gap-3 rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm font-bold text-clinic-text">
+                    <input
+                      ref={element => { modalPrimaryRef.current = element; }}
+                      type="radio"
+                      name="access-validity"
+                      checked={validityMode === 'none'}
+                      onChange={() => setValidityMode('none')}
+                      disabled={modalBusy}
+                      className="h-4 w-4 accent-clinic-primary"
+                    />
+                    Sem prazo
+                  </label>
+                  <label className="flex items-center gap-3 rounded-xl border border-clinic-border bg-white px-3 py-3 text-sm font-bold text-clinic-text">
+                    <input
+                      type="radio"
+                      name="access-validity"
+                      checked={validityMode === 'date'}
+                      onChange={() => setValidityMode('date')}
+                      disabled={modalBusy}
+                      className="h-4 w-4 accent-clinic-primary"
+                    />
+                    Válido até uma data
+                  </label>
+                </fieldset>
+                {validityMode === 'date' && (
+                  <label className="block">
+                    <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">
+                      Data final (AAAA-MM-DD)
+                    </span>
+                    <input
+                      ref={element => { modalPrimaryRef.current = element; }}
+                      type="date"
+                      value={validityDate}
+                      onChange={event => setValidityDate(event.target.value)}
+                      disabled={modalBusy}
+                      required
+                      className="clinic-input bg-white"
+                    />
+                    <span className="mt-1 block text-xs text-clinic-text-muted">
+                      A data escolhida será tratada como válida até o final desse dia em America/Sao_Paulo.
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
+
+            {showTextArea && modalText.length >= textAreaMaxLength - 80 && (
+              <p className="text-xs font-bold text-status-orange-text">
+                O texto está próximo do limite máximo permitido.
+              </p>
+            )}
+
+            {modalError && (
+              <div className="rounded-xl border border-status-red-text/20 bg-status-red-bg px-4 py-3 text-sm font-bold text-status-red-text" role="alert">
+                {modalError}
+              </div>
+            )}
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={closeActionModal}
+                disabled={modalBusy}
+                className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-sm font-bold text-clinic-text transition hover:bg-clinic-bg disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                ref={element => {
+                  if (!showTextArea && !showValidityFields) modalPrimaryRef.current = element;
+                }}
+                type="submit"
+                disabled={modalBusy}
+                className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold text-white transition disabled:opacity-60 ${modalSubmitClass}`}
+              >
+                {modalBusy && <Loader2 size={16} className="animate-spin" />}
+                {modalSubmitLabel}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
     </section>
   );
 }

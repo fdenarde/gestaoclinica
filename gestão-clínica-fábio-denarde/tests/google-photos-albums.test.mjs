@@ -542,7 +542,7 @@ test('portal do responsável usa tema verde, aba única e não expõe o nome do 
   assert.match(portalSource, /type PortalTab = 'dashboard' \| 'sessions' \| 'gallery' \| 'profile'/);
   assert.match(portalSource, /packageNumber=\{selectedPackage\.number\}/);
   assert.doesNotMatch(portalSource, /activePortalTab === 'googlePhotos'/);
-  assert.match(responsibleSource, /bg-clinic-primary/);
+  assert.match(responsibleSource, /bg-status-green-text/);
   assert.match(responsibleSource, /bg-status-green-bg/);
   assert.match(responsibleSource, /text-status-green-text/);
   assert.match(responsibleSource, /target="_blank"/);

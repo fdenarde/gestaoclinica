@@ -180,13 +180,20 @@ test('api de fotos exige perfil, permissão, vínculo e preserva namespace legad
   assert.match(driveSource, /context\.legacyStorageOwnerId/);
 });
 
-test('perfil Monitoramento é reconhecido sem abrir solicitação pública nem painel interno', () => {
+test('perfil Monitoramento abre solicitação pública e painel próprio sem virar sistema interno comum', () => {
   const typesSource = fs.readFileSync(new URL('../src/types/access.ts', import.meta.url), 'utf8');
   const accessSource = fs.readFileSync(new URL('../api/access.js', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const portalSource = fs.readFileSync(new URL('../src/components/Auth/AccessPortal.tsx', import.meta.url), 'utf8');
   assert.match(typesSource, /'admin' \| 'professional' \| 'responsible' \| 'monitoring'/);
-  assert.match(typesSource, /Exclude<AccessRole, 'admin' \| 'monitoring'>/);
+  assert.match(typesSource, /Exclude<AccessRole, 'admin'>/);
   assert.match(accessSource, /ACCESS_PROFILE_ROLES\.has\(data\.role\)/);
-  assert.match(accessSource, /const ACCESS_ROLES = new Set\(\['professional', 'responsible'\]\)/);
-  assert.doesNotMatch(appSource, /accessProfile\.role === 'monitoring'/);
+  assert.match(accessSource, /const ACCESS_ROLES = new Set\(\['professional', 'responsible', 'monitoring'\]\)/);
+  assert.match(accessSource, /\['disabled', 'revoked'\]\.includes\(approval\.status\)/);
+  assert.match(portalSource, /<option value="monitoring">Monitoramento<\/option>/);
+  assert.match(portalSource, /applyTheme\('health-balance'\)/);
+  assert.doesNotMatch(portalSource, /applyTheme\('calm-tech'\)/);
+  assert.match(appSource, /const canAccessMonitoringPanel =/);
+  assert.match(appSource, /<MonitoringPanel onLogout=\{\(\) => void logout\(\)\} \/>/);
+  assert.match(appSource, /accessProfile\.role === 'admin' \|\| accessProfile\.role === 'professional'/);
 });

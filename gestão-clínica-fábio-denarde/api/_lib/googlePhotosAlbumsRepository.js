@@ -396,7 +396,7 @@ export async function listGooglePhotosAlbums(context, { patientId, packageNumber
     throw albumError('google-photos-albums/invalid-package', 'Informe o pacote da galeria.');
   }
 
-  if (normalizedScope === 'portal' && !['responsible', 'admin'].includes(effectiveRole(context))) {
+  if (normalizedScope === 'portal' && !['responsible', 'admin', 'monitoring'].includes(effectiveRole(context))) {
     throw albumError('google-photos-albums/portal-scope-denied', 'Este modo de visualização não está disponível para o seu perfil.', 403);
   }
 

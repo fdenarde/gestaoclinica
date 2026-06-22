@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X } from 'lucide-react';
 
@@ -8,9 +8,47 @@ interface ModalProps {
   title: string;
   children: React.ReactNode;
   width?: string;
+  closeDisabled?: boolean;
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
 }
 
-export default function Modal({ isOpen, onClose, title, children, width = 'max-w-2xl' }: ModalProps) {
+export default function Modal({
+  isOpen,
+  onClose,
+  title,
+  children,
+  width = 'max-w-2xl',
+  closeDisabled = false,
+  initialFocusRef,
+}: ModalProps) {
+  const titleId = useId();
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusTimer = window.setTimeout(() => {
+      (initialFocusRef?.current || closeButtonRef.current)?.focus();
+    }, 0);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !closeDisabled) onClose();
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocusRef.current?.focus();
+      previousFocusRef.current = null;
+    };
+  }, [closeDisabled, initialFocusRef, isOpen, onClose]);
+
+  const requestClose = () => {
+    if (!closeDisabled) onClose();
+  };
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -19,20 +57,27 @@ export default function Modal({ isOpen, onClose, title, children, width = 'max-w
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={onClose}
+            onClick={requestClose}
             className="absolute inset-0 bg-black/40 backdrop-blur-sm"
           />
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
             className={`relative bg-clinic-surface w-full ${width} rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[94dvh] sm:max-h-[90vh] overflow-hidden`}
           >
             <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-clinic-border flex justify-between items-center gap-3 bg-clinic-header text-white">
-              <h3 className="text-lg sm:text-xl font-semibold uppercase tracking-wide leading-tight">{title}</h3>
+              <h3 id={titleId} className="text-lg sm:text-xl font-semibold uppercase tracking-wide leading-tight">{title}</h3>
               <button
-                onClick={onClose}
-                className="p-2 -mr-2 hover:bg-white/20 rounded-full transition-colors touch-manipulation"
+                ref={closeButtonRef}
+                type="button"
+                onClick={requestClose}
+                disabled={closeDisabled}
+                aria-label="Fechar modal"
+                className="p-2 -mr-2 hover:bg-white/20 rounded-full transition-colors touch-manipulation disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <X size={24} />
               </button>

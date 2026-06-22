@@ -2,10 +2,19 @@ import crypto from 'crypto';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
-import { ACCESS_CONTEXTS, ACCESS_ROLES as ACCESS_PROFILE_ROLES, normalizePermissionOverrides } from './_lib/accessPermissions.js';
+import {
+  ACCESS_CONTEXTS,
+  ACCESS_ROLES as ACCESS_PROFILE_ROLES,
+  buildEffectiveAccessContext,
+  normalizePermissionOverrides,
+} from './_lib/accessPermissions.js';
 import { notifyAccessApproval, notifyAccessRequest } from './_lib/accessRequestNotification.js';
 import { canShareActivityWithGuardian } from './_lib/activityRecordsValidation.js';
 import { buildResponsiblePackages, getPackageForMedia } from './_lib/responsiblePortalPackages.js';
+import {
+  buildMonitoringSessionDataset,
+  getSaoPauloWeekRange,
+} from '../shared/monitoringPanel.js';
 import {
   assertOwnedPatientPhoto,
   assertOwnedResponsibleDocument,
@@ -17,9 +26,9 @@ import {
 
 const PRIMARY_ADMIN_EMAIL = 'fdenarde@gmail.com';
 const DEFAULT_PROFESSIONAL_NAME = 'Fábio Denarde';
-const ACCESS_ROLES = new Set(['professional', 'responsible']);
-const ACCESS_STATUSES = new Set(['pending', 'approved', 'rejected', 'revoked', 'disabled', 'canceled']);
-const REQUEST_STATUSES = new Set(['pending', 'approved', 'rejected', 'revoked', 'disabled', 'canceled']);
+const ACCESS_ROLES = new Set(['professional', 'responsible', 'monitoring']);
+const ACCESS_STATUSES = new Set(['pending', 'information_requested', 'approved', 'rejected', 'revoked', 'disabled', 'canceled']);
+const REQUEST_STATUSES = new Set(['pending', 'information_requested', 'approved', 'rejected', 'revoked', 'disabled', 'canceled']);
 const ALLOWED_ORIGINS = new Set([
   'https://gestaoclinica-solucoes.vercel.app',
   'https://fdenarde.github.io',
@@ -76,6 +85,33 @@ function normalizeEmail(value) {
 
 function emailDocumentId(email) {
   return crypto.createHash('sha256').update(normalizeEmail(email)).digest('hex');
+}
+
+function parseSaoPauloEndOfDay(value) {
+  const normalized = normalizeText(value, 20);
+  if (!normalized) return null;
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw accessError('access/invalid-expiration-date', 'Informe uma data de validade válida.');
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const localNoon = new Date(Date.UTC(year, month - 1, day, 15, 0, 0));
+  if (
+    localNoon.getUTCFullYear() !== year
+    || localNoon.getUTCMonth() !== month - 1
+    || localNoon.getUTCDate() !== day
+  ) {
+    throw accessError('access/invalid-expiration-date', 'Informe uma data de validade válida.');
+  }
+  const nextDayUtc = Date.UTC(year, month - 1, day + 1, 3, 0, 0);
+  return new Date(nextDayUtc).toISOString();
+}
+
+function serializeExpirationLabel(value) {
+  const iso = serializeDate(value);
+  return iso;
 }
 
 function requestDocumentId(email, uid) {
@@ -282,6 +318,12 @@ function serializeProfile(data) {
         endsAt: serializeDate(data.temporaryAccess.endsAt),
       }
       : null,
+    expiresAt: serializeExpirationLabel(data.expiresAt || data.temporaryAccess?.endsAt),
+    informationRequestMessage: data.informationRequestMessage ? normalizeText(data.informationRequestMessage, 1200) : null,
+    informationRequestedAt: serializeDate(data.informationRequestedAt),
+    informationRequestedBy: data.informationRequestedBy ? String(data.informationRequestedBy) : null,
+    informationResponseMessage: data.informationResponseMessage ? normalizeText(data.informationResponseMessage, 1200) : null,
+    informationRespondedAt: serializeDate(data.informationRespondedAt),
     configurationVersion: Number.isFinite(Number(data.configurationVersion))
       ? Number(data.configurationVersion)
       : 1,
@@ -319,6 +361,20 @@ function serializeRequest(snapshot) {
     revokedAt: serializeDate(data.revokedAt),
     revokedBy: data.revokedBy ? String(data.revokedBy) : null,
     revokedByEmail: data.revokedByEmail ? normalizeEmail(data.revokedByEmail) : null,
+    suspendedAt: serializeDate(data.suspendedAt || data.suspension?.startedAt),
+    suspendedBy: data.suspendedBy ? String(data.suspendedBy) : null,
+    suspendedByEmail: data.suspendedByEmail ? normalizeEmail(data.suspendedByEmail) : null,
+    suspensionReason: data.suspensionReason || data.suspension?.reason ? normalizeText(data.suspensionReason || data.suspension?.reason, 500) : null,
+    reactivatedAt: serializeDate(data.reactivatedAt),
+    reactivatedBy: data.reactivatedBy ? String(data.reactivatedBy) : null,
+    reactivatedByEmail: data.reactivatedByEmail ? normalizeEmail(data.reactivatedByEmail) : null,
+    expiresAt: serializeExpirationLabel(data.expiresAt || data.temporaryAccess?.endsAt),
+    informationRequestMessage: data.informationRequestMessage ? normalizeText(data.informationRequestMessage, 1200) : null,
+    informationRequestedAt: serializeDate(data.informationRequestedAt),
+    informationRequestedBy: data.informationRequestedBy ? String(data.informationRequestedBy) : null,
+    informationRequestedByEmail: data.informationRequestedByEmail ? normalizeEmail(data.informationRequestedByEmail) : null,
+    informationResponseMessage: data.informationResponseMessage ? normalizeText(data.informationResponseMessage, 1200) : null,
+    informationRespondedAt: serializeDate(data.informationRespondedAt),
     emailNotificationStatus: ['sent', 'skipped', 'failed'].includes(data.emailNotificationStatus)
       ? data.emailNotificationStatus
       : null,
@@ -518,6 +574,21 @@ async function materializeProfileFromApproval(db, decodedToken, approvalSnapshot
       revokedAt: status === 'revoked' ? approval.revokedAt || FieldValue.serverTimestamp() : null,
       revokedBy: status === 'revoked' ? approval.revokedBy || PRIMARY_ADMIN_EMAIL : null,
       revokedByEmail: status === 'revoked' ? approval.revokedByEmail || PRIMARY_ADMIN_EMAIL : null,
+      suspendedAt: approval.suspendedAt || null,
+      suspendedBy: approval.suspendedBy || null,
+      suspendedByEmail: approval.suspendedByEmail || null,
+      suspensionReason: approval.suspensionReason || null,
+      reactivatedAt: approval.reactivatedAt || null,
+      reactivatedBy: approval.reactivatedBy || null,
+      reactivatedByEmail: approval.reactivatedByEmail || null,
+      suspension: approval.suspension || null,
+      expiresAt: approval.expiresAt || null,
+      temporaryAccess: approval.temporaryAccess || null,
+      informationRequestMessage: approval.informationRequestMessage || null,
+      informationRequestedAt: approval.informationRequestedAt || null,
+      informationRequestedBy: approval.informationRequestedBy || null,
+      informationResponseMessage: approval.informationResponseMessage || null,
+      informationRespondedAt: approval.informationRespondedAt || null,
       linkedPatientIds,
       provider: providerFromToken(decodedToken),
       requestId: approval.requestId || null,
@@ -553,13 +624,18 @@ async function createPendingProfileFromRequest(db, decodedToken, requestSnapshot
     displayName: normalizeText(request.displayName || decodedToken.name, 120),
     phone: normalizeText(request.phone, 24),
     role: ACCESS_ROLES.has(request.role) ? request.role : 'professional',
-    status: 'pending',
+    status: request.status === 'information_requested' ? 'information_requested' : 'pending',
     createdAt: request.createdAt || FieldValue.serverTimestamp(),
     approvedAt: null,
     approvedBy: null,
     revokedAt: null,
     revokedBy: null,
     revokedByEmail: null,
+    informationRequestMessage: request.informationRequestMessage || null,
+    informationRequestedAt: request.informationRequestedAt || null,
+    informationRequestedBy: request.informationRequestedBy || null,
+    informationResponseMessage: request.informationResponseMessage || null,
+    informationRespondedAt: request.informationRespondedAt || null,
     linkedPatientIds: [],
     provider: providerFromToken(decodedToken),
     requestId: requestSnapshot.id,
@@ -628,8 +704,15 @@ async function createPendingRequest(db, decodedToken, input) {
     if (approval.status === 'approved' || currentProfile.status === 'approved' || currentProfile.role === 'admin') {
       throw accessError('access/already-approved', 'Este acesso já está aprovado.', 409);
     }
-    if (approval.status === 'disabled' || currentProfile.status === 'disabled') {
-      throw accessError('access/disabled', 'Este acesso está desativado. Entre em contato com a administração.', 403);
+    if (
+      approval.status === 'information_requested'
+      || currentProfile.status === 'information_requested'
+      || currentRequest.status === 'information_requested'
+    ) {
+      throw accessError('access/information-response-required', 'Sua solicitação precisa de informações adicionais antes de voltar para análise.', 409);
+    }
+    if (['disabled', 'revoked'].includes(approval.status) || ['disabled', 'revoked'].includes(currentProfile.status)) {
+      throw accessError('access/disabled', 'Este acesso está desativado ou revogado. Entre em contato com a administração.', 403);
     }
 
     transaction.set(requestRef, {
@@ -657,6 +740,22 @@ async function createPendingRequest(db, decodedToken, input) {
       revokedAt: null,
       revokedBy: null,
       revokedByEmail: null,
+      suspendedAt: null,
+      suspendedBy: null,
+      suspendedByEmail: null,
+      suspensionReason: null,
+      reactivatedAt: null,
+      reactivatedBy: null,
+      reactivatedByEmail: null,
+      expiresAt: null,
+      temporaryAccess: null,
+      suspension: null,
+      informationRequestMessage: null,
+      informationRequestedAt: null,
+      informationRequestedBy: null,
+      informationRequestedByEmail: null,
+      informationResponseMessage: null,
+      informationRespondedAt: null,
       emailNotificationStatus: null,
       emailNotificationError: null,
       updatedAt: FieldValue.serverTimestamp(),
@@ -677,6 +776,25 @@ async function createPendingRequest(db, decodedToken, input) {
       rejectedAt: null,
       rejectedBy: null,
       rejectedByEmail: null,
+      revokedAt: null,
+      revokedBy: null,
+      revokedByEmail: null,
+      suspendedAt: null,
+      suspendedBy: null,
+      suspendedByEmail: null,
+      suspensionReason: null,
+      reactivatedAt: null,
+      reactivatedBy: null,
+      reactivatedByEmail: null,
+      expiresAt: null,
+      temporaryAccess: null,
+      suspension: null,
+      informationRequestMessage: null,
+      informationRequestedAt: null,
+      informationRequestedBy: null,
+      informationRequestedByEmail: null,
+      informationResponseMessage: null,
+      informationRespondedAt: null,
       linkedUid: decodedToken.uid,
       createdAt: approval.createdAt || currentRequest.createdAt || FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -696,6 +814,21 @@ async function createPendingRequest(db, decodedToken, input) {
       revokedAt: null,
       revokedBy: null,
       revokedByEmail: null,
+      suspendedAt: null,
+      suspendedBy: null,
+      suspendedByEmail: null,
+      suspensionReason: null,
+      reactivatedAt: null,
+      reactivatedBy: null,
+      reactivatedByEmail: null,
+      expiresAt: null,
+      temporaryAccess: null,
+      suspension: null,
+      informationRequestMessage: null,
+      informationRequestedAt: null,
+      informationRequestedBy: null,
+      informationResponseMessage: null,
+      informationRespondedAt: null,
       linkedPatientIds: [],
       provider: providerFromToken(decodedToken),
       requestId: requestRef.id,
@@ -791,6 +924,7 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
   const reviewedBy = decodedToken.uid;
   const reviewedByEmail = normalizeEmail(decodedToken.email);
   const approved = decision === 'approve';
+  const approvedExpiresAt = approved ? parseSaoPauloEndOfDay(body.expiresAt) : null;
   if (approved && !resolvedUid) {
     throw accessError(
       'access/missing-linked-user',
@@ -808,6 +942,13 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
 
     const request = requestSnapshot.data();
     const approval = approvalSnapshot.exists ? approvalSnapshot.data() : {};
+    if (!['pending'].includes(request.status)) {
+      throw accessError(
+        'access/request-not-pending',
+        'Esta solicitação não está pendente para revisão.',
+        409,
+      );
+    }
     const status = approved ? 'approved' : 'rejected';
 
     transaction.set(requestRef, {
@@ -822,6 +963,9 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
       rejectedAt: approved ? null : FieldValue.serverTimestamp(),
       rejectedBy: approved ? null : reviewedBy,
       rejectedByEmail: approved ? null : reviewedByEmail,
+      expiresAt: approvedExpiresAt,
+      temporaryAccess: approvedExpiresAt ? { startsAt: null, endsAt: approvedExpiresAt } : null,
+      suspension: null,
       emailNotificationStatus: approved ? 'skipped' : null,
       emailNotificationError: null,
       updatedAt: FieldValue.serverTimestamp(),
@@ -842,6 +986,9 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
       rejectedAt: approved ? null : FieldValue.serverTimestamp(),
       rejectedBy: approved ? null : reviewedBy,
       rejectedByEmail: approved ? null : reviewedByEmail,
+      expiresAt: approvedExpiresAt,
+      temporaryAccess: approvedExpiresAt ? { startsAt: null, endsAt: approvedExpiresAt } : null,
+      suspension: null,
       linkedUid: resolvedUid || approval.linkedUid || null,
       createdAt: approval.createdAt || request.createdAt || FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -859,6 +1006,9 @@ async function reviewRequest(db, decodedToken, body, platformUrl) {
         approvedAt: approved ? FieldValue.serverTimestamp() : null,
         approvedBy: approved ? reviewedBy : null,
         approvedByEmail: approved ? reviewedByEmail : null,
+        expiresAt: approvedExpiresAt,
+        temporaryAccess: approvedExpiresAt ? { startsAt: null, endsAt: approvedExpiresAt } : null,
+        suspension: null,
         linkedPatientIds: Array.isArray(approval.linkedPatientIds) ? approval.linkedPatientIds : [],
         provider: normalizeText(request.provider, 80) || 'approved-request',
         requestId,
@@ -1013,6 +1163,243 @@ async function linkResponsiblePatient(db, decodedToken, body) {
   });
 
   return requestRef.get();
+}
+
+async function collectAccessMutationRefs(db, request, requestId) {
+  const normalizedEmail = normalizeEmail(request.email);
+  const approvalRef = db.collection('accessApprovals').doc(emailDocumentId(normalizedEmail));
+  const resolvedUid = await resolveUidForEmail(normalizedEmail, request.uid);
+  const matchingProfiles = await findProfilesByEmail(db, normalizedEmail);
+  const profileRefs = new Map(matchingProfiles.map(snapshot => [snapshot.id, snapshot.ref]));
+  if (resolvedUid) profileRefs.set(resolvedUid, db.collection('accessProfiles').doc(resolvedUid));
+  const approvalSnapshot = await approvalRef.get();
+  const approval = approvalSnapshot.exists ? approvalSnapshot.data() : {};
+  if (approval.linkedUid) profileRefs.set(String(approval.linkedUid), db.collection('accessProfiles').doc(String(approval.linkedUid)));
+  return { normalizedEmail, approvalRef, approval, profileRefs, linkedUid: resolvedUid || approval.linkedUid || request.uid || null, requestId };
+}
+
+async function mutateAccessState(db, decodedToken, body, operation) {
+  const requestId = normalizeText(body.requestId, 128);
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)) {
+    throw accessError('access/invalid-request-id', 'A solicitação informada é inválida.');
+  }
+  const requestRef = db.collection('accessRequests').doc(requestId);
+  const initialSnapshot = await requestRef.get();
+  if (!initialSnapshot.exists) {
+    throw accessError('access/request-not-found', 'A solicitação não foi encontrada.', 404);
+  }
+  const initialRequest = initialSnapshot.data();
+  const refs = await collectAccessMutationRefs(db, initialRequest, requestId);
+  const actorUid = decodedToken.uid;
+  const actorEmail = normalizeEmail(decodedToken.email);
+
+  await db.runTransaction(async transaction => {
+    const latestSnapshot = await transaction.get(requestRef);
+    if (!latestSnapshot.exists) throw accessError('access/request-not-found', 'A solicitação não foi encontrada.', 404);
+    const currentRequest = latestSnapshot.data();
+    const currentStatus = REQUEST_STATUSES.has(currentRequest.status) ? currentRequest.status : 'pending';
+    const currentSuspension = currentRequest.suspension && typeof currentRequest.suspension === 'object'
+      ? currentRequest.suspension
+      : null;
+    const patch = operation({
+      request: currentRequest,
+      status: currentStatus,
+      suspension: currentSuspension,
+      actorUid,
+      actorEmail,
+    });
+
+    transaction.set(requestRef, {
+      ...patch.request,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    transaction.set(refs.approvalRef, {
+      email: refs.normalizedEmail,
+      normalizedEmail: refs.normalizedEmail,
+      displayName: normalizeText(currentRequest.displayName, 120),
+      phone: normalizeText(currentRequest.phone, 24),
+      role: ACCESS_ROLES.has(currentRequest.role) ? currentRequest.role : 'professional',
+      requestId,
+      linkedUid: refs.linkedUid,
+      createdAt: refs.approval.createdAt || currentRequest.createdAt || FieldValue.serverTimestamp(),
+      ...patch.approval,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    for (const [uid, profileRef] of refs.profileRefs) {
+      transaction.set(profileRef, {
+        uid,
+        email: refs.normalizedEmail,
+        displayName: normalizeText(currentRequest.displayName, 120),
+        phone: normalizeText(currentRequest.phone, 24),
+        role: ACCESS_ROLES.has(currentRequest.role) ? currentRequest.role : 'professional',
+        requestId,
+        ...patch.profile,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  });
+
+  return requestRef.get();
+}
+
+async function suspendAccess(db, decodedToken, body) {
+  const suspensionReason = normalizeText(body.suspensionReason, 500);
+  return mutateAccessState(db, decodedToken, body, ({ status, suspension, actorUid, actorEmail }) => {
+    if (status !== 'approved') {
+      throw accessError('access/suspend-approved-required', 'Somente acessos aprovados podem ser suspensos.', 409);
+    }
+    if (suspension?.active === true) {
+      throw accessError('access/already-suspended', 'Este acesso já está suspenso.', 409);
+    }
+    const suspensionPatch = {
+      active: true,
+      reason: suspensionReason || null,
+      startedAt: FieldValue.serverTimestamp(),
+      endsAt: null,
+    };
+    const base = {
+      status: 'approved',
+      suspendedAt: FieldValue.serverTimestamp(),
+      suspendedBy: actorUid,
+      suspendedByEmail: actorEmail,
+      suspensionReason: suspensionReason || null,
+      suspension: suspensionPatch,
+    };
+    return { request: base, approval: base, profile: base };
+  });
+}
+
+async function reactivateAccess(db, decodedToken, body) {
+  return mutateAccessState(db, decodedToken, body, ({ status, suspension, actorUid, actorEmail }) => {
+    if (status !== 'approved') {
+      throw accessError('access/reactivate-approved-required', 'Somente acessos aprovados podem ser reativados.', 409);
+    }
+    if (suspension?.active !== true) {
+      throw accessError('access/not-suspended', 'Este acesso não está suspenso.', 409);
+    }
+    const base = {
+      status: 'approved',
+      suspension: { active: false, reason: suspension.reason || null, startedAt: suspension.startedAt || null, endsAt: FieldValue.serverTimestamp() },
+      reactivatedAt: FieldValue.serverTimestamp(),
+      reactivatedBy: actorUid,
+      reactivatedByEmail: actorEmail,
+    };
+    return { request: base, approval: base, profile: base };
+  });
+}
+
+async function updateAccessValidity(db, decodedToken, body) {
+  const hasExpiresAt = Object.prototype.hasOwnProperty.call(body, 'expiresAt');
+  const expiresAt = hasExpiresAt && body.expiresAt ? parseSaoPauloEndOfDay(body.expiresAt) : null;
+  return mutateAccessState(db, decodedToken, body, ({ status }) => {
+    if (!['approved'].includes(status)) {
+      throw accessError('access/validity-approved-required', 'A validade só pode ser alterada em acessos aprovados.', 409);
+    }
+    const base = {
+      status: 'approved',
+      expiresAt,
+      temporaryAccess: expiresAt ? { startsAt: null, endsAt: expiresAt } : null,
+    };
+    return { request: base, approval: base, profile: base };
+  });
+}
+
+async function requestAdditionalInformation(db, decodedToken, body) {
+  const message = normalizeText(body.message, 1200);
+  if (!message) {
+    throw accessError('access/empty-information-request', 'Descreva quais informações adicionais são necessárias.');
+  }
+  return mutateAccessState(db, decodedToken, body, ({ status, actorUid, actorEmail }) => {
+    if (status !== 'pending') {
+      throw accessError('access/information-request-pending-required', 'Só é possível solicitar informações de uma solicitação pendente.', 409);
+    }
+    const base = {
+      status: 'information_requested',
+      informationRequestMessage: message,
+      informationRequestedAt: FieldValue.serverTimestamp(),
+      informationRequestedBy: actorUid,
+      informationRequestedByEmail: actorEmail,
+      informationResponseMessage: null,
+      informationRespondedAt: null,
+      informationHistory: FieldValue.arrayUnion({
+        type: 'request',
+        message,
+        at: new Date().toISOString(),
+        by: actorUid,
+        byEmail: actorEmail,
+      }),
+    };
+    return { request: base, approval: base, profile: base };
+  });
+}
+
+async function respondAdditionalInformation(db, decodedToken, body) {
+  const responseMessage = normalizeText(body.responseMessage, 1200);
+  if (!responseMessage) {
+    throw accessError('access/empty-information-response', 'Digite as informações solicitadas antes de enviar.');
+  }
+  const normalizedEmail = normalizeEmail(decodedToken.email);
+  const directRequestRef = db.collection('accessRequests').doc(requestDocumentId(normalizedEmail, decodedToken.uid));
+  let requestSnapshot = await directRequestRef.get();
+  if (!requestSnapshot.exists) {
+    requestSnapshot = await findRequestByEmail(db, normalizedEmail);
+  }
+  if (!requestSnapshot?.exists) {
+    throw accessError('access/request-not-found', 'A solicitação não foi encontrada.', 404);
+  }
+  const request = requestSnapshot.data();
+  if (normalizeEmail(request.email) !== normalizedEmail || String(request.uid || '') !== String(decodedToken.uid)) {
+    throw accessError('access/request-owner-required', 'Você não pode responder por outra solicitação.', 403);
+  }
+  if (request.status !== 'information_requested') {
+    throw accessError('access/information-not-requested', 'Esta solicitação não está aguardando informações adicionais.', 409);
+  }
+
+  const refs = await collectAccessMutationRefs(db, request, requestSnapshot.id);
+  await db.runTransaction(async transaction => {
+    const latestSnapshot = await transaction.get(requestSnapshot.ref);
+    if (!latestSnapshot.exists) throw accessError('access/request-not-found', 'A solicitação não foi encontrada.', 404);
+    const latest = latestSnapshot.data();
+    if (latest.status !== 'information_requested') {
+      throw accessError('access/information-not-requested', 'Esta solicitação não está aguardando informações adicionais.', 409);
+    }
+    const patch = {
+      status: 'pending',
+      informationResponseMessage: responseMessage,
+      informationRespondedAt: FieldValue.serverTimestamp(),
+      informationHistory: FieldValue.arrayUnion({
+        type: 'response',
+        message: responseMessage,
+        at: new Date().toISOString(),
+        by: decodedToken.uid,
+        byEmail: normalizedEmail,
+      }),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    transaction.set(requestSnapshot.ref, patch, { merge: true });
+    transaction.set(refs.approvalRef, {
+      status: 'pending',
+      informationResponseMessage: responseMessage,
+      informationRespondedAt: FieldValue.serverTimestamp(),
+      informationHistory: patch.informationHistory,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    for (const [uid, profileRef] of refs.profileRefs) {
+      transaction.set(profileRef, {
+        uid,
+        status: 'pending',
+        informationResponseMessage: responseMessage,
+        informationRespondedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  });
+  return {
+    request: await requestSnapshot.ref.get(),
+    profile: await db.collection('accessProfiles').doc(decodedToken.uid).get(),
+  };
 }
 
 function normalizeResponsibleSessionType(value) {
@@ -1483,6 +1870,246 @@ async function requireResponsibleContext(db, decodedToken) {
     profile,
     linkedPatientIds: serializeLinkedPatientIds(profile.linkedPatientIds),
     ownerUserId: await getPrimaryAdminUid(),
+  };
+}
+
+function serializeMonitoringPatient(snapshot) {
+  const data = snapshot.data() || {};
+  return {
+    id: snapshot.id,
+    name: normalizeText(data.name || data.fullName, 120),
+    fullName: normalizeText(data.fullName || data.name, 160),
+    birthDate: normalizeText(data.birthDate, 20),
+    status: normalizeText(data.status, 40) || 'Não informado',
+    photoUrl: normalizeText(data.photoUrl, 3000),
+    photoDriveFileId: normalizeText(data.photoDriveFileId, 256),
+    photoStoragePath: normalizeText(data.photoStoragePath, 320),
+    monitoringVisible: data.monitoringVisible === false ? false : undefined,
+    hideFromMonitoring: data.hideFromMonitoring === true ? true : undefined,
+    excludeFromMonitoring: data.excludeFromMonitoring === true ? true : undefined,
+    fixedDay: normalizeText(data.fixedDay, 30),
+    fixedTime: normalizeText(data.fixedTime, 20),
+    doubleSession: data.doubleSession === true,
+    fixedScheduleEffectiveFrom: normalizeText(data.fixedScheduleEffectiveFrom, 20),
+    fixedScheduleHistory: Array.isArray(data.fixedScheduleHistory)
+      ? data.fixedScheduleHistory.slice(0, 50).map(item => ({
+        fixedDay: normalizeText(item?.fixedDay, 30),
+        fixedTime: normalizeText(item?.fixedTime, 20),
+        doubleSession: item?.doubleSession === true,
+        effectiveFrom: normalizeText(item?.effectiveFrom, 20),
+        effectiveTo: normalizeText(item?.effectiveTo, 20),
+      }))
+      : [],
+    startDate: normalizeText(data.startDate, 20),
+    guardianName: normalizeText(data.guardianName, 160),
+    guardianKinship: normalizeText(
+      data.otherResponsibleKinship
+        || data.custodyResponsibleKinship
+        || data.financialResponsibleOtherKinship
+        || 'Responsável',
+      80,
+    ),
+    whatsapp: normalizeText(data.whatsapp, 40),
+  };
+}
+
+function inferMonitoringDurationMinutes(session) {
+  const type = normalizeText(session.type, 100).toLowerCase();
+  if (type.includes('dupla') || type.includes('2 ')) return 100;
+  return 50;
+}
+
+function serializeMonitoringSession(snapshot, patientsById) {
+  const data = snapshot.data ? snapshot.data() || {} : snapshot || {};
+  const patientId = normalizeText(data.patientId, 128);
+  const patient = patientsById.get(patientId);
+  return {
+    id: snapshot.id ? String(snapshot.id) : normalizeText(data.id, 128),
+    patientId,
+    patientName: patient?.name || patient?.fullName || 'Atendente',
+    date: normalizeText(data.date, 20),
+    time: normalizeText(data.time, 20),
+    durationMinutes: inferMonitoringDurationMinutes(data),
+    professionalName: normalizeText(
+      data.professionalName || data.therapistName || data.providerName || data.createdByName || DEFAULT_PROFESSIONAL_NAME,
+      120,
+    ) || DEFAULT_PROFESSIONAL_NAME,
+    type: normalizeText(data.type, 100),
+    status: normalizeText(data.status, 60),
+    packageNumber: Number.isFinite(Number(data.packageNumber)) ? Number(data.packageNumber) : null,
+    isBlocked: data.isBlocked === true,
+    removedFromAgenda: data.removedFromAgenda === true,
+    consumesPackage: data.consumesPackage === true,
+    source: normalizeText(data.source, 40) || null,
+  };
+}
+
+function resolveMonitoringWeekRange(req) {
+  const weekStart = normalizeText(req?.query?.weekStart, 20);
+  const weekEnd = normalizeText(req?.query?.weekEnd, 20);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(weekStart) && /^\d{4}-\d{2}-\d{2}$/.test(weekEnd) && weekStart <= weekEnd) {
+    return { start: weekStart, end: weekEnd };
+  }
+  return getSaoPauloWeekRange(new Date());
+}
+
+function normalizeMonitoringPatientPhotoFileId(patient = {}) {
+  const direct = normalizeText(patient.photoDriveFileId, 256);
+  if (direct) return direct;
+  const storagePath = normalizeText(patient.photoStoragePath, 320);
+  return storagePath.startsWith('google-drive:') ? storagePath.slice('google-drive:'.length) : '';
+}
+
+async function hydrateMonitoringPatientPhotos(patients, ownerUserId, req) {
+  return Promise.all(patients.map(async patient => {
+    const toPublicPatient = (source) => {
+      const {
+        photoDriveFileId,
+        photoStoragePath,
+        monitoringVisible,
+        hideFromMonitoring,
+        excludeFromMonitoring,
+        fixedDay,
+        fixedTime,
+        doubleSession,
+        fixedScheduleEffectiveFrom,
+        fixedScheduleHistory,
+        startDate,
+        ...publicPatient
+      } = source;
+      return publicPatient;
+    };
+    const fileId = normalizeMonitoringPatientPhotoFileId(patient);
+    if (!fileId) {
+      return toPublicPatient(patient);
+    }
+
+    try {
+      const metadata = await getDriveFileMetadata(fileId);
+      assertOwnedPatientPhoto(metadata, ownerUserId);
+      const signed = createSignedPhotoUrl({ req, fileId, ownerUserId });
+      return toPublicPatient({ ...patient, photoUrl: signed.url || patient.photoUrl || '' });
+    } catch (error) {
+      console.error('[ACCESS API] Não foi possível assinar foto para Monitoramento:', error?.message || error);
+      return toPublicPatient(patient);
+    }
+  }));
+}
+
+async function resolveMonitoringPanelContext(db, decodedToken, req) {
+  const normalizedEmail = normalizeEmail(decodedToken?.email);
+  const isPrimaryAdmin = normalizedEmail === PRIMARY_ADMIN_EMAIL;
+  const adminPreview = isPrimaryAdmin && normalizeText(req?.query?.adminPreview, 5) === '1';
+  const profileSnapshot = await getProfile(db, decodedToken);
+  const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
+  const primaryAdminWorkspaceId = await getPrimaryAdminUid();
+
+  let context;
+  try {
+    context = buildEffectiveAccessContext({
+      decodedToken,
+      profile,
+      primaryAdminEmail: PRIMARY_ADMIN_EMAIL,
+      primaryAdminWorkspaceId,
+      requestedContext: isPrimaryAdmin ? undefined : 'monitoring',
+    });
+  } catch (error) {
+    if (error?.code === 'access/approved-profile-required') {
+      throw accessError('access/monitoring-approved-required', 'O acesso de Monitoramento ainda não foi aprovado.', 403);
+    }
+    throw error;
+  }
+
+  if (!isPrimaryAdmin && context.role !== 'monitoring') {
+    throw accessError('access/monitoring-required', 'Este painel está disponível apenas para o perfil Monitoramento.', 403);
+  }
+
+  return {
+    context,
+    ownerUserId: primaryAdminWorkspaceId,
+    adminPreview: isPrimaryAdmin ? adminPreview : false,
+  };
+}
+
+async function countMonitoringActivities(patientRef) {
+  try {
+    const aggregate = await patientRef.collection('activityRecords').count().get();
+    return Number(aggregate.data().count) || 0;
+  } catch (error) {
+    console.error('[ACCESS API] Não foi possível contar atividades para Monitoramento:', error?.message || error);
+    return 0;
+  }
+}
+
+async function getMonitoringPanelData(db, decodedToken, req) {
+  const { context, ownerUserId, adminPreview } = await resolveMonitoringPanelContext(db, decodedToken, req);
+  const weekRange = resolveMonitoringWeekRange(req);
+  const ownerRef = db.collection('users').doc(ownerUserId);
+  const patientsRef = ownerRef.collection('patients');
+  const sessionsRef = ownerRef.collection('sessions');
+
+  const [settingsSnapshot, patientsSnapshot, sessionsSnapshot] = await Promise.all([
+    ownerRef.collection('settings').doc('config').get(),
+    patientsRef.limit(250).get(),
+    sessionsRef.limit(2000).get(),
+  ]);
+
+  const settings = settingsSnapshot.exists ? settingsSnapshot.data() || {} : {};
+  const rawPatients = patientsSnapshot.docs.map(serializeMonitoringPatient)
+    .filter(patient => patient.id && patient.name);
+  const rawPatientsById = new Map(rawPatients.map(patient => [patient.id, patient]));
+  const persistedSessions = sessionsSnapshot.docs
+    .map(snapshot => serializeMonitoringSession(snapshot, rawPatientsById))
+    .filter(session => session.patientId);
+  const monitoringDataset = buildMonitoringSessionDataset({
+    patients: rawPatients,
+    sessions: persistedSessions,
+    weekRange,
+    holidays: Array.isArray(settings.holidays) ? settings.holidays : [],
+    professionalName: DEFAULT_PROFESSIONAL_NAME,
+  });
+  const patients = await hydrateMonitoringPatientPhotos(monitoringDataset.patients, ownerUserId, req);
+  const patientNamesById = new Map(patients.map(patient => [patient.id, patient.name || patient.fullName || 'Atendente']));
+  const sessions = monitoringDataset.sessions.map(session => ({
+    ...session,
+    patientName: patientNamesById.get(session.patientId) || session.patientName || 'Atendente',
+  }));
+  const weekSessions = monitoringDataset.weekSessions.map(session => ({
+    ...session,
+    patientName: patientNamesById.get(session.patientId) || session.patientName || 'Atendente',
+  }));
+
+  const activityCounts = await Promise.all(patients.map(async patient => ({
+    patientId: patient.id,
+    count: await countMonitoringActivities(patientsRef.doc(patient.id)),
+  })));
+
+  return {
+    viewer: {
+      uid: context.userId,
+      email: context.actorEmail,
+      displayName: context.actorName,
+      role: context.role,
+      adminPreview,
+    },
+    settings: {
+      name: normalizeText(settings.name, 160) || 'Gestão Clínica',
+      title: normalizeText(settings.title, 160) || 'Monitoramento',
+      visualTheme: ['current', 'calm-tech', 'health-balance', 'soft-welcome'].includes(settings.visualTheme)
+        ? settings.visualTheme
+        : 'calm-tech',
+    },
+    weekRange,
+    patients,
+    sessions,
+    weekSessions,
+    activityCounts,
+    querySummary: {
+      patients: `users/${ownerUserId}/patients limit 250; filtro Monitoramento aplicado antes da exibição`,
+      sessions: `users/${ownerUserId}/sessions limit 2000 + agenda fixa calculada por fixedDay/fixedTime`,
+      weekSessions: `derivado da mesma fonte de sessions para ${weekRange.start}..${weekRange.end}`,
+      activityCounts: 'aggregate count() por atendente em activityRecords',
+    },
   };
 }
 
@@ -2833,6 +3460,9 @@ export default async function handler(req, res) {
       if (req.query?.mode === 'adminResponsiblePreview') {
         return res.status(200).json(await getAdminResponsiblePortalData(db, decodedToken, req));
       }
+      if (req.query?.mode === 'monitoringPanel') {
+        return res.status(200).json(await getMonitoringPanelData(db, decodedToken, req));
+      }
       if (req.query?.mode === 'professionalNotifications') {
         return res.status(200).json(await listProfessionalNotifications(db, decodedToken, req));
       }
@@ -2856,6 +3486,43 @@ export default async function handler(req, res) {
       requirePrimaryAdmin(decodedToken);
       const snapshot = await revokeRequest(db, decodedToken, body);
       return res.status(200).json({ request: serializeRequest(snapshot), profile: null });
+    }
+
+    if (body.action === 'suspendAccess') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      const snapshot = await suspendAccess(db, decodedToken, body);
+      return res.status(200).json({ request: serializeRequest(snapshot), profile: null });
+    }
+
+    if (body.action === 'reactivateAccess') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      const snapshot = await reactivateAccess(db, decodedToken, body);
+      return res.status(200).json({ request: serializeRequest(snapshot), profile: null });
+    }
+
+    if (body.action === 'updateAccessValidity') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      const snapshot = await updateAccessValidity(db, decodedToken, body);
+      return res.status(200).json({ request: serializeRequest(snapshot), profile: null });
+    }
+
+    if (body.action === 'requestAdditionalInformation') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      const snapshot = await requestAdditionalInformation(db, decodedToken, body);
+      return res.status(200).json({ request: serializeRequest(snapshot), profile: null });
+    }
+
+    if (body.action === 'respondAdditionalInformation') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      const result = await respondAdditionalInformation(db, decodedToken, body);
+      return res.status(200).json({
+        request: serializeRequest(result.request),
+        profile: result.profile?.exists ? serializeProfile(result.profile.data()) : null,
+      });
     }
 
     if (body.action === 'linkResponsiblePatient') {

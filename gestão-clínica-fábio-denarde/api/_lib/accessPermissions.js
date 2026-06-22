@@ -1,5 +1,5 @@
 const VALID_ACCESS_ROLES = Object.freeze(['admin', 'professional', 'responsible', 'monitoring']);
-const VALID_ACCESS_STATUSES = Object.freeze(['pending', 'approved', 'rejected', 'revoked', 'disabled', 'canceled']);
+const VALID_ACCESS_STATUSES = Object.freeze(['pending', 'information_requested', 'approved', 'rejected', 'revoked', 'disabled', 'canceled']);
 const VALID_ACCESS_CONTEXTS = Object.freeze(['admin', 'professional', 'responsible', 'monitoring']);
 
 export const ACCESS_ROLES = new Set(VALID_ACCESS_ROLES);
@@ -370,6 +370,7 @@ function assertProfileAvailability(sourceProfile, now = Date.now()) {
   const temporaryAccess = sourceProfile?.temporaryAccess && typeof sourceProfile.temporaryAccess === 'object'
     ? sourceProfile.temporaryAccess
     : null;
+  const directExpiresAt = toEpochMillis(sourceProfile?.expiresAt);
   if (temporaryAccess) {
     const startsAt = toEpochMillis(temporaryAccess.startsAt);
     const endsAt = toEpochMillis(temporaryAccess.endsAt);
@@ -383,10 +384,21 @@ function assertProfileAvailability(sourceProfile, now = Date.now()) {
     if (endsAt !== null && endsAt <= now) {
       throw accessPermissionError(
         'access/temporary-access-expired',
-        'O período autorizado para esta conta terminou.',
+        sourceProfile?.role === 'monitoring'
+          ? 'Seu acesso ao Monitoramento expirou. Entre em contato com o administrador.'
+          : 'O período autorizado para esta conta terminou.',
         403,
       );
     }
+  }
+  if (!temporaryAccess && directExpiresAt !== null && directExpiresAt <= now) {
+    throw accessPermissionError(
+      'access/temporary-access-expired',
+      sourceProfile?.role === 'monitoring'
+        ? 'Seu acesso ao Monitoramento expirou. Entre em contato com o administrador.'
+        : 'O período autorizado para esta conta terminou.',
+      403,
+    );
   }
 }
 
@@ -509,7 +521,7 @@ export function buildEffectiveAccessContext({
     enabledContexts: Object.freeze(enabledContexts),
     actorName: normalizeText(sourceProfile.displayName || decodedToken?.name || decodedToken?.email || 'Usuário', 120),
     actorEmail: email,
-    allowedPatientIds: role === 'admin'
+    allowedPatientIds: role === 'admin' || activeContext === 'monitoring'
       ? null
       : Object.freeze(normalizeStringArray(sourceProfile.linkedPatientIds, 200, 160)),
     permissionOverrides: Object.freeze(permissionOverrides),
@@ -542,7 +554,7 @@ export function assertPatientBinding(context, patientId, message = 'Você não p
   if (!normalizedPatientId) {
     throw accessPermissionError('access/invalid-patient', 'Não foi possível identificar o atendente.', 400);
   }
-  if (context?.role === 'admin') return normalizedPatientId;
+  if (context?.role === 'admin' || context?.activeContext === 'monitoring') return normalizedPatientId;
   if (!Array.isArray(context?.allowedPatientIds) || !context.allowedPatientIds.includes(normalizedPatientId)) {
     throw accessPermissionError('access/patient-access-denied', message, 403);
   }

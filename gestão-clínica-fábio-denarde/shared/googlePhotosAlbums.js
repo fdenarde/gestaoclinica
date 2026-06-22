@@ -147,7 +147,7 @@ export function getGooglePhotosAlbumCapabilities({ role, activeContext, scope = 
   const portalScope = scope === 'portal';
   return Object.freeze({
     canView: portalScope
-      ? effectiveRole === 'responsible' || effectiveRole === 'admin'
+      ? effectiveRole === 'responsible' || effectiveRole === 'admin' || effectiveRole === 'monitoring'
       : ['admin', 'professional', 'monitoring'].includes(effectiveRole),
     canCreate: !portalScope && ['admin', 'professional'].includes(effectiveRole),
     canEdit: !portalScope && ['admin', 'professional'].includes(effectiveRole),

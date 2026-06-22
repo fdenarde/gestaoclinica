@@ -113,7 +113,7 @@ export default function ResponsibleGooglePhotosGallery({ patientId, patientName,
                   </div>
                 )}
               </div>
-              <a href={album.url} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white transition hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-clinic-primary/30 focus:ring-offset-2">
+              <a href={album.url} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-status-green-text px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white transition hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-status-green-text/30 focus:ring-offset-2">
                 Abrir Atividade <ExternalLink size={15} />
               </a>
             </article>

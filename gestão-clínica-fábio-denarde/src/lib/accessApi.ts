@@ -16,6 +16,7 @@ import type {
   ProfessionalPortalNotification,
   ProfessionalNotificationAction,
   ProfessionalNotificationBulkScope,
+  MonitoringPanelData,
 } from '../types/access';
 
 const API_ENDPOINT =
@@ -137,6 +138,9 @@ const accessProfileBackoffByUid = new Map<string, {
   error: Error & { code: string };
 }>();
 const ACCESS_PROFILE_QUOTA_BACKOFF_MS = 60 * 1000;
+const MONITORING_PANEL_CACHE_MS = 60 * 1000;
+const monitoringPanelCache = new Map<string, { value: MonitoringPanelData; expiresAt: number }>();
+const monitoringPanelRequests = new Map<string, Promise<MonitoringPanelData>>();
 
 function getResponsiblePortalSessionId(user?: User): string {
   const currentUser = user || auth.currentUser;
@@ -280,11 +284,13 @@ export async function listAccessRequests(): Promise<AccessRequestRecord[]> {
 export async function reviewAccessRequest(
   requestId: string,
   decision: 'approve' | 'reject',
+  options: { expiresAt?: string | null } = {},
 ): Promise<AccessRequestRecord> {
   const result = await request<AccessRequestResponse>('POST', {
     action: 'reviewAccess',
     requestId,
     decision,
+    ...options,
   });
   return result.request;
 }
@@ -307,6 +313,60 @@ export async function linkResponsiblePatient(
     patientId,
   });
   return result.request;
+}
+
+export async function suspendAccessRequest(
+  requestId: string,
+  suspensionReason = '',
+): Promise<AccessRequestRecord> {
+  const result = await request<AccessRequestResponse>('POST', {
+    action: 'suspendAccess',
+    requestId,
+    suspensionReason,
+  });
+  return result.request;
+}
+
+export async function reactivateAccessRequest(requestId: string): Promise<AccessRequestRecord> {
+  const result = await request<AccessRequestResponse>('POST', {
+    action: 'reactivateAccess',
+    requestId,
+  });
+  return result.request;
+}
+
+export async function updateAccessValidity(
+  requestId: string,
+  expiresAt: string | null,
+): Promise<AccessRequestRecord> {
+  const result = await request<AccessRequestResponse>('POST', {
+    action: 'updateAccessValidity',
+    requestId,
+    expiresAt,
+  });
+  return result.request;
+}
+
+export async function requestAdditionalAccessInformation(
+  requestId: string,
+  message: string,
+): Promise<AccessRequestRecord> {
+  const result = await request<AccessRequestResponse>('POST', {
+    action: 'requestAdditionalInformation',
+    requestId,
+    message,
+  });
+  return result.request;
+}
+
+export async function respondAdditionalAccessInformation(
+  responseMessage: string,
+  user: User | null,
+): Promise<AccessRequestResponse> {
+  return request<AccessRequestResponse>('POST', {
+    action: 'respondAdditionalInformation',
+    responseMessage,
+  }, user);
 }
 
 
@@ -365,6 +425,40 @@ export async function getAdminResponsiblePortalData(
   });
   if (responsibleUid) params.set('responsibleUid', responsibleUid);
   return request<AdminResponsiblePortalData>('GET', undefined, user, `?${params.toString()}`);
+}
+
+export async function getMonitoringPanelData(options: {
+  adminPreview?: boolean;
+  weekStart?: string;
+  weekEnd?: string;
+  user?: User;
+} = {}): Promise<MonitoringPanelData> {
+  const currentUser = options.user || auth.currentUser;
+  const cacheKey = [
+    currentUser?.uid || 'anonymous',
+    options.adminPreview ? 'admin-preview' : 'monitoring',
+    options.weekStart || '',
+    options.weekEnd || '',
+  ].join(':');
+  const cached = monitoringPanelCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const existing = monitoringPanelRequests.get(cacheKey);
+  if (existing) return existing;
+
+  const params = new URLSearchParams({ mode: 'monitoringPanel' });
+  if (options.adminPreview) params.set('adminPreview', '1');
+  if (options.weekStart) params.set('weekStart', options.weekStart);
+  if (options.weekEnd) params.set('weekEnd', options.weekEnd);
+  const pending = request<MonitoringPanelData>('GET', undefined, options.user, `?${params.toString()}`)
+    .then(value => {
+      monitoringPanelCache.set(cacheKey, { value, expiresAt: Date.now() + MONITORING_PANEL_CACHE_MS });
+      return value;
+    })
+    .finally(() => {
+      monitoringPanelRequests.delete(cacheKey);
+    });
+  monitoringPanelRequests.set(cacheKey, pending);
+  return pending;
 }
 
 export async function recordResponsiblePortalAction(input: {

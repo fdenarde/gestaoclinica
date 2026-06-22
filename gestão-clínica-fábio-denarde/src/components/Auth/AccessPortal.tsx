@@ -19,7 +19,7 @@ import {
   logout,
   requestPasswordReset,
 } from '../../firebase';
-import { submitAccessRequest } from '../../lib/accessApi';
+import { respondAdditionalAccessInformation, submitAccessRequest } from '../../lib/accessApi';
 import { applyTheme } from '../../lib/theme';
 import type { AccessProfile, AccessRequestInput, AccessRequestRole } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
@@ -72,8 +72,8 @@ function statusCopy(profile: AccessProfile): { title: string; description: strin
   }
   if (profile.status === 'approved' && profile.role === 'monitoring') {
     return {
-      title: 'Perfil de Monitoramento configurado',
-      description: 'O painel de Monitoramento permanece indisponível até a conclusão e validação da etapa de segurança.',
+      title: 'Acesso de Monitoramento aprovado',
+      description: 'Seu acesso ao ambiente de Monitoramento está autorizado em modo somente leitura.',
       tone: 'text-status-blue-text bg-status-blue-bg',
     };
   }
@@ -82,6 +82,13 @@ function statusCopy(profile: AccessProfile): { title: string; description: strin
       title: 'Acesso não autorizado',
       description: 'Sua solicitação foi analisada, mas o acesso não foi autorizado. Entre em contato com a clínica para mais informações.',
       tone: 'text-status-red-text bg-status-red-bg',
+    };
+  }
+  if (profile.status === 'information_requested') {
+    return {
+      title: 'Informações adicionais necessárias',
+      description: 'A administração solicitou mais detalhes antes de concluir a análise do seu acesso.',
+      tone: 'text-status-orange-text bg-status-orange-bg',
     };
   }
   if (['revoked', 'disabled', 'canceled'].includes(profile.status)) {
@@ -121,9 +128,10 @@ export default function AccessPortal({
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [requestSubmitted, setRequestSubmitted] = useState(false);
+  const [informationResponse, setInformationResponse] = useState('');
 
   useLayoutEffect(() => {
-    applyTheme('calm-tech');
+    applyTheme('health-balance');
   }, []);
 
   useEffect(() => {
@@ -233,6 +241,18 @@ export default function AccessPortal({
       setView('login');
       setPassword('');
       setConfirmPassword('');
+    });
+  };
+
+  const handleInformationResponse = (event: FormEvent) => {
+    event.preventDefault();
+    void run(async () => {
+      const response = informationResponse.trim();
+      if (!response) throw new Error('Digite as informações solicitadas antes de enviar.');
+      const result = await respondAdditionalAccessInformation(response, user);
+      onAccessRequestSubmitted(result.profile);
+      setInformationResponse('');
+      setMessage('Informações enviadas. Sua solicitação voltou para análise da administração.');
     });
   };
 
@@ -423,6 +443,7 @@ export default function AccessPortal({
           <select className="clinic-input" value={request.role} onChange={event => handleRequestChange('role', event.target.value as AccessRequestRole)}>
             <option value="professional">Profissional</option>
             <option value="responsible">Responsável</option>
+            <option value="monitoring">Monitoramento</option>
           </select>
         </label>
         {request.role === 'responsible' && (
@@ -502,6 +523,54 @@ export default function AccessPortal({
         {message && (
           <div role="status" className="rounded-xl bg-status-green-bg px-4 py-3 text-sm font-medium text-status-green-text">
             {message}
+          </div>
+        )}
+        {profile.status === 'information_requested' && (
+          <form onSubmit={handleInformationResponse} className="space-y-4 rounded-xl border border-status-orange-text/25 bg-status-orange-bg/65 p-4 text-left">
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider text-status-orange-text">Solicitação da administração</p>
+              {profile.informationRequestedAt && (
+                <p className="mt-1 text-xs font-bold text-clinic-text-muted">
+                  Enviada em {new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(profile.informationRequestedAt))}
+                </p>
+              )}
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-clinic-text">
+                {profile.informationRequestMessage || 'A administração solicitou informações adicionais para continuar a análise.'}
+              </p>
+            </div>
+            <label className="block">
+              <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">Sua resposta</span>
+              <textarea
+                className="clinic-input min-h-28 resize-y bg-white"
+                value={informationResponse}
+                onChange={event => setInformationResponse(event.target.value)}
+                maxLength={1200}
+                required
+              />
+              <span className="mt-1 block text-right text-[11px] font-bold text-clinic-text-muted">
+                {informationResponse.length}/1200
+              </span>
+            </label>
+            <button type="submit" disabled={busy || !informationResponse.trim()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3 font-bold text-white hover:bg-clinic-primary-hover disabled:opacity-60">
+              {busy ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+              Enviar informações para análise
+            </button>
+          </form>
+        )}
+        {profile.status === 'pending' && profile.informationRequestMessage && (
+          <div className="space-y-3 rounded-xl border border-status-blue-text/20 bg-status-blue-bg p-4 text-left text-sm">
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider text-status-blue-text">Informações enviadas para análise</p>
+              <p className="mt-2 whitespace-pre-wrap text-clinic-text">{profile.informationRequestMessage}</p>
+            </div>
+            {profile.informationResponseMessage && (
+              <div className="rounded-lg bg-white/75 p-3">
+                <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-muted">
+                  Sua resposta{profile.informationRespondedAt ? ` em ${new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(profile.informationRespondedAt))}` : ''}
+                </p>
+                <p className="mt-2 whitespace-pre-wrap text-clinic-text-muted">{profile.informationResponseMessage}</p>
+              </div>
+            )}
           </div>
         )}
         <button type="button" onClick={handleLogout} disabled={busy} className="w-full rounded-xl border border-clinic-border px-4 py-3 font-bold text-clinic-text hover:border-clinic-primary hover:bg-clinic-bg disabled:opacity-60">

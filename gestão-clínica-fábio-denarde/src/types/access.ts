@@ -2,9 +2,9 @@ import type { PatientRegistrationData } from '../types';
 
 export type AccessRole = 'admin' | 'professional' | 'responsible' | 'monitoring';
 
-export type AccessRequestRole = Exclude<AccessRole, 'admin' | 'monitoring'>;
+export type AccessRequestRole = Exclude<AccessRole, 'admin'>;
 
-export type AccessStatus = 'pending' | 'approved' | 'rejected' | 'revoked' | 'disabled' | 'canceled';
+export type AccessStatus = 'pending' | 'information_requested' | 'approved' | 'rejected' | 'revoked' | 'disabled' | 'canceled';
 
 export type AccessRequestStatus = AccessStatus;
 
@@ -116,6 +116,12 @@ export interface AccessProfile {
   effectivePermissions?: AccessEffectivePermissions;
   suspension?: AccessSuspension | null;
   temporaryAccess?: AccessTemporaryWindow | null;
+  expiresAt?: string | null;
+  informationRequestMessage?: string | null;
+  informationRequestedAt?: string | null;
+  informationRequestedBy?: string | null;
+  informationResponseMessage?: string | null;
+  informationRespondedAt?: string | null;
   configurationVersion?: number;
 }
 
@@ -145,6 +151,20 @@ export interface AccessRequestRecord extends AccessRequestInput {
   revokedAt: string | null;
   revokedBy: string | null;
   revokedByEmail: string | null;
+  suspendedAt: string | null;
+  suspendedBy: string | null;
+  suspendedByEmail: string | null;
+  suspensionReason: string | null;
+  reactivatedAt: string | null;
+  reactivatedBy: string | null;
+  reactivatedByEmail: string | null;
+  expiresAt: string | null;
+  informationRequestMessage: string | null;
+  informationRequestedAt: string | null;
+  informationRequestedBy: string | null;
+  informationRequestedByEmail: string | null;
+  informationResponseMessage: string | null;
+  informationRespondedAt: string | null;
   emailNotificationStatus: 'sent' | 'skipped' | 'failed' | null;
   emailNotificationError: string | null;
 }
@@ -426,4 +446,66 @@ export interface ResponsiblePortalActionResult {
   liked?: boolean;
   comment?: ResponsiblePortalMediaComment;
   notificationId?: string;
+}
+
+export interface MonitoringPatient {
+  id: string;
+  name: string;
+  fullName: string;
+  birthDate: string;
+  status: 'Ativo' | 'Concluído' | string;
+  photoUrl: string;
+  guardianName: string;
+  guardianKinship: string;
+  whatsapp: string;
+}
+
+export interface MonitoringSession {
+  id: string;
+  patientId: string;
+  patientName: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  professionalName: string;
+  type: string;
+  status: string;
+  packageNumber: number | null;
+  isBlocked: boolean;
+  consumesPackage: boolean;
+  source: string | null;
+}
+
+export interface MonitoringActivityCount {
+  patientId: string;
+  count: number;
+}
+
+export interface MonitoringPanelData {
+  viewer: {
+    uid: string;
+    email: string;
+    displayName: string;
+    role: AccessRole;
+    adminPreview: boolean;
+  };
+  settings: {
+    name: string;
+    title: string;
+    visualTheme: ResponsiblePortalSettings['visualTheme'];
+  };
+  weekRange: {
+    start: string;
+    end: string;
+  };
+  patients: MonitoringPatient[];
+  sessions: MonitoringSession[];
+  weekSessions: MonitoringSession[];
+  activityCounts: MonitoringActivityCount[];
+  querySummary: {
+    patients: string;
+    sessions: string;
+    weekSessions: string;
+    activityCounts: string;
+  };
 }
