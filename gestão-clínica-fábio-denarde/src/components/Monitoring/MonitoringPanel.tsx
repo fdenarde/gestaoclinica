@@ -12,7 +12,11 @@ import {
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
-import { getMonitoringPanelData } from '../../lib/accessApi';
+import {
+  getMonitoringPanelData,
+  recordMonitoringSessionStart,
+  recordMonitoringTabAccess,
+} from '../../lib/accessApi';
 import { calculateAge, cn, getStatusColor, safeFormatDate } from '../../lib/utils';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import type { MonitoringPanelData, MonitoringPatient, MonitoringSession } from '../../types/access';
@@ -140,6 +144,11 @@ export default function MonitoringPanel({
       .then(result => {
         if (!active) return;
         setData(result);
+        if (!adminPreview) {
+          void recordMonitoringSessionStart().catch(recordError => {
+            console.error('[MonitoringPanel] Falha ao registrar entrada no Monitoramento:', recordError);
+          });
+        }
         setSelectedPatientId(current => (
           current && result.patients.some(patient => patient.id === current)
             ? current
@@ -222,6 +231,16 @@ export default function MonitoringPanel({
     (data?.sessions || []).filter(session => visiblePatientIds.has(session.patientId)),
   ), [data?.sessions, visiblePatientIds]);
   const monitoringUserName = data?.viewer.displayName || data?.viewer.email || 'Usuário do Monitoramento';
+
+  const changeMonitoringTab = (tab: MonitoringTab) => {
+    if (tab === activeTab) return;
+    setActiveTab(tab);
+    if (!adminPreview) {
+      void recordMonitoringTabAccess(tab).catch(recordError => {
+        console.error('[MonitoringPanel] Falha ao registrar entrada na aba:', recordError);
+      });
+    }
+  };
 
   const tabs: Array<{ id: MonitoringTab; label: string; icon: typeof LayoutDashboard }> = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -326,7 +345,7 @@ export default function MonitoringPanel({
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => changeMonitoringTab(tab.id)}
                 className={cn(
                   'flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-xs font-black uppercase transition',
                   activeTab === tab.id

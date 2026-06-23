@@ -17,6 +17,8 @@ import type {
   ProfessionalNotificationAction,
   ProfessionalNotificationBulkScope,
   MonitoringPanelData,
+  MonitoringNotificationActionResult,
+  MonitoringNotificationTab,
 } from '../types/access';
 
 const API_ENDPOINT =
@@ -171,6 +173,50 @@ function getResponsiblePortalSessionId(user?: User): string {
   } catch {
     return `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   }
+}
+
+
+function monitoringSessionStorageKey(user?: User): string {
+  const currentUser = user || auth.currentUser;
+  return `monitoring-session:${currentUser?.uid || 'anonymous'}`;
+}
+
+function getMonitoringSessionId(user?: User): string {
+  const currentUser = user || auth.currentUser;
+  const uid = currentUser?.uid || 'anonymous';
+  const storageKey = monitoringSessionStorageKey(currentUser || undefined);
+  try {
+    const existing = window.sessionStorage.getItem(storageKey);
+    if (existing) return existing;
+    const generated = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    window.sessionStorage.setItem(storageKey, generated);
+    return generated;
+  } catch {
+    return `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+}
+
+export function clearMonitoringSessionId(user?: User): void {
+  try {
+    window.sessionStorage.removeItem(monitoringSessionStorageKey(user));
+  } catch {
+    // A sessão também é encerrada normalmente quando o armazenamento não está disponível.
+  }
+}
+
+function monitoringClientContext(tab: MonitoringNotificationTab | 'monitoring') {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return { portalTab: tab, actionLocation: `Monitoramento / ${tab}` };
+  }
+  return {
+    portalTab: tab,
+    actionLocation: tab === 'monitoring' ? 'Monitoramento / Entrada' : `Monitoramento / ${tab}`,
+    viewport: `${window.innerWidth}x${window.innerHeight}`,
+    language: navigator.language,
+    platform: navigator.platform,
+  };
 }
 
 function inferResponsibleDocumentMimeType(file: File): string {
@@ -485,6 +531,37 @@ export async function getMonitoringPanelData(options: {
     });
   monitoringPanelRequests.set(cacheKey, pending);
   return pending;
+}
+
+export async function recordMonitoringSessionStart(user?: User): Promise<MonitoringNotificationActionResult> {
+  return request<MonitoringNotificationActionResult>('POST', {
+    action: 'recordMonitoringAction',
+    eventType: 'session_start',
+    monitoringSessionId: getMonitoringSessionId(user),
+    clientContext: monitoringClientContext('monitoring'),
+  }, user);
+}
+
+export async function recordMonitoringTabAccess(
+  tab: MonitoringNotificationTab,
+  user?: User,
+): Promise<MonitoringNotificationActionResult> {
+  return request<MonitoringNotificationActionResult>('POST', {
+    action: 'recordMonitoringAction',
+    eventType: 'tab_access',
+    monitoringSessionId: getMonitoringSessionId(user),
+    tab,
+    clientContext: monitoringClientContext(tab),
+  }, user);
+}
+
+export async function recordMonitoringLogout(user?: User): Promise<MonitoringNotificationActionResult> {
+  return request<MonitoringNotificationActionResult>('POST', {
+    action: 'recordMonitoringAction',
+    eventType: 'logout',
+    monitoringSessionId: getMonitoringSessionId(user),
+    clientContext: monitoringClientContext('monitoring'),
+  }, user);
 }
 
 export async function recordResponsiblePortalAction(input: {

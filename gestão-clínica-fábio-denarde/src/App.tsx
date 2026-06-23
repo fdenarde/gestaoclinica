@@ -24,6 +24,8 @@ import {
   getAccessProfile,
   getProfessionalPortalNotifications,
   manageProfessionalPortalNotifications,
+  recordMonitoringLogout,
+  clearMonitoringSessionId,
 } from './lib/accessApi';
 import type {
   AccessProfile,
@@ -341,6 +343,15 @@ export default function App() {
   }, []);
 
   const handleAccessPortalLogout = useCallback(async () => {
+    if (accessProfile?.role === 'monitoring') {
+      try {
+        await recordMonitoringLogout(user || undefined);
+      } catch (recordError) {
+        console.error('Falha ao registrar logout do Monitoramento:', recordError);
+      } finally {
+        clearMonitoringSessionId(user || undefined);
+      }
+    }
     await logout();
     forceAccessTokenRefreshRef.current = false;
     setUser(null);
@@ -348,7 +359,7 @@ export default function App() {
     setSelectedAccessRole(null);
     setAccessLoading(false);
     setAccessError('');
-  }, []);
+  }, [accessProfile?.role, user]);
 
   const resetSessionScopedData = useCallback(() => {
     clearAccessApiCaches();
@@ -386,6 +397,9 @@ export default function App() {
   const canAccessInternalSystem =
     accessProfile?.status === 'approved'
     && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
+  const canManagePortalNotifications =
+    accessProfile?.status === 'approved'
+    && accessProfile.role === 'admin';
   const canAccessResponsiblePortal =
     accessProfile?.status === 'approved'
     && accessProfile.role === 'responsible';
@@ -397,7 +411,7 @@ export default function App() {
     initial?: boolean;
     force?: boolean;
   }): Promise<boolean> => {
-    if (!user || !canAccessInternalSystem) return false;
+    if (!user || !canManagePortalNotifications) return false;
     if (document.visibilityState === 'hidden' && !options?.force) return false;
 
     const now = Date.now();
@@ -437,10 +451,10 @@ export default function App() {
 
     notificationInFlightRef.current = requestPromise;
     return requestPromise;
-  }, [canAccessInternalSystem, user]);
+  }, [canManagePortalNotifications, user]);
 
   const loadOlderPortalNotifications = useCallback(async (): Promise<void> => {
-    if (!user || !canAccessInternalSystem || !notificationHasMore || notificationLoading) return;
+    if (!user || !canManagePortalNotifications || !notificationHasMore || notificationLoading) return;
     setNotificationLoading(true);
     try {
       const result = await getProfessionalPortalNotifications({
@@ -455,11 +469,11 @@ export default function App() {
     } finally {
       setNotificationLoading(false);
     }
-  }, [canAccessInternalSystem, notificationHasMore, notificationLoading, user]);
+  }, [canManagePortalNotifications, notificationHasMore, notificationLoading, user]);
 
 
   useEffect(() => {
-    if (!user || !canAccessInternalSystem) {
+    if (!user || !canManagePortalNotifications) {
       setNotifications([]);
       setNotificationsOpen(false);
       setSelectedPortalNotification(null);
@@ -472,7 +486,7 @@ export default function App() {
     }
 
     void refreshPortalNotifications({ initial: true, force: true });
-  }, [canAccessInternalSystem, refreshPortalNotifications, user]);
+  }, [canManagePortalNotifications, refreshPortalNotifications, user]);
 
 
   useEffect(() => {
@@ -1147,6 +1161,7 @@ export default function App() {
               <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} alt="User" className="h-9 w-9 rounded-full border-2 border-white/20 shadow-md sm:h-10 sm:w-10" />
             </div>
           )}
+          {canManagePortalNotifications && (
           <div className="relative">
             <button
               type="button"
@@ -1203,7 +1218,7 @@ export default function App() {
                           <p className="mt-1 text-xs font-black text-clinic-text">{notification.title || 'Atividade no Portal do Responsável'}</p>
                           <p className="mt-1 text-[11px] text-clinic-text-muted">{notification.message}</p>
                           <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-clinic-text-faint">
-                            <span>{notification.patientName || 'Atendente'}</span>
+                            <span>{notification.actorRole === 'monitoring' ? 'Monitoramento' : (notification.patientName || 'Atendente')}</span>
                             <span>{formatPortalNotificationDate(notification.updatedAt || notification.createdAt)}</span>
                           </div>
                         </button>
@@ -1265,6 +1280,7 @@ export default function App() {
               </div>
             )}
           </div>
+          )}
         </div>
       </header>
 
@@ -1371,7 +1387,8 @@ export default function App() {
         </Suspense>
       </main>
 
-      <NotificationCenter
+      {canManagePortalNotifications && (
+        <NotificationCenter
         open={notificationCenterOpen}
         notifications={notifications}
         loading={notificationLoading}
@@ -1383,6 +1400,7 @@ export default function App() {
         onManage={manageNotifications}
         onBulkManage={bulkManageNotifications}
       />
+      )}
 
       {selectedPortalNotification && (
         <div
@@ -1424,14 +1442,15 @@ export default function App() {
             <div className="overflow-y-auto px-5 py-5 sm:px-6">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
-                  <div className="flex items-center gap-2 text-clinic-primary"><UserRound size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Responsável</span></div>
-                  <p className="mt-2 font-black text-clinic-text">{selectedPortalNotification.responsibleName || 'Não informado'}</p>
-                  <p className="mt-1 break-all text-xs text-clinic-text-muted">{selectedPortalNotification.responsibleEmail || 'E-mail não informado'}</p>
+                  <div className="flex items-center gap-2 text-clinic-primary"><UserRound size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Usuário</span></div>
+                  <p className="mt-2 font-black text-clinic-text">{selectedPortalNotification.actorName || selectedPortalNotification.responsibleName || 'Não informado'}</p>
+                  <p className="mt-1 break-all text-xs text-clinic-text-muted">{selectedPortalNotification.actorEmail || selectedPortalNotification.responsibleEmail || 'E-mail não informado'}</p>
+                  <p className="mt-1 text-[10px] font-black uppercase text-clinic-primary">{selectedPortalNotification.actorRole === 'monitoring' ? 'Monitoramento' : 'Responsável'}</p>
                 </div>
                 <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
-                  <div className="flex items-center gap-2 text-clinic-primary"><Users size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Atendente</span></div>
-                  <p className="mt-2 font-black text-clinic-text">{selectedPortalNotification.patientName || 'Não informado'}</p>
-                  <p className="mt-1 text-xs text-clinic-text-muted">{selectedPortalNotification.actionTarget || 'Ação geral do portal'}</p>
+                  <div className="flex items-center gap-2 text-clinic-primary"><Users size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Destino da ação</span></div>
+                  <p className="mt-2 font-black text-clinic-text">{selectedPortalNotification.patientName || selectedPortalNotification.actionTarget || 'Ação geral do sistema'}</p>
+                  <p className="mt-1 text-xs text-clinic-text-muted">{selectedPortalNotification.actionTarget || 'Ação geral do sistema'}</p>
                 </div>
                 <div className="rounded-2xl border border-clinic-border bg-clinic-bg p-4">
                   <div className="flex items-center gap-2 text-clinic-primary"><Clock3 size={17} /><span className="text-[10px] font-black uppercase tracking-wide">Quando aconteceu</span></div>

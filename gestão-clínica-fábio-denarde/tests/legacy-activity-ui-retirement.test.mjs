@@ -102,7 +102,8 @@ test('validação visual por perfil permanece segura sem abrir Firebase real', (
   assert.match(appSource, /const canAccessInternalSystem =[\s\S]*accessProfile\.role === 'admin' \|\| accessProfile\.role === 'professional'/);
   assert.match(appSource, /const canAccessResponsiblePortal =[\s\S]*accessProfile\.role === 'responsible'/);
   assert.match(accessPortalSource, /profile\.status === 'approved' && profile\.role === 'monitoring'/);
-  assert.match(accessPortalSource, /painel de Monitoramento permanece indisponível/);
+  assert.match(appSource, /const canAccessMonitoringPanel =[\s\S]*accessProfile\.role === 'monitoring'/);
+  assert.match(appSource, /<MonitoringPanel[\s\S]*onLogout=\{\(\) => void handleAccessPortalLogout\(\)\}/);
 
   assert.match(reportsSource, /\{isAdmin && \(/);
   assert.match(reportsSource, /visibleReportTab = activeReportTab === 'whatsapp' && isAdmin \? 'whatsapp' : 'clinical'/);

@@ -38,6 +38,7 @@ const categoryLabels: Record<string, string> = {
   gallery: 'Consulta à galeria',
   profile_update: 'Atualização cadastral',
   document: 'Documento enviado',
+  monitoring: 'Monitoramento',
   system: 'Sistema',
   access: 'Acesso',
 };
@@ -124,6 +125,8 @@ export default function NotificationCenter({
         notification.patientName,
         notification.responsibleName,
         notification.responsibleEmail,
+        notification.actorName,
+        notification.actorEmail,
       ].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(normalizedSearch));
     });
   }, [activeTab, categoryFilter, notifications, periodFilter, priorityFilter, search]);
@@ -192,8 +195,8 @@ export default function NotificationCenter({
         <header className="flex flex-col gap-3 border-b border-clinic-border bg-clinic-bg px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-clinic-primary">Central de notificações</p>
-            <h2 className="mt-1 text-xl font-black text-clinic-text sm:text-2xl">Ações dos responsáveis</h2>
-            <p className="mt-1 text-xs text-clinic-text-muted">Pendências, avisos não lidos e histórico em um único local.</p>
+            <h2 className="mt-1 text-xl font-black text-clinic-text sm:text-2xl">Ações do sistema</h2>
+            <p className="mt-1 text-xs text-clinic-text-muted">Responsável e Monitoramento em um único local administrativo.</p>
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => void onRefresh()} disabled={loading || actionLoading} className="flex items-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black text-clinic-primary disabled:opacity-50">
@@ -221,7 +224,7 @@ export default function NotificationCenter({
           <div className="grid flex-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <label className="relative block">
               <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-clinic-text-faint" />
-              <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar responsável ou atendente" className="w-full rounded-xl border border-clinic-border bg-white py-2.5 pl-9 pr-3 text-xs outline-none focus:border-clinic-primary" />
+              <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar usuário, responsável ou atendente" className="w-full rounded-xl border border-clinic-border bg-white py-2.5 pl-9 pr-3 text-xs outline-none focus:border-clinic-primary" />
             </label>
             <select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)} className="rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold text-clinic-text">
               <option value="all">Todas as categorias</option>
@@ -294,8 +297,8 @@ export default function NotificationCenter({
                     <h3 className="mt-2 break-words text-sm font-black text-clinic-text">{notification.title}</h3>
                     <p className="mt-1 break-words text-xs text-clinic-text-muted">{notification.message}</p>
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-clinic-text-faint">
-                      <span>{notification.responsibleName || 'Responsável'}</span>
-                      <span>{notification.patientName || 'Atendente'}</span>
+                      <span>{notification.actorName || notification.responsibleName || 'Usuário'}</span>
+                      <span>{notification.actorRole === 'monitoring' ? 'Monitoramento' : (notification.patientName || 'Responsável')}</span>
                       <span className="flex items-center gap-1"><Clock3 size={12} /> {formatDate(notification.updatedAt || notification.createdAt)}</span>
                     </div>
                   </button>

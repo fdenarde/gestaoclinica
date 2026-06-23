@@ -1930,18 +1930,10 @@ function aggregateMediaInteractions(snapshots, responsibleUid) {
 }
 
 async function requireInternalNotificationContext(db, decodedToken) {
-  const profileSnapshot = await getProfile(db, decodedToken);
-  const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
-  const professionalProfile = getProfileEntry(profile || {}, 'professional');
-  const adminProfile = getProfileEntry(profile || {}, 'admin');
-  if (!profile || (!adminProfile && professionalProfile?.status !== 'approved')) {
-    throw accessError('access/internal-approved-required', 'Acesso profissional aprovado obrigatório.', 403);
-  }
+  requirePrimaryAdmin(decodedToken);
   return {
-    profile,
-    ownerUserId: normalizeEmail(decodedToken.email) === PRIMARY_ADMIN_EMAIL
-      ? decodedToken.uid
-      : await getPrimaryAdminUid(),
+    profile: null,
+    ownerUserId: decodedToken.uid,
   };
 }
 
@@ -1950,6 +1942,7 @@ function notificationCategoryForType(type) {
   if (type === 'gallery_access') return 'gallery';
   if (type === 'patient_profile_update') return 'profile_update';
   if (type === 'patient_document_upload') return 'document';
+  if (type.startsWith('monitoring_')) return 'monitoring';
   if (type === 'access_blocked' || type === 'access_revoked') return 'access';
   return 'system';
 }
@@ -2027,6 +2020,12 @@ function serializeProfessionalNotification(snapshot) {
     patientName: normalizeText(data.patientName, 120),
     responsibleName: normalizeText(data.responsibleName, 120),
     responsibleEmail: normalizeEmail(data.responsibleEmail),
+    actorUserId: normalizeText(data.actorUserId || data.responsibleUid, 128),
+    actorRole: ['admin', 'professional', 'responsible', 'monitoring'].includes(data.actorRole)
+      ? data.actorRole
+      : (data.responsibleUid ? 'responsible' : null),
+    actorName: normalizeText(data.actorName || data.responsibleName, 120),
+    actorEmail: normalizeEmail(data.actorEmail || data.responsibleEmail),
     recordId: data.recordId ? normalizeText(data.recordId, 128) : null,
     documentId: data.documentId ? normalizeText(data.documentId, 128) : null,
     mediaFileName: data.mediaFileName ? normalizeText(data.mediaFileName, 220) : null,
@@ -2410,6 +2409,153 @@ async function countMonitoringActivities(patientRef) {
     console.error('[ACCESS API] Não foi possível contar atividades para Monitoramento:', error?.message || error);
     return 0;
   }
+}
+
+const MONITORING_NOTIFICATION_TABS = new Set(['dashboard', 'agenda', 'galeria']);
+
+function monitoringTabLabel(tab) {
+  if (tab === 'agenda') return 'Agenda';
+  if (tab === 'galeria') return 'Galeria de Atividades';
+  return 'Dashboard';
+}
+
+async function requireMonitoringNotificationContext(db, decodedToken, req) {
+  if (normalizeEmail(decodedToken?.email) === PRIMARY_ADMIN_EMAIL) {
+    throw accessError('access/monitoring-user-required', 'Esta ação deve ser realizada pelo perfil Monitoramento.', 403);
+  }
+  const resolved = await resolveMonitoringPanelContext(db, decodedToken, req);
+  if (resolved.context.role !== 'monitoring' || resolved.adminPreview) {
+    throw accessError('access/monitoring-user-required', 'Esta ação deve ser realizada pelo perfil Monitoramento.', 403);
+  }
+  return resolved;
+}
+
+function monitoringNotificationDefinition(eventType, tab = '') {
+  if (eventType === 'monitoring_login') {
+    return {
+      title: 'Login no Monitoramento',
+      actionLocation: 'Acesso / Monitoramento',
+      actionTarget: 'Perfil Monitoramento',
+      messageSuffix: 'entrou com o perfil Monitoramento.',
+      detailAction: 'Login autenticado no perfil Monitoramento',
+    };
+  }
+  if (eventType === 'monitoring_logout') {
+    return {
+      title: 'Logout do Monitoramento',
+      actionLocation: 'Monitoramento / Saída',
+      actionTarget: 'Perfil Monitoramento',
+      messageSuffix: 'saiu do perfil Monitoramento.',
+      detailAction: 'Logout solicitado pelo usuário do Monitoramento',
+    };
+  }
+  if (eventType === 'monitoring_panel_access') {
+    return {
+      title: 'Entrada no Monitoramento',
+      actionLocation: 'Monitoramento / Entrada',
+      actionTarget: 'Área Monitoramento',
+      messageSuffix: 'entrou na área Monitoramento.',
+      detailAction: 'Entrada autenticada na área Monitoramento',
+    };
+  }
+  const tabLabel = monitoringTabLabel(tab);
+  return {
+    title: `Entrada em ${tabLabel}`,
+    actionLocation: `Monitoramento / ${tabLabel}`,
+    actionTarget: tabLabel,
+    messageSuffix: `entrou em ${tabLabel} no Monitoramento.`,
+    detailAction: `Entrada na aba ${tabLabel}`,
+  };
+}
+
+async function recordMonitoringAction(db, decodedToken, body, req) {
+  const { context, ownerUserId } = await requireMonitoringNotificationContext(db, decodedToken, req);
+  const clientEventType = normalizeText(body.eventType, 40);
+  if (!['session_start', 'tab_access', 'logout'].includes(clientEventType)) {
+    throw accessError('access/invalid-monitoring-action', 'A ação de Monitoramento informada é inválida.');
+  }
+
+  const monitoringSessionId = normalizeText(body.monitoringSessionId, 128);
+  if (monitoringSessionId.length < 8) {
+    throw accessError('access/invalid-monitoring-session', 'A sessão do Monitoramento não foi identificada.');
+  }
+
+  const requestedTab = normalizeText(body.tab, 20);
+  const tab = MONITORING_NOTIFICATION_TABS.has(requestedTab) ? requestedTab : 'dashboard';
+  if (clientEventType === 'tab_access' && !MONITORING_NOTIFICATION_TABS.has(requestedTab)) {
+    throw accessError('access/invalid-monitoring-tab', 'A aba do Monitoramento informada é inválida.');
+  }
+
+  const actorName = normalizeText(context.actorName || decodedToken.name, 120) || 'Usuário do Monitoramento';
+  const actorEmail = normalizeEmail(context.actorEmail || decodedToken.email);
+  const clientContext = normalizeClientContext({
+    ...(body.clientContext && typeof body.clientContext === 'object' ? body.clientContext : {}),
+  });
+  const eventDefinitions = clientEventType === 'session_start'
+    ? [
+      ['monitoring_login', ''],
+      ['monitoring_panel_access', ''],
+      ['monitoring_tab_access', 'dashboard'],
+    ]
+    : clientEventType === 'logout'
+      ? [['monitoring_logout', '']]
+      : [['monitoring_tab_access', tab]];
+
+  const batch = db.batch();
+  const notificationIds = [];
+  for (const [eventType, eventTab] of eventDefinitions) {
+    const definition = monitoringNotificationDefinition(eventType, eventTab);
+    const notificationId = crypto.createHash('sha256')
+      .update(`${decodedToken.uid}:${monitoringSessionId}:${eventType}:${eventTab || 'general'}`)
+      .digest('hex');
+    const notificationRef = db.doc(`users/${ownerUserId}/portalNotifications/${notificationId}`);
+    const eventClientContext = normalizeClientContext({
+      ...clientContext,
+      portalTab: eventTab || 'monitoring',
+      actionLocation: definition.actionLocation,
+    });
+    const details = [
+      notificationDetail('Ação', definition.detailAction),
+      notificationDetail('Perfil', 'Monitoramento'),
+      notificationDetail('Usuário', actorName),
+      notificationDetail('E-mail da conta', actorEmail),
+      notificationDetail('Local', definition.actionLocation),
+      notificationDetail('Dispositivo', eventClientContext.deviceType),
+      notificationDetail('Navegador', eventClientContext.browser),
+      notificationDetail('Sistema', eventClientContext.platform),
+    ];
+    batch.set(notificationRef, {
+      id: notificationRef.id,
+      type: eventType,
+      ...notificationBaseFields(eventType),
+      monitoringSessionId,
+      monitoringTab: eventTab || null,
+      title: definition.title,
+      message: `${actorName} ${definition.messageSuffix}`,
+      patientId: '',
+      patientName: '',
+      responsibleUid: '',
+      responsibleName: '',
+      responsibleEmail: '',
+      actorUserId: decodedToken.uid,
+      actorRole: 'monitoring',
+      actorName,
+      actorEmail,
+      actionLocation: definition.actionLocation,
+      actionTarget: definition.actionTarget,
+      navigationTarget: 'none',
+      clientContext: eventClientContext,
+      details,
+      read: false,
+      readAt: null,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    notificationIds.push(notificationId);
+  }
+
+  await batch.commit();
+  return { recorded: true, notificationIds };
 }
 
 async function getMonitoringPanelData(db, decodedToken, req) {
@@ -4165,6 +4311,11 @@ export default async function handler(req, res) {
     if (body.action === 'recordResponsibleAction') {
       const decodedToken = await verifyFirebaseRequest(req);
       return res.status(200).json(await recordResponsibleAction(db, decodedToken, body));
+    }
+
+    if (body.action === 'recordMonitoringAction') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      return res.status(200).json(await recordMonitoringAction(db, decodedToken, body, req));
     }
 
     if (body.action === 'getResponsiblePatientPhotoUrl') {

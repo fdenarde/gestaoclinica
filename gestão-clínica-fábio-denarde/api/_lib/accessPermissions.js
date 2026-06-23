@@ -117,7 +117,6 @@ const PROFESSIONAL_PERMISSIONS = permissionsFromAllowedKeys([
   'documents.upload',
   'documents.download',
   'uploads.exception.request',
-  'notifications.manage',
   'session.devices.view',
   'session.revoke_all',
 ]);
@@ -150,7 +149,6 @@ const MONITORING_PERMISSIONS = permissionsFromAllowedKeys([
   'media.video.play',
   'monitoring.panel.view',
   'monitoring.search.local',
-  'notifications.manage',
   'session.devices.view',
   'session.revoke_all',
 ]);
@@ -198,7 +196,6 @@ const PROFESSIONAL_PERMISSION_CEILING = permissionsFromAllowedKeys([
   'reports.view',
   'reports.export',
   'uploads.exception.request',
-  'notifications.manage',
   'session.devices.view',
   'session.revoke_all',
 ]);
@@ -230,7 +227,6 @@ const MONITORING_PERMISSION_CEILING = permissionsFromAllowedKeys([
   'reports.view',
   'monitoring.panel.view',
   'monitoring.search.local',
-  'notifications.manage',
   'session.devices.view',
   'session.revoke_all',
 ]);

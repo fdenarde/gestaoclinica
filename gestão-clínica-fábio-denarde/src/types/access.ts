@@ -402,6 +402,7 @@ export type ProfessionalNotificationCategory =
   | 'gallery'
   | 'profile_update'
   | 'document'
+  | 'monitoring'
   | 'system'
   | 'access';
 
@@ -437,6 +438,10 @@ export interface ProfessionalPortalNotification {
   patientName: string;
   responsibleName: string;
   responsibleEmail: string;
+  actorUserId: string;
+  actorRole: AccessRole | null;
+  actorName: string;
+  actorEmail: string;
   recordId: string | null;
   documentId: string | null;
   mediaFileName: string | null;
@@ -474,6 +479,13 @@ export interface ResponsiblePortalActionResult {
   liked?: boolean;
   comment?: ResponsiblePortalMediaComment;
   notificationId?: string;
+}
+
+export type MonitoringNotificationTab = 'dashboard' | 'agenda' | 'galeria';
+
+export interface MonitoringNotificationActionResult {
+  recorded: boolean;
+  notificationIds: string[];
 }
 
 export interface MonitoringPatient {
