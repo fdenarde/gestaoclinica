@@ -5,6 +5,7 @@ import {
   getSessionCycleLabel,
   getSessionCycleNumber,
   getSessionLogicalPosition,
+  mergeSessionSequenceSource,
   rescheduleSessionInAgenda,
 } from '../shared/sessionScheduling.js';
 import { buildCurrentPackageSessionSummary } from '../shared/sessionPackageSummary.js';
@@ -69,6 +70,104 @@ test('outra sessão futura válida continua ocupando a posição seguinte', () =
 
   assert.equal(getSessionCycleNumber(source, ninth), 9);
   assert.equal(getSessionCycleNumber(source, tenth), 10);
+});
+
+test('sessão dupla virtual atribui um número independente a cada horário e continua na semana seguinte', () => {
+  const persistedFirstHours = [
+    scheduled({
+      id: 'celso-2026-06-26-14',
+      patientId: 'celso',
+      date: '2026-06-26',
+      time: '14:00',
+      type: 'Sessão dupla (2 × 50 min)',
+      packageNumber: 1,
+    }),
+    scheduled({
+      id: 'celso-2026-07-03-14',
+      patientId: 'celso',
+      date: '2026-07-03',
+      time: '14:00',
+      type: 'Sessão dupla (2 × 50 min)',
+      packageNumber: 3,
+    }),
+  ];
+  const virtualOccurrences = [
+    scheduled({
+      id: 'virtual-celso-2026-06-26-15:00',
+      patientId: 'celso',
+      date: '2026-06-26',
+      time: '15:00',
+      type: 'Sessão dupla (2 × 50 min)',
+      packageNumber: 0,
+      isVirtual: true,
+    }),
+    scheduled({
+      id: 'virtual-celso-2026-07-03-15:00',
+      patientId: 'celso',
+      date: '2026-07-03',
+      time: '15:00',
+      type: 'Sessão dupla (2 × 50 min)',
+      packageNumber: 0,
+      isVirtual: true,
+    }),
+  ];
+  const source = mergeSessionSequenceSource(persistedFirstHours, virtualOccurrences);
+
+  assert.deepEqual(
+    source
+      .filter(item => item.patientId === 'celso')
+      .sort((left, right) => `${left.date}T${left.time}`.localeCompare(`${right.date}T${right.time}`))
+      .map(item => getSessionCycleNumber(source, item)),
+    [1, 2, 3, 4],
+  );
+  assert.equal(getSessionCycleLabel(source, virtualOccurrences[0]), 'Sessão será 2');
+  assert.equal(getSessionCycleLabel(source, virtualOccurrences[1]), 'Sessão será 4');
+});
+
+test('quatro ocorrências virtuais de duas semanas mantêm a ordem 1, 2, 3 e 4', () => {
+  const source = [
+    scheduled({ id: 'virtual-week-1-a', patientId: 'double-patient', date: '2026-06-26', time: '14:00', type: 'Sessão dupla (2 × 50 min)', packageNumber: 0, isVirtual: true }),
+    scheduled({ id: 'virtual-week-1-b', patientId: 'double-patient', date: '2026-06-26', time: '15:00', type: 'Sessão dupla (2 × 50 min)', packageNumber: 0, isVirtual: true }),
+    scheduled({ id: 'virtual-week-2-a', patientId: 'double-patient', date: '2026-07-03', time: '14:00', type: 'Sessão dupla (2 × 50 min)', packageNumber: 0, isVirtual: true }),
+    scheduled({ id: 'virtual-week-2-b', patientId: 'double-patient', date: '2026-07-03', time: '15:00', type: 'Sessão dupla (2 × 50 min)', packageNumber: 0, isVirtual: true }),
+  ];
+
+  assert.deepEqual(source.map(item => getSessionCycleNumber(source, item)), [1, 2, 3, 4]);
+});
+
+test('horários consecutivos sem etiqueta DUPLA também recebem posições próprias', () => {
+  const consecutive = [
+    scheduled({ id: 'single-08', date: '2026-06-24', time: '08:00', packageNumber: 0 }),
+    scheduled({ id: 'single-09', date: '2026-06-24', time: '09:00', packageNumber: 0 }),
+    scheduled({ id: 'single-10', date: '2026-06-24', time: '10:00', packageNumber: 0 }),
+  ];
+
+  assert.deepEqual(
+    consecutive.map(item => getSessionCycleNumber(consecutive, item)),
+    [1, 2, 3],
+  );
+});
+
+test('a sequência continua isolada por patientId mesmo com horários iguais', () => {
+  const patientOne = scheduled({ id: 'p1-14', patientId: 'patient-1', date: '2026-06-26', time: '14:00', packageNumber: 0 });
+  const patientOneSecond = scheduled({ id: 'p1-15', patientId: 'patient-1', date: '2026-06-26', time: '15:00', packageNumber: 0 });
+  const patientTwo = scheduled({ id: 'p2-14', patientId: 'patient-2', date: '2026-06-26', time: '14:00', packageNumber: 0 });
+  const source = [patientOne, patientOneSecond, patientTwo];
+
+  assert.equal(getSessionCycleNumber(source, patientOne), 1);
+  assert.equal(getSessionCycleNumber(source, patientOneSecond), 2);
+  assert.equal(getSessionCycleNumber(source, patientTwo), 1);
+});
+
+test('a fonte combinada não duplica uma ocorrência já materializada', () => {
+  const persisted = scheduled({ id: 'persisted-14', date: '2026-06-26', time: '14:00' });
+  const duplicateVirtual = scheduled({ id: 'virtual-14', date: '2026-06-26', time: '14:00', isVirtual: true });
+  const secondVirtual = scheduled({ id: 'virtual-15', date: '2026-06-26', time: '15:00', isVirtual: true });
+  const source = mergeSessionSequenceSource([persisted], [duplicateVirtual, secondVirtual, secondVirtual]);
+
+  assert.deepEqual(source.map(item => item.id), ['persisted-14', 'virtual-15']);
+  assert.equal(getSessionCycleNumber(source, persisted), 1);
+  assert.equal(getSessionCycleNumber(source, secondVirtual), 2);
 });
 
 test('reagendamento real mantém o mesmo id, paciente, pacote, observação e número lógico', () => {
@@ -202,6 +301,10 @@ test('Agenda expõe reagendamento, preserva o mesmo registro real e não grava o
   assert.match(agenda, /rescheduleLockRef\.current = false/);
   assert.match(agenda, /value=\{notes\}[\s\S]*onChange=\{\(e\) => setNotes\(e\.target\.value\)\}/);
   assert.doesNotMatch(agenda, /onChange=\{\(e\) => onUpdate\(\{ sessions:/);
+  assert.match(agenda, /buildAgendaSequenceSourceThroughDate/);
+  assert.match(agenda, /const agendaSequenceSource = useMemo/);
+  assert.match(agenda, /getSessionCycleLabel\(agendaSequenceSource, session\)/);
+  assert.match(agenda, /mergeSessionSequenceSource\(agendaSequenceSource, \[previewSession\]\)/);
   assert.match(app, /setState\(previousState => \(\{ \.\.\.previousState, \.\.\.newState \}\)\)/);
 });
 

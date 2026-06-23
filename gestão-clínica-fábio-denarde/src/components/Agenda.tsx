@@ -7,7 +7,7 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
-import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, mergeSessionSequenceSource } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
 import { rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
 
@@ -20,6 +20,35 @@ const getHourBase = (timeStr: string): string => {
 const NO_REPLACEMENT_STATUS_LABEL = 'Falta contabilizada — sem reposição';
 const NO_REPLACEMENT_PORTAL_REASON = 'Aviso tardio ou cancelamento fora do prazo';
 const NO_REPLACEMENT_DEFAULT_NOTE = 'Devido ao aviso tardio, a sessão foi contabilizada como dada.';
+
+function buildAgendaSequenceSourceThroughDate({
+  sessions,
+  patients,
+  settings,
+  fromDate,
+  throughDate,
+}: {
+  sessions: AppState['sessions'];
+  patients: AppState['patients'];
+  settings: AppState['settings'];
+  fromDate: string;
+  throughDate: string;
+}): Session[] {
+  if (!fromDate || !throughDate || throughDate < fromDate) return sessions;
+
+  const virtualSessions: Session[] = [];
+  let cursor = new Date(`${fromDate}T12:00:00`);
+  const end = new Date(`${throughDate}T12:00:00`);
+
+  while (cursor.getTime() <= end.getTime()) {
+    const dateStr = format(cursor, 'yyyy-MM-dd');
+    const daySessions = getSessionsForDate({ dateStr, patients, sessions, settings });
+    virtualSessions.push(...daySessions.filter(session => session.isVirtual && !session.isBlocked));
+    cursor = addDays(cursor, 1);
+  }
+
+  return mergeSessionSequenceSource(sessions, virtualSessions) as Session[];
+}
 
 const NO_REPLACEMENT_REASON_OPTIONS: Array<{ code: NoReplacementReasonCode; label: string; defaultObservation: string }> = [
   {
@@ -242,7 +271,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     };
     return {
       ...previewSession,
-      packageNumber: getSessionCycleNumber([...state.sessions, previewSession], previewSession),
+      packageNumber: getSessionCycleNumber(mergeSessionSequenceSource(agendaSequenceSource, [previewSession]), previewSession),
     };
   };
 
@@ -341,7 +370,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         : false,
       ...extraSessionData,
     };
-    const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
+    const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [virtualSession]);
+    const nextSessionNumber = getSessionCycleNumber(sequenceSource, virtualSession);
     const newReal: Session = {
       ...previewSession,
       id: Math.random().toString(36).substr(2, 9),
@@ -639,9 +669,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       return;
     }
 
-    const sequenceSource = session.isVirtual
-      ? [...state.sessions, session]
-      : state.sessions;
+    const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
     const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
     const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
     const generatedId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -757,6 +785,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   const activeDays = weekDays.filter(d => [1, 2, 3, 4, 5, 6].includes(d.getDay()));
 
+  const todayDate = format(new Date(), 'yyyy-MM-dd');
+  const agendaSequenceSource = useMemo(() => buildAgendaSequenceSourceThroughDate({
+    sessions: state.sessions,
+    patients: state.patients,
+    settings: state.settings,
+    fromDate: todayDate,
+    throughDate: format(weekDays[6], 'yyyy-MM-dd'),
+  }), [state.sessions, state.patients, state.settings, todayDate, weekDays]);
+
   const handlePrevWeek = () => setCurrentDate(subWeeks(currentDate, 1));
   const handleNextWeek = () => setCurrentDate(addWeeks(currentDate, 1));
 
@@ -832,7 +869,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       notes,
       packageNumber: 0
     };
-    const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
+    const nextSessionNumber = getSessionCycleNumber(mergeSessionSequenceSource(agendaSequenceSource, [previewSession]), previewSession);
 
     const newSession: Session = {
       ...previewSession,
@@ -1065,7 +1102,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       details.push(`Responsável: ${patient?.guardianName || 'Não informado'}`);
       details.push(`WhatsApp: ${patient?.whatsapp || 'Não informado'}`);
       details.push(`Tipo: ${session.type || 'Não informado'}`);
-      details.push(getSessionCycleLabel(state.sessions, session) || 'Sessão sem número definido');
+      details.push(getSessionCycleLabel(agendaSequenceSource, session) || 'Sessão sem número definido');
     }
 
     if (session.notes?.trim()) details.push(`Observações: ${session.notes.trim()}`);
@@ -1220,7 +1257,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                           const statusLabel = getStatusLabel(session);
                           const sessionActions = getSessionActions(session);
                           const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canNoReplacement || sessionActions.canCancel || sessionActions.canReschedule;
-                          const sessionCycleLabel = getSessionCycleLabel(state.sessions, session);
+                          const sessionCycleLabel = getSessionCycleLabel(agendaSequenceSource, session);
 
                           const handleCardClick = () => {
                             if (!isBlocked && patient) {
@@ -1304,7 +1341,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                                   )}
                                   {!isBlocked && session.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
                                     <span className="mt-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-snug" style={{ backgroundColor: '#FFF4F4', color: '#A94444' }}>
-                                      Sessão {getSessionCycleNumber(state.sessions, session)} contabilizada no pacote.
+                                      Sessão {getSessionCycleNumber(agendaSequenceSource, session)} contabilizada no pacote.
                                     </span>
                                   )}
 
@@ -1414,9 +1451,9 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     <div className="mt-2 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4', color: '#A94444' }}>
                       <p className="font-black">{NO_REPLACEMENT_STATUS_LABEL}</p>
                       <p className="mt-1 text-[12px] font-bold">{getNoReplacementReasonLabel(actionSession.noReplacementReasonCode, actionSession.noReplacementReasonText)}</p>
-                      {getSessionCycleNumber(state.sessions, actionSession) > 0 && (
+                      {getSessionCycleNumber(agendaSequenceSource, actionSession) > 0 && (
                         <p className="mt-1 text-[12px] text-clinic-text-muted">
-                          Sessão {getSessionCycleNumber(state.sessions, actionSession)} contabilizada no pacote.
+                          Sessão {getSessionCycleNumber(agendaSequenceSource, actionSession)} contabilizada no pacote.
                         </p>
                       )}
                     </div>
@@ -1636,9 +1673,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
       {rescheduleModal && (() => {
         const reschedulePatient = state.patients.find(item => item.id === rescheduleModal.session.patientId);
-        const sequenceSource = rescheduleModal.session.isVirtual
-          ? [...state.sessions, rescheduleModal.session]
-          : state.sessions;
+        const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [rescheduleModal.session]);
         const logicalSessionNumber = getSessionCycleNumber(sequenceSource, rescheduleModal.session);
         const usesConfiguredTime = rescheduleAvailableTimes.includes(rescheduleModal.time);
 
@@ -2045,11 +2080,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   <div className="p-4 grid grid-cols-2 gap-2">
                     <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3">
                       <p className="text-[10px] font-black text-clinic-text-faint uppercase">Última sessão</p>
-                      <p className="text-sm font-bold text-clinic-text mt-1">{getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]?.date ? getSessionCycleLabel(state.sessions, getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]) : 'Sem sessão realizada'}</p>
+                      <p className="text-sm font-bold text-clinic-text mt-1">{getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]?.date ? getSessionCycleLabel(agendaSequenceSource, getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]) : 'Sem sessão realizada'}</p>
                     </div>
                     <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3">
                       <p className="text-[10px] font-black text-clinic-text-faint uppercase">Próxima lógica</p>
-                      <p className="text-sm font-bold text-clinic-text mt-1">{buildPreviewSession() ? getSessionCycleLabel([...state.sessions, buildPreviewSession() as Session], buildPreviewSession() as Session) : '--'}</p>
+                      <p className="text-sm font-bold text-clinic-text mt-1">{buildPreviewSession() ? getSessionCycleLabel(mergeSessionSequenceSource(agendaSequenceSource, [buildPreviewSession() as Session]), buildPreviewSession() as Session) : '--'}</p>
                     </div>
                     <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3 col-span-2">
                       <p className="text-[10px] font-black text-clinic-text-faint uppercase flex items-center gap-1"><DollarSign size={12} /> Financeiro</p>

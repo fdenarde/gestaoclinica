@@ -10,6 +10,7 @@ import {
   getSessionLogicalPosition as getSessionLogicalPositionShared,
   getSessionSequenceSortKey as getSessionSequenceSortKeyShared,
   isCompletedClinicalSession as isCompletedClinicalSessionShared,
+  mergeSessionSequenceSource as mergeSessionSequenceSourceShared,
 } from '../../shared/sessionScheduling.js';
 
 type SequencedSession = Pick<
@@ -30,6 +31,13 @@ type SequencedSession = Pick<
 
 export function getSessionSequenceSortKey(session: Pick<Session, 'date' | 'time' | 'id'>) {
   return getSessionSequenceSortKeyShared(session);
+}
+
+export function mergeSessionSequenceSource(
+  sessions: SequencedSession[],
+  supplementalSessions: SequencedSession[],
+) {
+  return mergeSessionSequenceSourceShared(sessions, supplementalSessions) as SequencedSession[];
 }
 
 export function getSessionCycleNumberFromPosition(position: number) {

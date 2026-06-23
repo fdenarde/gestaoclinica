@@ -23,6 +23,47 @@ export function getSessionSequenceSortKey(session = {}) {
   return `${String(session.date || '')}T${normalizeAgendaTime(session.time)}|${String(session.id || '')}`;
 }
 
+function getSessionOccurrenceKey(session = {}) {
+  const patientId = String(session?.patientId || '').trim();
+  const date = String(session?.date || '').trim();
+  const time = normalizeAgendaTime(session?.time);
+  if (!patientId || !date || !time) return '';
+  return `${patientId}|${date}|${time}`;
+}
+
+// A Agenda combina registros persistidos com ocorrências fixas virtuais. A
+// sequência clínica precisa enxergar as duas fontes ao mesmo tempo, mas sem
+// duplicar o mesmo horário quando ele já foi materializado no Firestore.
+export function mergeSessionSequenceSource(sessions = [], supplementalSessions = []) {
+  const merged = Array.isArray(sessions) ? sessions.slice() : [];
+  const knownIds = new Set(
+    merged
+      .map(session => String(session?.id || '').trim())
+      .filter(Boolean),
+  );
+  const knownOccurrences = new Set(
+    merged
+      .map(getSessionOccurrenceKey)
+      .filter(Boolean),
+  );
+
+  for (const session of Array.isArray(supplementalSessions) ? supplementalSessions : []) {
+    if (!session || isSessionRemovedOrBlocked(session)) continue;
+
+    const id = String(session?.id || '').trim();
+    const occurrenceKey = getSessionOccurrenceKey(session);
+    if ((id && knownIds.has(id)) || (occurrenceKey && knownOccurrences.has(occurrenceKey))) {
+      continue;
+    }
+
+    merged.push(session);
+    if (id) knownIds.add(id);
+    if (occurrenceKey) knownOccurrences.add(occurrenceKey);
+  }
+
+  return merged;
+}
+
 export function getSessionCycleNumberFromPosition(position) {
   const normalized = Math.floor(Number(position) || 0);
   if (normalized <= 0) return 0;
