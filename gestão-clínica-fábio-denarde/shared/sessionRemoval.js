@@ -29,11 +29,27 @@ export function hasPersistedScheduleOccurrence(sessions, {
   const normalizedTime = normalizeTime(time);
   if (!normalizedPatientId || !normalizedDate || !normalizedTime) return false;
 
-  return (Array.isArray(sessions) ? sessions : []).some(session => (
-    String(session?.patientId || '').trim() === normalizedPatientId
-    && String(session?.date || '').trim() === normalizedDate
-    && normalizeTime(session?.time) === normalizedTime
-  ));
+  return (Array.isArray(sessions) ? sessions : []).some(session => {
+    if (String(session?.patientId || '').trim() !== normalizedPatientId) return false;
+
+    const matchesCurrentSlot = String(session?.date || '').trim() === normalizedDate
+      && normalizeTime(session?.time) === normalizedTime;
+    if (matchesCurrentSlot) return true;
+
+    const matchesFixedOrigin = String(session?.fixedScheduleOriginalDate || '').trim() === normalizedDate
+      && normalizeTime(session?.fixedScheduleOriginalTime) === normalizedTime;
+    if (matchesFixedOrigin) return true;
+
+    const canSuppressFixedOrigin = session?.isFixedSchedule === true
+      || String(session?.source || '') === 'fixed'
+      || Boolean(session?.fixedScheduleOriginalDate || session?.fixedScheduleOriginalTime);
+    if (!canSuppressFixedOrigin) return false;
+
+    return (Array.isArray(session?.rescheduleHistory) ? session.rescheduleHistory : []).some(entry => (
+      String(entry?.previousDate || '').trim() === normalizedDate
+      && normalizeTime(entry?.previousTime) === normalizedTime
+    ));
+  });
 }
 
 export function removeSessionFromAgenda(sessions, sessionId, {

@@ -214,6 +214,16 @@ export interface ExternalRegistrationForm {
   history?: ExternalRegistrationHistoryItem[];
 }
 
+
+export interface SessionRescheduleHistoryEntry {
+  previousDate: string;
+  previousTime: string;
+  newDate: string;
+  newTime: string;
+  changedAt: string;
+  changedBy: string;
+}
+
 export interface Session {
   id: string;
   patientId: string;
@@ -239,6 +249,13 @@ export interface Session {
   removedFromAgendaAt?: string;
   removedFromAgendaBy?: string;
   removalReason?: 'removed_after_cancellation';
+  logicalSessionPosition?: number; // posição absoluta preservada para impedir duplicidade ao reagendar
+  logicalSessionNumber?: number; // número de 1 a 10 derivado da posição lógica
+  rescheduledAt?: string;
+  rescheduledBy?: string;
+  fixedScheduleOriginalDate?: string; // mantém a ocorrência fixa original suprimida após mudança de data/horário
+  fixedScheduleOriginalTime?: string;
+  rescheduleHistory?: SessionRescheduleHistoryEntry[];
 }
 
 export interface Reposition {

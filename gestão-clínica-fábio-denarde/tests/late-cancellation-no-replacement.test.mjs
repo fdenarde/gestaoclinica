@@ -148,10 +148,10 @@ test('APIs de mídia e galeria recusam vínculo de mídia ou link para sessão s
 
 test('financeiro, sequência e Portal reconhecem o status sem criar listener ou fluxo WhatsApp', () => {
   const financeSource = fs.readFileSync(new URL('../src/lib/financePackages.ts', import.meta.url), 'utf8');
-  const sequenceSource = fs.readFileSync(new URL('../src/lib/sessionSequence.ts', import.meta.url), 'utf8');
+  const sequenceSource = fs.readFileSync(new URL('../shared/sessionScheduling.js', import.meta.url), 'utf8');
   const agendaSource = fs.readFileSync(new URL('../src/components/Agenda.tsx', import.meta.url), 'utf8');
   assert.match(financeSource, /LATE_CANCELLATION_NO_REPLACEMENT/);
-  assert.match(sequenceSource, /LATE_CANCELLATION_NO_REPLACEMENT/);
+  assert.match(sequenceSource, /late_cancellation_no_replacement/);
   assert.doesNotMatch(agendaSource, /onSnapshot\s*\(/);
   assert.doesNotMatch(agendaSource, /send.*whats|whats.*send/i);
 });

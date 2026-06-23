@@ -24,6 +24,16 @@ export default function Modal({
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const closeDisabledRef = useRef(closeDisabled);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    closeDisabledRef.current = closeDisabled;
+  }, [closeDisabled]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -33,7 +43,7 @@ export default function Modal({
     }, 0);
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !closeDisabled) onClose();
+      if (event.key === 'Escape' && !closeDisabledRef.current) onCloseRef.current();
     };
 
     document.addEventListener('keydown', handleKeyDown);
@@ -43,10 +53,10 @@ export default function Modal({
       previousFocusRef.current?.focus();
       previousFocusRef.current = null;
     };
-  }, [closeDisabled, initialFocusRef, isOpen, onClose]);
+  }, [initialFocusRef, isOpen]);
 
   const requestClose = () => {
-    if (!closeDisabled) onClose();
+    if (!closeDisabledRef.current) onCloseRef.current();
   };
 
   return (

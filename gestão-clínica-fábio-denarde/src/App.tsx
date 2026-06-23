@@ -756,6 +756,8 @@ export default function App() {
 
       await commitBatch();
 
+      setState(previousState => ({ ...previousState, ...newState }));
+
       if (activityGalleryRelevantChange && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {
           detail: { reason: 'clinic-data-updated' },

@@ -7,8 +7,9 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
-import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
+import { rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
@@ -146,6 +147,13 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
+  const [rescheduleModal, setRescheduleModal] = useState<{
+    session: ProcessedSession;
+    date: string;
+    time: string;
+  } | null>(null);
+  const [isRescheduling, setIsRescheduling] = useState(false);
+  const rescheduleLockRef = useRef(false);
   const [noReplacementModal, setNoReplacementModal] = useState<{
     session: ProcessedSession;
     reasonCode: NoReplacementReasonCode;
@@ -165,6 +173,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const key = dayKeys[dayIndex];
     return key ? (SCHEDULE_CONFIG[key] || []) : AVAILABLE_TIMES;
   }, [repoDate]);
+
+
+  const rescheduleAvailableTimes = useMemo(() => {
+    if (!rescheduleModal?.date) return AVAILABLE_TIMES;
+    const dayIndex = getDay(new Date(rescheduleModal.date + 'T12:00:00'));
+    const dayKeys: Record<number, string> = { 1: 'segunda', 2: 'terça', 3: 'quarta', 4: 'quinta', 5: 'sexta', 6: 'sábado' };
+    const key = dayKeys[dayIndex];
+    return key ? (SCHEDULE_CONFIG[key] || []) : [];
+  }, [rescheduleModal?.date]);
 
   const selectedPatient = useMemo(
     () => state.patients.find(p => p.id === patientId) || null,
@@ -564,6 +581,105 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     setActionSession(null);
   };
 
+  const openRescheduleModal = (session: ProcessedSession) => {
+    setActionSession(null);
+    setRescheduleModal({
+      session,
+      date: session.date,
+      time: normalizeTime(session.time),
+    });
+  };
+
+  const handleConfirmReschedule = async () => {
+    if (!rescheduleModal || isRescheduling || rescheduleLockRef.current) return;
+
+    const { session, date, time } = rescheduleModal;
+    const normalizedTime = normalizeTime(time);
+    if (!date || !isValidTime(normalizedTime)) {
+      showToast('Informe uma data e um horário válidos para o reagendamento.', 'error');
+      return;
+    }
+
+    if (rescheduleAvailableTimes.length === 0) {
+      showToast('A clínica não possui horários de atendimento configurados para esse dia.', 'error');
+      return;
+    }
+
+    const holiday = state.settings.holidays?.find(item => item.date === date);
+    if (holiday) {
+      showToast(`Não é possível reagendar para uma data fechada: ${holiday.name}.`, 'error');
+      return;
+    }
+
+    if (session.date === date && normalizeTime(session.time) === normalizedTime) {
+      showToast('Escolha uma data ou horário diferente do agendamento atual.', 'error');
+      return;
+    }
+
+    const destinationSessions = getSessionsForDate({
+      dateStr: date,
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings,
+    });
+    const conflict = destinationSessions.find(item => (
+      normalizeTime(item.time) === normalizedTime
+      && item.id !== session.id
+      && item.status !== SessionStatus.CANCELADA
+      && !isSessionRemovedFromAgenda(item)
+    ));
+    if (conflict) {
+      const conflictPatient = state.patients.find(item => item.id === conflict.patientId);
+      showToast(
+        conflict.isBlocked
+          ? 'O novo horário está bloqueado por outro compromisso.'
+          : `O novo horário já está ocupado por ${conflictPatient?.name || 'outro atendimento'}.`,
+        'error',
+      );
+      return;
+    }
+
+    const sequenceSource = session.isVirtual
+      ? [...state.sessions, session]
+      : state.sessions;
+    const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
+    const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
+    const generatedId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 11);
+    const result = rescheduleSessionInAgenda(state.sessions, session, {
+      newDate: date,
+      newTime: normalizedTime,
+      generatedId,
+      logicalSessionPosition,
+      logicalSessionNumber,
+      rescheduledAt: new Date().toISOString(),
+      rescheduledBy: currentUserName || 'Profissional',
+    });
+
+    if (!result.changed || !result.session) {
+      showToast('Não foi possível preparar o reagendamento. Atualize a Agenda e tente novamente.', 'error');
+      return;
+    }
+
+    rescheduleLockRef.current = true;
+    setIsRescheduling(true);
+    try {
+      await onUpdate({ sessions: result.sessions as Session[] });
+      showToast(
+        `Sessão reagendada para ${safeFormatDate(date, 'dd/MM/yyyy')} às ${normalizedTime}. A numeração do pacote foi preservada.`,
+        'success',
+      );
+      setRescheduleModal(null);
+    } catch (error) {
+      console.error('Falha ao reagendar sessão:', error);
+      showToast('Não foi possível reagendar a sessão. O horário anterior foi preservado.', 'error');
+    } finally {
+      rescheduleLockRef.current = false;
+      setIsRescheduling(false);
+    }
+  };
+
   const handleActionDelete = (session: ProcessedSession) => {
     if (session.isVirtual) return;
     setActionSession(null);
@@ -852,30 +968,65 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   // ── Determine if the session has available actions ──────────
   const getSessionActions = (s: ProcessedSession): {
     canOk: boolean; canFalta: boolean; canFaltaProf: boolean;
-    canNoReplacement: boolean; canCancel: boolean; canReopen: boolean; canDelete: boolean;
+    canNoReplacement: boolean; canCancel: boolean; canReopen: boolean;
+    canDelete: boolean; canReschedule: boolean;
   } => {
-    if (s.isBlocked) return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: false, canDelete: true };
-    if (s.isVirtual && s.isValid) {
-      // Virtual sessions behave like Agendada
-      return { canOk: true, canFalta: true, canFaltaProf: true, canNoReplacement: true, canCancel: true, canReopen: false, canDelete: false };
-    }
-    if (s.isVirtual) return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: false, canDelete: false };
+    const none = {
+      canOk: false,
+      canFalta: false,
+      canFaltaProf: false,
+      canNoReplacement: false,
+      canCancel: false,
+      canReopen: false,
+      canDelete: false,
+      canReschedule: false,
+    };
 
-    // Manual sessions
+    if (s.isBlocked) return { ...none, canDelete: true };
+    if (s.isVirtual && s.isValid) {
+      return {
+        ...none,
+        canOk: true,
+        canFalta: true,
+        canFaltaProf: true,
+        canNoReplacement: true,
+        canCancel: true,
+        canReschedule: true,
+      };
+    }
+    if (s.isVirtual) return none;
+
     switch (s.status) {
       case SessionStatus.AGENDADA:
-        return { canOk: true, canFalta: true, canFaltaProf: true, canNoReplacement: true, canCancel: true, canReopen: false, canDelete: true };
+        return {
+          ...none,
+          canOk: true,
+          canFalta: true,
+          canFaltaProf: true,
+          canNoReplacement: true,
+          canCancel: true,
+          canDelete: true,
+          canReschedule: true,
+        };
       case SessionStatus.REALIZADA:
-        return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: true, canCancel: false, canReopen: true, canDelete: true };
+        return { ...none, canNoReplacement: true, canReopen: true, canDelete: true };
       case SessionStatus.FALTA:
       case SessionStatus.FALTA_PROF:
       case SessionStatus.CANCELADA:
       case SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT:
-        return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: true, canDelete: true };
+        return { ...none, canReopen: true, canDelete: true };
       case SessionStatus.REPOSICAO:
-        return { canOk: true, canFalta: true, canFaltaProf: true, canNoReplacement: false, canCancel: true, canReopen: false, canDelete: true };
+        return {
+          ...none,
+          canOk: true,
+          canFalta: true,
+          canFaltaProf: true,
+          canCancel: true,
+          canDelete: true,
+          canReschedule: true,
+        };
       default:
-        return { canOk: false, canFalta: false, canFaltaProf: false, canNoReplacement: false, canCancel: false, canReopen: false, canDelete: true };
+        return { ...none, canDelete: true };
     }
   };
 
@@ -1068,7 +1219,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                           const isOnHoliday = !!holiday;
                           const statusLabel = getStatusLabel(session);
                           const sessionActions = getSessionActions(session);
-                          const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canNoReplacement || sessionActions.canCancel;
+                          const canAct = sessionActions.canOk || sessionActions.canFalta || sessionActions.canFaltaProf || sessionActions.canNoReplacement || sessionActions.canCancel || sessionActions.canReschedule;
                           const sessionCycleLabel = getSessionCycleLabel(state.sessions, session);
 
                           const handleCardClick = () => {
@@ -1380,11 +1531,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
 
               {/* ── Botões de ação ── */}
-              {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel || actions.canReopen) && (
+              {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel || actions.canReopen || actions.canReschedule) && (
                 <div className="space-y-2.5">
                   <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">⚡ Ações Rápidas</p>
 
-                  {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel) && (
+                  {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel || actions.canReschedule) && (
                     <div className="grid grid-cols-2 gap-2">
                       {actions.canOk && (
                         <button
@@ -1422,6 +1573,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                           <span className="text-xs font-black uppercase">Registrar falta sem reposição</span>
                         </button>
                       )}
+                      {actions.canReschedule && (
+                        <button
+                          type="button"
+                          onClick={() => openRescheduleModal(actionSession)}
+                          className="flex items-center justify-center gap-2 py-2.5 px-3 border border-clinic-primary/30 bg-clinic-primary/10 text-clinic-primary font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                        >
+                          <Clock size={16} />
+                          <span className="text-xs font-black uppercase">Reagendar sessão</span>
+                        </button>
+                      )}
                       {actions.canCancel && (
                         <button
                           onClick={() => handleActionCancel(actionSession)}
@@ -1456,7 +1617,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 </button>
               )}
 
-              {!actions.canOk && !actions.canFalta && !actions.canFaltaProf && !actions.canNoReplacement && !actions.canCancel && !actions.canReopen && !actions.canDelete && (
+              {!actions.canOk && !actions.canFalta && !actions.canFaltaProf && !actions.canNoReplacement && !actions.canCancel && !actions.canReopen && !actions.canReschedule && !actions.canDelete && (
                 <div className="text-center text-xs text-clinic-text-muted italic py-2">
                   Nenhuma ação disponível para esta sessão.
                 </div>
@@ -1468,6 +1629,115 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               >
                 Fechar
               </button>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {rescheduleModal && (() => {
+        const reschedulePatient = state.patients.find(item => item.id === rescheduleModal.session.patientId);
+        const sequenceSource = rescheduleModal.session.isVirtual
+          ? [...state.sessions, rescheduleModal.session]
+          : state.sessions;
+        const logicalSessionNumber = getSessionCycleNumber(sequenceSource, rescheduleModal.session);
+        const usesConfiguredTime = rescheduleAvailableTimes.includes(rescheduleModal.time);
+
+        return (
+          <Modal
+            isOpen={true}
+            onClose={() => {
+              if (!isRescheduling) setRescheduleModal(null);
+            }}
+            closeDisabled={isRescheduling}
+            title="Reagendar sessão"
+            width="max-w-lg"
+          >
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-clinic-primary/20 bg-clinic-primary/5 p-4">
+                <p className="text-sm font-black text-clinic-text">{reschedulePatient?.name || 'Atendente'}</p>
+                <p className="mt-1 text-xs text-clinic-text-muted">
+                  Horário atual: {safeFormatDate(rescheduleModal.session.date, 'dd/MM/yyyy')} às {rescheduleModal.session.time}
+                </p>
+                <p className="mt-1 text-xs font-bold text-clinic-primary">
+                  {logicalSessionNumber > 0 ? `Sessão ${logicalSessionNumber} do pacote atual` : 'Sessão sem número de pacote definido'}
+                </p>
+                <p className="mt-2 text-[11px] leading-relaxed text-clinic-text-muted">
+                  O mesmo agendamento será movido. Atendente, pacote, observação e histórico serão preservados.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Nova data</span>
+                  <input
+                    type="date"
+                    value={rescheduleModal.date}
+                    onChange={event => setRescheduleModal(current => current ? { ...current, date: event.target.value } : current)}
+                    disabled={isRescheduling}
+                    className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-60"
+                  />
+                </label>
+
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Novo horário</span>
+                  <select
+                    value={usesConfiguredTime ? rescheduleModal.time : 'custom'}
+                    onChange={event => {
+                      const nextTime = event.target.value === 'custom'
+                        ? (usesConfiguredTime ? `${rescheduleModal.time.split(':')[0]}:30` : rescheduleModal.time)
+                        : event.target.value;
+                      setRescheduleModal(current => current ? { ...current, time: nextTime } : current);
+                    }}
+                    disabled={isRescheduling || rescheduleAvailableTimes.length === 0}
+                    className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-60"
+                  >
+                    {rescheduleAvailableTimes.map(availableTime => (
+                      <option key={availableTime} value={availableTime}>{availableTime}</option>
+                    ))}
+                    <option value="custom">Outro horário...</option>
+                  </select>
+                </label>
+              </div>
+
+              {!usesConfiguredTime && (
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Horário personalizado</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={rescheduleModal.time}
+                    onChange={event => setRescheduleModal(current => current ? { ...current, time: event.target.value } : current)}
+                    placeholder="Ex.: 17:30"
+                    disabled={isRescheduling}
+                    className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-60"
+                  />
+                </label>
+              )}
+
+              {rescheduleAvailableTimes.length === 0 && (
+                <p className="rounded-xl border border-status-red-text/20 bg-status-red-bg p-3 text-xs font-bold text-status-red-text">
+                  Não existem horários de atendimento configurados para o dia escolhido.
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setRescheduleModal(null)}
+                  disabled={isRescheduling}
+                  className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-xs font-black uppercase tracking-wide text-clinic-text-muted hover:bg-clinic-border/40 disabled:opacity-60"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmReschedule()}
+                  disabled={isRescheduling || rescheduleAvailableTimes.length === 0}
+                  className="rounded-xl bg-clinic-primary px-4 py-3 text-xs font-black uppercase tracking-wide text-white shadow-md hover:bg-clinic-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isRescheduling ? 'Reagendando...' : 'Confirmar reagendamento'}
+                </button>
+              </div>
             </div>
           </Modal>
         );

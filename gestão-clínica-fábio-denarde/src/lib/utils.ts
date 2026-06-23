@@ -347,7 +347,7 @@ export function getSessionsForDate({
       if (fixedDayNorm === targetDayNorm && fixedSchedule.fixedTime) {
         const time1 = fixedSchedule.fixedTime;
         // Check if a real manual session exists for this patient, date, and time
-        const hasManual1 = hasPersistedScheduleOccurrence(dbSessions, {
+        const hasManual1 = hasPersistedScheduleOccurrence(sessions, {
           patientId: p.id,
           date: dateStr,
           time: time1,
@@ -371,7 +371,7 @@ export function getSessionsForDate({
         
         if (fixedSchedule.doubleSession) {
           const time2 = addOneHour(fixedSchedule.fixedTime);
-          const hasManual2 = hasPersistedScheduleOccurrence(dbSessions, {
+          const hasManual2 = hasPersistedScheduleOccurrence(sessions, {
             patientId: p.id,
             date: dateStr,
             time: time2,

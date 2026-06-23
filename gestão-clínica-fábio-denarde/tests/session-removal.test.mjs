@@ -66,6 +66,32 @@ test('Agenda oculta tombstone, aguarda persistência e não usa exclusão otimis
   assert.match(agenda, /await onUpdate\(\{ sessions: removal\.sessions, repositions: updatedRepositions \}\)/);
   assert.match(agenda, /if \(!sessionToDelete \|\| deletingSession\) return/);
   assert.match(utils, /if \(isSessionRemovedFromAgenda\(s\)\) continue/);
-  assert.match(utils, /hasPersistedScheduleOccurrence\(dbSessions/);
+  assert.match(utils, /hasPersistedScheduleOccurrence\(sessions/);
   assert.match(reports, /isSessionRemovedFromAgenda/);
+});
+
+
+test('ocorrência fixa reagendada continua suprimindo o horário original', () => {
+  const moved = session({
+    id: 'fixed-moved',
+    status: 'Agendada',
+    date: '2026-06-22',
+    time: '18:00',
+    fixedScheduleOriginalDate: '2026-06-22',
+    fixedScheduleOriginalTime: '10:00',
+    rescheduleHistory: [{
+      previousDate: '2026-06-22',
+      previousTime: '10:00',
+      newDate: '2026-06-22',
+      newTime: '18:00',
+      changedAt: '2026-06-21T12:00:00.000Z',
+      changedBy: 'Teste',
+    }],
+  });
+
+  assert.equal(hasPersistedScheduleOccurrence([moved], {
+    patientId: 'patient-1',
+    date: '2026-06-22',
+    time: '10:00',
+  }), true);
 });
