@@ -270,14 +270,40 @@ function updateMediaInData(
 
 
 function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
-  const sessionsByNumber = useMemo(() => {
-    const map = new Map<number, ResponsiblePortalSession[]>();
+  const sessionGroups = useMemo(() => {
+    const sessionsByNumber = new Map<number, ResponsiblePortalSession[]>();
     for (const session of pkg.sessions) {
-      const items = map.get(session.sessionNumber) || [];
+      const items = sessionsByNumber.get(session.sessionNumber) || [];
       items.push(session);
-      map.set(session.sessionNumber, items);
+      sessionsByNumber.set(session.sessionNumber, items);
     }
-    return map;
+
+    return Array.from({ length: 10 }, (_, index) => index + 1)
+      .map(number => {
+        const events = sessionsByNumber.get(number) || [];
+        const referenceEvent = events.reduce<ResponsiblePortalSession | null>((latest, session) => {
+          if (!latest) return session;
+          const latestKey = `${latest.date || ''}T${latest.time || '00:00'}|${latest.id}`;
+          const currentKey = `${session.date || ''}T${session.time || '00:00'}|${session.id}`;
+          return currentKey.localeCompare(latestKey) > 0 ? session : latest;
+        }, null);
+
+        return {
+          number,
+          events,
+          referenceEvent,
+          sortKey: referenceEvent
+            ? `${referenceEvent.date || ''}T${referenceEvent.time || '00:00'}|${referenceEvent.id}`
+            : '',
+        };
+      })
+      .sort((left, right) => {
+        const leftHasDate = Boolean(left.referenceEvent?.date);
+        const rightHasDate = Boolean(right.referenceEvent?.date);
+        if (leftHasDate !== rightHasDate) return leftHasDate ? -1 : 1;
+        if (left.sortKey !== right.sortKey) return right.sortKey.localeCompare(left.sortKey);
+        return right.number - left.number;
+      });
   }, [pkg.sessions]);
 
   return (
@@ -290,7 +316,7 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
             </div>
             <div>
               <h2 className="font-bold text-clinic-text">Andamento das 10 sessões</h2>
-              <p className="text-xs text-clinic-text-muted">Visualização organizada do pacote selecionado, com foco nas sessões já consumidas e no que ainda falta concluir.</p>
+              <p className="text-xs text-clinic-text-muted">As sessões mais recentes aparecem primeiro. Toque em uma sessão para ver ou esconder os detalhes.</p>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
@@ -304,84 +330,103 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
         </div>
       </header>
 
-      <div className="grid gap-3 p-4 sm:p-5 lg:grid-cols-2">
-        {Array.from({ length: 10 }, (_, index) => index + 1).map(number => {
-          const events = sessionsByNumber.get(number) || [];
+      <div className="space-y-3 p-4 sm:p-5">
+        {sessionGroups.map(({ number, events, referenceEvent }) => {
           const hasEvents = events.length > 0;
+          const detailsId = `package-${pkg.number}-session-${number}`;
           return (
-            <article
+            <details
               key={number}
-              className={`rounded-2xl border p-4 transition-colors ${hasEvents ? 'border-clinic-border bg-white shadow-sm' : 'border-dashed border-clinic-border bg-clinic-bg/50'}`}
+              className={`group overflow-hidden rounded-2xl border transition-colors ${hasEvents ? 'border-clinic-border bg-white shadow-sm' : 'border-dashed border-clinic-border bg-clinic-bg/50'}`}
             >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex items-start gap-3">
-                  <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-sm font-black ${hasEvents ? 'bg-clinic-primary text-white' : 'bg-white text-clinic-primary border border-clinic-border'}`}>
-                    {number}/10
-                  </div>
-                  <div>
+              <summary className="flex cursor-pointer list-none items-center gap-3 p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/30 [&::-webkit-details-marker]:hidden">
+                <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-sm font-black ${hasEvents ? 'bg-clinic-primary text-white' : 'border border-clinic-border bg-white text-clinic-primary'}`}>
+                  {number}/10
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-black text-clinic-text">Sessão {number}</p>
-                    <p className="text-xs text-clinic-text-muted">
-                      {hasEvents ? (events.length > 1 ? 'Sessão com reposição vinculada.' : 'Sessão vinculada ao pacote atual.') : 'Aguardando agendamento desta sessão.'}
+                    {referenceEvent ? (
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass(referenceEvent.status)}`}>
+                        {statusLabel(referenceEvent.status)}
+                      </span>
+                    ) : (
+                      <span className="inline-flex rounded-full border border-clinic-border bg-white px-2.5 py-1 text-[10px] font-bold text-clinic-text-muted">
+                        Pendente
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 grid gap-1 text-xs text-clinic-text-muted sm:grid-cols-2">
+                    <p className="truncate">
+                      <span className="font-black text-clinic-text-faint">Data:</span>{' '}
+                      {referenceEvent ? `${formatDate(referenceEvent.date, false)}${referenceEvent.time ? ` às ${referenceEvent.time}` : ''}` : 'ainda não agendada'}
+                    </p>
+                    <p className="truncate">
+                      <span className="font-black text-clinic-text-faint">Profissional:</span>{' '}
+                      {referenceEvent?.professionalName || (hasEvents ? 'Fábio Denarde' : 'a definir')}
                     </p>
                   </div>
+                  {events.length > 1 && (
+                    <p className="mt-1 text-[10px] font-black uppercase tracking-wide text-status-orange-text">
+                      Sessão com reposição vinculada
+                    </p>
+                  )}
                 </div>
-                {hasEvents && events[0] ? (
-                  <span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${statusClass(events[0].status)}`}>
-                    {statusLabel(events[0].status)}
-                  </span>
+
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg text-clinic-primary">
+                  <ChevronDown size={18} className="transition-transform duration-200 group-open:rotate-180" aria-hidden="true" />
+                </span>
+              </summary>
+
+              <div id={detailsId} className="border-t border-clinic-border px-4 pb-4 pt-3">
+                {hasEvents ? (
+                  <div className="space-y-3">
+                    {events.map((session, eventIndex) => (
+                      <div key={session.id} className="rounded-xl border border-clinic-border bg-clinic-bg/45 p-3">
+                        {eventIndex > 0 && (
+                          <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-status-orange-text">Reposição vinculada</p>
+                        )}
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Data e horário</p>
+                            <p className="mt-1 font-bold capitalize text-clinic-text">{formatDate(session.date)}</p>
+                            <p className="mt-1 flex items-center gap-1 text-xs text-clinic-text-muted"><Clock3 size={13} /> {session.time || 'Horário não informado'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo</p>
+                            <p className="mt-1 text-sm font-semibold text-clinic-text">{session.type || 'Intervenção'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Profissional</p>
+                            <p className="mt-1 text-sm font-semibold text-clinic-text">{session.professionalName || 'Fábio Denarde'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Consome o pacote</p>
+                            <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${session.consumesPackage ? 'bg-status-green-bg text-status-green-text' : 'border border-clinic-border bg-white text-clinic-text-muted'}`}>
+                              {session.consumesPackage ? <Check size={13} /> : <X size={13} />}
+                              {session.consumesPackage ? 'Sim' : 'Não'}
+                            </span>
+                          </div>
+                        </div>
+                        {session.status === NO_REPLACEMENT_SESSION_STATUS && (
+                          <div className="mt-3 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
+                            <p className="font-black text-clinic-text">{NO_REPLACEMENT_PORTAL_LABEL}</p>
+                            <p className="mt-1 text-[12px] font-bold" style={{ color: '#A94444' }}>
+                              {noReplacementReasonLabel(session)}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 ) : (
-                  <span className="inline-flex rounded-full bg-white px-3 py-1 text-xs font-bold text-clinic-text-muted border border-clinic-border">
-                    Pendente
-                  </span>
+                  <div className="rounded-xl border border-dashed border-clinic-border bg-white px-4 py-5 text-sm text-clinic-text-muted">
+                    Esta posição do pacote ainda não possui data agendada.
+                  </div>
                 )}
               </div>
-
-              {hasEvents ? (
-                <div className="mt-4 space-y-3">
-                  {events.map((session, eventIndex) => (
-                    <div key={session.id} className="rounded-xl border border-clinic-border bg-clinic-bg/45 p-3">
-                      {eventIndex > 0 && (
-                        <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-status-orange-text">Reposição vinculada</p>
-                      )}
-                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                        <div>
-                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Data e horário</p>
-                          <p className="mt-1 font-bold capitalize text-clinic-text">{formatDate(session.date)}</p>
-                          <p className="mt-1 flex items-center gap-1 text-xs text-clinic-text-muted"><Clock3 size={13} /> {session.time || 'Horário não informado'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo</p>
-                          <p className="mt-1 text-sm font-semibold text-clinic-text">{session.type || 'Intervenção'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Profissional</p>
-                          <p className="mt-1 text-sm font-semibold text-clinic-text">{session.professionalName || 'Fábio Denarde'}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Consome o pacote</p>
-                          <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${session.consumesPackage ? 'bg-status-green-bg text-status-green-text' : 'bg-white text-clinic-text-muted border border-clinic-border'}`}>
-                            {session.consumesPackage ? <Check size={13} /> : <X size={13} />}
-                            {session.consumesPackage ? 'Sim' : 'Não'}
-                          </span>
-                        </div>
-                      </div>
-                      {session.status === NO_REPLACEMENT_SESSION_STATUS && (
-                        <div className="mt-3 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
-                          <p className="font-black text-clinic-text">{NO_REPLACEMENT_PORTAL_LABEL}</p>
-                          <p className="mt-1 text-[12px] font-bold" style={{ color: '#A94444' }}>
-                            {noReplacementReasonLabel(session)}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="mt-4 rounded-xl border border-dashed border-clinic-border bg-white px-4 py-5 text-sm text-clinic-text-muted">
-                  Esta posição do pacote ainda não possui data agendada.
-                </div>
-              )}
-            </article>
+            </details>
           );
         })}
       </div>

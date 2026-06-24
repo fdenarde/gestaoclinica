@@ -185,7 +185,8 @@ test('Galeria de Monitoramento reutiliza o escopo portal do responsável', () =>
   assert.match(componentSource, /ResponsibleGooglePhotosGallery/);
   assert.match(componentSource, /isMonitoringPatientVisible/);
   assert.match(componentSource, /PatientPhoto/);
-  assert.match(componentSource, /expandable/);
+  assert.match(componentSource, /aria-expanded=\{expanded\}/);
+  assert.match(componentSource, /aria-controls=\{galleryPanelId\}/);
   assert.match(sharedSource, /effectiveRole === 'responsible' \|\| effectiveRole === 'admin' \|\| effectiveRole === 'monitoring'/);
 });
 

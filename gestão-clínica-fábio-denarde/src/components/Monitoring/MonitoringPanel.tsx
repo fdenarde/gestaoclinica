@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Calendar,
   CalendarDays,
+  ChevronDown,
   Clock3,
   Copy,
   Images,
@@ -215,7 +216,6 @@ export default function MonitoringPanel({
     return gallerySummaries.filter(summary => normalizeMonitoringText(patientDisplayName(summary.patient)).includes(query));
   }, [gallerySearch, gallerySummaries]);
 
-  const selectedSummary = gallerySummaries.find(summary => summary.patient.id === selectedPatientId) || null;
   const detailSummary = visibleSummaries.find(summary => summary.patient.id === detailPatientId) || null;
   const weekRange = data?.weekRange || getSaoPauloWeekRange();
   const weekSessions = useMemo(() => (
@@ -632,7 +632,7 @@ export default function MonitoringPanel({
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.16em] text-status-green-text">Álbuns externos por pacote</p>
                   <h2 className="mt-1 text-xl font-black text-clinic-text">Galeria externa de atividades</h2>
-                  <p className="mt-1 text-sm text-clinic-text-muted">Selecione um atendente para abrir somente as atividades autorizadas.</p>
+                  <p className="mt-1 text-sm text-clinic-text-muted">Toque no nome do atendente para expandir ou recolher a galeria. Dentro dela, as sessões mais recentes aparecem primeiro.</p>
                 </div>
               </div>
             </div>
@@ -640,9 +640,9 @@ export default function MonitoringPanel({
             <div className="rounded-xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-status-green-text">Seleção obrigatória</p>
+                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-status-green-text">Galerias por atendente</p>
                   <h3 className="mt-1 font-black text-clinic-text">Selecione o atendente</h3>
-                  <p className="mt-1 text-xs text-clinic-text-muted">A galeria carrega o pacote somente depois do clique no card.</p>
+                  <p className="mt-1 text-xs text-clinic-text-muted">Somente uma galeria permanece expandida por vez, evitando carregamentos simultâneos.</p>
                 </div>
                 <label className="relative w-full lg:max-w-xs">
                   <span className="mb-1 block text-[9px] font-black uppercase tracking-wide text-clinic-text-faint">Pesquisar por nome</span>
@@ -661,60 +661,64 @@ export default function MonitoringPanel({
                   Nenhum atendente encontrado na Galeria do Monitoramento.
                 </div>
               ) : (
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="mt-4 space-y-3">
                   {filteredGallerySummaries.map(summary => {
-                    const selected = selectedPatientId === summary.patient.id;
+                    const expanded = selectedPatientId === summary.patient.id;
+                    const galleryPanelId = `monitoring-gallery-${summary.patient.id}`;
                     return (
                       <article
                         key={summary.patient.id}
-                        onClick={() => setSelectedPatientId(summary.patient.id)}
-                        onKeyDown={event => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            setSelectedPatientId(summary.patient.id);
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
-                        aria-pressed={selected}
                         className={cn(
-                          'flex cursor-pointer items-center gap-3 rounded-xl border bg-white p-3 text-left shadow-sm transition focus:outline-none focus:ring-2 focus:ring-clinic-primary/30',
-                          selected
+                          'overflow-hidden rounded-2xl border bg-white shadow-sm transition',
+                          expanded
                             ? 'border-clinic-primary ring-2 ring-clinic-primary/15'
                             : 'border-clinic-border hover:border-clinic-primary/60',
                         )}
                       >
-                        <PatientPhoto
-                          patient={{ name: patientDisplayName(summary.patient), photoUrl: summary.patient.photoUrl }}
-                          alt={patientDisplayName(summary.patient)}
-                          className="h-12 w-12 shrink-0 rounded-xl object-cover"
-                          expandable
-                          fallbackClassName="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg text-xs font-black text-clinic-primary"
-                          fallbackText={patientInitials(summary.patient)}
-                        />
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-black text-clinic-text">{patientDisplayName(summary.patient)}</p>
-                          <p className="mt-0.5 text-[10px] text-clinic-text-muted">Pacote atual {getPackageNumber(summary)} • Sessão {summary.currentPackageRealized} de {summary.sessionsPlanned || 10}</p>
-                          <p className="mt-1 text-[10px] text-clinic-text-faint">Última sessão: {summary.lastSession ? safeFormatDate(summary.lastSession.date, 'dd/MM/yyyy') : 'Não informada'}</p>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPatientId(current => current === summary.patient.id ? '' : summary.patient.id)}
+                          aria-expanded={expanded}
+                          aria-controls={galleryPanelId}
+                          className="flex w-full items-center gap-3 p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/30 sm:p-4"
+                        >
+                          <PatientPhoto
+                            patient={{ name: patientDisplayName(summary.patient), photoUrl: summary.patient.photoUrl }}
+                            alt={patientDisplayName(summary.patient)}
+                            className="h-12 w-12 shrink-0 rounded-xl object-cover"
+                            fallbackClassName="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg text-xs font-black text-clinic-primary"
+                            fallbackText={patientInitials(summary.patient)}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate text-sm font-black text-clinic-text">{patientDisplayName(summary.patient)}</p>
+                              <span className="rounded-full bg-status-green-bg px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-status-green-text">
+                                {summary.activityCount} {summary.activityCount === 1 ? 'atividade' : 'atividades'}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[10px] text-clinic-text-muted">Pacote atual {getPackageNumber(summary)} • Sessão {summary.currentPackageRealized} de {summary.sessionsPlanned || 10}</p>
+                            <p className="mt-1 text-[10px] text-clinic-text-faint">Última sessão: {summary.lastSession ? safeFormatDate(summary.lastSession.date, 'dd/MM/yyyy') : 'Não informada'}</p>
+                          </div>
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg text-clinic-primary">
+                            <ChevronDown size={18} className={cn('transition-transform duration-200', expanded && 'rotate-180')} aria-hidden="true" />
+                          </span>
+                        </button>
+
+                        {expanded && (
+                          <div id={galleryPanelId} className="border-t border-clinic-border bg-clinic-bg/35 p-3 sm:p-4">
+                            <ResponsibleGooglePhotosGallery
+                              patientId={summary.patient.id}
+                              patientName={patientDisplayName(summary.patient)}
+                              packageNumber={getPackageNumber(summary)}
+                            />
+                          </div>
+                        )}
                       </article>
                     );
                   })}
                 </div>
               )}
             </div>
-
-            {selectedSummary ? (
-              <ResponsibleGooglePhotosGallery
-                patientId={selectedSummary.patient.id}
-                patientName={patientDisplayName(selectedSummary.patient)}
-                packageNumber={getPackageNumber(selectedSummary)}
-              />
-            ) : (
-              <div className="rounded-xl border border-dashed border-clinic-border bg-clinic-surface p-8 text-center text-clinic-text-muted">
-                Selecione um atendente para visualizar as atividades autorizadas.
-              </div>
-            )}
           </section>
         )}
 
