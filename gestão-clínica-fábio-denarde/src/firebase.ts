@@ -1,18 +1,27 @@
 import { initializeApp } from 'firebase/app';
 import {
   createUserWithEmailAndPassword,
+  EmailAuthProvider,
   getAuth,
   GoogleAuthProvider,
+  reauthenticateWithCredential,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updatePassword,
   updateProfile,
   type AuthError,
   type UserCredential,
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+import {
+  accessUsernameValidationError,
+  isManagedAuthEmail,
+  normalizeAccessUsername,
+  usernameToManagedAuthEmail,
+} from '../shared/accessCredentials.js';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -64,6 +73,62 @@ export const loginWithEmail = async (email: string, password: string): Promise<U
     throw toFriendlyAuthError(error);
   }
 };
+
+export const loginWithIdentifier = async (identifier: string, password: string): Promise<UserCredential> => {
+  const normalizedIdentifier = String(identifier || '').trim();
+  const usesEmail = normalizedIdentifier.includes('@');
+  let authEmail = normalizedIdentifier.toLowerCase();
+
+  if (!usesEmail) {
+    const username = normalizeAccessUsername(normalizedIdentifier);
+    if (accessUsernameValidationError(username)) {
+      throw Object.assign(new Error('Usuário/e-mail ou senha inválidos.'), { code: 'auth/invalid-credential' });
+    }
+    authEmail = usernameToManagedAuthEmail(username);
+  }
+
+  try {
+    return await signInWithEmailAndPassword(auth, authEmail, password);
+  } catch (error) {
+    const code = (error as Partial<AuthError> | null)?.code || '';
+    if (['auth/network-request-failed', 'auth/too-many-requests', 'auth/operation-not-allowed'].includes(code)) {
+      throw toFriendlyAuthError(error);
+    }
+    throw Object.assign(new Error('Usuário/e-mail ou senha inválidos.'), { code: 'auth/invalid-credential' });
+  }
+};
+
+export const changeCurrentUserPassword = async (
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> => {
+  const currentUser = auth.currentUser;
+  if (!currentUser?.email) {
+    throw Object.assign(new Error('Sua conta não permite alteração de senha por este método.'), { code: 'auth/password-provider-required' });
+  }
+  if (!currentPassword) {
+    throw Object.assign(new Error('Informe a senha atual.'), { code: 'auth/missing-password' });
+  }
+  if (newPassword.length < 8) {
+    throw Object.assign(new Error('Crie uma nova senha com pelo menos 8 caracteres.'), { code: 'auth/weak-password' });
+  }
+
+  try {
+    const credential = EmailAuthProvider.credential(currentUser.email, currentPassword);
+    await reauthenticateWithCredential(currentUser, credential);
+    await updatePassword(currentUser, newPassword);
+  } catch (error) {
+    const code = (error as Partial<AuthError> | null)?.code || '';
+    if (['auth/invalid-credential', 'auth/wrong-password'].includes(code)) {
+      throw Object.assign(new Error('A senha atual está incorreta.'), { code });
+    }
+    throw toFriendlyAuthError(error);
+  }
+};
+
+export const currentAccountUsesManagedUsername = (): boolean => (
+  isManagedAuthEmail(auth.currentUser?.email)
+);
 
 export const createEmailAccount = async ({
   displayName,

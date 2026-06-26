@@ -349,6 +349,14 @@ function toEpochMillis(value) {
 }
 
 function assertProfileAvailability(sourceProfile, now = Date.now()) {
+  if (sourceProfile?.mustChangePassword === true) {
+    throw accessPermissionError(
+      'access/password-change-required',
+      'Altere a senha temporária antes de acessar os dados do sistema.',
+      403,
+    );
+  }
+
   const suspension = sourceProfile?.suspension && typeof sourceProfile.suspension === 'object'
     ? sourceProfile.suspension
     : null;

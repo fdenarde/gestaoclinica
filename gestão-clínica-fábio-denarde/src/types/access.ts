@@ -98,6 +98,10 @@ export interface AccessProfile {
   activeProfiles?: AccessRole[];
   uid: string;
   email: string;
+  username?: string | null;
+  contactEmail?: string | null;
+  directAccess?: boolean;
+  mustChangePassword?: boolean;
   displayName: string;
   phone: string;
   createdAt: string | null;
@@ -151,6 +155,7 @@ export interface AccessProfileRoleState {
   permissionOverrides?: AccessPermissionOverrides;
   suspension?: AccessSuspension | null;
   temporaryAccess?: AccessTemporaryWindow | null;
+  mustChangePassword?: boolean;
 }
 
 export interface AccessRequestInput {
@@ -195,6 +200,35 @@ export interface AccessRequestRecord extends AccessRequestInput {
   informationRespondedAt: string | null;
   emailNotificationStatus: 'sent' | 'skipped' | 'failed' | null;
   emailNotificationError: string | null;
+  username?: string | null;
+  contactEmail?: string | null;
+  directAccess?: boolean;
+  mustChangePassword?: boolean;
+}
+
+
+export interface DirectAccessCreateInput {
+  role: AccessRequestRole;
+  displayName: string;
+  username: string;
+  contactEmail?: string;
+  phone?: string;
+  password?: string;
+  linkedPatientIds?: string[];
+  expiresAt?: string | null;
+  mustChangePassword?: boolean;
+}
+
+export interface DirectAccessCredentialsResult {
+  request: AccessRequestRecord;
+  username: string;
+  temporaryPassword: string;
+  accessPath: string;
+}
+
+export interface DirectAccessPasswordResetResult {
+  request: AccessRequestRecord;
+  temporaryPassword: string;
 }
 
 export interface ResponsiblePortalSettings {

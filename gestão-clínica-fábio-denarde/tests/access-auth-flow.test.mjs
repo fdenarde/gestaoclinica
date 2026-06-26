@@ -19,15 +19,15 @@ test('tela real de login exige escolha explícita entre Profissional, Monitorame
   assert.match(accessPortalSource, /role="radio"/);
   assert.match(accessPortalSource, /aria-checked=\{selected\}/);
   assert.match(accessPortalSource, /Nenhum modo de entrada selecionado/);
-  assert.match(accessPortalSource, /disabled=\{busy \|\| !selectedLoginRole\}/);
+  assert.match(accessPortalSource, /disabled=\{busy \|\| !effectiveLoginRole\}/);
 });
 
-test('login por e-mail e Google bloqueiam autenticação sem modo escolhido', () => {
+test('login por usuário, e-mail e Google bloqueiam autenticação sem modo escolhido', () => {
   const requiredMessage = /Escolha se deseja entrar como Profissional, Monitoramento ou Responsável\./;
-  assert.match(accessPortalSource, /const handleEmailLogin[\s\S]*if \(!selectedLoginRole\)[\s\S]*throw new Error/);
-  assert.match(accessPortalSource, /const handleGoogleLogin[\s\S]*if \(!selectedLoginRole\)[\s\S]*throw new Error/);
+  assert.match(accessPortalSource, /const handleEmailLogin[\s\S]*if \(!effectiveLoginRole\)[\s\S]*throw new Error/);
+  assert.match(accessPortalSource, /const handleGoogleLogin[\s\S]*if \(!effectiveLoginRole\)[\s\S]*throw new Error/);
   assert.match(accessPortalSource, requiredMessage);
-  assert.match(accessPortalSource, /await loginWithEmail\(email, password\)/);
+  assert.match(accessPortalSource, /await loginWithIdentifier\(loginIdentifier, password\)/);
   assert.match(accessPortalSource, /await loginWithGoogle\(\)/);
 });
 
@@ -43,7 +43,7 @@ test('cadastro reutiliza conta Auth existente e cria somente nova solicitação 
 
 test('perfil escolhido no login é enviado ao backend e controla o roteamento', () => {
   assert.match(appSource, /selectedLoginRole=\{selectedAccessRole/);
-  assert.match(appSource, /onSelectedLoginRoleChange=\{role => setSelectedAccessRole\(role\)\}/);
+  assert.match(appSource, /onSelectedLoginRoleChange=\{role => setSelectedAccessRole\(directAccessRole \|\| role\)\}/);
   assert.match(appSource, /getAccessProfile\(user, \{ forceRefreshToken, activeRole: selectedAccessRole \}\)/);
   assert.match(accessApiSource, /\?activeRole=\$\{encodeURIComponent\(options\.activeRole\)\}/);
   assert.match(accessServerSource, /assertSelectedProfileIsActive\(sourceProfile, activeRole\)/);
@@ -130,7 +130,7 @@ test('sair da conta limpa usuário, perfil e modo escolhido', () => {
   assert.match(appSource, /await logout\(\)/);
   assert.match(appSource, /setUser\(null\)/);
   assert.match(appSource, /setAccessProfile\(null\)/);
-  assert.match(appSource, /setSelectedAccessRole\(null\)/);
+  assert.match(appSource, /setSelectedAccessRole\(directAccessRole\)/);
   assert.match(appSource, /onLogout=\{handleAccessPortalLogout\}/);
 });
 

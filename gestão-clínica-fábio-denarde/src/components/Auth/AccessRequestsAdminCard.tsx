@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  Clipboard,
   CircleAlert,
   CircleCheck,
   Clock3,
+  KeyRound,
   Link2,
   Loader2,
   MailCheck,
@@ -19,6 +21,7 @@ import {
   linkResponsiblePatient,
   listAccessRequests,
   reactivateAccessRequest,
+  resetDirectAccessPassword,
   requestAdditionalAccessInformation,
   reviewAccessRequest,
   revokeAccessRequest,
@@ -28,6 +31,7 @@ import {
 import type { Patient } from '../../types';
 import type { AccessRequestRecord, AccessRequestStatus } from '../../types/access';
 import Modal from '../Common/Modal';
+import DirectAccessAdminCard from './DirectAccessAdminCard';
 import { showToast } from '../Common/Toast';
 
 type RequestTab = 'pending' | 'information_requested' | 'approved' | 'rejected' | 'revoked';
@@ -200,6 +204,9 @@ export default function AccessRequestsAdminCard({
   const [validityMode, setValidityMode] = useState<'none' | 'date'>('none');
   const [validityDate, setValidityDate] = useState('');
   const [modalError, setModalError] = useState('');
+  const [resettingId, setResettingId] = useState('');
+  const [resetPasswordRequest, setResetPasswordRequest] = useState<AccessRequestRecord | null>(null);
+  const [resetCredentials, setResetCredentials] = useState<{ username: string; temporaryPassword: string; accessPath: string } | null>(null);
   const modalPrimaryRef = useRef<HTMLElement | null>(null);
   const actionSubmittingRef = useRef(false);
 
@@ -373,6 +380,27 @@ export default function AccessRequestsAdminCard({
     }
   };
 
+  const submitPasswordReset = async () => {
+    const request = resetPasswordRequest;
+    if (!request || resettingId || reviewingId) return;
+    setResettingId(request.id);
+    try {
+      const result = await resetDirectAccessPassword(request.id);
+      setRequests(current => current.map(item => item.id === result.request.id ? result.request : item));
+      setResetCredentials({
+        username: result.request.username || request.username || '',
+        temporaryPassword: result.temporaryPassword,
+        accessPath: request.role === 'responsible' ? '/responsavel' : request.role === 'monitoring' ? '/monitoramento' : '/profissional',
+      });
+      setResetPasswordRequest(null);
+      showToast('Nova senha temporária gerada. Copie antes de fechar o quadro.', 'success');
+    } catch (caughtError) {
+      showToast(caughtError instanceof Error ? caughtError.message : 'Não foi possível gerar a nova senha temporária.', 'error');
+    } finally {
+      setResettingId('');
+    }
+  };
+
   const linkPatient = async (request: AccessRequestRecord) => {
     const patientId = patientSelections[request.id] || '';
     if (!patientId) {
@@ -466,6 +494,41 @@ export default function AccessRequestsAdminCard({
         </button>
       </header>
 
+      {!previewRequests && (
+        <div className="px-5 pt-5">
+          {resetCredentials && (
+            <div className="mb-5 rounded-xl border border-status-green-text/25 bg-status-green-bg p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wider text-status-green-text">Nova senha temporária</p>
+                  <p className="mt-1 text-sm text-clinic-text-muted">Copie os dados agora. A senha será removida desta tela ao fechar.</p>
+                </div>
+                <button type="button" onClick={() => setResetCredentials(null)} className="rounded-lg p-2 text-clinic-text-muted hover:bg-white" aria-label="Fechar nova senha"><X size={17} /></button>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                {[
+                  ['Link', `${window.location.origin}${resetCredentials.accessPath}`],
+                  ['Usuário', resetCredentials.username],
+                  ['Senha temporária', resetCredentials.temporaryPassword],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-center gap-2 rounded-lg bg-white p-3">
+                    <div className="min-w-0 flex-1"><p className="text-[10px] font-black uppercase text-clinic-text-muted">{label}</p><p className="mt-1 break-all text-sm font-bold text-clinic-text">{value}</p></div>
+                    <button type="button" onClick={() => void navigator.clipboard.writeText(value)} className="rounded-lg border border-clinic-border p-2 text-clinic-primary" aria-label={`Copiar ${label}`}><Clipboard size={15} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <DirectAccessAdminCard
+            patients={patients}
+            onCreated={created => {
+              setRequests(current => [created, ...current.filter(item => item.id !== created.id)]);
+              setActiveTab('approved');
+            }}
+          />
+        </div>
+      )}
+
       <div className="border-b border-clinic-border px-5 pt-4">
         <div className="flex gap-2 overflow-x-auto">
           {TABS.map(tab => (
@@ -526,7 +589,7 @@ export default function AccessRequestsAdminCard({
                       <div className="flex flex-wrap items-start gap-2">
                         <div className="min-w-0 flex-1">
                           <h3 className="font-bold text-clinic-text">{request.displayName}</h3>
-                          <p className="break-all text-sm text-clinic-text-muted">{request.email}</p>
+                          <p className="break-all text-sm text-clinic-text-muted">{request.username || request.contactEmail || request.email}</p>
                         </div>
                         <span className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${status.className}`}>
                           <StatusIcon size={12} />
@@ -535,7 +598,8 @@ export default function AccessRequestsAdminCard({
                       </div>
 
                       <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-clinic-text-muted">
-                        <span><strong>WhatsApp:</strong> {request.phone}</span>
+                        {request.directAccess && <span><strong>Acesso:</strong> Direto por usuário</span>}
+                        <span><strong>WhatsApp:</strong> {request.phone || 'Não informado'}</span>
                         <span><strong>Perfil:</strong> {roleLabel(request.role)}</span>
                         <span><strong>Solicitado:</strong> {formatDateTime(request.submittedAt)}</span>
                         <span><strong>UID:</strong> {request.uid || 'Ainda não vinculado'}</span>
@@ -725,6 +789,17 @@ export default function AccessRequestsAdminCard({
 
                     {request.status === 'approved' && (
                       <div className="flex shrink-0 flex-wrap gap-2">
+                        {request.directAccess && (
+                          <button
+                            type="button"
+                            onClick={() => setResetPasswordRequest(request)}
+                            disabled={resettingId === request.id || !!reviewingId}
+                            className="flex items-center justify-center gap-2 rounded-lg border border-clinic-primary/30 bg-white px-4 py-2 text-xs font-bold text-clinic-primary transition hover:bg-clinic-bg disabled:opacity-50"
+                          >
+                            {resettingId === request.id ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />}
+                            Gerar nova senha
+                          </button>
+                        )}
                         {isSuspended(request) ? (
                           <button
                             type="button"
@@ -789,6 +864,35 @@ export default function AccessRequestsAdminCard({
       </div>
 
       <Modal
+        isOpen={!!resetPasswordRequest}
+        onClose={() => { if (!resettingId) setResetPasswordRequest(null); }}
+        title="Gerar nova senha temporária"
+        width="max-w-lg"
+        closeDisabled={!!resettingId}
+      >
+        {resetPasswordRequest && (
+          <div className="space-y-5">
+            <div className="rounded-xl border border-status-orange-text/25 bg-status-orange-bg p-4 text-sm text-status-orange-text">
+              <p className="font-black">A senha atual deixará de funcionar.</p>
+              <p className="mt-2">O usuário receberá uma nova senha temporária e deverá criar uma senha particular no próximo acesso.</p>
+              <p className="mt-2">Suspensão, revogação e validade não serão alteradas por esta ação.</p>
+            </div>
+            <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
+              <p className="font-bold text-clinic-text">{resetPasswordRequest.displayName}</p>
+              <p className="mt-1 text-sm text-clinic-text-muted">{resetPasswordRequest.username || resetPasswordRequest.contactEmail || resetPasswordRequest.email}</p>
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setResetPasswordRequest(null)} disabled={!!resettingId} className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-sm font-bold text-clinic-text disabled:opacity-60">Cancelar</button>
+              <button type="button" onClick={() => void submitPasswordReset()} disabled={!!resettingId} className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-sm font-bold text-white disabled:opacity-60">
+                {resettingId ? <Loader2 size={17} className="animate-spin" /> : <KeyRound size={17} />}
+                Gerar nova senha
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
         isOpen={!!actionModal}
         onClose={closeActionModal}
         title={modalTitle}
@@ -806,7 +910,7 @@ export default function AccessRequestsAdminCard({
           >
             <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
               <p className="text-sm font-bold text-clinic-text">{actionRequest.displayName}</p>
-              <p className="mt-1 break-all text-xs text-clinic-text-muted">{actionRequest.email}</p>
+              <p className="mt-1 break-all text-xs text-clinic-text-muted">{actionRequest.username || actionRequest.contactEmail || actionRequest.email}</p>
               <p className="mt-2 text-xs text-clinic-text-muted">
                 Perfil: <strong>{roleLabel(actionRequest.role)}</strong>
                 {actionRequest.status === 'approved' && <> · Validade: <strong>{validityLabel(actionRequest)}</strong></>}

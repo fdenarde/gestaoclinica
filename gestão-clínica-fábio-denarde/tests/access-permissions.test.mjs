@@ -150,6 +150,12 @@ test('perfil pendente, suspenso ou com acesso temporário expirado é negado', (
   }), error => error.code === 'access/temporary-access-expired');
 });
 
+test('troca obrigatória de senha bloqueia dados protegidos até a conclusão', () => {
+  assert.throws(() => buildProfessional({
+    mustChangePassword: true,
+  }), error => error.code === 'access/password-change-required');
+});
+
 test('administrador principal permanece aprovado sem depender de documento de perfil', () => {
   const context = buildEffectiveAccessContext({
     decodedToken: { uid: 'admin-uid', email: PRIMARY_ADMIN_EMAIL, name: 'Administrador' },

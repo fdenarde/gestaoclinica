@@ -16,6 +16,12 @@ import {
   getSaoPauloWeekRange,
 } from '../shared/monitoringPanel.js';
 import {
+  assertAccessUsername,
+  directAccessPathForRole,
+  isManagedAuthEmail,
+  usernameToManagedAuthEmail,
+} from '../shared/accessCredentials.js';
+import {
   assertOwnedPatientPhoto,
   assertOwnedResponsibleDocument,
   createResponsibleDocumentUploadSession,
@@ -81,6 +87,54 @@ function normalizeText(value, maxLength) {
 
 function normalizeEmail(value) {
   return normalizeText(value, 254).toLowerCase();
+}
+
+function normalizeOptionalContactEmail(value) {
+  const email = normalizeEmail(value);
+  if (!email) return '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw accessError('access/invalid-contact-email', 'Informe um e-mail de contato válido.');
+  }
+  if (isManagedAuthEmail(email)) {
+    throw accessError('access/invalid-contact-email', 'Informe um e-mail de contato válido.');
+  }
+  return email;
+}
+
+function normalizeDirectAccessPassword(value) {
+  const password = String(value || '');
+  if (password.length < 8 || password.length > 72) {
+    throw accessError('access/invalid-password', 'A senha temporária deve ter entre 8 e 72 caracteres.');
+  }
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+    throw accessError('access/weak-password', 'A senha temporária deve conter letras e números.');
+  }
+  return password;
+}
+
+function generateTemporaryPassword() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const bytes = crypto.randomBytes(16);
+  const generated = [...bytes].map(byte => alphabet[byte % alphabet.length]).join('');
+  return `${generated.slice(0, 8)}7${generated.slice(8)}a`;
+}
+
+function authCredentialVersionDate(userRecord) {
+  const tokenVersion = userRecord?.tokensValidAfterTime || userRecord?.metadata?.creationTime;
+  const millis = new Date(String(tokenVersion || '')).getTime();
+  if (!Number.isFinite(millis)) {
+    throw accessError('access/password-state-unavailable', 'Não foi possível confirmar o estado seguro da senha.', 503);
+  }
+  return new Date(millis);
+}
+
+function normalizeDirectLinkedPatientIds(value, role) {
+  if (role !== 'responsible') return [];
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map(item => normalizeText(item, 128))
+    .filter(item => item && !item.includes('/')))]
+    .slice(0, 3);
 }
 
 function emailDocumentId(email) {
@@ -340,6 +394,7 @@ function serializeRoleProfile(role, data = {}) {
         endsAt: serializeDate(data.temporaryAccess.endsAt),
       }
       : null,
+    mustChangePassword: data.mustChangePassword === true,
   };
 }
 
@@ -510,6 +565,7 @@ function legacySummaryPatchForRole(profile = {}, role, patch = {}) {
     workspaceId: entry.workspaceId || profile.workspaceId || null,
     enabledContexts: entry.enabledContexts || [],
     permissionOverrides: entry.permissionOverrides || {},
+    mustChangePassword: entry.mustChangePassword === true,
   };
 }
 
@@ -521,7 +577,13 @@ function serializeProfile(data) {
   const profiles = serializeProfileMap(data);
   return {
     uid: String(data.uid || ''),
-    email: normalizeEmail(data.email),
+    email: data.directAccess === true
+      ? normalizeOptionalContactEmail(data.contactEmail)
+      : normalizeEmail(data.email),
+    username: data.username ? normalizeText(data.username, 20).toLowerCase() : null,
+    contactEmail: data.contactEmail ? normalizeOptionalContactEmail(data.contactEmail) : null,
+    directAccess: data.directAccess === true,
+    mustChangePassword: data.mustChangePassword === true,
     displayName: normalizeText(data.displayName, 120),
     phone: normalizeText(data.phone, 24),
     role,
@@ -582,7 +644,13 @@ function serializeRequest(snapshot) {
     id: snapshot.id,
     uid: data.uid ? String(data.uid) : null,
     linkedPatientIds: serializeLinkedPatientIds(data.linkedPatientIds),
-    email: normalizeEmail(data.email),
+    email: data.directAccess === true
+      ? normalizeOptionalContactEmail(data.contactEmail)
+      : normalizeEmail(data.email),
+    username: data.username ? normalizeText(data.username, 20).toLowerCase() : null,
+    contactEmail: data.contactEmail ? normalizeOptionalContactEmail(data.contactEmail) : null,
+    directAccess: data.directAccess === true,
+    mustChangePassword: data.mustChangePassword === true,
     displayName: normalizeText(data.displayName, 120),
     phone: normalizeText(data.phone, 24),
     role: ACCESS_ROLES.has(data.role) ? data.role : 'professional',
@@ -1768,6 +1836,466 @@ async function respondAdditionalInformation(db, decodedToken, body) {
     request: await requestSnapshot.ref.get(),
     profile: await db.collection('accessProfiles').doc(decodedToken.uid).get(),
   };
+}
+
+
+async function validateDirectAccessPatients(db, ownerUserId, linkedPatientIds, role) {
+  if (role !== 'responsible') return [];
+  if (linkedPatientIds.length === 0) {
+    throw accessError('access/responsible-patient-required', 'Selecione ao menos um atendente para o responsável.');
+  }
+  const refs = linkedPatientIds.map(patientId => db.doc(`users/${ownerUserId}/patients/${patientId}`));
+  const snapshots = await db.getAll(...refs);
+  const missing = snapshots.find(snapshot => !snapshot.exists);
+  if (missing) {
+    throw accessError('access/patient-not-found', 'Um dos atendentes selecionados não foi encontrado.', 404);
+  }
+  return snapshots.map(snapshot => ({
+    id: snapshot.id,
+    name: normalizeText(snapshot.data()?.name, 120) || snapshot.id,
+  }));
+}
+
+async function reserveDirectAccessUsername(db, aliasRef, reservationId, decodedToken) {
+  await db.runTransaction(async transaction => {
+    const snapshot = await transaction.get(aliasRef);
+    if (snapshot.exists) {
+      const data = snapshot.data();
+      const reservedAt = dateValueToMillis(data.reservedAt);
+      const staleReservation = data.status === 'reserved'
+        && reservedAt !== null
+        && reservedAt < Date.now() - (15 * 60 * 1000);
+      if (!staleReservation) {
+        throw accessError('access/username-unavailable', 'Este nome de usuário não está disponível.', 409);
+      }
+    }
+    transaction.set(aliasRef, {
+      username: aliasRef.id,
+      status: 'reserved',
+      reservationId,
+      reservedAt: FieldValue.serverTimestamp(),
+      reservedBy: decodedToken.uid,
+      reservedByEmail: normalizeEmail(decodedToken.email),
+    });
+  });
+}
+
+async function releaseDirectAccessUsernameReservation(db, aliasRef, reservationId) {
+  try {
+    await db.runTransaction(async transaction => {
+      const snapshot = await transaction.get(aliasRef);
+      if (!snapshot.exists) return;
+      const data = snapshot.data();
+      if (data.status === 'reserved' && data.reservationId === reservationId) {
+        transaction.delete(aliasRef);
+      }
+    });
+  } catch (error) {
+    console.error('[ACCESS API] Não foi possível liberar uma reserva de nome de usuário:', error?.message || error);
+  }
+}
+
+async function createDirectAccess(db, decodedToken, body) {
+  const displayName = normalizeText(body.displayName, 120);
+  if (displayName.length < 3) {
+    throw accessError('access/invalid-name', 'Informe o nome completo do usuário.');
+  }
+
+  let username;
+  try {
+    username = assertAccessUsername(body.username);
+  } catch (error) {
+    throw accessError(error?.code || 'access/invalid-username', error?.message || 'Informe um nome de usuário válido.');
+  }
+
+  const role = accessRoleKey(body.role);
+  if (!role) {
+    throw accessError('access/invalid-role', 'Selecione um tipo de acesso válido.');
+  }
+
+  const contactEmail = normalizeOptionalContactEmail(body.contactEmail);
+  const phone = normalizeText(body.phone, 24);
+  if (phone && !/^\d{10,11}$/.test(phone.replace(/\D/g, ''))) {
+    throw accessError('access/invalid-phone', 'Informe um telefone válido com DDD ou deixe o campo vazio.');
+  }
+
+  const linkedPatientIds = normalizeDirectLinkedPatientIds(body.linkedPatientIds, role);
+  const linkedPatients = await validateDirectAccessPatients(db, decodedToken.uid, linkedPatientIds, role);
+  const expiresAt = body.expiresAt ? parseSaoPauloEndOfDay(body.expiresAt) : null;
+  const mustChangePassword = body.mustChangePassword !== false;
+  const temporaryPassword = body.password
+    ? normalizeDirectAccessPassword(body.password)
+    : generateTemporaryPassword();
+  const authEmail = usernameToManagedAuthEmail(username);
+  const reservationId = crypto.randomUUID();
+  const aliasRef = db.collection('accessUsernames').doc(username);
+  const reservationAuditRef = db.collection('accessAdministrationAudit').doc();
+
+  await reserveDirectAccessUsername(db, aliasRef, reservationId, decodedToken);
+
+  let createdAuthUser = null;
+  try {
+    try {
+      createdAuthUser = await getAuth().createUser({
+        email: authEmail,
+        password: temporaryPassword,
+        displayName,
+        disabled: false,
+        emailVerified: false,
+      });
+    } catch (error) {
+      if (error?.code === 'auth/email-already-exists' || error?.code === 'auth/uid-already-exists') {
+        throw accessError('access/username-unavailable', 'Este nome de usuário não está disponível.', 409);
+      }
+      throw error;
+    }
+
+    const passwordCredentialBaselineAt = authCredentialVersionDate(createdAuthUser);
+    const requestRef = db.collection('accessRequests').doc(requestDocumentId(authEmail, createdAuthUser.uid, role));
+    const approvalRef = db.collection('accessApprovals').doc(approvalDocumentId(authEmail, role));
+    const profileRef = db.collection('accessProfiles').doc(createdAuthUser.uid);
+    const workspaceId = role === 'professional' ? createdAuthUser.uid : decodedToken.uid;
+    const actorEmail = normalizeEmail(decodedToken.email);
+    const linkedPatientName = linkedPatients.map(patient => patient.name).join(', ');
+
+    await db.runTransaction(async transaction => {
+      const aliasSnapshot = await transaction.get(aliasRef);
+      if (!aliasSnapshot.exists || aliasSnapshot.data().reservationId !== reservationId) {
+        throw accessError('access/username-reservation-lost', 'A reserva do nome de usuário expirou. Tente novamente.', 409);
+      }
+
+      const roleState = {
+        role,
+        status: 'approved',
+        approvedAt: FieldValue.serverTimestamp(),
+        approvedBy: decodedToken.uid,
+        approvedByEmail: actorEmail,
+        revokedAt: null,
+        revokedBy: null,
+        revokedByEmail: null,
+        suspension: null,
+        expiresAt,
+        temporaryAccess: expiresAt ? { startsAt: null, endsAt: expiresAt } : null,
+        linkedPatientIds: role === 'monitoring' ? [] : linkedPatientIds,
+        provider: 'password',
+        requestId: requestRef.id,
+        workspaceId,
+        enabledContexts: [],
+        permissionOverrides: {},
+        mustChangePassword,
+        passwordCredentialBaselineAt,
+      };
+
+      transaction.set(requestRef, {
+        uid: createdAuthUser.uid,
+        email: authEmail,
+        normalizedEmail: authEmail,
+        contactEmail: contactEmail || null,
+        username,
+        usernameNormalized: username,
+        directAccess: true,
+        displayName,
+        phone,
+        role,
+        linkedPatientIds: role === 'monitoring' ? [] : linkedPatientIds,
+        linkedPatientName,
+        notes: 'Acesso criado diretamente pelo administrador.',
+        provider: 'password',
+        status: 'approved',
+        source: 'admin_direct',
+        submittedAt: FieldValue.serverTimestamp(),
+        reviewedAt: FieldValue.serverTimestamp(),
+        reviewedBy: decodedToken.uid,
+        approvedAt: FieldValue.serverTimestamp(),
+        approvedBy: decodedToken.uid,
+        approvedByEmail: actorEmail,
+        expiresAt,
+        temporaryAccess: roleState.temporaryAccess,
+        suspension: null,
+        mustChangePassword,
+        passwordCredentialBaselineAt,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(approvalRef, {
+        email: authEmail,
+        normalizedEmail: authEmail,
+        contactEmail: contactEmail || null,
+        username,
+        usernameNormalized: username,
+        directAccess: true,
+        displayName,
+        phone,
+        role,
+        status: 'approved',
+        linkedPatientIds: role === 'monitoring' ? [] : linkedPatientIds,
+        requestId: requestRef.id,
+        linkedUid: createdAuthUser.uid,
+        workspaceId,
+        approvedAt: FieldValue.serverTimestamp(),
+        approvedBy: decodedToken.uid,
+        approvedByEmail: actorEmail,
+        expiresAt,
+        temporaryAccess: roleState.temporaryAccess,
+        suspension: null,
+        mustChangePassword,
+        passwordCredentialBaselineAt,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(profileRef, {
+        uid: createdAuthUser.uid,
+        email: authEmail,
+        contactEmail: contactEmail || null,
+        username,
+        usernameNormalized: username,
+        directAccess: true,
+        displayName,
+        phone,
+        ...profilePatchForRole(role, roleState),
+        ...legacySummaryPatchForRole({}, role, roleState),
+        workspaceId,
+        provider: 'password',
+        mustChangePassword,
+        passwordCredentialBaselineAt,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(aliasRef, {
+        username,
+        usernameNormalized: username,
+        uid: createdAuthUser.uid,
+        role,
+        requestId: requestRef.id,
+        authEmail,
+        status: 'active',
+        reservationId: null,
+        reservedAt: null,
+        activatedAt: FieldValue.serverTimestamp(),
+        createdBy: decodedToken.uid,
+        createdByEmail: actorEmail,
+      });
+
+      transaction.set(reservationAuditRef, {
+        id: reservationAuditRef.id,
+        action: 'createDirectAccess',
+        uid: createdAuthUser.uid,
+        username,
+        role,
+        requestId: requestRef.id,
+        actorUid: decodedToken.uid,
+        actorEmail,
+        createdAt: FieldValue.serverTimestamp(),
+        passwordStored: false,
+      });
+    });
+
+    return {
+      request: serializeRequest(await requestRef.get()),
+      username,
+      temporaryPassword,
+      accessPath: directAccessPathForRole(role),
+    };
+  } catch (error) {
+    if (createdAuthUser?.uid) {
+      try {
+        await getAuth().deleteUser(createdAuthUser.uid);
+      } catch (deleteError) {
+        console.error('[ACCESS API] Falha ao remover conta Auth após criação incompleta:', deleteError?.message || deleteError);
+      }
+    }
+    await releaseDirectAccessUsernameReservation(db, aliasRef, reservationId);
+    throw error;
+  }
+}
+
+async function setDirectPasswordState(db, requestSnapshot, patch) {
+  const request = requestSnapshot.data();
+  const refs = await collectAccessMutationRefs(db, request, requestSnapshot.id);
+  const profileSnapshots = new Map();
+  await Promise.all([...refs.profileRefs.entries()].map(async ([uid, profileRef]) => {
+    profileSnapshots.set(uid, await profileRef.get());
+  }));
+
+  const batch = db.batch();
+  batch.set(requestSnapshot.ref, { ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  batch.set(refs.approvalRef, { ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  for (const [uid, profileRef] of refs.profileRefs) {
+    const currentProfile = profileSnapshots.get(uid)?.data() || {};
+    const mappedRoleState = currentProfile.profiles?.[refs.role] && typeof currentProfile.profiles[refs.role] === 'object'
+      ? currentProfile.profiles[refs.role]
+      : {};
+    const rolePatch = {
+      ...mappedRoleState,
+      role: refs.role,
+      status: mappedRoleState.status || request.status || 'approved',
+      requestId: requestSnapshot.id,
+      ...patch,
+    };
+    batch.set(profileRef, {
+      uid,
+      ...profilePatchForRole(refs.role, rolePatch),
+      ...legacySummaryPatchForRole(currentProfile, refs.role, rolePatch),
+      ...patch,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+  await batch.commit();
+}
+
+async function resetDirectAccessPassword(db, decodedToken, body) {
+  const requestId = normalizeText(body.requestId, 128);
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)) {
+    throw accessError('access/invalid-request-id', 'O acesso informado é inválido.');
+  }
+  const requestRef = db.collection('accessRequests').doc(requestId);
+  const requestSnapshot = await requestRef.get();
+  if (!requestSnapshot.exists) {
+    throw accessError('access/request-not-found', 'O acesso não foi encontrado.', 404);
+  }
+  const request = requestSnapshot.data();
+  if (request.directAccess !== true || !request.uid || !request.username) {
+    throw accessError('access/direct-account-required', 'Esta ação está disponível somente para contas de acesso direto.', 409);
+  }
+
+  const temporaryPassword = body.password
+    ? normalizeDirectAccessPassword(body.password)
+    : generateTemporaryPassword();
+  const actorEmail = normalizeEmail(decodedToken.email);
+  const previousMustChangePassword = request.mustChangePassword === true;
+  const previousPasswordCredentialBaselineAt = request.passwordCredentialBaselineAt || null;
+
+  await setDirectPasswordState(db, requestSnapshot, {
+    mustChangePassword: true,
+    passwordCredentialBaselineAt: null,
+    passwordResetPending: true,
+    passwordResetRequestedAt: FieldValue.serverTimestamp(),
+    passwordResetRequestedBy: decodedToken.uid,
+    passwordResetRequestedByEmail: actorEmail,
+  });
+
+  let updatedAuthUser;
+  try {
+    await getAuth().updateUser(String(request.uid), { password: temporaryPassword });
+    updatedAuthUser = await getAuth().getUser(String(request.uid));
+  } catch (error) {
+    try {
+      await setDirectPasswordState(db, requestSnapshot, {
+        mustChangePassword: previousMustChangePassword,
+        passwordCredentialBaselineAt: previousPasswordCredentialBaselineAt,
+        passwordResetPending: false,
+        passwordResetFailedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (rollbackError) {
+      console.error('[ACCESS API] Falha ao restaurar o estado após redefinição de senha recusada:', rollbackError?.message || rollbackError);
+    }
+    throw accessError('access/password-reset-failed', 'Não foi possível gerar a nova senha temporária.', 500);
+  }
+
+  const passwordCredentialBaselineAt = authCredentialVersionDate(updatedAuthUser);
+  try {
+    await setDirectPasswordState(db, requestSnapshot, {
+      mustChangePassword: true,
+      passwordCredentialBaselineAt,
+      passwordResetPending: false,
+      passwordResetCompletedAt: FieldValue.serverTimestamp(),
+    });
+  } catch (stateError) {
+    console.error('[ACCESS API] A senha temporária foi atualizada, mas o estado final exige reconciliação:', stateError?.message || stateError);
+  }
+
+  return {
+    request: serializeRequest(await requestRef.get()),
+    temporaryPassword,
+  };
+}
+
+async function completePasswordChange(db, decodedToken, body) {
+  const profileRef = db.collection('accessProfiles').doc(decodedToken.uid);
+  const snapshot = await profileRef.get();
+  if (!snapshot.exists) {
+    throw accessError('access/profile-not-found', 'Seu perfil de acesso não foi encontrado.', 404);
+  }
+  const profile = snapshot.data();
+  const requestedRole = accessRoleKey(body.activeRole) || accessRoleKey(profile.role);
+  const roleProfile = getProfileEntry(profile, requestedRole);
+  if (!roleProfile) {
+    throw accessError('access/profile-not-configured', 'O perfil selecionado não está cadastrado nesta conta.', 403);
+  }
+  const mappedRoleState = profile.profiles?.[requestedRole] && typeof profile.profiles[requestedRole] === 'object'
+    ? profile.profiles[requestedRole]
+    : {
+      role: requestedRole,
+      status: roleProfile.status,
+      requestId: roleProfile.requestId || null,
+      workspaceId: roleProfile.workspaceId || profile.workspaceId || null,
+      linkedPatientIds: roleProfile.linkedPatientIds || [],
+      enabledContexts: roleProfile.enabledContexts || [],
+      permissionOverrides: roleProfile.permissionOverrides || {},
+    };
+
+  const requiresPasswordChange = roleProfile.mustChangePassword === true || profile.mustChangePassword === true;
+  if (requiresPasswordChange) {
+    const baselineMillis = dateValueToMillis(
+      roleProfile.passwordCredentialBaselineAt || profile.passwordCredentialBaselineAt,
+    );
+    if (baselineMillis === null) {
+      throw accessError(
+        'access/password-reset-required',
+        'A senha temporária precisa ser gerada novamente pelo administrador antes da troca.',
+        409,
+      );
+    }
+    const authUser = await getAuth().getUser(decodedToken.uid);
+    const credentialVersionMillis = dateValueToMillis(authUser.tokensValidAfterTime);
+    if (credentialVersionMillis === null || credentialVersionMillis <= baselineMillis) {
+      throw accessError(
+        'access/password-change-not-confirmed',
+        'Altere a senha temporária antes de continuar.',
+        409,
+      );
+    }
+  }
+
+  await profileRef.set({
+    mustChangePassword: false,
+    passwordCredentialBaselineAt: null,
+    ...profilePatchForRole(requestedRole, {
+      ...mappedRoleState,
+      mustChangePassword: false,
+      passwordCredentialBaselineAt: null,
+      passwordChangedAt: FieldValue.serverTimestamp(),
+    }),
+    passwordChangedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  if (roleProfile.requestId) {
+    const requestRef = db.collection('accessRequests').doc(String(roleProfile.requestId));
+    const requestSnapshot = await requestRef.get();
+    if (requestSnapshot.exists && String(requestSnapshot.data().uid || '') === String(decodedToken.uid)) {
+      const refs = await collectAccessMutationRefs(db, requestSnapshot.data(), requestSnapshot.id);
+      const batch = db.batch();
+      batch.set(requestRef, {
+        mustChangePassword: false,
+        passwordCredentialBaselineAt: null,
+        passwordChangedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      batch.set(refs.approvalRef, {
+        mustChangePassword: false,
+        passwordCredentialBaselineAt: null,
+        passwordChangedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      await batch.commit();
+    }
+  }
+
+  return profileRef.get();
 }
 
 function normalizeResponsibleSessionType(value) {
@@ -4214,6 +4742,25 @@ export default async function handler(req, res) {
     }
 
     const body = parseBody(req);
+
+    if (body.action === 'createDirectAccess') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      return res.status(201).json(await createDirectAccess(db, decodedToken, body));
+    }
+
+    if (body.action === 'resetDirectAccessPassword') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      return res.status(200).json(await resetDirectAccessPassword(db, decodedToken, body));
+    }
+
+    if (body.action === 'completePasswordChange') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      const snapshot = await completePasswordChange(db, decodedToken, body);
+      return res.status(200).json({ profile: serializeProfile(snapshot.data()) });
+    }
+
     if (body.action === 'reviewAccess') {
       const decodedToken = await verifyFirebaseRequest(req);
       requirePrimaryAdmin(decodedToken);

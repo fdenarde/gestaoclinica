@@ -1171,3 +1171,104 @@ Nenhum commit, push, deploy, publicação de rules, PM2 ou WhatsApp foi executad
 - Arquivos criados: shared/sessionPackageSummary.js, src/lib/clipboard.ts e 	ests/session-package-summary.test.mjs.
 - Testes previstos nesta aplicacao: testes do pacote atual, testes do Monitoramento, lint, build e git diff --check.
 - Publicacao: commit, push e deploy permanecem bloqueados ate validacao visual local do usuario.
+
+---
+
+# Tela de Acesso Geral — preparação local em 26/06/2026
+
+## Auditoria de retomada
+
+- Pasta auditada: `D:\Projeto Gestão Clínica - Repositório\gestão-clínica-fábio-denarde`.
+- Branch auditada: `main`.
+- HEAD auditado: `5fd0b21df3aa540dfec6c0dd5798a10e80702fdf`.
+- Coleta somente de leitura: 137 arquivos sanitizados.
+- `git diff --check` da coleta: aprovado.
+- Alterações preexistentes de WhatsApp, PM2, relatórios e arquivos não rastreados foram identificadas e permanecem fora deste escopo.
+- Nenhum dado real, conta real, agenda, paciente, pagamento, Firebase Rules, PM2 ou WhatsApp foi modificado durante a preparação.
+
+## Rotas específicas por perfil
+
+- Preparadas as rotas públicas diretas `/responsavel`, `/profissional` e `/monitoramento`.
+- A rota principal `/` continua com o seletor de perfil, login Google, recuperação por e-mail e solicitação pública existentes.
+- As rotas específicas exibem somente o perfil correspondente, usuário/e-mail, senha e botão Entrar.
+- A URL não concede autorização: o backend continua validando o perfil ativo, suspensão, revogação e validade.
+- `vercel.json` foi preparado com rewrites exclusivamente para as três rotas diretas, sem interceptar `/api`.
+
+## Modelagem do nome de usuário
+
+- Nome normalizado em minúsculas, com 3 a 20 caracteres.
+- Permitidos: letras, números, ponto, hífen e sublinhado, começando por letra e terminando por letra ou número.
+- Nomes reservados e sequências inseguras são rejeitados.
+- A unicidade é garantida no backend pela coleção administrativa `accessUsernames`, usando reserva transacional antes da criação no Firebase Authentication.
+- A resolução do login é determinística e não exige consulta pública que permita enumerar usuários.
+
+## Estratégia de autenticação por nome de usuário
+
+- Contas antigas continuam autenticando diretamente por e-mail.
+- Contas novas usam um e-mail técnico determinístico apenas dentro do Firebase Authentication.
+- O e-mail técnico não é apresentado ao usuário, não é usado como contato e não é retornado nas telas administrativas.
+- Senhas continuam armazenadas exclusivamente pelo Firebase Authentication.
+- Mensagens de credencial inválida são genéricas para nome de usuário e e-mail.
+
+## Criação administrativa de contas
+
+- Preparado o bloco `Criar acesso direto` dentro da administração de solicitações.
+- Perfis suportados: Responsável, Profissional e Monitoramento.
+- Responsável exige vínculo explícito com pelo menos um atendente e no máximo três.
+- A criação ocorre no backend com autorização exclusiva do administrador principal.
+- Se a criação do perfil falhar após criar a conta Auth, a conta incompleta é removida e a reserva do nome é liberada.
+- Link, usuário e senha temporária são mostrados somente na confirmação imediata.
+
+## Senha temporária
+
+- A senha pode ser informada pelo administrador ou gerada de forma criptograficamente segura no backend.
+- A senha temporária não é gravada no Firestore, em logs, auditorias ou checkpoint.
+- A tela limpa os campos sensíveis ao fechar a confirmação.
+- O administrador pode gerar nova senha temporária para contas diretas por meio de modal de confirmação.
+- Redefinir a senha não altera suspensão, revogação, validade, perfil ou vínculos.
+
+## Troca obrigatória no primeiro acesso
+
+- Contas diretas são criadas com `mustChangePassword` habilitado por padrão.
+- Antes da troca, o backend nega operações protegidas com `access/password-change-required`.
+- A conclusão compara a versão de credencial do Firebase Auth com a linha de base registrada na criação ou redefinição; apenas uma mudança real de senha libera o perfil.
+- O frontend apresenta uma tela exclusiva para confirmar a senha temporária e criar uma senha particular.
+- Dashboard, Agenda, Galeria e demais dados permanecem bloqueados até a conclusão.
+
+## Troca voluntária de senha
+
+- Preparado o acesso `Minha conta` para contas autenticadas por senha.
+- A troca exige senha atual, nova senha e confirmação.
+- A senha atual é reautenticada no Firebase Authentication antes de `updatePassword`.
+- A troca não modifica usuário, perfil, vínculos, suspensão, validade, revogação ou permissões.
+- Contas autenticadas somente por Google não recebem um formulário incompatível de senha.
+
+## Segurança e autorização
+
+- Criação e redefinição de contas exigem o administrador principal no backend.
+- A coleção de nomes de usuário não é consultada diretamente pelo frontend.
+- O e-mail técnico, UID e campos internos não são apresentados nas páginas de login.
+- A redefinição de senha preserva os estados administrativos existentes.
+- O fluxo possui compensação para falha parcial na criação e restauração de estado quando a redefinição de senha é recusada pelo Firebase Auth.
+- Nenhuma alteração foi feita em Firestore Rules, dados clínicos, agenda, pagamentos, PM2 ou robô do WhatsApp.
+
+## Testes da Tela de Acesso Geral
+
+- `node --check api/access.js`: aprovado.
+- `node --check shared/accessCredentials.js`: aprovado.
+- Verificação sintática isolada dos oito arquivos TypeScript/TSX alterados: aprovada.
+- Testes focados de credenciais, rotas, autenticação e permissões: 37/37 aprovados no ambiente de preparação.
+- Testes completos, lint e build permanecem obrigatórios no repositório real depois da aplicação do pacote, porque a coleta sanitizada não contém todos os arquivos e dependências do projeto.
+
+## Limitações encontradas
+
+- O pacote sanitizado não continha todos os componentes compartilhados, dependências instaladas e arquivos auxiliares necessários para executar lint/build integralmente fora do computador do projeto.
+- A confirmação definitiva depende da aplicação auditada no repositório real e da execução automática de testes, lint, build e `git diff --check`.
+- Nenhum commit, push ou deploy está autorizado nesta etapa.
+
+## Estado desta continuação
+
+- Implementação preparada em pacote local com validação por SHA-256 dos arquivos auditados.
+- Aplicação no repositório real: pendente.
+- Teste visual local pelo usuário: pendente.
+- Commit, push e deploy: bloqueados até validação local completa e autorização expressa.

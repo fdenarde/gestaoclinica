@@ -1,0 +1,10 @@
+{
+  "rewrites": [
+    { "source": "/responsavel", "destination": "/index.html" },
+    { "source": "/responsavel/", "destination": "/index.html" },
+    { "source": "/profissional", "destination": "/index.html" },
+    { "source": "/profissional/", "destination": "/index.html" },
+    { "source": "/monitoramento", "destination": "/index.html" },
+    { "source": "/monitoramento/", "destination": "/index.html" }
+  ]
+}

@@ -19,6 +19,9 @@ import type {
   MonitoringPanelData,
   MonitoringNotificationActionResult,
   MonitoringNotificationTab,
+  DirectAccessCreateInput,
+  DirectAccessCredentialsResult,
+  DirectAccessPasswordResetResult,
 } from '../types/access';
 
 const API_ENDPOINT =
@@ -439,6 +442,42 @@ export async function respondAdditionalAccessInformation(
     action: 'respondAdditionalInformation',
     responseMessage,
   }, user);
+}
+
+
+export async function createDirectAccess(
+  input: DirectAccessCreateInput,
+): Promise<DirectAccessCredentialsResult> {
+  return request<DirectAccessCredentialsResult>('POST', {
+    action: 'createDirectAccess',
+    ...input,
+  });
+}
+
+export async function resetDirectAccessPassword(
+  requestId: string,
+  password?: string,
+): Promise<DirectAccessPasswordResetResult> {
+  return request<DirectAccessPasswordResetResult>('POST', {
+    action: 'resetDirectAccessPassword',
+    requestId,
+    ...(password ? { password } : {}),
+  });
+}
+
+export async function completePasswordChange(
+  activeRole: AccessProfile['role'],
+  user?: User,
+): Promise<AccessProfile> {
+  const result = await request<AccessProfileResponse>('POST', {
+    action: 'completePasswordChange',
+    activeRole,
+  }, user);
+  if (!result.profile) {
+    throw createApiError('access/profile-not-found', 'Não foi possível atualizar o estado da senha.');
+  }
+  clearAccessApiCaches();
+  return result.profile;
 }
 
 

@@ -18,6 +18,7 @@ import ExternalRegistrationPage from './components/ExternalRegistrationPage';
 import BrandLogo from './components/Common/BrandLogo';
 import AccessPortal from './components/Auth/AccessPortal';
 import ResponsiblePortal from './components/Auth/ResponsiblePortal';
+import PasswordSecurityPanel from './components/Auth/PasswordSecurityPanel';
 import NotificationCenter from './components/Notifications/NotificationCenter';
 import {
   clearAccessApiCaches,
@@ -200,6 +201,14 @@ function formatAuditDuration(value?: number): string {
 }
 
 export default function App() {
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
+    ? 'responsible'
+    : normalizedPath === '/profissional'
+      ? 'professional'
+      : normalizedPath === '/monitoramento'
+        ? 'monitoring'
+        : null;
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -207,7 +216,7 @@ export default function App() {
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessError, setAccessError] = useState('');
   const [accessRetryKey, setAccessRetryKey] = useState(0);
-  const [selectedAccessRole, setSelectedAccessRole] = useState<AccessRole | null>(null);
+  const [selectedAccessRole, setSelectedAccessRole] = useState<AccessRole | null>(directAccessRole);
   const [state, setState] = useState<AppState>(DEFAULT_STATE);
   const [dataLoading, setDataLoading] = useState(false);
   
@@ -299,7 +308,7 @@ export default function App() {
       setUser(currentUser);
       if (!currentUser) {
         setAccessProfile(null);
-        setSelectedAccessRole(null);
+        setSelectedAccessRole(directAccessRole);
         setAccessLoading(false);
         setAccessError('');
       }
@@ -356,10 +365,10 @@ export default function App() {
     forceAccessTokenRefreshRef.current = false;
     setUser(null);
     setAccessProfile(null);
-    setSelectedAccessRole(null);
+    setSelectedAccessRole(directAccessRole);
     setAccessLoading(false);
     setAccessError('');
-  }, [accessProfile?.role, user]);
+  }, [accessProfile?.role, directAccessRole, user]);
 
   const resetSessionScopedData = useCallback(() => {
     clearAccessApiCaches();
@@ -389,10 +398,11 @@ export default function App() {
   }, [resetSessionScopedData]);
 
   const switchAccessRole = useCallback(() => {
+    if (directAccessRole) return;
     resetSessionScopedData();
     setSelectedAccessRole(null);
     setAccessProfile(current => current ? { ...current } : current);
-  }, [resetSessionScopedData]);
+  }, [directAccessRole, resetSessionScopedData]);
 
   const canAccessInternalSystem =
     accessProfile?.status === 'approved'
@@ -818,8 +828,25 @@ export default function App() {
 
   const activeProfileRoles = getActiveProfileRoles(accessProfile);
   const hasMultipleActiveProfiles = activeProfileRoles.length > 1;
+  const handlePasswordProfileUpdated = (profile: AccessProfile) => {
+    setAccessProfile(profile);
+    setAccessError('');
+    setAccessLoading(false);
+  };
 
-  if (user && accessProfile && activeProfileRoles.length > 0 && !selectedAccessRole) {
+  if (user && accessProfile?.mustChangePassword === true) {
+    return (
+      <PasswordSecurityPanel
+        user={user}
+        profile={accessProfile}
+        required
+        onProfileUpdated={handlePasswordProfileUpdated}
+        onLogout={handleAccessPortalLogout}
+      />
+    );
+  }
+
+  if (user && !directAccessRole && accessProfile && activeProfileRoles.length > 0 && !selectedAccessRole) {
     return (
       <ProfileChoiceScreen
         profile={accessProfile}
@@ -832,7 +859,7 @@ export default function App() {
   if (user && canAccessResponsiblePortal) {
     return (
       <>
-        {hasMultipleActiveProfiles && (
+        {!directAccessRole && hasMultipleActiveProfiles && (
           <button
             type="button"
             onClick={switchAccessRole}
@@ -842,15 +869,33 @@ export default function App() {
           </button>
         )}
         <ResponsiblePortal user={user} />
+        {accessProfile && (
+          <PasswordSecurityPanel
+            user={user}
+            profile={accessProfile}
+            onProfileUpdated={handlePasswordProfileUpdated}
+            onLogout={handleAccessPortalLogout}
+          />
+        )}
       </>
     );
   }
 
   if (user && canAccessMonitoringPanel) {
     return (
-      <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-clinic-bg"><Loader2 className="h-10 w-10 animate-spin text-clinic-primary" /></div>}>
-        <MonitoringPanel onLogout={() => void handleAccessPortalLogout()} onSwitchProfile={hasMultipleActiveProfiles ? switchAccessRole : undefined} />
-      </Suspense>
+      <>
+        <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-clinic-bg"><Loader2 className="h-10 w-10 animate-spin text-clinic-primary" /></div>}>
+          <MonitoringPanel onLogout={() => void handleAccessPortalLogout()} onSwitchProfile={!directAccessRole && hasMultipleActiveProfiles ? switchAccessRole : undefined} />
+        </Suspense>
+        {accessProfile && (
+          <PasswordSecurityPanel
+            user={user}
+            profile={accessProfile}
+            onProfileUpdated={handlePasswordProfileUpdated}
+            onLogout={handleAccessPortalLogout}
+          />
+        )}
+      </>
     );
   }
 
@@ -862,14 +907,15 @@ export default function App() {
         profileLoading={accessLoading}
         profileError={accessError}
         selectedLoginRole={selectedAccessRole && selectedAccessRole !== 'admin' ? selectedAccessRole as AccessRequestRole : null}
-        onSelectedLoginRoleChange={role => setSelectedAccessRole(role)}
+        accessRouteRole={directAccessRole}
+        onSelectedLoginRoleChange={role => setSelectedAccessRole(directAccessRole || role)}
         onAccessRequestSubmitted={profile => {
           setAccessProfile(profile);
           setAccessLoading(false);
           setAccessError('');
         }}
         onRetryProfile={handleRetryAccessProfile}
-        onChooseAnotherRole={switchAccessRole}
+        onChooseAnotherRole={directAccessRole ? undefined : switchAccessRole}
         onLogout={handleAccessPortalLogout}
       />
     );
@@ -1045,6 +1091,14 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-clinic-bg">
+      {accessProfile && accessProfile.role !== 'admin' && (
+        <PasswordSecurityPanel
+          user={user}
+          profile={accessProfile}
+          onProfileUpdated={handlePasswordProfileUpdated}
+          onLogout={handleAccessPortalLogout}
+        />
+      )}
       {navigationMode === 'sidebar' && (
         <SidebarNavigation
           items={tabs}

@@ -18,6 +18,7 @@ import {
 import {
   createEmailAccount,
   loginWithEmail,
+  loginWithIdentifier,
   loginWithGoogle,
   logout,
   requestPasswordReset,
@@ -40,6 +41,7 @@ interface AccessPortalProps {
   onRetryProfile: () => void;
   onChooseAnotherRole?: () => void;
   onLogout?: () => Promise<void> | void;
+  accessRouteRole?: AccessRequestRole | null;
 }
 
 const LOGIN_ROLE_OPTIONS: Array<{
@@ -158,9 +160,11 @@ export default function AccessPortal({
   onRetryProfile,
   onChooseAnotherRole,
   onLogout,
+  accessRouteRole = null,
 }: AccessPortalProps) {
   const [view, setView] = useState<PortalView>(user ? 'request' : 'login');
   const [email, setEmail] = useState(user?.email || '');
+  const [loginIdentifier, setLoginIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -174,10 +178,23 @@ export default function AccessPortal({
   const [error, setError] = useState('');
   const [requestSubmitted, setRequestSubmitted] = useState(false);
   const [informationResponse, setInformationResponse] = useState('');
+  const directRoute = Boolean(accessRouteRole);
+  const effectiveLoginRole = accessRouteRole || selectedLoginRole;
+  const directRouteCopy = accessRouteRole === 'responsible'
+    ? { title: 'Acesso do Responsável', description: 'Entre para consultar os dados e materiais autorizados.' }
+    : accessRouteRole === 'professional'
+      ? { title: 'Acesso do Profissional', description: 'Entre diretamente na área profissional autorizada.' }
+      : { title: 'Acesso ao Monitoramento', description: 'Entre no painel de acompanhamento em modo somente leitura.' };
 
   useLayoutEffect(() => {
     applyTheme('health-balance');
   }, []);
+
+  useEffect(() => {
+    if (accessRouteRole && selectedLoginRole !== accessRouteRole) {
+      onSelectedLoginRoleChange(accessRouteRole);
+    }
+  }, [accessRouteRole, onSelectedLoginRoleChange, selectedLoginRole]);
 
   useEffect(() => {
     if (!user) return;
@@ -210,16 +227,16 @@ export default function AccessPortal({
   const handleEmailLogin = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
-      if (!selectedLoginRole) {
+      if (!effectiveLoginRole) {
         throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
       }
-      await loginWithEmail(email, password);
+      await loginWithIdentifier(loginIdentifier, password);
     });
   };
 
   const handleGoogleLogin = () => {
     void run(async () => {
-      if (!selectedLoginRole) {
+      if (!effectiveLoginRole) {
         throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
       }
       await loginWithGoogle();
@@ -337,15 +354,15 @@ export default function AccessPortal({
     <form onSubmit={handleEmailLogin} className="space-y-5">
       <div>
         <p className="text-xs font-bold uppercase tracking-[0.16em] text-clinic-primary">Acesso seguro</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-clinic-text">Entre na plataforma</h1>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-clinic-text">{directRoute ? directRouteCopy.title : 'Entre na plataforma'}</h1>
         <p className="mt-2 text-sm leading-relaxed text-clinic-text-muted">
-          Use sua conta aprovada para acessar agenda, atendimentos e gestão clínica.
+          {directRoute ? directRouteCopy.description : 'Use sua conta aprovada para acessar a área correspondente.'}
         </p>
       </div>
 
       {renderFeedback()}
 
-      <fieldset className="space-y-3">
+      {!directRoute && <fieldset className="space-y-3">
         <legend className="text-xs font-bold uppercase tracking-wider text-clinic-text-muted">Entrar como</legend>
         <p className="text-xs leading-relaxed text-clinic-text-muted">
           Escolha o perfil que deseja usar nesta entrada. A autorização será confirmada depois do login.
@@ -383,18 +400,18 @@ export default function AccessPortal({
         {!selectedLoginRole && (
           <p className="text-xs font-semibold text-status-orange-text">Nenhum modo de entrada selecionado.</p>
         )}
-      </fieldset>
+      </fieldset>}
 
       <label className="block">
-        <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">E-mail</span>
+        <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">E-mail ou nome de usuário</span>
         <div className="relative">
           <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinic-text-faint" />
           <input
             className="clinic-input pl-11"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={event => setEmail(event.target.value)}
+            type="text"
+            autoComplete="username"
+            value={loginIdentifier}
+            onChange={event => setLoginIdentifier(event.target.value)}
             required
           />
         </div>
@@ -423,39 +440,49 @@ export default function AccessPortal({
         </div>
       </label>
 
-      <div className="flex items-center justify-between gap-4 text-sm">
-        <button type="button" onClick={() => { clearFeedback(); setView('reset'); }} className="font-semibold text-clinic-primary hover:underline">
-          Esqueci minha senha
-        </button>
-        <button type="button" onClick={() => { clearFeedback(); setView('request'); }} className="font-semibold text-clinic-primary hover:underline">
-          Criar acesso
-        </button>
-      </div>
+      {!directRoute && (
+        <div className="flex items-center justify-between gap-4 text-sm">
+          <button type="button" onClick={() => { clearFeedback(); setView('reset'); }} className="font-semibold text-clinic-primary hover:underline">
+            Esqueci minha senha
+          </button>
+          <button type="button" onClick={() => { clearFeedback(); setView('request'); }} className="font-semibold text-clinic-primary hover:underline">
+            Criar acesso
+          </button>
+        </div>
+      )}
 
       <button
         type="submit"
-        disabled={busy || !selectedLoginRole}
+        disabled={busy || !effectiveLoginRole}
         className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60"
       >
         {busy ? <Loader2 size={19} className="animate-spin" /> : <LockKeyhole size={19} />}
-        Entrar com e-mail
+        Entrar
       </button>
 
-      <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-clinic-text-faint">
-        <span className="h-px flex-1 bg-clinic-border" />
-        ou
-        <span className="h-px flex-1 bg-clinic-border" />
-      </div>
-
-      <button
-        type="button"
-        onClick={handleGoogleLogin}
-        disabled={busy || !selectedLoginRole}
-        className="flex w-full items-center justify-center gap-3 rounded-xl border border-clinic-border bg-white px-4 py-3.5 font-bold text-clinic-text shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg disabled:cursor-wait disabled:opacity-60"
-      >
-        <Mail size={19} className="text-clinic-primary" />
-        Entrar com Google
-      </button>
+      {!directRoute && (
+        <>
+          <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-clinic-text-faint">
+            <span className="h-px flex-1 bg-clinic-border" />
+            ou
+            <span className="h-px flex-1 bg-clinic-border" />
+          </div>
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            disabled={busy || !effectiveLoginRole}
+            className="flex w-full items-center justify-center gap-3 rounded-xl border border-clinic-border bg-white px-4 py-3.5 font-bold text-clinic-text shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg disabled:cursor-wait disabled:opacity-60"
+          >
+            <Mail size={19} className="text-clinic-primary" />
+            Entrar com Google
+          </button>
+        </>
+      )}
+      {directRoute && (
+        <a href="/" className="block text-center text-sm font-semibold text-clinic-primary hover:underline">
+          Voltar ao acesso geral
+        </a>
+      )}
     </form>
   );
 
@@ -617,7 +644,7 @@ export default function AccessPortal({
         </div>
         <div className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-left text-sm">
           <p className="font-bold text-clinic-text">{profile.displayName || user?.displayName || 'Usuário'}</p>
-          <p className="mt-1 text-clinic-text-muted">{profile.email}</p>
+          <p className="mt-1 text-clinic-text-muted">{profile.username || profile.contactEmail || profile.email}</p>
           <p className="mt-2 text-xs font-bold uppercase tracking-wider text-clinic-text-faint">
             Perfil: {accessRoleLabel(profile.role)}
           </p>
@@ -678,7 +705,7 @@ export default function AccessPortal({
         <button type="button" onClick={handleLogout} disabled={busy} className="w-full rounded-xl border border-clinic-border px-4 py-3 font-bold text-clinic-text hover:border-clinic-primary hover:bg-clinic-bg disabled:opacity-60">
           Sair
         </button>
-        {user && (
+        {user && !directRoute && (
           <button
             type="button"
             onClick={() => {
@@ -697,8 +724,11 @@ export default function AccessPortal({
   };
 
   const renderProfileState = () => {
-    if (!user) return view === 'request' ? renderRequest() : view === 'reset' ? renderReset() : renderLogin();
-    if (view === 'request') return renderRequest();
+    if (!user) {
+      if (directRoute) return renderLogin();
+      return view === 'request' ? renderRequest() : view === 'reset' ? renderReset() : renderLogin();
+    }
+    if (view === 'request' && !directRoute) return renderRequest();
     if (profileLoading) {
       return (
         <div className="flex min-h-72 flex-col items-center justify-center gap-4 text-center">
@@ -721,7 +751,7 @@ export default function AccessPortal({
           <button type="button" onClick={onRetryProfile} className="w-full rounded-xl bg-clinic-primary px-4 py-3 font-bold text-white hover:bg-clinic-primary-hover">
             Tentar novamente
           </button>
-          {user && selectedLoginRole && onChooseAnotherRole && (
+          {user && !directRoute && selectedLoginRole && onChooseAnotherRole && (
             <button
               type="button"
               onClick={onChooseAnotherRole}
