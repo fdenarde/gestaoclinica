@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth';
 import { Eye, EyeOff, KeyRound, Loader2, LockKeyhole, LogOut, ShieldCheck } from 'lucide-react';
 import { changeCurrentUserPassword } from '../../firebase';
 import { completePasswordChange } from '../../lib/accessApi';
+import { publicAccessIdentifier } from '../../../shared/accessCredentials.js';
 import type { AccessProfile } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
 import Modal from '../Common/Modal';
@@ -16,7 +17,7 @@ interface PasswordSecurityPanelProps {
 }
 
 function accountLabel(profile: AccessProfile): string {
-  return profile.username || profile.contactEmail || profile.email || profile.displayName || 'Sua conta';
+  return publicAccessIdentifier(profile) || profile.displayName || 'Sua conta';
 }
 
 export default function PasswordSecurityPanel({

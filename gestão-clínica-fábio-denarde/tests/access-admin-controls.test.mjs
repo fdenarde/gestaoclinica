@@ -207,3 +207,32 @@ test('consulta de sessões continua limitada e sem listener global ou padrão N\
   assert.doesNotMatch(monitoringSource, /onSnapshot/);
   assert.doesNotMatch(monitoringSource, /for \(const patient[\s\S]{0,300}sessionsRef\.where/);
 });
+
+test('administrador gerencia nome de usuário e redefine senha sem recuperar senha atual', () => {
+  assert.match(accessSource, /async function updateDirectAccessUsername/);
+  assert.match(accessSource, /body\.action === 'updateDirectAccessUsername'/);
+  assert.match(accessSource, /requirePrimaryAdmin\(decodedToken\);[\s\S]*updateDirectAccessUsername/);
+  assert.match(accessSource, /getAuth\(\)\.updateUser\(String\(request\.uid\), \{ email: nextAuthEmail \}\)/);
+  assert.match(accessSource, /passwordStored: false/);
+  assert.match(accessApiSource, /export async function updateDirectAccessUsername/);
+  assert.match(adminCardSource, /Gerenciar acesso/);
+  assert.match(adminCardSource, /Gerenciar usuário e senha/);
+  assert.match(adminCardSource, /Salvar usuário/);
+  assert.match(adminCardSource, /A senha atual não pode ser visualizada/);
+  assert.match(adminCardSource, /Gerar senha temporária/);
+  assert.match(adminCardSource, /temporária gerada\. Copie antes de fechar/);
+  assert.doesNotMatch(accessSource, /currentPassword|plainTextPassword|storedPassword/);
+});
+
+test('e-mail técnico de login permanece interno e não é mostrado nas interfaces', () => {
+  const passwordPanelSource = fs.readFileSync(new URL('../src/components/Auth/PasswordSecurityPanel.tsx', import.meta.url), 'utf8');
+  const responsiblePortalSource = fs.readFileSync(new URL('../src/components/Auth/ResponsiblePortal.tsx', import.meta.url), 'utf8');
+  assert.match(accessSource, /resolvePublicAccessIdentity/);
+  assert.match(accessSource, /publicAccessIdentifier/);
+  assert.match(accessSource, /publicAccessEmail/);
+  assert.match(accessPortalSource, /publicAccessIdentifier\(profile\)/);
+  assert.match(passwordPanelSource, /publicAccessIdentifier\(profile\)/);
+  assert.match(adminCardSource, /publicAccessIdentifier\(request\)/);
+  assert.match(responsiblePortalSource, /responsible\.accountLabel/);
+  assert.doesNotMatch(responsiblePortalSource, /@login\.gestaoclinica\.invalid/);
+});

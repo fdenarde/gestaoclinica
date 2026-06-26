@@ -63,6 +63,7 @@ import type {
   ResponsiblePortalPlaybackSummary,
   ResponsiblePortalSession,
 } from '../../types/access';
+import { buildResponsiblePortalSessionProgress } from '../../../shared/responsiblePortalSessions.js';
 import BrandLogo from '../Common/BrandLogo';
 import PatientRegistrationFields, { PatientRegistrationSummary } from '../Common/PatientRegistrationFields';
 import ResponsibleGooglePhotosGallery from '../GooglePhotosAlbums/ResponsibleGooglePhotosGallery';
@@ -270,41 +271,17 @@ function updateMediaInData(
 
 
 function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
-  const sessionGroups = useMemo(() => {
-    const sessionsByNumber = new Map<number, ResponsiblePortalSession[]>();
-    for (const session of pkg.sessions) {
-      const items = sessionsByNumber.get(session.sessionNumber) || [];
-      items.push(session);
-      sessionsByNumber.set(session.sessionNumber, items);
-    }
+  const progress = useMemo(
+    () => buildResponsiblePortalSessionProgress(pkg.sessions, {
+      consumedCount: pkg.consumedCount,
+      targetCount: 10,
+    }),
+    [pkg.consumedCount, pkg.sessions],
+  );
 
-    return Array.from({ length: 10 }, (_, index) => index + 1)
-      .map(number => {
-        const events = sessionsByNumber.get(number) || [];
-        const referenceEvent = events.reduce<ResponsiblePortalSession | null>((latest, session) => {
-          if (!latest) return session;
-          const latestKey = `${latest.date || ''}T${latest.time || '00:00'}|${latest.id}`;
-          const currentKey = `${session.date || ''}T${session.time || '00:00'}|${session.id}`;
-          return currentKey.localeCompare(latestKey) > 0 ? session : latest;
-        }, null);
-
-        return {
-          number,
-          events,
-          referenceEvent,
-          sortKey: referenceEvent
-            ? `${referenceEvent.date || ''}T${referenceEvent.time || '00:00'}|${referenceEvent.id}`
-            : '',
-        };
-      })
-      .sort((left, right) => {
-        const leftHasDate = Boolean(left.referenceEvent?.date);
-        const rightHasDate = Boolean(right.referenceEvent?.date);
-        if (leftHasDate !== rightHasDate) return leftHasDate ? -1 : 1;
-        if (left.sortKey !== right.sortKey) return right.sortKey.localeCompare(left.sortKey);
-        return right.number - left.number;
-      });
-  }, [pkg.sessions]);
+  const forecastCopy = progress.forecastComplete
+    ? `Previsão de término: ${formatDate(progress.forecastEndDate, false)} · 10 sessões em ${progress.scheduledDateCount} ${progress.scheduledDateCount === 1 ? 'data de atendimento' : 'datas de atendimento'}`
+    : 'Previsão de término: aguardando o agendamento das próximas sessões';
 
   return (
     <section className="overflow-hidden rounded-2xl border border-clinic-border bg-clinic-surface shadow-clinic">
@@ -316,7 +293,8 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
             </div>
             <div>
               <h2 className="font-bold text-clinic-text">Andamento das 10 sessões</h2>
-              <p className="text-xs text-clinic-text-muted">As sessões mais recentes aparecem primeiro. Toque em uma sessão para ver ou esconder os detalhes.</p>
+              <p className="text-xs text-clinic-text-muted">A sessão mais recente e a próxima aparecem primeiro. As demais futuras ficam ocultas até o acompanhamento avançar.</p>
+              <p className="mt-1 text-xs font-bold text-clinic-primary">{forecastCopy}</p>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
@@ -331,29 +309,28 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
       </header>
 
       <div className="space-y-3 p-4 sm:p-5">
-        {sessionGroups.map(({ number, events, referenceEvent }) => {
-          const hasEvents = events.length > 0;
+        {progress.visibleGroups.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-clinic-border bg-white px-4 py-5 text-sm text-clinic-text-muted">
+            A primeira sessão ainda não foi agendada.
+          </div>
+        ) : progress.visibleGroups.map(({ number, events, referenceEvent }) => {
           const detailsId = `package-${pkg.number}-session-${number}`;
           return (
             <details
               key={number}
-              className={`group overflow-hidden rounded-2xl border transition-colors ${hasEvents ? 'border-clinic-border bg-white shadow-sm' : 'border-dashed border-clinic-border bg-clinic-bg/50'}`}
+              className="group overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm transition-colors"
             >
               <summary className="flex cursor-pointer list-none items-center gap-3 p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/30 [&::-webkit-details-marker]:hidden">
-                <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-sm font-black ${hasEvents ? 'bg-clinic-primary text-white' : 'border border-clinic-border bg-white text-clinic-primary'}`}>
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-clinic-primary text-sm font-black text-white">
                   {number}/10
                 </div>
 
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-black text-clinic-text">Sessão {number}</p>
-                    {referenceEvent ? (
+                    {referenceEvent && (
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass(referenceEvent.status)}`}>
                         {statusLabel(referenceEvent.status)}
-                      </span>
-                    ) : (
-                      <span className="inline-flex rounded-full border border-clinic-border bg-white px-2.5 py-1 text-[10px] font-bold text-clinic-text-muted">
-                        Pendente
                       </span>
                     )}
                   </div>
@@ -364,7 +341,7 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
                     </p>
                     <p className="truncate">
                       <span className="font-black text-clinic-text-faint">Profissional:</span>{' '}
-                      {referenceEvent?.professionalName || (hasEvents ? 'Fábio Denarde' : 'a definir')}
+                      {referenceEvent?.professionalName || 'Fábio Denarde'}
                     </p>
                   </div>
                   {events.length > 1 && (
@@ -380,51 +357,45 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
               </summary>
 
               <div id={detailsId} className="border-t border-clinic-border px-4 pb-4 pt-3">
-                {hasEvents ? (
-                  <div className="space-y-3">
-                    {events.map((session, eventIndex) => (
-                      <div key={session.id} className="rounded-xl border border-clinic-border bg-clinic-bg/45 p-3">
-                        {eventIndex > 0 && (
-                          <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-status-orange-text">Reposição vinculada</p>
-                        )}
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                          <div>
-                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Data e horário</p>
-                            <p className="mt-1 font-bold capitalize text-clinic-text">{formatDate(session.date)}</p>
-                            <p className="mt-1 flex items-center gap-1 text-xs text-clinic-text-muted"><Clock3 size={13} /> {session.time || 'Horário não informado'}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo</p>
-                            <p className="mt-1 text-sm font-semibold text-clinic-text">{session.type || 'Intervenção'}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Profissional</p>
-                            <p className="mt-1 text-sm font-semibold text-clinic-text">{session.professionalName || 'Fábio Denarde'}</p>
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Consome o pacote</p>
-                            <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${session.consumesPackage ? 'bg-status-green-bg text-status-green-text' : 'border border-clinic-border bg-white text-clinic-text-muted'}`}>
-                              {session.consumesPackage ? <Check size={13} /> : <X size={13} />}
-                              {session.consumesPackage ? 'Sim' : 'Não'}
-                            </span>
-                          </div>
+                <div className="space-y-3">
+                  {events.map((session, eventIndex) => (
+                    <div key={session.id} className="rounded-xl border border-clinic-border bg-clinic-bg/45 p-3">
+                      {eventIndex > 0 && (
+                        <p className="mb-2 text-[10px] font-black uppercase tracking-wide text-status-orange-text">Reposição vinculada</p>
+                      )}
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Data e horário</p>
+                          <p className="mt-1 font-bold capitalize text-clinic-text">{formatDate(session.date)}</p>
+                          <p className="mt-1 flex items-center gap-1 text-xs text-clinic-text-muted"><Clock3 size={13} /> {session.time || 'Horário não informado'}</p>
                         </div>
-                        {session.status === NO_REPLACEMENT_SESSION_STATUS && (
-                          <div className="mt-3 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
-                            <p className="font-black text-clinic-text">{NO_REPLACEMENT_PORTAL_LABEL}</p>
-                            <p className="mt-1 text-[12px] font-bold" style={{ color: '#A94444' }}>
-                              {noReplacementReasonLabel(session)}
-                            </p>
-                          </div>
-                        )}
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Tipo</p>
+                          <p className="mt-1 text-sm font-semibold text-clinic-text">{session.type || 'Intervenção'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Profissional</p>
+                          <p className="mt-1 text-sm font-semibold text-clinic-text">{session.professionalName || 'Fábio Denarde'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Consome o pacote</p>
+                          <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${session.consumesPackage ? 'bg-status-green-bg text-status-green-text' : 'border border-clinic-border bg-white text-clinic-text-muted'}`}>
+                            {session.consumesPackage ? <Check size={13} /> : <X size={13} />}
+                            {session.consumesPackage ? 'Sim' : 'Não'}
+                          </span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-xl border border-dashed border-clinic-border bg-white px-4 py-5 text-sm text-clinic-text-muted">
-                    Esta posição do pacote ainda não possui data agendada.
-                  </div>
-                )}
+                      {session.status === NO_REPLACEMENT_SESSION_STATUS && (
+                        <div className="mt-3 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
+                          <p className="font-black text-clinic-text">{NO_REPLACEMENT_PORTAL_LABEL}</p>
+                          <p className="mt-1 text-[12px] font-bold" style={{ color: '#A94444' }}>
+                            {noReplacementReasonLabel(session)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             </details>
           );
@@ -433,7 +404,6 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
     </section>
   );
 }
-
 
 interface MediaCardProps {
   key?: React.Key;
@@ -1503,7 +1473,7 @@ Arquivo preparado para compartilhamento.`);
                   >
                     {adminPreviewMeta.responsibleOptions.map(option => (
                       <option key={option.uid} value={option.uid} className="text-slate-900">
-                        {option.displayName}{option.email ? ` — ${option.email}` : ''}
+                        {option.displayName}{option.accountLabel ? ` — ${option.accountLabel}` : ''}
                       </option>
                     ))}
                   </select>
@@ -1585,7 +1555,7 @@ Arquivo preparado para compartilhamento.`);
               {data?.responsible.displayName || user.displayName || 'Responsável'}
             </span>
             <span className="break-all text-white/80">
-              {data?.responsible.email || (isAdminPreview ? 'Responsável sem e-mail vinculado' : user.email)}
+              {data?.responsible.accountLabel || data?.responsible.username || data?.responsible.email || (isAdminPreview ? 'Responsável sem conta vinculada' : 'Conta por nome de usuário')}
             </span>
           </div>
         </section>

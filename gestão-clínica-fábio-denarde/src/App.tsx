@@ -25,7 +25,6 @@ import {
   getAccessProfile,
   getProfessionalPortalNotifications,
   manageProfessionalPortalNotifications,
-  recordMonitoringLogout,
   clearMonitoringSessionId,
 } from './lib/accessApi';
 import type {
@@ -353,13 +352,7 @@ export default function App() {
 
   const handleAccessPortalLogout = useCallback(async () => {
     if (accessProfile?.role === 'monitoring') {
-      try {
-        await recordMonitoringLogout(user || undefined);
-      } catch (recordError) {
-        console.error('Falha ao registrar logout do Monitoramento:', recordError);
-      } finally {
-        clearMonitoringSessionId(user || undefined);
-      }
+      clearMonitoringSessionId(user || undefined);
     }
     await logout();
     forceAccessTokenRefreshRef.current = false;

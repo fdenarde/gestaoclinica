@@ -231,6 +231,10 @@ export interface DirectAccessPasswordResetResult {
   temporaryPassword: string;
 }
 
+export interface DirectAccessUsernameUpdateResult {
+  request: AccessRequestRecord;
+}
+
 export interface ResponsiblePortalSettings {
   name: string;
   title: string;
@@ -380,6 +384,8 @@ export interface ResponsiblePortalData {
   responsible: {
     uid: string;
     displayName: string;
+    username: string;
+    accountLabel: string;
     email: string;
   };
   settings: ResponsiblePortalSettings;
@@ -515,7 +521,7 @@ export interface ResponsiblePortalActionResult {
   notificationId?: string;
 }
 
-export type MonitoringNotificationTab = 'dashboard' | 'agenda' | 'galeria';
+export type MonitoringNotificationTab = 'agenda' | 'galeria';
 
 export interface MonitoringNotificationActionResult {
   recorded: boolean;

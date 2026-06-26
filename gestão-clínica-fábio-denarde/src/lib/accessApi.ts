@@ -22,6 +22,7 @@ import type {
   DirectAccessCreateInput,
   DirectAccessCredentialsResult,
   DirectAccessPasswordResetResult,
+  DirectAccessUsernameUpdateResult,
 } from '../types/access';
 
 const API_ENDPOINT =
@@ -128,6 +129,8 @@ interface ResponsibleDocumentUrlResponse {
 export interface AdminResponsiblePreviewOption {
   uid: string;
   displayName: string;
+  username: string;
+  accountLabel: string;
   email: string;
 }
 
@@ -465,6 +468,17 @@ export async function resetDirectAccessPassword(
   });
 }
 
+export async function updateDirectAccessUsername(
+  requestId: string,
+  username: string,
+): Promise<DirectAccessUsernameUpdateResult> {
+  return request<DirectAccessUsernameUpdateResult>('POST', {
+    action: 'updateDirectAccessUsername',
+    requestId,
+    username,
+  });
+}
+
 export async function completePasswordChange(
   activeRole: AccessProfile['role'],
   user?: User,
@@ -591,15 +605,6 @@ export async function recordMonitoringTabAccess(
     monitoringSessionId: getMonitoringSessionId(user),
     tab,
     clientContext: monitoringClientContext(tab),
-  }, user);
-}
-
-export async function recordMonitoringLogout(user?: User): Promise<MonitoringNotificationActionResult> {
-  return request<MonitoringNotificationActionResult>('POST', {
-    action: 'recordMonitoringAction',
-    eventType: 'logout',
-    monitoringSessionId: getMonitoringSessionId(user),
-    clientContext: monitoringClientContext('monitoring'),
   }, user);
 }
 

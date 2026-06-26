@@ -5,6 +5,8 @@ import {
   CircleAlert,
   CircleCheck,
   Clock3,
+  Eye,
+  EyeOff,
   KeyRound,
   Link2,
   Loader2,
@@ -27,12 +29,14 @@ import {
   revokeAccessRequest,
   suspendAccessRequest,
   updateAccessValidity,
+  updateDirectAccessUsername,
 } from '../../lib/accessApi';
 import type { Patient } from '../../types';
 import type { AccessRequestRecord, AccessRequestStatus } from '../../types/access';
 import Modal from '../Common/Modal';
 import DirectAccessAdminCard from './DirectAccessAdminCard';
 import { showToast } from '../Common/Toast';
+import { publicAccessIdentifier } from '../../../shared/accessCredentials.js';
 
 type RequestTab = 'pending' | 'information_requested' | 'approved' | 'rejected' | 'revoked';
 type AdminActionKind = 'approveMonitoring' | 'requestInformation' | 'suspend' | 'reactivate' | 'validity' | 'revoke' | 'deleteAccess';
@@ -205,7 +209,13 @@ export default function AccessRequestsAdminCard({
   const [validityDate, setValidityDate] = useState('');
   const [modalError, setModalError] = useState('');
   const [resettingId, setResettingId] = useState('');
+  const [updatingUsernameId, setUpdatingUsernameId] = useState('');
   const [resetPasswordRequest, setResetPasswordRequest] = useState<AccessRequestRecord | null>(null);
+  const [credentialUsername, setCredentialUsername] = useState('');
+  const [credentialPassword, setCredentialPassword] = useState('');
+  const [credentialPasswordConfirmation, setCredentialPasswordConfirmation] = useState('');
+  const [credentialError, setCredentialError] = useState('');
+  const [showCredentialPassword, setShowCredentialPassword] = useState(false);
   const [resetCredentials, setResetCredentials] = useState<{ username: string; temporaryPassword: string; accessPath: string } | null>(null);
   const modalPrimaryRef = useRef<HTMLElement | null>(null);
   const actionSubmittingRef = useRef(false);
@@ -380,12 +390,80 @@ export default function AccessRequestsAdminCard({
     }
   };
 
+  const openCredentialManager = (request: AccessRequestRecord) => {
+    setCredentialUsername(request.username || '');
+    setCredentialPassword('');
+    setCredentialPasswordConfirmation('');
+    setCredentialError('');
+    setShowCredentialPassword(false);
+    setResetPasswordRequest(request);
+  };
+
+  const closeCredentialManager = () => {
+    if (resettingId || updatingUsernameId) return;
+    setResetPasswordRequest(null);
+    setCredentialUsername('');
+    setCredentialPassword('');
+    setCredentialPasswordConfirmation('');
+    setCredentialError('');
+    setShowCredentialPassword(false);
+  };
+
+  const submitUsernameUpdate = async () => {
+    const request = resetPasswordRequest;
+    if (!request || updatingUsernameId || resettingId) return;
+    const username = credentialUsername.trim().toLowerCase();
+    if (!username) {
+      setCredentialError('Informe o nome de usuário.');
+      return;
+    }
+    if (username === (request.username || '').trim().toLowerCase()) {
+      setCredentialError('O nome de usuário não foi alterado.');
+      return;
+    }
+
+    setUpdatingUsernameId(request.id);
+    setCredentialError('');
+    try {
+      const result = await updateDirectAccessUsername(request.id, username);
+      setRequests(current => current.map(item => item.id === result.request.id ? result.request : item));
+      setResetPasswordRequest(result.request);
+      setCredentialUsername(result.request.username || username);
+      showToast('Nome de usuário atualizado. O usuário deverá entrar com o novo nome.', 'success');
+    } catch (caughtError) {
+      setCredentialError(caughtError instanceof Error ? caughtError.message : 'Não foi possível atualizar o nome de usuário.');
+    } finally {
+      setUpdatingUsernameId('');
+    }
+  };
+
   const submitPasswordReset = async () => {
     const request = resetPasswordRequest;
-    if (!request || resettingId || reviewingId) return;
+    if (!request || resettingId || reviewingId || updatingUsernameId) return;
+
+    const customPassword = credentialPassword;
+    if (customPassword) {
+      if (customPassword.length < 8 || customPassword.length > 72) {
+        setCredentialError('A nova senha temporária deve ter entre 8 e 72 caracteres.');
+        return;
+      }
+      if (!/[A-Za-z]/.test(customPassword) || !/\d/.test(customPassword)) {
+        setCredentialError('A nova senha temporária deve conter letras e números.');
+        return;
+      }
+      if (customPassword !== credentialPasswordConfirmation) {
+        setCredentialError('A confirmação da nova senha não corresponde.');
+        return;
+      }
+    } else if (credentialPasswordConfirmation) {
+      setCredentialError('Informe a nova senha temporária antes da confirmação.');
+      return;
+    }
+
     setResettingId(request.id);
+    setCredentialError('');
     try {
-      const result = await resetDirectAccessPassword(request.id);
+      const result = await resetDirectAccessPassword(request.id, customPassword || undefined);
       setRequests(current => current.map(item => item.id === result.request.id ? result.request : item));
       setResetCredentials({
         username: result.request.username || request.username || '',
@@ -393,9 +471,14 @@ export default function AccessRequestsAdminCard({
         accessPath: request.role === 'responsible' ? '/responsavel' : request.role === 'monitoring' ? '/monitoramento' : '/profissional',
       });
       setResetPasswordRequest(null);
+      setCredentialUsername('');
+      setCredentialPassword('');
+      setCredentialPasswordConfirmation('');
+      setCredentialError('');
+      setShowCredentialPassword(false);
       showToast('Nova senha temporária gerada. Copie antes de fechar o quadro.', 'success');
     } catch (caughtError) {
-      showToast(caughtError instanceof Error ? caughtError.message : 'Não foi possível gerar a nova senha temporária.', 'error');
+      setCredentialError(caughtError instanceof Error ? caughtError.message : 'Não foi possível gerar a nova senha temporária.');
     } finally {
       setResettingId('');
     }
@@ -589,7 +672,7 @@ export default function AccessRequestsAdminCard({
                       <div className="flex flex-wrap items-start gap-2">
                         <div className="min-w-0 flex-1">
                           <h3 className="font-bold text-clinic-text">{request.displayName}</h3>
-                          <p className="break-all text-sm text-clinic-text-muted">{request.username || request.contactEmail || request.email}</p>
+                          <p className="break-all text-sm text-clinic-text-muted">{publicAccessIdentifier(request) || request.displayName}</p>
                         </div>
                         <span className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${status.className}`}>
                           <StatusIcon size={12} />
@@ -792,12 +875,12 @@ export default function AccessRequestsAdminCard({
                         {request.directAccess && (
                           <button
                             type="button"
-                            onClick={() => setResetPasswordRequest(request)}
-                            disabled={resettingId === request.id || !!reviewingId}
+                            onClick={() => openCredentialManager(request)}
+                            disabled={resettingId === request.id || updatingUsernameId === request.id || !!reviewingId}
                             className="flex items-center justify-center gap-2 rounded-lg border border-clinic-primary/30 bg-white px-4 py-2 text-xs font-bold text-clinic-primary transition hover:bg-clinic-bg disabled:opacity-50"
                           >
                             {resettingId === request.id ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />}
-                            Gerar nova senha
+                            Gerenciar acesso
                           </button>
                         )}
                         {isSuspended(request) ? (
@@ -865,27 +948,118 @@ export default function AccessRequestsAdminCard({
 
       <Modal
         isOpen={!!resetPasswordRequest}
-        onClose={() => { if (!resettingId) setResetPasswordRequest(null); }}
-        title="Gerar nova senha temporária"
-        width="max-w-lg"
-        closeDisabled={!!resettingId}
+        onClose={closeCredentialManager}
+        title="Gerenciar usuário e senha"
+        width="max-w-xl"
+        closeDisabled={!!resettingId || !!updatingUsernameId}
       >
         {resetPasswordRequest && (
           <div className="space-y-5">
-            <div className="rounded-xl border border-status-orange-text/25 bg-status-orange-bg p-4 text-sm text-status-orange-text">
-              <p className="font-black">A senha atual deixará de funcionar.</p>
-              <p className="mt-2">O usuário receberá uma nova senha temporária e deverá criar uma senha particular no próximo acesso.</p>
-              <p className="mt-2">Suspensão, revogação e validade não serão alteradas por esta ação.</p>
-            </div>
             <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
               <p className="font-bold text-clinic-text">{resetPasswordRequest.displayName}</p>
-              <p className="mt-1 text-sm text-clinic-text-muted">{resetPasswordRequest.username || resetPasswordRequest.contactEmail || resetPasswordRequest.email}</p>
+              <p className="mt-1 text-sm text-clinic-text-muted">Perfil: {roleLabel(resetPasswordRequest.role)}</p>
             </div>
+
+            <section className="space-y-3 rounded-xl border border-clinic-border bg-white p-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-clinic-primary">Nome de usuário</p>
+                <p className="mt-1 text-xs text-clinic-text-muted">O usuário passará a entrar com o novo nome assim que a alteração for salva.</p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  className="clinic-input min-w-0 flex-1"
+                  value={credentialUsername}
+                  onChange={event => setCredentialUsername(event.target.value)}
+                  autoComplete="off"
+                  disabled={!!resettingId || !!updatingUsernameId}
+                  aria-label="Nome de usuário do acesso"
+                />
+                <button
+                  type="button"
+                  onClick={() => void submitUsernameUpdate()}
+                  disabled={
+                    !!resettingId
+                    || !!updatingUsernameId
+                    || credentialUsername.trim().toLowerCase() === (resetPasswordRequest.username || '').trim().toLowerCase()
+                  }
+                  className="flex items-center justify-center gap-2 rounded-xl border border-clinic-primary/30 bg-clinic-bg px-4 py-3 text-sm font-bold text-clinic-primary disabled:opacity-50"
+                >
+                  {updatingUsernameId ? <Loader2 size={17} className="animate-spin" /> : <UserRoundCheck size={17} />}
+                  Salvar usuário
+                </button>
+              </div>
+            </section>
+
+            <section className="space-y-4 rounded-xl border border-status-orange-text/25 bg-status-orange-bg p-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-status-orange-text">Redefinir senha</p>
+                <p className="mt-2 text-sm text-clinic-text">
+                  A senha atual não pode ser visualizada. Defina uma nova senha temporária ou deixe os campos vazios para gerar uma automaticamente.
+                </p>
+                <p className="mt-1 text-xs text-clinic-text-muted">
+                  A nova senha será exibida uma única vez e o usuário deverá criar uma senha particular no próximo acesso.
+                </p>
+              </div>
+
+              <label className="block">
+                <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">Nova senha temporária — opcional</span>
+                <div className="relative">
+                  <input
+                    className="clinic-input pr-11"
+                    type={showCredentialPassword ? 'text' : 'password'}
+                    value={credentialPassword}
+                    onChange={event => setCredentialPassword(event.target.value)}
+                    autoComplete="new-password"
+                    disabled={!!resettingId || !!updatingUsernameId}
+                    placeholder="Deixe vazio para gerar automaticamente"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCredentialPassword(current => !current)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-clinic-text-muted hover:text-clinic-primary"
+                    aria-label={showCredentialPassword ? 'Ocultar senha temporária' : 'Mostrar senha temporária'}
+                  >
+                    {showCredentialPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs font-black uppercase tracking-wider text-clinic-text-muted">Confirmar nova senha</span>
+                <input
+                  className="clinic-input"
+                  type={showCredentialPassword ? 'text' : 'password'}
+                  value={credentialPasswordConfirmation}
+                  onChange={event => setCredentialPasswordConfirmation(event.target.value)}
+                  autoComplete="new-password"
+                  disabled={!!resettingId || !!updatingUsernameId}
+                />
+              </label>
+            </section>
+
+            {credentialError && (
+              <div role="alert" className="rounded-xl border border-status-red-text/20 bg-status-red-bg px-4 py-3 text-sm font-bold text-status-red-text">
+                {credentialError}
+              </div>
+            )}
+
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button type="button" onClick={() => setResetPasswordRequest(null)} disabled={!!resettingId} className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-sm font-bold text-clinic-text disabled:opacity-60">Cancelar</button>
-              <button type="button" onClick={() => void submitPasswordReset()} disabled={!!resettingId} className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-sm font-bold text-white disabled:opacity-60">
+              <button
+                type="button"
+                onClick={closeCredentialManager}
+                disabled={!!resettingId || !!updatingUsernameId}
+                className="rounded-xl border border-clinic-border bg-white px-4 py-3 text-sm font-bold text-clinic-text disabled:opacity-60"
+              >
+                Fechar
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitPasswordReset()}
+                disabled={!!resettingId || !!updatingUsernameId}
+                className="flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-5 py-3 text-sm font-bold text-white disabled:opacity-60"
+              >
                 {resettingId ? <Loader2 size={17} className="animate-spin" /> : <KeyRound size={17} />}
-                Gerar nova senha
+                {credentialPassword ? 'Salvar nova senha' : 'Gerar senha temporária'}
               </button>
             </div>
           </div>
@@ -910,7 +1084,7 @@ export default function AccessRequestsAdminCard({
           >
             <div className="rounded-xl border border-clinic-border bg-clinic-bg p-4">
               <p className="text-sm font-bold text-clinic-text">{actionRequest.displayName}</p>
-              <p className="mt-1 break-all text-xs text-clinic-text-muted">{actionRequest.username || actionRequest.contactEmail || actionRequest.email}</p>
+              <p className="mt-1 break-all text-xs text-clinic-text-muted">{publicAccessIdentifier(actionRequest) || actionRequest.displayName}</p>
               <p className="mt-2 text-xs text-clinic-text-muted">
                 Perfil: <strong>{roleLabel(actionRequest.role)}</strong>
                 {actionRequest.status === 'approved' && <> · Validade: <strong>{validityLabel(actionRequest)}</strong></>}

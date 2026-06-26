@@ -235,7 +235,7 @@ export default function MonitoringPanel({
   const changeMonitoringTab = (tab: MonitoringTab) => {
     if (tab === activeTab) return;
     setActiveTab(tab);
-    if (!adminPreview) {
+    if (!adminPreview && (tab === 'agenda' || tab === 'galeria')) {
       void recordMonitoringTabAccess(tab).catch(recordError => {
         console.error('[MonitoringPanel] Falha ao registrar entrada na aba:', recordError);
       });

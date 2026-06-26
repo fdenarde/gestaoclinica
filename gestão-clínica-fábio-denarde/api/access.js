@@ -19,6 +19,8 @@ import {
   assertAccessUsername,
   directAccessPathForRole,
   isManagedAuthEmail,
+  publicAccessEmail,
+  publicAccessIdentifier,
   usernameToManagedAuthEmail,
 } from '../shared/accessCredentials.js';
 import {
@@ -99,6 +101,26 @@ function normalizeOptionalContactEmail(value) {
     throw accessError('access/invalid-contact-email', 'Informe um e-mail de contato válido.');
   }
   return email;
+}
+
+function resolvePublicAccessIdentity(profile = {}, decodedToken = {}) {
+  const username = normalizeText(profile.username, 20).toLowerCase();
+  const email = normalizeEmail(publicAccessEmail({
+    contactEmail: profile.contactEmail,
+    email: profile.email || decodedToken.email,
+  }));
+  const accountLabel = publicAccessIdentifier({
+    username,
+    contactEmail: email,
+    email,
+    displayName: profile.displayName || decodedToken.name,
+  }) || normalizeText(profile.displayName || decodedToken.name, 120);
+
+  return {
+    username,
+    email,
+    accountLabel,
+  };
 }
 
 function normalizeDirectAccessPassword(value) {
@@ -2213,6 +2235,192 @@ async function resetDirectAccessPassword(db, decodedToken, body) {
   };
 }
 
+
+async function updateDirectAccessUsername(db, decodedToken, body) {
+  const requestId = normalizeText(body.requestId, 128);
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)) {
+    throw accessError('access/invalid-request-id', 'O acesso informado é inválido.');
+  }
+
+  let username;
+  try {
+    username = assertAccessUsername(body.username);
+  } catch (error) {
+    throw accessError(error?.code || 'access/invalid-username', error?.message || 'Informe um nome de usuário válido.');
+  }
+
+  const requestRef = db.collection('accessRequests').doc(requestId);
+  const requestSnapshot = await requestRef.get();
+  if (!requestSnapshot.exists) {
+    throw accessError('access/request-not-found', 'O acesso não foi encontrado.', 404);
+  }
+
+  const request = requestSnapshot.data();
+  const currentUsername = normalizeText(request.username, 20).toLowerCase();
+  if (request.directAccess !== true || !request.uid || !currentUsername) {
+    throw accessError('access/direct-account-required', 'Esta ação está disponível somente para contas de acesso direto.', 409);
+  }
+  if (username === currentUsername) {
+    return { request: serializeRequest(requestSnapshot) };
+  }
+
+  const role = accessRoleKey(request.role) || 'professional';
+  const currentAuthEmail = normalizeEmail(request.email);
+  const nextAuthEmail = usernameToManagedAuthEmail(username);
+  const reservationId = crypto.randomUUID();
+  const newAliasRef = db.collection('accessUsernames').doc(username);
+  const oldAliasRef = db.collection('accessUsernames').doc(currentUsername);
+  const refs = await collectAccessMutationRefs(db, request, requestId);
+  const nextApprovalRef = db.collection('accessApprovals').doc(approvalDocumentId(nextAuthEmail, role));
+  const auditRef = db.collection('accessAdministrationAudit').doc();
+  const actorEmail = normalizeEmail(decodedToken.email);
+
+  await reserveDirectAccessUsername(db, newAliasRef, reservationId, decodedToken);
+
+  let authEmailUpdated = false;
+  try {
+    const authUser = await getAuth().getUser(String(request.uid));
+    const authEmailBefore = normalizeEmail(authUser.email || currentAuthEmail);
+    if (!currentAuthEmail || !isManagedAuthEmail(currentAuthEmail) || authEmailBefore !== currentAuthEmail) {
+      throw accessError('access/direct-account-email-mismatch', 'A conta de autenticação não corresponde ao usuário gerenciado registrado. Recarregue e tente novamente.', 409);
+    }
+
+    try {
+      await getAuth().updateUser(String(request.uid), { email: nextAuthEmail });
+      authEmailUpdated = true;
+    } catch (error) {
+      if (error?.code === 'auth/email-already-exists') {
+        throw accessError('access/username-unavailable', 'Este nome de usuário não está disponível.', 409);
+      }
+      throw error;
+    }
+
+    await db.runTransaction(async transaction => {
+      const [
+        latestRequest,
+        latestNewAlias,
+        latestOldAlias,
+        currentApproval,
+        existingNextApproval,
+      ] = await Promise.all([
+        transaction.get(requestRef),
+        transaction.get(newAliasRef),
+        transaction.get(oldAliasRef),
+        transaction.get(refs.approvalRef),
+        transaction.get(nextApprovalRef),
+      ]);
+
+      if (!latestRequest.exists) {
+        throw accessError('access/request-not-found', 'O acesso não foi encontrado.', 404);
+      }
+      const latestRequestData = latestRequest.data();
+      if (
+        latestRequestData.directAccess !== true
+        || String(latestRequestData.uid || '') !== String(request.uid)
+        || normalizeText(latestRequestData.username, 20).toLowerCase() !== currentUsername
+      ) {
+        throw accessError('access/direct-account-changed', 'O acesso foi alterado durante a atualização. Recarregue e tente novamente.', 409);
+      }
+      if (!latestNewAlias.exists || latestNewAlias.data().reservationId !== reservationId) {
+        throw accessError('access/username-reservation-lost', 'A reserva do nome de usuário expirou. Tente novamente.', 409);
+      }
+      if (!currentApproval.exists) {
+        throw accessError('access/direct-account-incomplete', 'O cadastro de acesso está incompleto e não pode ter o usuário alterado com segurança.', 409);
+      }
+      if (existingNextApproval.exists && nextApprovalRef.path !== refs.approvalRef.path) {
+        throw accessError('access/username-unavailable', 'Este nome de usuário não está disponível.', 409);
+      }
+
+      const profileSnapshots = new Map();
+      for (const [uid, profileRef] of refs.profileRefs) {
+        const profileSnapshot = await transaction.get(profileRef);
+        profileSnapshots.set(uid, profileSnapshot);
+      }
+
+      const identityPatch = {
+        email: nextAuthEmail,
+        normalizedEmail: nextAuthEmail,
+        username,
+        usernameNormalized: username,
+      };
+
+      transaction.set(requestRef, {
+        ...identityPatch,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      transaction.set(nextApprovalRef, {
+        ...currentApproval.data(),
+        ...identityPatch,
+        requestId,
+        linkedUid: String(request.uid),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (nextApprovalRef.path !== refs.approvalRef.path) {
+        transaction.delete(refs.approvalRef);
+      }
+
+      for (const [uid, profileRef] of refs.profileRefs) {
+        const profileData = profileSnapshots.get(uid)?.exists ? profileSnapshots.get(uid).data() : {};
+        transaction.set(profileRef, {
+          uid,
+          ...identityPatch,
+          displayName: normalizeText(profileData.displayName || latestRequestData.displayName, 120),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+
+      transaction.set(newAliasRef, {
+        username,
+        usernameNormalized: username,
+        uid: String(request.uid),
+        role,
+        requestId,
+        authEmail: nextAuthEmail,
+        status: 'active',
+        reservationId: null,
+        reservedAt: null,
+        activatedAt: FieldValue.serverTimestamp(),
+        createdBy: decodedToken.uid,
+        createdByEmail: actorEmail,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      if (latestOldAlias.exists && String(latestOldAlias.data().uid || '') === String(request.uid)) {
+        transaction.delete(oldAliasRef);
+      }
+
+      transaction.set(auditRef, {
+        id: auditRef.id,
+        action: 'updateDirectAccessUsername',
+        uid: String(request.uid),
+        role,
+        requestId,
+        previousUsername: currentUsername,
+        username,
+        actorUid: decodedToken.uid,
+        actorEmail,
+        createdAt: FieldValue.serverTimestamp(),
+        passwordStored: false,
+      });
+    });
+
+    return {
+      request: serializeRequest(await requestRef.get()),
+    };
+  } catch (error) {
+    if (authEmailUpdated) {
+      try {
+        await getAuth().updateUser(String(request.uid), { email: currentAuthEmail });
+      } catch (rollbackError) {
+        console.error('[ACCESS API] Falha ao restaurar o e-mail técnico após atualização incompleta do usuário:', rollbackError?.message || rollbackError);
+      }
+    }
+    await releaseDirectAccessUsernameReservation(db, newAliasRef, reservationId);
+    throw error;
+  }
+}
+
 async function completePasswordChange(db, decodedToken, body) {
   const profileRef = db.collection('accessProfiles').doc(decodedToken.uid);
   const snapshot = await profileRef.get();
@@ -2924,6 +3132,7 @@ async function resolveMonitoringPanelContext(db, decodedToken, req) {
 
   return {
     context,
+    profile,
     ownerUserId: primaryAdminWorkspaceId,
     adminPreview: isPrimaryAdmin ? adminPreview : false,
   };
@@ -2939,12 +3148,11 @@ async function countMonitoringActivities(patientRef) {
   }
 }
 
-const MONITORING_NOTIFICATION_TABS = new Set(['dashboard', 'agenda', 'galeria']);
+const MONITORING_NOTIFICATION_TABS = new Set(['agenda', 'galeria']);
 
 function monitoringTabLabel(tab) {
   if (tab === 'agenda') return 'Agenda';
-  if (tab === 'galeria') return 'Galeria de Atividades';
-  return 'Dashboard';
+  return 'Galeria de Atividades';
 }
 
 async function requireMonitoringNotificationContext(db, decodedToken, req) {
@@ -2968,38 +3176,21 @@ function monitoringNotificationDefinition(eventType, tab = '') {
       detailAction: 'Login autenticado no perfil Monitoramento',
     };
   }
-  if (eventType === 'monitoring_logout') {
-    return {
-      title: 'Logout do Monitoramento',
-      actionLocation: 'Monitoramento / Saída',
-      actionTarget: 'Perfil Monitoramento',
-      messageSuffix: 'saiu do perfil Monitoramento.',
-      detailAction: 'Logout solicitado pelo usuário do Monitoramento',
-    };
-  }
-  if (eventType === 'monitoring_panel_access') {
-    return {
-      title: 'Entrada no Monitoramento',
-      actionLocation: 'Monitoramento / Entrada',
-      actionTarget: 'Área Monitoramento',
-      messageSuffix: 'entrou na área Monitoramento.',
-      detailAction: 'Entrada autenticada na área Monitoramento',
-    };
-  }
+
   const tabLabel = monitoringTabLabel(tab);
   return {
-    title: `Entrada em ${tabLabel}`,
+    title: `Acesso à ${tabLabel}`,
     actionLocation: `Monitoramento / ${tabLabel}`,
     actionTarget: tabLabel,
-    messageSuffix: `entrou em ${tabLabel} no Monitoramento.`,
-    detailAction: `Entrada na aba ${tabLabel}`,
+    messageSuffix: `acessou ${tabLabel} no Monitoramento.`,
+    detailAction: `Acesso à aba ${tabLabel}`,
   };
 }
 
 async function recordMonitoringAction(db, decodedToken, body, req) {
-  const { context, ownerUserId } = await requireMonitoringNotificationContext(db, decodedToken, req);
+  const { context, profile, ownerUserId } = await requireMonitoringNotificationContext(db, decodedToken, req);
   const clientEventType = normalizeText(body.eventType, 40);
-  if (!['session_start', 'tab_access', 'logout'].includes(clientEventType)) {
+  if (!['session_start', 'tab_access'].includes(clientEventType)) {
     throw accessError('access/invalid-monitoring-action', 'A ação de Monitoramento informada é inválida.');
   }
 
@@ -3009,29 +3200,23 @@ async function recordMonitoringAction(db, decodedToken, body, req) {
   }
 
   const requestedTab = normalizeText(body.tab, 20);
-  const tab = MONITORING_NOTIFICATION_TABS.has(requestedTab) ? requestedTab : 'dashboard';
+  const tab = MONITORING_NOTIFICATION_TABS.has(requestedTab) ? requestedTab : '';
   if (clientEventType === 'tab_access' && !MONITORING_NOTIFICATION_TABS.has(requestedTab)) {
     throw accessError('access/invalid-monitoring-tab', 'A aba do Monitoramento informada é inválida.');
   }
 
   const actorName = normalizeText(context.actorName || decodedToken.name, 120) || 'Usuário do Monitoramento';
-  const actorEmail = normalizeEmail(context.actorEmail || decodedToken.email);
+  const actorIdentity = resolvePublicAccessIdentity(profile || {}, decodedToken);
+  const actorEmail = actorIdentity.email;
+  const actorAccount = actorIdentity.accountLabel || actorName;
   const clientContext = normalizeClientContext({
     ...(body.clientContext && typeof body.clientContext === 'object' ? body.clientContext : {}),
   });
   const eventDefinitions = clientEventType === 'session_start'
-    ? [
-      ['monitoring_login', ''],
-      ['monitoring_panel_access', ''],
-      ['monitoring_tab_access', 'dashboard'],
-    ]
-    : clientEventType === 'logout'
-      ? [['monitoring_logout', '']]
-      : [['monitoring_tab_access', tab]];
+    ? [['monitoring_login', '']]
+    : [['monitoring_tab_access', tab]];
 
-  const batch = db.batch();
-  const notificationIds = [];
-  for (const [eventType, eventTab] of eventDefinitions) {
+  const preparedNotifications = eventDefinitions.map(([eventType, eventTab]) => {
     const definition = monitoringNotificationDefinition(eventType, eventTab);
     const notificationId = crypto.createHash('sha256')
       .update(`${decodedToken.uid}:${monitoringSessionId}:${eventType}:${eventTab || 'general'}`)
@@ -3042,52 +3227,73 @@ async function recordMonitoringAction(db, decodedToken, body, req) {
       portalTab: eventTab || 'monitoring',
       actionLocation: definition.actionLocation,
     });
-    const details = [
-      notificationDetail('Ação', definition.detailAction),
-      notificationDetail('Perfil', 'Monitoramento'),
-      notificationDetail('Usuário', actorName),
-      notificationDetail('E-mail da conta', actorEmail),
-      notificationDetail('Local', definition.actionLocation),
-      notificationDetail('Dispositivo', eventClientContext.deviceType),
-      notificationDetail('Navegador', eventClientContext.browser),
-      notificationDetail('Sistema', eventClientContext.platform),
-    ];
-    batch.set(notificationRef, {
-      id: notificationRef.id,
-      type: eventType,
-      ...notificationBaseFields(eventType),
-      monitoringSessionId,
-      monitoringTab: eventTab || null,
-      title: definition.title,
-      message: `${actorName} ${definition.messageSuffix}`,
-      patientId: '',
-      patientName: '',
-      responsibleUid: '',
-      responsibleName: '',
-      responsibleEmail: '',
-      actorUserId: decodedToken.uid,
-      actorRole: 'monitoring',
-      actorName,
-      actorEmail,
-      actionLocation: definition.actionLocation,
-      actionTarget: definition.actionTarget,
-      navigationTarget: 'none',
-      clientContext: eventClientContext,
-      details,
-      read: false,
-      readAt: null,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    notificationIds.push(notificationId);
+    return {
+      notificationId,
+      notificationRef,
+      data: {
+        id: notificationRef.id,
+        type: eventType,
+        ...notificationBaseFields(eventType),
+        monitoringSessionId,
+        monitoringTab: eventTab || null,
+        title: definition.title,
+        message: `${actorName} ${definition.messageSuffix}`,
+        patientId: '',
+        patientName: '',
+        responsibleUid: '',
+        responsibleName: '',
+        responsibleEmail: '',
+        actorUserId: decodedToken.uid,
+        actorRole: 'monitoring',
+        actorName,
+        actorEmail,
+        actionLocation: definition.actionLocation,
+        actionTarget: definition.actionTarget,
+        navigationTarget: 'none',
+        clientContext: eventClientContext,
+        details: [
+          notificationDetail('Ação', definition.detailAction),
+          notificationDetail('Perfil', 'Monitoramento'),
+          notificationDetail('Usuário', actorName),
+          notificationDetail('Conta', actorAccount),
+          notificationDetail('Local', definition.actionLocation),
+          notificationDetail('Dispositivo', eventClientContext.deviceType),
+          notificationDetail('Navegador', eventClientContext.browser),
+          notificationDetail('Sistema', eventClientContext.platform),
+        ],
+        read: false,
+        readAt: null,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    };
+  });
+
+  const existingSnapshots = await db.getAll(
+    ...preparedNotifications.map(item => item.notificationRef),
+  );
+  const missingNotifications = preparedNotifications.filter((item, index) => !existingSnapshots[index].exists);
+  if (missingNotifications.length === 0) {
+    return {
+      recorded: false,
+      notificationIds: preparedNotifications.map(item => item.notificationId),
+    };
   }
 
+  const batch = db.batch();
+  for (const item of missingNotifications) {
+    batch.set(item.notificationRef, item.data);
+  }
   await batch.commit();
-  return { recorded: true, notificationIds };
+  return {
+    recorded: true,
+    notificationIds: missingNotifications.map(item => item.notificationId),
+  };
 }
 
 async function getMonitoringPanelData(db, decodedToken, req) {
-  const { context, ownerUserId, adminPreview } = await resolveMonitoringPanelContext(db, decodedToken, req);
+  const { context, profile, ownerUserId, adminPreview } = await resolveMonitoringPanelContext(db, decodedToken, req);
+  const viewerIdentity = resolvePublicAccessIdentity(profile || {}, decodedToken);
   const weekRange = resolveMonitoringWeekRange(req);
   const ownerRef = db.collection('users').doc(ownerUserId);
   const patientsRef = ownerRef.collection('patients');
@@ -3132,7 +3338,7 @@ async function getMonitoringPanelData(db, decodedToken, req) {
   return {
     viewer: {
       uid: context.userId,
-      email: context.actorEmail,
+      email: viewerIdentity.accountLabel || viewerIdentity.email,
       displayName: context.actorName,
       role: context.role,
       adminPreview,
@@ -3162,11 +3368,14 @@ async function getResponsiblePortalData(db, decodedToken, req) {
   const { profile, linkedPatientIds, ownerUserId } = await requireResponsibleContext(db, decodedToken);
   const settingsSnapshot = await db.doc(`users/${ownerUserId}/settings/config`).get();
   const settings = serializePortalSettings(settingsSnapshot.exists ? settingsSnapshot.data() : {});
+  const responsibleIdentity = resolvePublicAccessIdentity(profile, decodedToken);
   const baseResult = {
     responsible: {
       uid: decodedToken.uid,
       displayName: normalizeText(profile.displayName || decodedToken.name, 120),
-      email: normalizeEmail(profile.email || decodedToken.email),
+      username: responsibleIdentity.username,
+      accountLabel: responsibleIdentity.accountLabel,
+      email: responsibleIdentity.email,
     },
     settings,
     patients: [],
@@ -3221,7 +3430,8 @@ async function getResponsiblePortalData(db, decodedToken, req) {
   }
 
   const responsibleName = normalizeText(profile.displayName || decodedToken.name, 120) || 'Responsável';
-  const responsibleEmail = normalizeEmail(profile.email || decodedToken.email);
+  const responsibleEmail = responsibleIdentity.email;
+  const responsibleAccount = responsibleIdentity.accountLabel || responsibleName;
   const patientNames = patientResults.map(item => normalizeText(item.patient?.name, 120)).filter(Boolean);
   const accessMessage = patientNames.length === 1
     ? `${responsibleName} entrou no Portal do Responsável de ${patientNames[0]}.`
@@ -3238,7 +3448,7 @@ async function getResponsiblePortalData(db, decodedToken, req) {
   const details = [
     notificationDetail('Ação', 'Último acesso autenticado ao Portal do Responsável'),
     notificationDetail('Responsável', responsibleName),
-    notificationDetail('E-mail da conta', responsibleEmail),
+    notificationDetail('Conta', responsibleAccount),
     notificationDetail('Atendente(s) disponível(is)', patientNames.join(', ') || 'Nenhum atendente vinculado'),
     notificationDetail('Dispositivo', clientContext.deviceType),
     notificationDetail('Navegador', clientContext.browser),
@@ -3290,10 +3500,13 @@ async function listAdminResponsiblePreviewOptions(db, patientId) {
   return snapshot.docs
     .map(document => {
       const profile = document.data() || {};
+      const identity = resolvePublicAccessIdentity(profile);
       return {
         uid: document.id,
         displayName: normalizeText(profile.displayName, 120) || 'Responsável',
-        email: normalizeEmail(profile.email),
+        username: identity.username,
+        accountLabel: identity.accountLabel,
+        email: identity.email,
         status: normalizeText(profile.status, 40),
         role: normalizeText(profile.role, 40),
         profile,
@@ -3381,11 +3594,15 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
   const fallbackResponsibleName = normalizeText(patient.guardianName, 120) || 'Responsável';
   const responsibleName = selectedResponsible?.displayName || fallbackResponsibleName;
   const responsibleEmail = selectedResponsible?.email || '';
+  const responsibleUsername = selectedResponsible?.username || '';
+  const responsibleAccountLabel = selectedResponsible?.accountLabel || responsibleEmail || responsibleName;
 
   return {
     responsible: {
       uid: selectedResponsibleUid || `admin-preview:${patientId}`,
       displayName: responsibleName,
+      username: responsibleUsername,
+      accountLabel: responsibleAccountLabel,
       email: responsibleEmail,
     },
     settings,
@@ -3398,6 +3615,8 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
       responsibleOptions: responsibleOptions.map(option => ({
         uid: option.uid,
         displayName: option.displayName,
+        username: option.username,
+        accountLabel: option.accountLabel,
         email: option.email,
       })),
     },
@@ -3756,7 +3975,7 @@ async function requestResponsiblePatientUpdate(db, decodedToken, body) {
   }
 
   const responsibleName = normalizeText(profile.displayName || decodedToken.name, 120) || 'Responsável';
-  const responsibleEmail = normalizeEmail(profile.email || decodedToken.email);
+  const responsibleEmail = resolvePublicAccessIdentity(profile, decodedToken).email;
   const clientContext = normalizeClientContext({
     portalTab: 'profile',
     actionLocation: 'Portal do Responsável / Solicitação de alteração cadastral',
@@ -4047,6 +4266,7 @@ async function prepareResponsibleDocumentUpload(db, decodedToken, body, req) {
   if (sizeBytes > MAX_RESPONSIBLE_DOCUMENT_BYTES) throw accessError('access/document-too-large', 'O documento deve ter no máximo 20 MB.', 413);
 
   const responsibleName = normalizeText(profile.displayName || decodedToken.name, 120) || 'Responsável';
+  const responsibleEmail = resolvePublicAccessIdentity(profile, decodedToken).email;
   const documentRef = patientRef.collection('portalDocuments').doc();
   const upload = await createResponsibleDocumentUploadSession({
     ownerUserId,
@@ -4067,7 +4287,7 @@ async function prepareResponsibleDocumentUpload(db, decodedToken, body, req) {
     note,
     responsibleUid: decodedToken.uid,
     responsibleName,
-    responsibleEmail: normalizeEmail(profile.email || decodedToken.email),
+    responsibleEmail,
     status: 'uploading',
     driveName: upload.driveName,
     createdAt: FieldValue.serverTimestamp(),
@@ -4099,7 +4319,7 @@ async function finalizeResponsibleDocumentUpload(db, decodedToken, body) {
   }
 
   const responsibleName = normalizeText(profile.displayName || decodedToken.name, 120) || 'Responsável';
-  const responsibleEmail = normalizeEmail(profile.email || decodedToken.email);
+  const responsibleEmail = resolvePublicAccessIdentity(profile, decodedToken).email;
   const patientName = normalizeText(patientSnapshot.data().name, 120) || 'atendente';
   const clientContext = normalizeClientContext({
     portalTab: 'profile',
@@ -4227,7 +4447,7 @@ async function recordResponsibleAction(db, decodedToken, body) {
   }
 
   const responsibleName = normalizeText(profile.displayName || decodedToken.name, 120) || 'Responsável';
-  const responsibleEmail = normalizeEmail(profile.email || decodedToken.email);
+  const responsibleEmail = resolvePublicAccessIdentity(profile, decodedToken).email;
   const clientContext = normalizeClientContext({
     portalTab: 'gallery',
     actionLocation: 'Portal do Responsável / Galeria de atividades',
@@ -4753,6 +4973,12 @@ export default async function handler(req, res) {
       const decodedToken = await verifyFirebaseRequest(req);
       requirePrimaryAdmin(decodedToken);
       return res.status(200).json(await resetDirectAccessPassword(db, decodedToken, body));
+    }
+
+    if (body.action === 'updateDirectAccessUsername') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      requirePrimaryAdmin(decodedToken);
+      return res.status(200).json(await updateDirectAccessUsername(db, decodedToken, body));
     }
 
     if (body.action === 'completePasswordChange') {

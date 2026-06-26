@@ -40,45 +40,50 @@ test('Responsável mantém somente os quatro tipos já aprovados no sino', () =>
   }
 });
 
-test('backend aceita somente as três ações controladas do Monitoramento', () => {
+test('backend do Monitoramento aceita somente login, Agenda e Galeria', () => {
   const block = between(accessSource, 'async function recordMonitoringAction', 'async function getMonitoringPanelData');
-  assert.match(block, /\['session_start', 'tab_access', 'logout'\]/);
-  assert.match(block, /MONITORING_NOTIFICATION_TABS/);
+  assert.match(block, /\['session_start', 'tab_access'\]/);
+  assert.match(accessSource, /const MONITORING_NOTIFICATION_TABS = new Set\(\['agenda', 'galeria'\]\)/);
   assert.match(block, /monitoring_login/);
-  assert.match(block, /monitoring_logout/);
-  assert.match(block, /monitoring_panel_access/);
   assert.match(block, /monitoring_tab_access/);
-  assert.match(block, /db\.batch\(\)/);
+  assert.match(block, /db\.getAll/);
   assert.match(block, /monitoringSessionId/);
+  assert.doesNotMatch(block, /monitoring_logout/);
+  assert.doesNotMatch(block, /monitoring_panel_access/);
+  assert.doesNotMatch(block, /'dashboard'/);
 });
 
-test('API expõe gravação autenticada do Monitoramento', () => {
+test('API expõe somente gravação autenticada de login e abas necessárias', () => {
   assert.match(accessSource, /body\.action === 'recordMonitoringAction'/);
   assert.match(accessSource, /verifyFirebaseRequest\(req\)/);
   assert.match(apiSource, /recordMonitoringSessionStart/);
   assert.match(apiSource, /recordMonitoringTabAccess/);
-  assert.match(apiSource, /recordMonitoringLogout/);
+  assert.doesNotMatch(apiSource, /recordMonitoringLogout/);
 });
 
-test('entrada inicial registra login, área Monitoramento e Dashboard sem admin preview', () => {
+test('entrada inicial registra somente login, sem acesso genérico ou Dashboard', () => {
   assert.match(panelSource, /if \(!adminPreview\)[\s\S]*recordMonitoringSessionStart\(\)/);
   assert.match(accessSource, /\['monitoring_login', ''\]/);
-  assert.match(accessSource, /\['monitoring_panel_access', ''\]/);
-  assert.match(accessSource, /\['monitoring_tab_access', 'dashboard'\]/);
+  assert.doesNotMatch(accessSource, /monitoring_panel_access/);
+  assert.doesNotMatch(accessSource, /\['monitoring_tab_access', 'dashboard'\]/);
 });
 
-test('troca real de aba registra Dashboard, Agenda e Galeria', () => {
+test('troca real de aba registra somente Agenda e Galeria uma vez por sessão', () => {
   assert.match(panelSource, /if \(tab === activeTab\) return/);
+  assert.match(panelSource, /tab === 'agenda' \|\| tab === 'galeria'/);
   assert.match(panelSource, /recordMonitoringTabAccess\(tab\)/);
   assert.match(panelSource, /onClick=\{\(\) => changeMonitoringTab\(tab\.id\)\}/);
-  assert.match(accessSource, /new Set\(\['dashboard', 'agenda', 'galeria'\]\)/);
+  assert.match(accessSource, /crypto\.createHash\('sha256'\)/);
+  assert.match(accessSource, /existingSnapshots/);
+  assert.match(accessSource, /missingNotifications\.length === 0/);
 });
 
-test('logout do Monitoramento é registrado antes do signOut e limpa a sessão local', () => {
+test('logout do Monitoramento apenas limpa a sessão local e sai da conta', () => {
   const block = between(appSource, 'const handleAccessPortalLogout', 'const resetSessionScopedData');
   assert.match(block, /accessProfile\?\.role === 'monitoring'/);
-  assert.ok(block.indexOf('await recordMonitoringLogout') < block.indexOf('await logout()'));
   assert.match(block, /clearMonitoringSessionId/);
+  assert.match(block, /await logout\(\)/);
+  assert.doesNotMatch(block, /recordMonitoringLogout/);
 });
 
 test('sino e Central de Notificações ficam visíveis somente ao Administrador', () => {
@@ -90,6 +95,7 @@ test('sino e Central de Notificações ficam visíveis somente ao Administrador'
 test('modelo e interface distinguem Monitoramento de Responsável', () => {
   assert.match(typesSource, /actorRole: AccessRole \| null/);
   assert.match(typesSource, /\| 'monitoring'/);
+  assert.match(typesSource, /MonitoringNotificationTab = 'agenda' \| 'galeria'/);
   assert.match(centerSource, /monitoring: 'Monitoramento'/);
   assert.match(centerSource, /Ações do sistema/);
   assert.match(centerSource, /notification\.actorName/);

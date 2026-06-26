@@ -25,6 +25,7 @@ import {
 } from '../../firebase';
 import { respondAdditionalAccessInformation, submitAccessRequest } from '../../lib/accessApi';
 import { applyTheme } from '../../lib/theme';
+import { publicAccessIdentifier } from '../../../shared/accessCredentials.js';
 import type { AccessProfile, AccessRequestInput, AccessRequestRole } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
 
@@ -644,7 +645,7 @@ export default function AccessPortal({
         </div>
         <div className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-left text-sm">
           <p className="font-bold text-clinic-text">{profile.displayName || user?.displayName || 'Usuário'}</p>
-          <p className="mt-1 text-clinic-text-muted">{profile.username || profile.contactEmail || profile.email}</p>
+          <p className="mt-1 text-clinic-text-muted">{publicAccessIdentifier(profile) || profile.displayName || 'Conta por nome de usuário'}</p>
           <p className="mt-2 text-xs font-bold uppercase tracking-wider text-clinic-text-faint">
             Perfil: {accessRoleLabel(profile.role)}
           </p>

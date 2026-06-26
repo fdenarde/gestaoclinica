@@ -5,6 +5,56 @@ import {
   getPackageForMedia,
   sessionConsumesPackage,
 } from '../api/_lib/responsiblePortalPackages.js';
+import { buildResponsiblePortalSessionProgress } from '../shared/responsiblePortalSessions.js';
+
+
+test('portal mostra sessões progressivamente e mantém somente a próxima futura', () => {
+  const sessions = Array.from({ length: 10 }, (_, index) => ({
+    id: `s${index + 1}`,
+    sessionNumber: index + 1,
+    date: `2026-${index < 2 ? '06' : '07'}-${String(index < 2 ? 10 + index : 10 + index).padStart(2, '0')}`,
+    time: '14:00',
+    status: index < 2 ? 'Realizada' : 'Agendada',
+  }));
+  const progress = buildResponsiblePortalSessionProgress(sessions, {
+    today: '2026-06-26',
+    consumedCount: 2,
+  });
+  assert.deepEqual(progress.visibleGroups.map(group => group.number), [3, 2, 1]);
+  assert.equal(progress.nextSessionNumber, 3);
+  assert.equal(progress.visibleGroups.some(group => group.number === 10), false);
+  assert.equal(progress.forecastEndDate, '2026-07-19');
+});
+
+test('previsão conta sessão dupla como duas sessões sem repetir a data', () => {
+  const dates = ['2026-07-03', '2026-07-03', '2026-07-10', '2026-07-10', '2026-07-17', '2026-07-17', '2026-07-24', '2026-07-24', '2026-07-31', '2026-07-31'];
+  const sessions = dates.map((date, index) => ({
+    id: `double-${index + 1}`,
+    sessionNumber: index + 1,
+    date,
+    time: index % 2 === 0 ? '14:00' : '15:00',
+    status: 'Agendada',
+  }));
+  const progress = buildResponsiblePortalSessionProgress(sessions, {
+    today: '2026-06-26',
+    consumedCount: 0,
+  });
+  assert.deepEqual(progress.visibleGroups.map(group => group.number), [2, 1]);
+  assert.equal(progress.scheduledSessionCount, 10);
+  assert.equal(progress.scheduledDateCount, 5);
+  assert.deepEqual(progress.scheduledDates, ['2026-07-03', '2026-07-10', '2026-07-17', '2026-07-24', '2026-07-31']);
+  assert.equal(progress.forecastEndDate, '2026-07-31');
+});
+
+test('interface usa lista progressiva e exibe previsão de término do pacote', async () => {
+  const fs = await import('node:fs');
+  const portalSource = fs.readFileSync(new URL('../src/components/Auth/ResponsiblePortal.tsx', import.meta.url), 'utf8');
+  assert.match(portalSource, /buildResponsiblePortalSessionProgress/);
+  assert.match(portalSource, /progress\.visibleGroups/);
+  assert.match(portalSource, /Previsão de término/);
+  assert.match(portalSource, /10 sessões em/);
+  assert.doesNotMatch(portalSource, /Array\.from\(\{ length: 10 \}/);
+});
 
 test('falta só consome pacote quando o profissional decide', () => {
   assert.equal(sessionConsumesPackage({ status: 'Falta' }), false);

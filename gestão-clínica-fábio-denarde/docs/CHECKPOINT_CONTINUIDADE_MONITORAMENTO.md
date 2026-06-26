@@ -1272,3 +1272,97 @@ Nenhum commit, push, deploy, publicação de rules, PM2 ou WhatsApp foi executad
 - Aplicação no repositório real: pendente.
 - Teste visual local pelo usuário: pendente.
 - Commit, push e deploy: bloqueados até validação local completa e autorização expressa.
+
+## Continuação — gerenciamento de acesso, notificações e sessões progressivas (26/06/2026)
+
+### Objetivo autorizado
+
+- permitir que o administrador gerencie posteriormente o nome de usuário de contas de acesso direto;
+- permitir redefinição segura de senha temporária, sem armazenar ou recuperar a senha atual;
+- ocultar o identificador técnico `@login.gestaoclinica.invalid` de interfaces e notificações;
+- manter no Monitoramento somente notificações de login, abertura da Agenda e abertura da Galeria de Atividades;
+- tornar a lista de sessões do Portal do Responsável progressiva e incluir previsão de término do pacote de dez sessões.
+
+### Modelagem de credenciais
+
+- o nome de usuário continua associado a um e-mail técnico determinístico apenas no Firebase Authentication;
+- a alteração do nome de usuário reserva o novo alias, atualiza o e-mail técnico no Auth e sincroniza solicitação, aprovação, perfil e alias em transação;
+- em caso de falha, o e-mail do Auth e a reserva do alias são restaurados quando possível;
+- a senha atual nunca é retornada ou persistida;
+- a nova senha temporária pode ser informada pelo administrador ou gerada automaticamente;
+- a nova senha é devolvida apenas na resposta da redefinição e exibida uma única vez;
+- a redefinição mantém suspensão, revogação e validade existentes.
+
+### Identidade pública
+
+- `publicAccessIdentifier` prioriza nome de usuário, e-mail real de contato ou nome de exibição;
+- `publicAccessEmail` elimina e-mails técnicos das respostas públicas;
+- Portal do Responsável, tela de controle de acesso, painel de senha, Monitoramento e notificações não devem exibir `@login.gestaoclinica.invalid`.
+
+### Notificações do Monitoramento
+
+Eventos mantidos:
+
+1. login autenticado no perfil Monitoramento;
+2. primeira abertura da Agenda na sessão autenticada;
+3. primeira abertura da Galeria de Atividades na sessão autenticada.
+
+Eventos encerrados:
+
+- entrada genérica no painel;
+- acesso ao Dashboard;
+- logout;
+- demais eventos específicos do Monitoramento.
+
+A deduplicação usa um identificador determinístico composto por usuário, sessão autenticada, tipo do evento e aba. Nenhuma exclusão automática de notificações históricas foi introduzida.
+
+### Sessões progressivas no Portal do Responsável
+
+- são exibidas as sessões já alcançadas e somente a próxima sessão futura;
+- a sessão de maior número aparece acima das anteriores;
+- posições futuras distantes ficam ocultas, mas continuam disponíveis para calcular a previsão;
+- a previsão termina na data da sessão 10 quando essa posição está agendada;
+- sessões duplas contam como duas posições, mas datas iguais são deduplicadas na informação de previsão;
+- nenhuma numeração, pagamento, reagendamento ou registro real é alterado por essa apresentação.
+
+### Arquivos previstos nesta continuação
+
+Modificados:
+
+- `api/access.js`
+- `shared/accessCredentials.js`
+- `src/App.tsx`
+- `src/components/Auth/AccessPortal.tsx`
+- `src/components/Auth/AccessRequestsAdminCard.tsx`
+- `src/components/Auth/PasswordSecurityPanel.tsx`
+- `src/components/Auth/ResponsiblePortal.tsx`
+- `src/components/Monitoring/MonitoringPanel.tsx`
+- `src/lib/accessApi.ts`
+- `src/types/access.ts`
+- `tests/access-admin-controls.test.mjs`
+- `tests/access-credentials.test.mjs`
+- `tests/monitoring-notifications.test.mjs`
+- `tests/responsible-portal-packages.test.mjs`
+
+Criado:
+
+- `shared/responsiblePortalSessions.js`
+
+### Validações executadas fora do projeto real
+
+- sintaxe Node de `api/access.js`, `shared/accessCredentials.js` e `shared/responsiblePortalSessions.js`: aprovada;
+- transpile de sintaxe TypeScript/TSX dos arquivos alterados: aprovado;
+- cinco testes do módulo de credenciais: aprovados;
+- cenários puros de sessões progressivas e sessão dupla: aprovados;
+- testes completos, lint e build permanecem obrigatórios no computador do projeto após aplicação do pacote.
+
+### Proteções desta etapa
+
+- nenhum dado real foi gravado;
+- nenhuma conta real foi alterada;
+- nenhuma senha real foi lida;
+- nenhum commit foi executado;
+- nenhum push foi executado;
+- nenhum deploy foi executado;
+- nenhuma Firebase Rule foi publicada;
+- PM2 e WhatsApp não foram modificados.

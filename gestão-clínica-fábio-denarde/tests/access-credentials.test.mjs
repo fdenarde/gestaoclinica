@@ -36,3 +36,13 @@ test('mapeia cada perfil para o link específico', () => {
   assert.equal(directAccessPathForRole('professional'), '/profissional');
   assert.equal(directAccessPathForRole('monitoring'), '/monitoramento');
 });
+
+test('identificador público prefere usuário ou e-mail real e nunca expõe e-mail técnico', async () => {
+  const { publicAccessEmail, publicAccessIdentifier } = await import('../shared/accessCredentials.js');
+  const technicalEmail = usernameToManagedAuthEmail('debriane');
+  assert.equal(publicAccessIdentifier({ username: 'debriane', email: technicalEmail }), 'debriane');
+  assert.equal(publicAccessIdentifier({ email: technicalEmail, displayName: 'Debriane' }), 'Debriane');
+  assert.equal(publicAccessIdentifier({ contactEmail: 'real@example.com', email: technicalEmail }), 'real@example.com');
+  assert.equal(publicAccessEmail({ email: technicalEmail }), '');
+  assert.equal(publicAccessEmail({ contactEmail: 'real@example.com', email: technicalEmail }), 'real@example.com');
+});

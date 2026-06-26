@@ -70,6 +70,28 @@ export function isManagedAuthEmail(value) {
   return String(value || '').trim().toLowerCase().endsWith(`@${MANAGED_AUTH_DOMAIN}`);
 }
 
+
+export function publicAccessIdentifier(value = {}) {
+  const username = normalizeAccessUsername(value?.username);
+  if (username) return username;
+
+  const contactEmail = String(value?.contactEmail || '').trim();
+  if (contactEmail && !isManagedAuthEmail(contactEmail)) return contactEmail;
+
+  const email = String(value?.email || '').trim();
+  if (email && !isManagedAuthEmail(email)) return email;
+
+  return String(value?.displayName || '').trim();
+}
+
+export function publicAccessEmail(value = {}) {
+  const contactEmail = String(value?.contactEmail || '').trim();
+  if (contactEmail && !isManagedAuthEmail(contactEmail)) return contactEmail;
+
+  const email = String(value?.email || '').trim();
+  return email && !isManagedAuthEmail(email) ? email : '';
+}
+
 export function directAccessPathForRole(role) {
   if (role === 'responsible') return '/responsavel';
   if (role === 'monitoring') return '/monitoramento';
