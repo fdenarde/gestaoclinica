@@ -1,4 +1,10 @@
-const REALIZED_STATUSES = new Set([
+const PACKAGE_CONSUMING_STATUSES = new Set([
+  'Realizada',
+  'Reposição',
+  'late_cancellation_no_replacement',
+]);
+
+const ACTIVITY_ALLOWED_STATUSES = new Set([
   'Realizada',
   'Reposição',
 ]);
@@ -74,14 +80,72 @@ export function isSessionRemovedOrBlocked(session = {}) {
   return session.removedFromAgenda === true || session.isBlocked === true;
 }
 
-// Mantém a mesma definição do card "Sessões Restantes (Pacote atual)":
-// apenas sessões efetivamente realizadas ou de reposição avançam a sequência
-// exibida na Agenda. Faltas, cancelamentos e faltas sem reposição continuam
-// podendo ter efeitos financeiros próprios, mas não criam uma divergência
-// visual entre o card do pacote e o texto "Sessão será".
-export function isCompletedClinicalSession(session = {}) {
+function normalizeBoolean(value) {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function normalizeThroughDate(value) {
+  const normalized = String(value || '').trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : '';
+}
+
+export function dedupeSessionsByStableIdentity(sessions = []) {
+  const unique = [];
+  const knownIds = new Set();
+
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    if (!session) continue;
+    const id = String(session.id || '').trim();
+    if (id && knownIds.has(id)) continue;
+    if (id) knownIds.add(id);
+    unique.push(session);
+  }
+
+  return unique;
+}
+
+export function sessionConsumesPackage(session = {}, { throughDate = '' } = {}) {
   if (isSessionRemovedOrBlocked(session)) return false;
-  return REALIZED_STATUSES.has(String(session.status || ''));
+
+  const normalizedThroughDate = normalizeThroughDate(throughDate);
+  const sessionDate = normalizeThroughDate(session.date);
+  if (normalizedThroughDate && sessionDate && sessionDate > normalizedThroughDate) return false;
+
+  const status = String(session.status || '');
+  if (PACKAGE_CONSUMING_STATUSES.has(status)) return true;
+  if (status !== 'Falta') return false;
+  return normalizeBoolean(
+    session.consumesPackage
+    ?? session.consumePackageSession
+    ?? session.countsTowardPackage,
+  );
+}
+
+export function isCountedAbsenceSession(session = {}, options = {}) {
+  if (!sessionConsumesPackage(session, options)) return false;
+  const status = String(session.status || '');
+  return status === 'Falta' || status === 'late_cancellation_no_replacement';
+}
+
+export function sessionAllowsActivity(session = {}, { throughDate = '' } = {}) {
+  if (isSessionRemovedOrBlocked(session)) return false;
+  const normalizedThroughDate = normalizeThroughDate(throughDate);
+  const sessionDate = normalizeThroughDate(session.date);
+  if (normalizedThroughDate && sessionDate && sessionDate > normalizedThroughDate) return false;
+  return ACTIVITY_ALLOWED_STATUSES.has(String(session.status || ''));
+}
+
+export function getSessionPresentationStatus(session = {}) {
+  if (isCountedAbsenceSession(session)) return 'Falta contabilizada';
+  if (String(session.status || '') === 'Falta.Prof') return 'Falta do profissional';
+  return String(session.status || 'Agendada');
+}
+
+// Uma posição clínica avança sempre que o evento efetivamente consome o
+// pacote. A atividade é uma dimensão separada: faltas contabilizadas ocupam a
+// sequência sem admitir mídia ou registro clínico fictício.
+export function isCompletedClinicalSession(session = {}) {
+  return sessionConsumesPackage(session);
 }
 
 export function isPlannedClinicalSession(session = {}) {
@@ -113,12 +177,12 @@ function normalizeStoredCycleNumber(session = {}) {
   return 0;
 }
 
-function getPatientRealizedSessions(sessions = [], patientId = '') {
+function getPatientRealizedSessions(sessions = [], patientId = '', options = {}) {
   const normalizedPatientId = String(patientId || '');
-  return (Array.isArray(sessions) ? sessions : [])
+  return dedupeSessionsByStableIdentity(sessions)
     .filter(session => (
       String(session?.patientId || '') === normalizedPatientId
-      && isCompletedClinicalSession(session)
+      && sessionConsumesPackage(session, options)
     ))
     .slice()
     .sort((left, right) => getSessionSequenceSortKey(left).localeCompare(getSessionSequenceSortKey(right)));
@@ -237,8 +301,8 @@ export function getSessionLogicalPosition(sessions = [], session = {}) {
   return 0;
 }
 
-export function getCompletedSessions(sessions = [], patientId = '') {
-  return getPatientRealizedSessions(sessions, patientId);
+export function getCompletedSessions(sessions = [], patientId = '', options = {}) {
+  return getPatientRealizedSessions(sessions, patientId, options);
 }
 
 export function getCompletedSessionCycleNumber(sessions = [], session = {}) {
@@ -282,6 +346,77 @@ export function getSessionCycleLabel(sessions = [], session = {}) {
 export function getCurrentPackageProgress(sessions = [], patientId = '') {
   const completedCount = getCompletedSessions(sessions, patientId).length;
   return completedCount === 0 ? 0 : getSessionCycleNumberFromPosition(completedCount);
+}
+
+function linkedActivitySessionIds(activity = {}) {
+  const ids = Array.isArray(activity.sessionIds) && activity.sessionIds.length > 0
+    ? activity.sessionIds
+    : [activity.sessionId];
+  return [...new Set(ids.map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+export function buildEffectiveSessionHistory(sessions = [], {
+  patientId = '',
+  activities = [],
+  throughDate = '',
+  includeRemoved = false,
+} = {}) {
+  const normalizedPatientId = String(patientId || '').trim();
+  const normalizedThroughDate = normalizeThroughDate(throughDate);
+  const source = dedupeSessionsByStableIdentity(sessions)
+    .filter(session => !normalizedPatientId || String(session.patientId || '') === normalizedPatientId)
+    .filter(session => includeRemoved || !isSessionRemovedOrBlocked(session))
+    .filter(session => {
+      const date = normalizeThroughDate(session.date);
+      return date && (!normalizedThroughDate || date <= normalizedThroughDate);
+    })
+    .slice()
+    .sort((left, right) => getSessionSequenceSortKey(left).localeCompare(getSessionSequenceSortKey(right)));
+
+  const activityIdsBySession = new Map();
+  for (const [index, activity] of (Array.isArray(activities) ? activities : []).entries()) {
+    const activityId = String(activity?.id || `activity-${index}`);
+    for (const sessionId of linkedActivitySessionIds(activity)) {
+      const activityIds = activityIdsBySession.get(sessionId) || new Set();
+      activityIds.add(activityId);
+      activityIdsBySession.set(sessionId, activityIds);
+    }
+  }
+
+  return source.map(session => {
+    const logicalPosition = getSessionLogicalPosition(source, session);
+    const sessionNumber = getSessionCycleNumber(source, session);
+    const activityCount = activityIdsBySession.get(String(session.id || ''))?.size || 0;
+    const history = Array.isArray(session.noReplacementHistory) ? session.noReplacementHistory : [];
+    const wasCountedAbsence = history.some(entry => (
+      String(entry?.newStatus || '') === 'late_cancellation_no_replacement'
+    ));
+    const reopened = String(session.status || '') === 'Agendada' && wasCountedAbsence;
+    const removed = isSessionRemovedOrBlocked(session);
+
+    return {
+      id: String(session.id || ''),
+      sessionId: String(session.id || ''),
+      patientId: String(session.patientId || ''),
+      packageNumber: logicalPosition > 0 ? Math.floor((logicalPosition - 1) / 10) + 1 : null,
+      date: String(session.date || ''),
+      time: normalizeAgendaTime(session.time),
+      sessionNumber,
+      logicalSessionPosition: logicalPosition,
+      originalStatus: String(session.status || ''),
+      presentationStatus: getSessionPresentationStatus(session),
+      consumesPackage: sessionConsumesPackage(session, { throughDate: normalizedThroughDate }),
+      hasActivity: activityCount > 0,
+      activityCount,
+      sessionKind: String(session.status || '') === 'Reposição' || String(session.source || '') === 'reposition'
+        ? 'replacement'
+        : 'normal',
+      absenceReason: String(session.noReplacementReasonText || session.noReplacementObservation || ''),
+      reopened,
+      reverted: reopened || removed || (String(session.status || '') === 'Cancelada' && wasCountedAbsence),
+      removed,
+    };
+  });
 }
 
 function sanitizeVirtualSessionForPersistence(session = {}, generatedId) {

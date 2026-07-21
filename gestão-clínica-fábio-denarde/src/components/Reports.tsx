@@ -9,7 +9,7 @@ import autoTable from 'jspdf-autotable';
 import Papa from 'papaparse';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { getSessionCycleNumber } from '../lib/sessionSequence';
+import { getCompletedSessions, getSessionCycleNumber, isCountedAbsenceSession } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
@@ -115,7 +115,7 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
         .filter(s => s.patientId === patient.id && !isSessionRemovedFromAgenda(s))
         .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-      const realized = patientSessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
+      const realized = getCompletedSessions(patientSessions, patient.id, format(new Date(), 'yyyy-MM-dd')).length;
 
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
@@ -378,11 +378,12 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
                       <div className="flex flex-wrap gap-1 mb-1">
                         {summary.sessions.slice(-summary.plannedSessions).map(session => {
                            const isReposicao = session.status === SessionStatus.REPOSICAO;
+                           const isCountedAbsence = isCountedAbsenceSession(session);
                            return (
                              <div key={session.id} className="flex flex-col items-center gap-0.5">
                                <div className={cn(
                                  "w-3 h-3 rounded-full",
-                                 isReposicao ? "bg-[#E67E22]" : "bg-clinic-primary"
+                                  isCountedAbsence ? "bg-[#A94444]" : isReposicao ? "bg-[#E67E22]" : "bg-clinic-primary"
                                )} />
                                <span className="text-[8px] text-clinic-text-muted font-medium">
                                  {safeFormatDate(session.date, 'dd/MM')}
@@ -402,10 +403,14 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
                           <div className="w-2 h-2 rounded-full bg-clinic-primary" />
                           Normal
                         </span>
-                        <span className="flex items-center gap-1">
-                          <div className="w-2 h-2 rounded-full bg-[#E67E22]" />
-                          Reposição
-                        </span>
+                         <span className="flex items-center gap-1">
+                           <div className="w-2 h-2 rounded-full bg-[#E67E22]" />
+                           Reposição
+                         </span>
+                         <span className="flex items-center gap-1">
+                           <div className="w-2 h-2 rounded-full bg-[#A94444]" />
+                           Falta contabilizada
+                         </span>
                         <span className="flex items-center gap-1">
                           <div className="w-2 h-2 rounded-full bg-clinic-bg border border-clinic-border" />
                           Restante
@@ -429,7 +434,7 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
            </h3>
            <div className="space-y-3">
              {state.patients.filter(p => {
-               const count = state.sessions.filter(s => s.patientId === p.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length % 10 || 0;
+               const count = getCompletedSessions(state.sessions, p.id, format(new Date(), 'yyyy-MM-dd')).length % 10 || 0;
                return count >= 8;
              }).map(patient => (
                <div key={patient.id} className="p-4 rounded-xl bg-status-blue-bg border border-blue-100 flex justify-between items-center">
@@ -440,7 +445,7 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
                   <span className="text-xs font-bold px-3 py-1 bg-white rounded-full text-status-blue-text shadow-sm">Sugerir Renovação</span>
                </div>
              ))}
-             {state.patients.filter(p => (state.sessions.filter(s => s.patientId === p.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length % 10) >= 8).length === 0 && (
+             {state.patients.filter(p => (getCompletedSessions(state.sessions, p.id, format(new Date(), 'yyyy-MM-dd')).length % 10) >= 8).length === 0 && (
                <p className="text-sm text-clinic-text-muted italic text-center py-6">Nenhum atendente próximo da renovação.</p>
              )}
            </div>

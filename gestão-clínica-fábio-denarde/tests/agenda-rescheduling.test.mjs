@@ -347,7 +347,7 @@ test('agendamento antigo ainda marcado como Agendada antes da última realizada 
   assert.equal(getSessionCycleLabel(source, preview), 'Sessão será 9');
 });
 
-test('falta sem reposição e falta consumida não divergem do card de sessões realizadas', () => {
+test('falta sem reposição e falta consumida ocupam posições estáveis na sequência contabilizada', () => {
   const realized = completedSessions(8);
   const noReplacement = scheduled({
     id: 'late-cancel',
@@ -366,8 +366,8 @@ test('falta sem reposição e falta consumida não divergem do card de sessões 
   const preview = scheduled({ id: 'preview-after-absence', date: '2026-06-22', time: '18:00', packageNumber: 0 });
   const source = [...realized, noReplacement, consumedAbsence, preview];
 
-  assert.equal(getSessionCycleNumber(source, preview), 9);
-  assert.equal(getSessionCycleLabel(source, preview), 'Sessão será 9');
+  assert.equal(getSessionCycleNumber(source, preview), 1);
+  assert.equal(getSessionCycleLabel(source, preview), 'Sessão será 1');
   assert.equal(getSessionCycleNumber(source, noReplacement), 9);
-  assert.equal(getSessionCycleNumber(source, consumedAbsence), 9);
+  assert.equal(getSessionCycleNumber(source, consumedAbsence), 10);
 });

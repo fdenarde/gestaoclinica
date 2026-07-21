@@ -7,7 +7,7 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
-import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, mergeSessionSequenceSource } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, isCompletedClinicalSession, mergeSessionSequenceSource } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
 import { rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
 
@@ -371,11 +371,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       ...extraSessionData,
     };
     const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [virtualSession]);
+    const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, virtualSession);
     const nextSessionNumber = getSessionCycleNumber(sequenceSource, virtualSession);
     const newReal: Session = {
       ...previewSession,
       id: Math.random().toString(36).substr(2, 9),
       packageNumber: nextSessionNumber,
+      ...(logicalSessionPosition > 0 ? {
+        logicalSessionPosition,
+        logicalSessionNumber: nextSessionNumber,
+      } : {}),
     };
     let reposition: Reposition | undefined;
     if (newStatus === SessionStatus.FALTA || newStatus === SessionStatus.FALTA_PROF) {
@@ -514,6 +519,9 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       changedAt,
       changedBy: currentUserName || 'Profissional',
     };
+    const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
+    const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
+    const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
     const sessionPatch: Partial<Session> = {
       status: SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
       consumesPackage: true,
@@ -522,6 +530,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       noReplacementObservation: trimmedObservation,
       noReplacementRecordedAt: changedAt,
       noReplacementRecordedBy: currentUserName || 'Profissional',
+      ...(logicalSessionPosition > 0 ? {
+        logicalSessionPosition,
+        logicalSessionNumber,
+        packageNumber: logicalSessionNumber,
+      } : {}),
     };
 
     if (session.isVirtual) {
@@ -716,6 +729,9 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   const handleActionReopen = (session: ProcessedSession) => {
     if (session.isVirtual) return;
+    const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
+    const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
+    const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
     const updatedSessions = state.sessions.map(s => {
       if (s.id !== session.id) return s;
       const {
@@ -731,7 +747,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       void noReplacementObservation;
       void noReplacementRecordedAt;
       void noReplacementRecordedBy;
-      return { ...rest, status: SessionStatus.AGENDADA, consumesPackage: false };
+      return {
+        ...rest,
+        status: SessionStatus.AGENDADA,
+        consumesPackage: false,
+        ...(logicalSessionPosition > 0 ? {
+          logicalSessionPosition,
+          logicalSessionNumber,
+          packageNumber: logicalSessionNumber,
+        } : {}),
+      };
     });
     onUpdate({ sessions: updatedSessions });
     showToast(`Sessão de ${state.patients.find(p => p.id === session.patientId)?.name} reaberta como Agendada.`);
@@ -910,8 +935,20 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
     }
+    const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
+    const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
+    const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
     const updatedSessions = state.sessions.map(s => 
-      s.id === session.id ? { ...s, status: SessionStatus.FALTA, consumesPackage } : s
+      s.id === session.id ? {
+        ...s,
+        status: SessionStatus.FALTA,
+        consumesPackage,
+        ...(consumesPackage && logicalSessionPosition > 0 ? {
+          logicalSessionPosition,
+          logicalSessionNumber,
+          packageNumber: logicalSessionNumber,
+        } : {}),
+      } : s
     );
     const newReposition: Reposition = {
       id: Math.random().toString(36).substr(2, 9),
@@ -2080,7 +2117,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   <div className="p-4 grid grid-cols-2 gap-2">
                     <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3">
                       <p className="text-[10px] font-black text-clinic-text-faint uppercase">Última sessão</p>
-                      <p className="text-sm font-bold text-clinic-text mt-1">{getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]?.date ? getSessionCycleLabel(agendaSequenceSource, getPatientSessions(selectedPatient.id).filter(s => [SessionStatus.REALIZADA, SessionStatus.REPOSICAO].includes(s.status)).slice(-1)[0]) : 'Sem sessão realizada'}</p>
+                      <p className="text-sm font-bold text-clinic-text mt-1">{getPatientSessions(selectedPatient.id).filter(isCompletedClinicalSession).slice(-1)[0]?.date ? getSessionCycleLabel(agendaSequenceSource, getPatientSessions(selectedPatient.id).filter(isCompletedClinicalSession).slice(-1)[0]) : 'Sem sessão contabilizada'}</p>
                     </div>
                     <div className="rounded-lg bg-clinic-bg/70 border border-clinic-border p-3">
                       <p className="text-[10px] font-black text-clinic-text-faint uppercase">Próxima lógica</p>

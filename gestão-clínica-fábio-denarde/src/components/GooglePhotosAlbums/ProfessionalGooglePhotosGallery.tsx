@@ -38,6 +38,7 @@ import {
   saveGooglePhotosAlbumPackage,
 } from '../../lib/googlePhotosAlbumsApi';
 import { buildActivityMediaPackageModel } from '../../lib/activityMediaPackages';
+import { buildEffectiveSessionHistory } from '../../lib/sessionSequence';
 import { safeFormatDate } from '../../lib/utils';
 import PatientPhoto from '../Common/PatientPhoto';
 import {
@@ -304,6 +305,14 @@ export default function ProfessionalGooglePhotosGallery({
       removedCardIds,
     }) as GooglePhotosAlbum[]
   ), [draftCards, persistedCards, removedCardIds, virtualCards]);
+
+  const effectiveSessionHistory = useMemo(() => buildEffectiveSessionHistory(sessionSource, {
+    patientId: selectedPatientId,
+    throughDate: todayIsoDate(),
+    activities: allCards
+      .filter(card => Boolean(normalizeAlbumUrl(card.url)))
+      .map(card => ({ id: card.id, sessionId: card.sessionId, sessionIds: card.sessionIds })),
+  }).filter(item => item.consumesPackage && item.packageNumber === currentPackageNumber), [allCards, currentPackageNumber, selectedPatientId, sessionSource]);
 
   const canCreateAlbum = permissions.canCreate || permissions.canEdit;
   const creatableCards = useMemo(() => allCards.filter(card => (
@@ -832,7 +841,8 @@ export default function ProfessionalGooglePhotosGallery({
       : 'border-status-green-text/20 bg-status-green-bg text-status-green-text';
   const showSaveNow = permissions.canEdit && (saveStatus === 'dirty' || saveStatus === 'invalid' || saveStatus === 'error' || hasLocalChanges);
   const selectedPatientInitials = selectedPatientName.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase() || 'AT';
-  const latestSelectedSession = packageSessions[0] || null;
+  const latestEffectiveSession = effectiveSessionHistory.at(-1) || null;
+  const latestSelectedSession = packageSessions.at(-1) || null;
 
   return (
     <div className="space-y-4 py-4">
@@ -948,8 +958,8 @@ export default function ProfessionalGooglePhotosGallery({
                 <h2 className="truncate text-lg font-bold text-clinic-text">{selectedPatientName}</h2>
                 <p className="text-xs text-clinic-text-muted">
                   Pacote atual {currentPackageNumber}
-                  {latestSelectedSession ? ` • ${formatSessionNumbers([Number((latestSelectedSession as Session & { activitySessionNumber?: number }).activitySessionNumber || 0)]) || 'Sessão atual'} de 10` : ''}
-                  {latestSelectedSession?.date ? ` • ${safeFormatDate(latestSelectedSession.date, 'dd/MM/yyyy')}` : ''}
+                  {latestEffectiveSession ? ` • Sessão ${latestEffectiveSession.sessionNumber} de 10` : latestSelectedSession ? ` • ${formatSessionNumbers([Number((latestSelectedSession as Session & { activitySessionNumber?: number }).activitySessionNumber || 0)]) || 'Sessão atual'} de 10` : ''}
+                  {latestEffectiveSession?.date ? ` • ${safeFormatDate(latestEffectiveSession.date, 'dd/MM/yyyy')}` : latestSelectedSession?.date ? ` • ${safeFormatDate(latestSelectedSession.date, 'dd/MM/yyyy')}` : ''}
                 </p>
               </div>
             </div>
@@ -1052,13 +1062,46 @@ export default function ProfessionalGooglePhotosGallery({
           </span>
         </header>
 
+        {!loading && effectiveSessionHistory.length > 0 && (
+          <div className="mt-5 rounded-2xl border border-clinic-border bg-clinic-bg/45 p-3 sm:p-4">
+            <div className="flex items-center gap-2">
+              <CalendarDays size={17} className="text-clinic-primary" />
+              <div>
+                <h3 className="text-xs font-black uppercase tracking-wide text-clinic-text">Histórico efetivo de sessões</h3>
+                <p className="text-[10px] text-clinic-text-muted">Sessões contabilizadas aparecem mesmo quando não admitem atividade.</p>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {effectiveSessionHistory.map(item => {
+                const countedAbsence = item.presentationStatus === 'Falta contabilizada';
+                return (
+                  <article key={item.sessionId} className={`rounded-xl border p-3 ${countedAbsence ? 'border-[#A94444]/30 bg-[#FFF4F4]' : 'border-clinic-border bg-white'}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-black text-clinic-text">Sessão {item.sessionNumber}</p>
+                        <p className="mt-0.5 text-xs text-clinic-text-muted">{safeFormatDate(item.date, 'dd/MM/yyyy')} às {item.time}</p>
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${countedAbsence ? 'bg-white text-[#A94444]' : item.sessionKind === 'replacement' ? 'bg-status-orange-bg text-status-orange-text' : 'bg-status-green-bg text-status-green-text'}`}>
+                        {item.presentationStatus}
+                      </span>
+                    </div>
+                    <p className={`mt-2 text-[10px] font-bold ${item.hasActivity ? 'text-status-green-text' : 'text-clinic-text-muted'}`}>
+                      {item.hasActivity ? `${item.activityCount} ${item.activityCount === 1 ? 'atividade' : 'atividades'}` : 'Sem atividade registrada'}
+                    </p>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {loading && <div className="flex min-h-40 items-center justify-center gap-2 text-sm font-bold text-clinic-text-muted"><Loader2 size={20} className="animate-spin" /> Carregando links do pacote...</div>}
 
         {!loading && allCards.length === 0 && (
           <div className="mt-5 rounded-xl border border-dashed border-clinic-border bg-clinic-bg p-8 text-center">
             <Images size={32} className="mx-auto text-clinic-text-faint" />
-            <p className="mt-3 font-black text-clinic-text">Nenhuma sessão disponível no pacote atual</p>
-            <p className="mt-1 text-sm text-clinic-text-muted">Quando uma sessão realizada ou em andamento existir, o card virtual aparecerá aqui.</p>
+            <p className="mt-3 font-black text-clinic-text">Nenhuma atividade disponível no pacote atual</p>
+            <p className="mt-1 text-sm text-clinic-text-muted">Quando uma sessão realizada ou em andamento admitir atividade, o card virtual aparecerá aqui.</p>
           </div>
         )}
 

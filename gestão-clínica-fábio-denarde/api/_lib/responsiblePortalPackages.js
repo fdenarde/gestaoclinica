@@ -1,11 +1,10 @@
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
+import {
+  dedupeSessionsByStableIdentity,
+  sessionConsumesPackage as sharedSessionConsumesPackage,
+} from '../../shared/sessionScheduling.js';
 
-const CONSUMED_STATUSES = new Set(['Realizada', 'Reposição', 'late_cancellation_no_replacement']);
 const EXCLUDED_STATUSES = new Set(['Cancelada']);
-
-function normalizeBoolean(value) {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
 
 function normalizeSessionSortKey(session) {
   const date = String(session?.date || '');
@@ -14,16 +13,7 @@ function normalizeSessionSortKey(session) {
 }
 
 export function sessionConsumesPackage(session) {
-  const status = String(session?.status || '');
-  if (CONSUMED_STATUSES.has(status)) return true;
-  if (status === 'Falta') {
-    return normalizeBoolean(
-      session?.consumesPackage
-      ?? session?.consumePackageSession
-      ?? session?.countsTowardPackage,
-    );
-  }
-  return false;
+  return sharedSessionConsumesPackage(session);
 }
 
 function createPackage(number, status = 'future') {
@@ -48,14 +38,14 @@ export function buildResponsiblePackages(rawSessions, {
   today = new Date().toISOString().slice(0, 10),
   payments = [],
 } = {}) {
-  const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
+  const sessions = dedupeSessionsByStableIdentity(rawSessions)
     .filter(session => session && !session.isBlocked && !EXCLUDED_STATUSES.has(String(session.status || '')))
     .filter(session => /^\d{4}-\d{2}-\d{2}$/.test(String(session.date || '')))
     .sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
 
   const patientId = String(sessions.find(session => session?.patientId)?.patientId || payments.find(payment => payment?.patientId)?.patientId || '');
   const activatedPackageNumber = getActivatedPackageNumber(payments, { patientId });
-  const consumedTotal = sessions.filter(sessionConsumesPackage).length;
+  const consumedTotal = sessions.filter(session => sharedSessionConsumesPackage(session, { throughDate: today })).length;
   const naturalCurrentPackageNumber = consumedTotal > 0
     ? Math.floor((consumedTotal - 1) / 10) + 1
     : 1;
@@ -66,7 +56,7 @@ export function buildResponsiblePackages(rawSessions, {
   let awaitingPaymentSessionCount = 0;
 
   for (const session of sessions) {
-    const consumesPackage = sessionConsumesPackage(session);
+    const consumesPackage = sharedSessionConsumesPackage(session, { throughDate: today });
     const status = String(session.status || 'Agendada');
     let ordinal;
 

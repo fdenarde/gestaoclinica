@@ -3,6 +3,7 @@ import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, R
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera, Eye } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import { getPatientSessionsThroughDate } from '../lib/sessionVisibility';
+import { getCompletedSessions, getSessionCycleNumber, isCountedAbsenceSession } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import Modal from './Common/Modal';
 import PatientPhoto from './Common/PatientPhoto';
@@ -456,7 +457,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         <div className="p-6 space-y-4">
           {filteredPatients.length > 0 ? (
             filteredPatients.map(patient => {
-              const totalRealized = state.sessions.filter(s => s.patientId === patient.id && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
+              const totalRealized = getCompletedSessions(state.sessions, patient.id, format(new Date(), 'yyyy-MM-dd')).length;
               const attendedInCycle = totalRealized % 10;
               const remainingInCycle = attendedInCycle === 0 && totalRealized > 0 ? 0 : 10 - attendedInCycle;
               // If exactly 10, 20, etc sessions are realized, we show 10 realized and 0 remaining for that cycle
@@ -489,7 +490,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                       <div className="flex-1 w-full max-w-sm space-y-1">
                         <div className="flex justify-between text-[10px] font-bold uppercase text-clinic-text-faint">
                           <span>Progresso do Pacote</span>
-                          <span>{displayAttended} atendidas • {displayRemaining} restantes</span>
+                          <span>{displayAttended} contabilizadas • {displayRemaining} restantes</span>
                         </div>
                         <div className="w-full h-1.5 bg-clinic-bg rounded-full overflow-hidden">
                           <div className="h-full bg-clinic-primary rounded-full transition-all duration-700" style={{ width: `${(displayAttended/10)*100}%` }}></div>
@@ -960,8 +961,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     }
   };
   // Realized sessions sorted chronologically (ascending)
-  const realizedSessionsChronological = patientSessions
-    .filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO || (s.status === SessionStatus.FALTA && s.consumesPackage === true))
+  const realizedSessionsChronological = getCompletedSessions(state.sessions, patient.id, format(new Date(), 'yyyy-MM-dd'))
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   const realizedCount = realizedSessionsChronological.length;
@@ -2261,6 +2261,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                        <div key={session.id} className={cn(
                          "p-4 rounded-xl border flex items-center justify-between",
                          session.status === SessionStatus.REALIZADA ? 'bg-blue-500/10 border-blue-400 border-dashed' :
+                         isCountedAbsenceSession(session) ? 'bg-[#FFF4F4] border-[#A94444]/30' :
                          session.status === SessionStatus.FALTA ? 'bg-red-500/10 border-red-500/20' :
                          session.status === SessionStatus.FALTA_PROF ? 'bg-orange-500/10 border-orange-500/20' :
                          'bg-transparent border-clinic-border'
@@ -2268,8 +2269,10 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                          <div className="flex items-center gap-4">
                             <Calendar size={18} className="text-clinic-text-faint" />
                             <div className="flex flex-col">
-                              <span className="font-bold text-sm">{safeFormatDate(session.date, 'dd/MM/yyyy')} — {session.time}</span>
+                              <span className="font-bold text-sm">Sessão {getSessionCycleNumber(state.sessions, session) || '—'}</span>
+                              <span className="text-xs text-clinic-text-muted">{safeFormatDate(session.date, 'dd/MM/yyyy')} às {session.time}</span>
                               <span className="text-[10px] text-clinic-text-muted italic">{session.type}</span>
+                              {isCountedAbsenceSession(session) && <span className="mt-1 text-[10px] font-bold text-[#A94444]">Sem atividade registrada</span>}
                             </div>
                          </div>
                          <div className="flex items-center gap-3">
@@ -2303,7 +2306,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                                )}
                              </div>
                              <span className={cn("px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider", getStatusColor(session.status))}>
-                              {session.status}
+                               {isCountedAbsenceSession(session) ? 'Falta contabilizada' : session.status}
                             </span>
                          </div>
                        </div>
@@ -2361,7 +2364,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                               </span>
                             </div>
                             <div className="flex justify-between text-xs">
-                              <span className="text-clinic-text-faint font-bold uppercase tracking-wider text-[10px]">Sessões Realizadas</span>
+                              <span className="text-clinic-text-faint font-bold uppercase tracking-wider text-[10px]">Sessões Contabilizadas</span>
                               <span className="text-clinic-text font-bold">{pkg.count} / 10</span>
                             </div>
                           </div>
@@ -2834,5 +2837,3 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     </Modal>
   );
 }
-
-

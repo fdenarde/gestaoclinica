@@ -68,7 +68,7 @@ test('texto individual e texto geral ficam legíveis para a área de transferên
   });
 
   assert.match(individual, /Atendente: Alicia/);
-  assert.match(individual, /Sessões realizadas \(2\/10\)/);
+  assert.match(individual, /Sessões contabilizadas \(2\/10\)/);
   assert.match(individual, /08\/06 - reposição/);
   assert.match(individual, /Restantes: 8 sessões/);
   assert.match(all, /Relatório de Sessões — 21\/06\/2026/);

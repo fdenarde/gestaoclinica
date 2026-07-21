@@ -1,5 +1,6 @@
 import { Payment, PaymentModal, Patient, Session, SessionStatus } from '../types';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
+import { sessionConsumesPackage } from '../../shared/sessionScheduling.js';
 
 export const PACKAGE_GROSS_VALUE = 1000;
 export const PARTNER_SHARE_RATE = 0.2;
@@ -34,12 +35,6 @@ export interface PackageFinancialSummary {
   hasNewPackageWithoutPayment: boolean;
 }
 
-const COUNTED_SESSION_STATUSES = new Set<string>([
-  SessionStatus.REALIZADA,
-  SessionStatus.REPOSICAO,
-  SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
-]);
-
 function sortSessionsChronologically(a: Session, b: Session) {
   const dateCompare = (a.date || '').localeCompare(b.date || '');
   if (dateCompare !== 0) return dateCompare;
@@ -58,9 +53,11 @@ function clampCurrency(value: number) {
   return Math.min(Math.max(value, 0), PACKAGE_GROSS_VALUE);
 }
 
-function isCountedSession(session: Session) {
-  return COUNTED_SESSION_STATUSES.has(session.status)
-    || (session.status === SessionStatus.FALTA && session.consumesPackage === true);
+function localDateKey(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function getExplicitPackageNumber(payment: Payment) {
@@ -107,7 +104,7 @@ export function calculatePackageFinancialSummary(
     .filter(session => session.patientId === patient.id && !session.isBlocked && session.status !== SessionStatus.CANCELADA)
     .sort(sortSessionsChronologically);
 
-  const completedSessions = patientSessions.filter(isCountedSession);
+  const completedSessions = patientSessions.filter(session => sessionConsumesPackage(session, { throughDate: localDateKey(today) }));
   const completedPackageNumber = completedSessions.length > 0
     ? Math.floor((completedSessions.length - 1) / SESSIONS_PER_PACKAGE) + 1
     : 0;

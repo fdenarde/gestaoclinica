@@ -1,5 +1,10 @@
+import {
+  dedupeSessionsByStableIdentity,
+  isCountedAbsenceSession,
+  sessionConsumesPackage,
+} from './sessionScheduling.js';
+
 const DEFAULT_PACKAGE_SESSION_TOTAL = 10;
-const REALIZED_SESSION_STATUSES = new Set(['Realizada', 'Reposição']);
 const ACTIVE_PATIENT_STATUS = 'Ativo';
 const SAFE_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -8,26 +13,33 @@ function normalizePlannedSessions(value) {
   return planned > 0 ? planned : DEFAULT_PACKAGE_SESSION_TOTAL;
 }
 
+function localTodayIso(now = new Date()) {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function sessionSortKey(session = {}) {
   return `${String(session.date || '')}T${String(session.time || '')}|${String(session.id || '')}`;
 }
 
 export function isCurrentPackageRealizedSession(session = {}) {
-  return REALIZED_SESSION_STATUSES.has(String(session.status || ''));
+  return sessionConsumesPackage(session);
 }
 
 export function isActivePackagePatient(patient = {}) {
   return String(patient.status || '') === ACTIVE_PATIENT_STATUS;
 }
 
-export function buildCurrentPackageSessionSummary(patient = {}, sessions = [], plannedSessions = DEFAULT_PACKAGE_SESSION_TOTAL) {
+export function buildCurrentPackageSessionSummary(patient = {}, sessions = [], plannedSessions = DEFAULT_PACKAGE_SESSION_TOTAL, options = {}) {
   const planned = normalizePlannedSessions(plannedSessions);
   const patientId = String(patient.id || '');
-  const realizedSessions = (Array.isArray(sessions) ? sessions : [])
+  const throughDate = String(options.throughDate || localTodayIso());
+  const realizedSessions = dedupeSessionsByStableIdentity(sessions)
     .filter(session => (
       String(session?.patientId || '') === patientId
-      && isCurrentPackageRealizedSession(session)
-      && session?.isBlocked !== true
+      && sessionConsumesPackage(session, { throughDate })
     ))
     .slice()
     .sort((left, right) => sessionSortKey(left).localeCompare(sessionSortKey(right)));
@@ -57,6 +69,7 @@ export function buildCurrentPackageSessionSummary(patient = {}, sessions = [], p
     count,
     remaining: Math.max(0, planned - count),
     totalRealized,
+    totalConsumed: totalRealized,
     currentPackageIndex,
     packageStartDate,
   };
@@ -77,7 +90,7 @@ export function buildCurrentPackageSessionSummaries(patients = [], sessions = []
       'pt-BR',
       { sensitivity: 'base' },
     ))
-    .map(patient => buildCurrentPackageSessionSummary(patient, sessions, plannedSessions));
+    .map(patient => buildCurrentPackageSessionSummary(patient, sessions, plannedSessions, options));
 }
 
 export function formatSessionPackageDate(value = '') {
@@ -103,13 +116,15 @@ export function formatCurrentPackageSessionSummary(summary = {}, options = {}) {
   lines.push(
     `👦 Atendente: ${getPatientDisplayName(patient)}`,
     `👤 Responsável: ${patient.guardianName || 'Não informado'}`,
-    `✅ Sessões realizadas (${summary.count || 0}/${summary.plannedSessions || DEFAULT_PACKAGE_SESSION_TOTAL}):`,
+    `✅ Sessões contabilizadas (${summary.count || 0}/${summary.plannedSessions || DEFAULT_PACKAGE_SESSION_TOTAL}):`,
   );
 
   (Array.isArray(summary.sessions) ? summary.sessions : [])
     .slice(-(summary.plannedSessions || DEFAULT_PACKAGE_SESSION_TOTAL))
     .forEach((session, index) => {
-      const typeLabel = String(session.status || '') === 'Reposição' ? 'reposição' : 'OK';
+      const typeLabel = isCountedAbsenceSession(session)
+        ? 'falta contabilizada'
+        : String(session.status || '') === 'Reposição' ? 'reposição' : 'OK';
       lines.push(`${index + 1}. ${formatSessionPackageDate(session.date)} - ${typeLabel}`);
     });
 

@@ -3,6 +3,7 @@ import {
   getCompletedSessionCycleNumber as getCompletedSessionCycleNumberShared,
   getCompletedSessions as getCompletedSessionsShared,
   getCurrentPackageProgress as getCurrentPackageProgressShared,
+  buildEffectiveSessionHistory as buildEffectiveSessionHistoryShared,
   getPlannedSessionCycleNumber as getPlannedSessionCycleNumberShared,
   getSessionCycleLabel as getSessionCycleLabelShared,
   getSessionCycleNumber as getSessionCycleNumberShared,
@@ -10,7 +11,10 @@ import {
   getSessionLogicalPosition as getSessionLogicalPositionShared,
   getSessionSequenceSortKey as getSessionSequenceSortKeyShared,
   isCompletedClinicalSession as isCompletedClinicalSessionShared,
+  isCountedAbsenceSession as isCountedAbsenceSessionShared,
   mergeSessionSequenceSource as mergeSessionSequenceSourceShared,
+  sessionAllowsActivity as sessionAllowsActivityShared,
+  sessionConsumesPackage as sessionConsumesPackageShared,
 } from '../../shared/sessionScheduling.js';
 
 type SequencedSession = Pick<
@@ -28,6 +32,27 @@ type SequencedSession = Pick<
   | 'rescheduledAt'
   | 'rescheduleHistory'
 >;
+
+export interface EffectiveSessionHistoryItem {
+  id: string;
+  sessionId: string;
+  patientId: string;
+  packageNumber: number | null;
+  date: string;
+  time: string;
+  sessionNumber: number;
+  logicalSessionPosition: number;
+  originalStatus: string;
+  presentationStatus: string;
+  consumesPackage: boolean;
+  hasActivity: boolean;
+  activityCount: number;
+  sessionKind: 'normal' | 'replacement';
+  absenceReason: string;
+  reopened: boolean;
+  reverted: boolean;
+  removed: boolean;
+}
 
 export function getSessionSequenceSortKey(session: Pick<Session, 'date' | 'time' | 'id'>) {
   return getSessionSequenceSortKeyShared(session);
@@ -48,8 +73,20 @@ export function isCompletedClinicalSession(session: Pick<Session, 'status' | 'co
   return isCompletedClinicalSessionShared(session);
 }
 
-export function getCompletedSessions(sessions: SequencedSession[], patientId: string) {
-  return getCompletedSessionsShared(sessions, patientId) as SequencedSession[];
+export function sessionConsumesPackage(session: SequencedSession, throughDate = '') {
+  return Boolean(sessionConsumesPackageShared(session, { throughDate }));
+}
+
+export function isCountedAbsenceSession(session: SequencedSession, throughDate = '') {
+  return Boolean(isCountedAbsenceSessionShared(session, { throughDate }));
+}
+
+export function sessionAllowsActivity(session: SequencedSession, throughDate = '') {
+  return Boolean(sessionAllowsActivityShared(session, { throughDate }));
+}
+
+export function getCompletedSessions(sessions: SequencedSession[], patientId: string, throughDate = '') {
+  return getCompletedSessionsShared(sessions, patientId, { throughDate }) as SequencedSession[];
 }
 
 export function getCompletedSessionCycleNumber(sessions: SequencedSession[], session: SequencedSession) {
@@ -74,4 +111,16 @@ export function getSessionCycleLabel(sessions: SequencedSession[], session: Sequ
 
 export function getCurrentPackageProgress(sessions: SequencedSession[], patientId: string) {
   return getCurrentPackageProgressShared(sessions, patientId);
+}
+
+export function buildEffectiveSessionHistory(
+  sessions: SequencedSession[],
+  options: {
+    patientId?: string;
+    activities?: Array<{ id?: string; sessionId?: string | null; sessionIds?: string[] }>;
+    throughDate?: string;
+    includeRemoved?: boolean;
+  } = {},
+) {
+  return buildEffectiveSessionHistoryShared(sessions, options) as EffectiveSessionHistoryItem[];
 }

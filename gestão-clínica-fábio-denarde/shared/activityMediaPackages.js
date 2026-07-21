@@ -3,13 +3,11 @@ import {
   getActivitySessionStartAt,
 } from './activityGalleryStatus.js';
 import { getActivatedPackageNumber } from './packagePayments.js';
-
-const COMPLETED_MEDIA_STATUSES = new Set(['Realizada', 'Reposição']);
-const COUNTED_NO_MEDIA_STATUSES = new Set(['late_cancellation_no_replacement']);
-
-function normalizeBoolean(value) {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
+import {
+  dedupeSessionsByStableIdentity,
+  sessionAllowsActivity,
+  sessionConsumesPackage,
+} from './sessionScheduling.js';
 
 function normalizePatientId(value) {
   return String(value || '').trim();
@@ -27,18 +25,16 @@ function normalizeNow(value) {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
+function localDateKey(value) {
+  const normalized = normalizeNow(value);
+  const year = normalized.getFullYear();
+  const month = String(normalized.getMonth() + 1).padStart(2, '0');
+  const day = String(normalized.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function activitySessionConsumesPackage(session) {
-  const status = String(session?.status || '');
-  if (COMPLETED_MEDIA_STATUSES.has(status)) return true;
-  if (COUNTED_NO_MEDIA_STATUSES.has(status)) return true;
-  if (status === 'Falta') {
-    return normalizeBoolean(
-      session?.consumesPackage
-      ?? session?.consumePackageSession
-      ?? session?.countsTowardPackage,
-    );
-  }
-  return false;
+  return sessionConsumesPackage(session);
 }
 
 export function isActivitySessionInProgress(session, now = new Date()) {
@@ -54,8 +50,7 @@ export function isActivityMediaSelectableSession(session, now = new Date()) {
   if (!session || Boolean(session.isBlocked)) return false;
   const startAt = getActivitySessionStartAt(session);
   if (!startAt || startAt.getTime() > normalizeNow(now).getTime()) return false;
-  const status = String(session.status || '');
-  return COMPLETED_MEDIA_STATUSES.has(status) || isActivitySessionInProgress(session, now);
+  return sessionAllowsActivity(session) || isActivitySessionInProgress(session, now);
 }
 
 export function buildActivityMediaPackageModel(rawSessions, {
@@ -65,7 +60,7 @@ export function buildActivityMediaPackageModel(rawSessions, {
 } = {}) {
   const normalizedPatientId = normalizePatientId(patientId);
   const nowAt = normalizeNow(now);
-  const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
+  const sessions = dedupeSessionsByStableIdentity(rawSessions)
     .filter(session => session && !session.isBlocked)
     .filter(session => !normalizedPatientId || normalizePatientId(session.patientId) === normalizedPatientId)
     .filter(session => /^\d{4}-\d{2}-\d{2}$/.test(String(session.date || '')))
@@ -81,7 +76,7 @@ export function buildActivityMediaPackageModel(rawSessions, {
   const awaitingPaymentSessions = [];
 
   for (const session of sessions) {
-    const consumesPackage = activitySessionConsumesPackage(session);
+    const consumesPackage = sessionConsumesPackage(session, { throughDate: localDateKey(nowAt) });
     const inProgress = isActivitySessionInProgress(session, nowAt);
     let packageNumber = null;
     let sessionNumber = null;
