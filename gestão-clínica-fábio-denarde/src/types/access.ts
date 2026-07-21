@@ -291,6 +291,9 @@ export interface ResponsiblePortalSession {
   source: string | null;
   isBlocked: boolean;
   consumesPackage: boolean;
+  packageConsumptionDecisionRecorded: boolean;
+  packageConsumptionDecidedAt?: string;
+  packageConsumptionDecidedBy?: string;
   noReplacementReasonCode?: string;
   noReplacementReasonText?: string;
   noReplacementObservation?: string;

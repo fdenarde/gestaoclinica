@@ -2514,6 +2514,9 @@ function normalizeResponsibleSessionType(value) {
 
 function serializeResponsibleSession(snapshot) {
   const data = snapshot.data();
+  const status = normalizeText(data.status, 40) || 'Agendada';
+  const isAutomaticallyConsumed = status === 'Realizada' || status === 'Reposição';
+  const isAbsence = status === 'Falta' || status === 'late_cancellation_no_replacement';
   const professionalName = normalizeText(
     data.professionalName || data.therapistName || data.providerName || DEFAULT_PROFESSIONAL_NAME,
     120,
@@ -2523,15 +2526,16 @@ function serializeResponsibleSession(snapshot) {
     patientId: normalizeText(data.patientId, 128),
     date: normalizeText(data.date, 10),
     time: normalizeText(data.time, 5),
-    status: normalizeText(data.status, 40) || 'Agendada',
+    status,
     type: normalizeResponsibleSessionType(data.type),
     professionalName: professionalName || DEFAULT_PROFESSIONAL_NAME,
     notes: normalizeText(data.notes, 500),
     source: normalizeText(data.source, 30) || null,
     isBlocked: data.isBlocked === true,
-    consumesPackage: data.consumesPackage === true
-      || data.consumePackageSession === true
-      || data.countsTowardPackage === true,
+    consumesPackage: isAutomaticallyConsumed || (isAbsence && data.consumesPackage === true),
+    packageConsumptionDecisionRecorded: isAbsence && typeof data.consumesPackage === 'boolean',
+    packageConsumptionDecidedAt: serializeDate(data.packageConsumptionDecidedAt),
+    packageConsumptionDecidedBy: normalizeText(data.packageConsumptionDecidedBy, 120),
     noReplacementReasonCode: normalizeText(data.noReplacementReasonCode, 80),
     noReplacementReasonText: normalizeText(data.noReplacementReasonText, 160),
     noReplacementObservation: normalizeText(data.noReplacementObservation, 500),

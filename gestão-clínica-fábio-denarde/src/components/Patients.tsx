@@ -3,7 +3,7 @@ import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, R
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera, Eye } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import { getPatientSessionsThroughDate } from '../lib/sessionVisibility';
-import { getCompletedSessions, getSessionCycleNumber, isCountedAbsenceSession } from '../lib/sessionSequence';
+import { getCompletedSessions, getSessionCycleNumber, getSessionPresentationStatus, isCountedAbsenceSession } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import Modal from './Common/Modal';
 import PatientPhoto from './Common/PatientPhoto';
@@ -21,6 +21,7 @@ import type { PatientProfileChangeRequest } from '../types/access';
 import PatientRegistrationFields, { PatientRegistrationSummary } from './Common/PatientRegistrationFields';
 import { PATIENT_REGISTRATION_FIELD_LABELS, formatPatientRegistrationValue } from '../lib/patientRegistration';
 import ResponsiblePortal from './Auth/ResponsiblePortal';
+import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
 
 interface PatientsProps {
   state: AppState;
@@ -821,6 +822,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     newDouble: boolean;
     conflictingNames: string[];
   } | null>(null);
+  const [absenceDecisionModal, setAbsenceDecisionModal] = useState<{
+    sessionId: string;
+    consumesPackage: boolean | null;
+    isEditing: boolean;
+  } | null>(null);
   
   const [newEvoDate, setNewEvoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [newEvoNotes, setNewEvoNotes] = useState('');
@@ -1367,19 +1373,36 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     setConfirmNewPackage(false);
   };
 
-  const updateSessionStatus = (sessionId: string, newStatus: SessionStatus) => {
+  const applySessionStatus = async (
+    sessionId: string,
+    newStatus: SessionStatus,
+    absenceConsumesPackage?: boolean,
+  ) => {
     let finalStatus = newStatus;
     const session = state.sessions.find(s => s.id === sessionId);
     const consumesPackage = newStatus === SessionStatus.FALTA
-      ? window.confirm(
-        'Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim, consumir a sessão.\nCancelar = Não consumir a sessão.'
-      )
+      ? absenceConsumesPackage === true
       : newStatus === SessionStatus.REALIZADA || newStatus === SessionStatus.REPOSICAO;
     if (newStatus === SessionStatus.REALIZADA && session?.notes?.includes('Reposição referente')) {
         finalStatus = SessionStatus.REPOSICAO;
     }
 
-    let updatedSessions = state.sessions.map(s => s.id === sessionId ? { ...s, status: finalStatus, consumesPackage } : s);
+    const decidedAt = new Date().toISOString();
+    let updatedSessions = state.sessions.map(s => {
+      if (s.id !== sessionId) return s;
+      const { packageConsumptionDecidedAt, packageConsumptionDecidedBy, ...sessionWithoutDecisionAudit } = s;
+      void packageConsumptionDecidedAt;
+      void packageConsumptionDecidedBy;
+      return {
+        ...sessionWithoutDecisionAudit,
+        status: finalStatus,
+        consumesPackage,
+        ...(finalStatus === SessionStatus.FALTA ? {
+          packageConsumptionDecidedAt: decidedAt,
+          packageConsumptionDecidedBy: currentUserName || 'Profissional',
+        } : {}),
+      };
+    });
     let updatedRepositions = state.repositions;
     if ((finalStatus === SessionStatus.FALTA || finalStatus === SessionStatus.FALTA_PROF)) {
        const existingRepo = state.repositions.find(r => r.originalSessionId === sessionId);
@@ -1396,8 +1419,38 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         // Se mudou de FALTA para outro status, remover ou cancelar a reposição pendente
         updatedRepositions = updatedRepositions.filter(r => r.originalSessionId !== sessionId || r.status !== 'Pendente');
     }
-    onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+    await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
     showToast(`Status atualizado para ${finalStatus}.`);
+  };
+
+  const updateSessionStatus = (sessionId: string, newStatus: SessionStatus) => {
+    if (newStatus === SessionStatus.FALTA) {
+      setAbsenceDecisionModal({ sessionId, consumesPackage: null, isEditing: false });
+      return;
+    }
+    void applySessionStatus(sessionId, newStatus);
+  };
+
+  const handleConfirmAbsenceDecision = async (consumesPackage: boolean) => {
+    if (!absenceDecisionModal) return;
+    const { sessionId, isEditing } = absenceDecisionModal;
+    if (isEditing) {
+      const decidedAt = new Date().toISOString();
+      await onUpdate({
+        sessions: state.sessions.map(item => item.id === sessionId
+          ? {
+              ...item,
+              consumesPackage,
+              packageConsumptionDecidedAt: decidedAt,
+              packageConsumptionDecidedBy: currentUserName || 'Profissional',
+            }
+          : item),
+      });
+      showToast('Contabilização da falta atualizada.');
+    } else {
+      await applySessionStatus(sessionId, SessionStatus.FALTA, consumesPackage);
+    }
+    setAbsenceDecisionModal(null);
   };
 
   const handleRegisterPaymentClick = () => {
@@ -1613,13 +1666,25 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={requestClosePatientModal}
-      title={patient.name}
-      width="max-w-5xl"
-    >
-       <div className="flex flex-col gap-6">
+    <>
+      {absenceDecisionModal && (
+        <PackageConsumptionDecisionModal
+          isOpen={true}
+          value={absenceDecisionModal.consumesPackage}
+          onChange={consumesPackage => setAbsenceDecisionModal(current => current ? { ...current, consumesPackage } : current)}
+          onClose={() => setAbsenceDecisionModal(null)}
+          onConfirm={handleConfirmAbsenceDecision}
+          confirmNonConsumption={absenceDecisionModal.isEditing}
+          title={absenceDecisionModal.isEditing ? 'Alterar contabilização da falta' : 'Registrar falta'}
+        />
+      )}
+      <Modal
+        isOpen={isOpen}
+        onClose={requestClosePatientModal}
+        title={patient.name}
+        width="max-w-5xl"
+      >
+        <div className="flex flex-col gap-6">
           {/* Resumo inteligente compacto */}
           <section className="overflow-hidden rounded-xl border border-clinic-border bg-clinic-surface shadow-sm">
             <div className="p-3 md:p-4">
@@ -2298,15 +2363,30 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                                     🏖
                                   </button>
                                 )}
-                                {(session.status === SessionStatus.FALTA || session.status === SessionStatus.FALTA_PROF) && (
+                               {(session.status === SessionStatus.FALTA || session.status === SessionStatus.FALTA_PROF) && (
                                  <button onClick={() => setRepositionModalSession(session)} className="px-2 py-1.5 rounded hover:bg-status-blue-bg text-status-blue-text font-bold text-[10px] uppercase tracking-wide flex items-center gap-1 hover:shadow-sm transition-all" title="Agendar Reposição para esta Falta">
                                    <RefreshCw size={12} />
                                    <span className="hidden sm:inline">Repor</span>
                                  </button>
                                )}
+                               {(session.status === SessionStatus.FALTA || session.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT) && (
+                                 <button
+                                   type="button"
+                                   onClick={() => setAbsenceDecisionModal({
+                                     sessionId: session.id,
+                                     consumesPackage: typeof session.consumesPackage === 'boolean' ? session.consumesPackage : null,
+                                     isEditing: true,
+                                   })}
+                                   className="px-2 py-1.5 rounded hover:bg-[#FFF4F4] text-[#A94444] font-bold text-[10px] uppercase tracking-wide flex items-center gap-1 hover:shadow-sm transition-all"
+                                   title="Alterar contabilização da falta"
+                                 >
+                                   <DollarSign size={12} />
+                                   <span className="hidden sm:inline">Contabilização</span>
+                                 </button>
+                               )}
                              </div>
                              <span className={cn("px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider", getStatusColor(session.status))}>
-                               {isCountedAbsenceSession(session) ? 'Falta contabilizada' : session.status}
+                               {getSessionPresentationStatus(session)}
                             </span>
                          </div>
                        </div>
@@ -2834,6 +2914,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
           </div>
         </Modal>
       )}
-    </Modal>
+      </Modal>
+    </>
   );
 }

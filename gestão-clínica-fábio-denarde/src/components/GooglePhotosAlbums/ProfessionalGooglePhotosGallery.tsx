@@ -312,7 +312,15 @@ export default function ProfessionalGooglePhotosGallery({
     activities: allCards
       .filter(card => Boolean(normalizeAlbumUrl(card.url)))
       .map(card => ({ id: card.id, sessionId: card.sessionId, sessionIds: card.sessionIds })),
-  }).filter(item => item.consumesPackage && item.packageNumber === currentPackageNumber), [allCards, currentPackageNumber, selectedPatientId, sessionSource]);
+  }).filter(item => (
+    item.packageNumber === currentPackageNumber
+    && (
+      item.consumesPackage
+      || item.originalStatus === 'Falta'
+      || item.originalStatus === 'late_cancellation_no_replacement'
+      || item.originalStatus === 'Falta.Prof'
+    )
+  )), [allCards, currentPackageNumber, selectedPatientId, sessionSource]);
 
   const canCreateAlbum = permissions.canCreate || permissions.canEdit;
   const creatableCards = useMemo(() => allCards.filter(card => (
@@ -1068,7 +1076,7 @@ export default function ProfessionalGooglePhotosGallery({
               <CalendarDays size={17} className="text-clinic-primary" />
               <div>
                 <h3 className="text-xs font-black uppercase tracking-wide text-clinic-text">Histórico efetivo de sessões</h3>
-                <p className="text-[10px] text-clinic-text-muted">Sessões contabilizadas aparecem mesmo quando não admitem atividade.</p>
+                <p className="text-[10px] text-clinic-text-muted">Sessões consumidas e faltas aparecem no histórico; ausências nunca admitem atividade ou mídia.</p>
               </div>
             </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">

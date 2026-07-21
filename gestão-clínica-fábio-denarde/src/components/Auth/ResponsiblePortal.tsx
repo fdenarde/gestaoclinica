@@ -198,7 +198,7 @@ function formatFileSize(value: number): string {
 }
 
 const NO_REPLACEMENT_SESSION_STATUS = 'late_cancellation_no_replacement';
-const NO_REPLACEMENT_PORTAL_LABEL = 'Sessão contabilizada — sem reposição';
+const NO_REPLACEMENT_PORTAL_LABEL = 'Falta — sem reposição';
 const NO_REPLACEMENT_REASON_TEXT = 'Aviso tardio ou cancelamento fora do prazo';
 
 function statusClass(status: string): string {
@@ -214,6 +214,14 @@ function statusLabel(status: string): string {
   if (status === NO_REPLACEMENT_SESSION_STATUS) return NO_REPLACEMENT_PORTAL_LABEL;
   if (status === 'Falta.Prof') return 'Falta do profissional';
   return status || 'Agendada';
+}
+
+function responsibleSessionStatusLabel(session: ResponsiblePortalSession): string {
+  if (session.status === 'Falta' || session.status === NO_REPLACEMENT_SESSION_STATUS) {
+    if (!session.packageConsumptionDecisionRecorded) return 'Falta — situação legada sem decisão explícita';
+    return session.consumesPackage ? 'Falta contabilizada' : 'Falta não contabilizada';
+  }
+  return statusLabel(session.status);
 }
 
 function noReplacementReasonLabel(session: ResponsiblePortalSession): string {
@@ -330,7 +338,7 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
                     <p className="text-sm font-black text-clinic-text">Sessão {number}</p>
                     {referenceEvent && (
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass(referenceEvent.status)}`}>
-                        {statusLabel(referenceEvent.status)}
+                        {responsibleSessionStatusLabel(referenceEvent)}
                       </span>
                     )}
                   </div>
@@ -381,13 +389,15 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
                           <p className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Consome o pacote</p>
                           <span className={`mt-1 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${session.consumesPackage ? 'bg-status-green-bg text-status-green-text' : 'border border-clinic-border bg-white text-clinic-text-muted'}`}>
                             {session.consumesPackage ? <Check size={13} /> : <X size={13} />}
-                            {session.consumesPackage ? 'Sim' : 'Não'}
+                            {(session.status === 'Falta' || session.status === NO_REPLACEMENT_SESSION_STATUS) && !session.packageConsumptionDecisionRecorded
+                              ? 'Decisão não registrada'
+                              : session.consumesPackage ? 'Sim' : 'Não'}
                           </span>
                         </div>
                       </div>
                       {session.status === NO_REPLACEMENT_SESSION_STATUS && (
                         <div className="mt-3 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
-                          <p className="font-black text-clinic-text">{NO_REPLACEMENT_PORTAL_LABEL}</p>
+                          <p className="font-black text-clinic-text">{responsibleSessionStatusLabel(session)}</p>
                           <p className="mt-1 text-[12px] font-bold" style={{ color: '#A94444' }}>
                             {noReplacementReasonLabel(session)}
                           </p>

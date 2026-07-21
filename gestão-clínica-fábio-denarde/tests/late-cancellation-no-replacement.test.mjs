@@ -15,10 +15,10 @@ import {
 } from '../api/_lib/responsiblePortalPackages.js';
 
 const STATUS = 'late_cancellation_no_replacement';
-const LABEL = 'Falta contabilizada — sem reposição';
-const PORTAL_LABEL = 'Sessão contabilizada — sem reposição';
+const LABEL = 'Falta — sem reposição';
+const PORTAL_LABEL = 'Falta — sem reposição';
 const REASON = 'Aviso tardio ou cancelamento fora do prazo';
-const DEFAULT_NOTE = 'Devido ao aviso tardio, a sessão foi contabilizada como dada.';
+const DEFAULT_NOTE = 'Ausência registrada após aviso tardio.';
 const NOW = new Date('2026-06-20T15:00:00.000Z');
 
 function session(id, date, status = 'Realizada', extra = {}) {
@@ -33,10 +33,11 @@ function session(id, date, status = 'Realizada', extra = {}) {
   };
 }
 
-test('novo status é canônico, não é realizada e consome pacote sem representar atendimento realizado', () => {
+test('novo status é canônico, não é realizada e só consome com decisão explícita', () => {
   assert.notEqual(STATUS, 'Realizada');
-  assert.equal(activitySessionConsumesPackage(session('late', '2026-06-10', STATUS)), true);
-  assert.equal(sessionConsumesPackage(session('late', '2026-06-10', STATUS)), true);
+  assert.equal(activitySessionConsumesPackage(session('late', '2026-06-10', STATUS)), false);
+  assert.equal(sessionConsumesPackage(session('late', '2026-06-10', STATUS)), false);
+  assert.equal(sessionConsumesPackage(session('late-counted', '2026-06-10', STATUS, { consumesPackage: true })), true);
   assert.equal(isActivityMediaSelectableSession(session('late', '2026-06-10', STATUS), NOW), false);
 });
 
@@ -121,9 +122,9 @@ test('Agenda contém ação, motivos, observação sugerida, proteção administ
   assert.match(source, /não há link persistido, mídia real, card com conteúdo ou registro clínico/);
   assert.match(source, /noReplacementHistory/);
   assert.match(source, /previousStatus/);
-  assert.match(source, /changedBy: currentUserName/);
+  assert.match(source, /packageConsumptionDecidedBy/);
   assert.match(source, /SessionStatus\.LATE_CANCELLATION_NO_REPLACEMENT/);
-  assert.match(source, /actionSession\.status !== SessionStatus\.LATE_CANCELLATION_NO_REPLACEMENT/);
+  assert.match(source, /sessionAllowsActivity\(actionSession\)/);
   assert.match(source, /#A94444/);
   assert.match(source, /#FFF4F4/);
 });

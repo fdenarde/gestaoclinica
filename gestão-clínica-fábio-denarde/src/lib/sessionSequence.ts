@@ -12,6 +12,9 @@ import {
   getSessionSequenceSortKey as getSessionSequenceSortKeyShared,
   isCompletedClinicalSession as isCompletedClinicalSessionShared,
   isCountedAbsenceSession as isCountedAbsenceSessionShared,
+  getPackageConsumptionDecision as getPackageConsumptionDecisionShared,
+  getSessionPresentationStatus as getSessionPresentationStatusShared,
+  hasExplicitPackageConsumptionDecision as hasExplicitPackageConsumptionDecisionShared,
   mergeSessionSequenceSource as mergeSessionSequenceSourceShared,
   sessionAllowsActivity as sessionAllowsActivityShared,
   sessionConsumesPackage as sessionConsumesPackageShared,
@@ -26,6 +29,8 @@ type SequencedSession = Pick<
   | 'status'
   | 'isBlocked'
   | 'consumesPackage'
+  | 'packageConsumptionDecidedAt'
+  | 'packageConsumptionDecidedBy'
   | 'removedFromAgenda'
   | 'logicalSessionNumber'
   | 'logicalSessionPosition'
@@ -45,6 +50,8 @@ export interface EffectiveSessionHistoryItem {
   originalStatus: string;
   presentationStatus: string;
   consumesPackage: boolean;
+  packageConsumptionDecision: boolean | null;
+  packageConsumptionDecisionRecorded: boolean;
   hasActivity: boolean;
   activityCount: number;
   sessionKind: 'normal' | 'replacement';
@@ -79,6 +86,18 @@ export function sessionConsumesPackage(session: SequencedSession, throughDate = 
 
 export function isCountedAbsenceSession(session: SequencedSession, throughDate = '') {
   return Boolean(isCountedAbsenceSessionShared(session, { throughDate }));
+}
+
+export function getPackageConsumptionDecision(session: SequencedSession) {
+  return getPackageConsumptionDecisionShared(session) as boolean | null;
+}
+
+export function hasExplicitPackageConsumptionDecision(session: SequencedSession) {
+  return Boolean(hasExplicitPackageConsumptionDecisionShared(session));
+}
+
+export function getSessionPresentationStatus(session: SequencedSession) {
+  return String(getSessionPresentationStatusShared(session));
 }
 
 export function sessionAllowsActivity(session: SequencedSession, throughDate = '') {

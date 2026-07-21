@@ -39,6 +39,9 @@ export interface SessionNoReplacementHistoryEntry {
   observation: string;
   changedAt: string;
   changedBy: string;
+  consumesPackage?: boolean;
+  packageConsumptionDecidedAt?: string;
+  packageConsumptionDecidedBy?: string;
 }
 
 export interface ResponsibleDocumentSummary {
@@ -239,6 +242,8 @@ export interface Session {
   isFixedSchedule?: boolean; // true if this is an automatic/fixed session
   source?: 'fixed' | 'manual' | 'reposition' | 'blocked';
   consumesPackage?: boolean; // decisão do profissional para faltas que devem consumir sessão
+  packageConsumptionDecidedAt?: string;
+  packageConsumptionDecidedBy?: string;
   noReplacementReasonCode?: NoReplacementReasonCode;
   noReplacementReasonText?: string;
   noReplacementObservation?: string;

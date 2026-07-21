@@ -5,9 +5,11 @@ import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSig
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
+import { PackageConsumptionDecisionField } from './Common/PackageConsumptionDecisionField';
+import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
-import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, isCompletedClinicalSession, mergeSessionSequenceSource } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, getSessionPresentationStatus, isCompletedClinicalSession, mergeSessionSequenceSource, sessionAllowsActivity } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
 import { rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
 
@@ -17,9 +19,9 @@ const getHourBase = (timeStr: string): string => {
   return `${hour}:00`;
 };
 
-const NO_REPLACEMENT_STATUS_LABEL = 'Falta contabilizada — sem reposição';
+const NO_REPLACEMENT_STATUS_LABEL = 'Falta — sem reposição';
 const NO_REPLACEMENT_PORTAL_REASON = 'Aviso tardio ou cancelamento fora do prazo';
-const NO_REPLACEMENT_DEFAULT_NOTE = 'Devido ao aviso tardio, a sessão foi contabilizada como dada.';
+const NO_REPLACEMENT_DEFAULT_NOTE = 'Ausência registrada após aviso tardio.';
 
 function buildAgendaSequenceSourceThroughDate({
   sessions,
@@ -86,11 +88,11 @@ function getStatusLabel(session: ProcessedSession): string {
       if (session.blockedReason === 'feriado/recesso') return 'Feriado';
       return 'Agendada';
     case 'Realizada': return 'Realizada';
-    case 'Falta': return 'Falta';
+    case 'Falta': return getSessionPresentationStatus(session);
     case 'Falta.Prof': return 'Falta Prof.';
     case 'Cancelada': return 'Cancelada';
     case 'Reposição': return 'Reposição';
-    case 'late_cancellation_no_replacement': return 'FALTA CONTABILIZADA';
+    case 'late_cancellation_no_replacement': return getSessionPresentationStatus(session).toUpperCase();
     default:
       // Truly unknown status — fall back to blockedReason
       if (!session.isValid) {
@@ -188,6 +190,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     reasonCode: NoReplacementReasonCode;
     observation: string;
     confirmedNoRealActivity: boolean;
+    consumesPackage: boolean | null;
+    isEditing: boolean;
+  } | null>(null);
+  const [isSavingNoReplacement, setIsSavingNoReplacement] = useState(false);
+  const noReplacementSaveLockRef = useRef(false);
+  const [absenceDecisionModal, setAbsenceDecisionModal] = useState<{
+    session: ProcessedSession;
+    consumesPackage: boolean | null;
+    isEditing: boolean;
   } | null>(null);
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
 
@@ -363,11 +374,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       packageNumber: 0,
       isFixedSchedule: true,
       source: 'fixed',
-      consumesPackage: newStatus === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT
-        ? true
-        : newStatus === SessionStatus.FALTA
-        ? window.confirm('Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim.\nCancelar = Não.')
-        : false,
+      consumesPackage: newStatus === SessionStatus.REALIZADA || newStatus === SessionStatus.REPOSICAO,
       ...extraSessionData,
     };
     const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [virtualSession]);
@@ -401,6 +408,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     session: ProcessedSession,
     newStatus: SessionStatus,
     successMessage: string,
+    extraSessionData: Partial<Session> = {},
   ): Promise<boolean> => {
     const actionKey = getVirtualActionKey(session);
     if (virtualActionLocksRef.current.has(actionKey)) {
@@ -408,7 +416,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       return false;
     }
 
-    const result = createRealFromVirtual(session, newStatus);
+    const result = createRealFromVirtual(session, newStatus, extraSessionData);
     if (!result) {
       showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
       return false;
@@ -476,11 +484,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   };
 
   const openNoReplacementModal = (session: ProcessedSession) => {
+    const isEditing = session.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT;
     setNoReplacementModal({
       session,
-      reasonCode: 'late_notice_or_out_of_policy_cancellation',
-      observation: NO_REPLACEMENT_DEFAULT_NOTE,
+      reasonCode: session.noReplacementReasonCode || 'late_notice_or_out_of_policy_cancellation',
+      observation: session.noReplacementObservation || NO_REPLACEMENT_DEFAULT_NOTE,
       confirmedNoRealActivity: session.status !== SessionStatus.REALIZADA,
+      consumesPackage: isEditing && typeof session.consumesPackage === 'boolean'
+        ? session.consumesPackage
+        : null,
+      isEditing,
     });
   };
 
@@ -496,20 +509,31 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   };
 
   const handleConfirmNoReplacement = async () => {
-    if (!noReplacementModal) return;
-    const { session, reasonCode, observation, confirmedNoRealActivity } = noReplacementModal;
+    if (!noReplacementModal || noReplacementSaveLockRef.current) return;
+    const { session, reasonCode, observation, confirmedNoRealActivity, consumesPackage, isEditing } = noReplacementModal;
     const reasonText = getNoReplacementReasonLabel(reasonCode);
     const trimmedObservation = observation.trim();
     if (!trimmedObservation) {
       showToast('Informe a observação antes de registrar a falta sem reposição.', 'error');
       return;
     }
+    if (consumesPackage === null) {
+      showToast('Escolha explicitamente se esta ausência será contabilizada no pacote.', 'error');
+      return;
+    }
     if (session.status === SessionStatus.REALIZADA && !confirmedNoRealActivity) {
       showToast('Confirme que não há atividade, link ou mídia real vinculada antes de converter esta sessão.', 'error');
       return;
     }
+    if (consumesPackage && !window.confirm(
+      'Confirmar contabilização desta falta no pacote?\n\nA ausência consumirá uma sessão, mas não terá atividade ou mídia.',
+    )) return;
+    if (!consumesPackage && isEditing && !window.confirm(
+      'Confirmar que esta falta não será contabilizada no pacote?\n\nA alteração devolverá uma sessão ao saldo restante.',
+    )) return;
 
     const changedAt = new Date().toISOString();
+    const changedBy = currentUserName || 'Profissional';
     const historyEntry = {
       previousStatus: session.status,
       newStatus: SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
@@ -517,19 +541,24 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       reasonText,
       observation: trimmedObservation,
       changedAt,
-      changedBy: currentUserName || 'Profissional',
+      changedBy,
+      consumesPackage,
+      packageConsumptionDecidedAt: changedAt,
+      packageConsumptionDecidedBy: changedBy,
     };
     const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
     const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
     const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
     const sessionPatch: Partial<Session> = {
       status: SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT,
-      consumesPackage: true,
+      consumesPackage,
+      packageConsumptionDecidedAt: changedAt,
+      packageConsumptionDecidedBy: changedBy,
       noReplacementReasonCode: reasonCode,
       noReplacementReasonText: reasonText,
       noReplacementObservation: trimmedObservation,
       noReplacementRecordedAt: changedAt,
-      noReplacementRecordedBy: currentUserName || 'Profissional',
+      noReplacementRecordedBy: changedBy,
       ...(logicalSessionPosition > 0 ? {
         logicalSessionPosition,
         logicalSessionNumber,
@@ -537,6 +566,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       } : {}),
     };
 
+    noReplacementSaveLockRef.current = true;
+    setIsSavingNoReplacement(true);
     if (session.isVirtual) {
       const result = createRealFromVirtual(session, SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT, {
         ...sessionPatch,
@@ -548,10 +579,12 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       }
       try {
         await onUpdate({ sessions: [...state.sessions, result.session] });
-        showToast('Falta contabilizada sem reposição registrada.');
+        showToast(consumesPackage ? 'Falta contabilizada sem reposição registrada.' : 'Falta não contabilizada sem reposição registrada.');
       } catch (error) {
         console.error('Falha ao registrar falta sem reposição:', error);
         showToast('Não foi possível registrar a falta sem reposição.', 'error');
+        noReplacementSaveLockRef.current = false;
+        setIsSavingNoReplacement(false);
         return;
       }
     } else {
@@ -564,16 +597,20 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         : item);
       try {
         await onUpdate({ sessions: updatedSessions });
-        showToast('Falta contabilizada sem reposição registrada.');
+        showToast(isEditing ? 'Contabilização da falta atualizada.' : (consumesPackage ? 'Falta contabilizada sem reposição registrada.' : 'Falta não contabilizada sem reposição registrada.'));
       } catch (error) {
         console.error('Falha ao registrar falta sem reposição:', error);
         showToast('Não foi possível registrar a falta sem reposição.', 'error');
+        noReplacementSaveLockRef.current = false;
+        setIsSavingNoReplacement(false);
         return;
       }
     }
 
     setNoReplacementModal(null);
     setActionSession(null);
+    noReplacementSaveLockRef.current = false;
+    setIsSavingNoReplacement(false);
   };
 
 
@@ -588,12 +625,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     setActionSession(null);
   };
 
-  const handleActionFalta = async (session: ProcessedSession) => {
-    if (session.isVirtual) {
-      await persistVirtualAction(session, SessionStatus.FALTA, 'Falta registrada. Reposição pendente criada.');
-    } else {
-      await markAsMissed(session);
-    }
+  const handleActionFalta = (session: ProcessedSession) => {
+    setAbsenceDecisionModal({ session, consumesPackage: null, isEditing: false });
     setActionSession(null);
   };
 
@@ -740,6 +773,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         noReplacementObservation,
         noReplacementRecordedAt,
         noReplacementRecordedBy,
+        packageConsumptionDecidedAt,
+        packageConsumptionDecidedBy,
         ...rest
       } = s;
       void noReplacementReasonCode;
@@ -747,6 +782,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       void noReplacementObservation;
       void noReplacementRecordedAt;
       void noReplacementRecordedBy;
+      void packageConsumptionDecidedAt;
+      void packageConsumptionDecidedBy;
       return {
         ...rest,
         status: SessionStatus.AGENDADA,
@@ -927,22 +964,23 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     }
   };
 
-  const markAsMissed = async (session: Session) => {
-    const consumesPackage = window.confirm(
-      'Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim, consumir a sessão.\nCancelar = Não consumir a sessão.'
-    );
+  const markAsMissed = async (session: Session, consumesPackage: boolean): Promise<boolean> => {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
-      return;
+      return false;
     }
     const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
     const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
     const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
+    const decidedAt = new Date().toISOString();
+    const decidedBy = currentUserName || 'Profissional';
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? {
         ...s,
         status: SessionStatus.FALTA,
         consumesPackage,
+        packageConsumptionDecidedAt: decidedAt,
+        packageConsumptionDecidedBy: decidedBy,
         ...(consumesPackage && logicalSessionPosition > 0 ? {
           logicalSessionPosition,
           logicalSessionNumber,
@@ -959,10 +997,49 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     try {
       await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
       showToast('Falta registrada. Reposição pendente criada.');
+      return true;
     } catch (error) {
       console.error('Falha ao registrar falta:', error);
       showToast('Não foi possível registrar a falta.', 'error');
+      return false;
     }
+  };
+
+  const handleConfirmAbsenceDecision = async (consumesPackage: boolean) => {
+    if (!absenceDecisionModal) return;
+    const { session, isEditing } = absenceDecisionModal;
+    const decidedAt = new Date().toISOString();
+    const decidedBy = currentUserName || 'Profissional';
+
+    if (isEditing) {
+      await onUpdate({
+        sessions: state.sessions.map(item => item.id === session.id
+          ? {
+              ...item,
+              consumesPackage,
+              packageConsumptionDecidedAt: decidedAt,
+              packageConsumptionDecidedBy: decidedBy,
+            }
+          : item),
+      });
+      showToast('Contabilização da falta atualizada.');
+    } else if (session.isVirtual) {
+      const saved = await persistVirtualAction(
+        session,
+        SessionStatus.FALTA,
+        'Falta registrada. Reposição pendente criada.',
+        {
+          consumesPackage,
+          packageConsumptionDecidedAt: decidedAt,
+          packageConsumptionDecidedBy: decidedBy,
+        },
+      );
+      if (!saved) return;
+    } else {
+      const saved = await markAsMissed(session, consumesPackage);
+      if (!saved) return;
+    }
+    setAbsenceDecisionModal(null);
   };
 
   const markAsMissedProf = async (session: Session) => {
@@ -1486,11 +1563,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   )}
                   {actionSession.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
                     <div className="mt-2 rounded-xl border px-3 py-2 text-xs" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4', color: '#A94444' }}>
-                      <p className="font-black">{NO_REPLACEMENT_STATUS_LABEL}</p>
+                      <p className="font-black">{getSessionPresentationStatus(actionSession)}</p>
                       <p className="mt-1 text-[12px] font-bold">{getNoReplacementReasonLabel(actionSession.noReplacementReasonCode, actionSession.noReplacementReasonText)}</p>
-                      {getSessionCycleNumber(agendaSequenceSource, actionSession) > 0 && (
+                      {actionSession.consumesPackage === true && getSessionCycleNumber(agendaSequenceSource, actionSession) > 0 && (
                         <p className="mt-1 text-[12px] text-clinic-text-muted">
                           Sessão {getSessionCycleNumber(agendaSequenceSource, actionSession)} contabilizada no pacote.
+                        </p>
+                      )}
+                      {typeof actionSession.consumesPackage !== 'boolean' && (
+                        <p className="mt-1 text-[12px] font-bold text-status-orange-text">
+                          Situação legada sem decisão explícita. Esta falta não consome o pacote até ser revisada.
                         </p>
                       )}
                     </div>
@@ -1592,7 +1674,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 </div>
               )}
 
-              {patient && onNavigateToPatientGallery && actionSession.status !== SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
+              {patient && onNavigateToPatientGallery && sessionAllowsActivity(actionSession) && (
                 <button
                   type="button"
                   onClick={() => void handleOpenActivityGallery(actionSession)}
@@ -1670,13 +1752,36 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   )}
 
                   {actions.canReopen && (
-                    <button
-                      onClick={() => handleActionReopen(actionSession)}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
-                    >
-                      <span>↻</span>
-                      <span className="text-sm font-black uppercase tracking-wide">Reabrir como Agendada</span>
-                    </button>
+                    <div className="space-y-2">
+                      {(actionSession.status === SessionStatus.FALTA || actionSession.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (actionSession.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT) {
+                              openNoReplacementModal(actionSession);
+                            } else {
+                              setAbsenceDecisionModal({
+                                session: actionSession,
+                                consumesPackage: typeof actionSession.consumesPackage === 'boolean' ? actionSession.consumesPackage : null,
+                                isEditing: true,
+                              });
+                            }
+                            setActionSession(null);
+                          }}
+                          className="w-full rounded-xl border border-[#A94444]/30 bg-[#FFF4F4] px-4 py-2.5 text-xs font-black uppercase tracking-wide text-[#A94444]"
+                        >
+                          Alterar contabilização da falta
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleActionReopen(actionSession)}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                      >
+                        <span>↻</span>
+                        <span className="text-sm font-black uppercase tracking-wide">Reabrir como Agendada</span>
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -1815,12 +1920,25 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         );
       })()}
 
+      {absenceDecisionModal && (
+        <PackageConsumptionDecisionModal
+          isOpen={true}
+          value={absenceDecisionModal.consumesPackage}
+          onChange={consumesPackage => setAbsenceDecisionModal(current => current ? { ...current, consumesPackage } : current)}
+          onClose={() => setAbsenceDecisionModal(null)}
+          onConfirm={handleConfirmAbsenceDecision}
+          confirmNonConsumption={absenceDecisionModal.isEditing}
+          title={absenceDecisionModal.isEditing ? 'Alterar contabilização da falta' : 'Registrar falta'}
+        />
+      )}
+
       {noReplacementModal && (
         <Modal
           isOpen={true}
           onClose={() => setNoReplacementModal(null)}
-          title="Registrar falta sem reposição"
+          title={noReplacementModal.isEditing ? 'Alterar contabilização da falta' : 'Registrar falta sem reposição'}
           width="max-w-xl"
+          closeDisabled={isSavingNoReplacement}
         >
           <div className="space-y-4">
             <div className="rounded-2xl border p-4" style={{ borderColor: 'rgba(169, 68, 68, 0.24)', backgroundColor: '#FFF4F4' }}>
@@ -1828,11 +1946,17 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               <p className="mt-1 text-xs font-bold" style={{ color: '#A94444' }}>{getNoReplacementReasonLabel(noReplacementModal.reasonCode)}</p>
               <ul className="mt-3 space-y-1.5 text-xs font-semibold text-clinic-text-muted">
                 <li>• O atendimento será registrado como não realizado.</li>
-                <li>• A sessão será contabilizada no pacote.</li>
+                <li>• O motivo não define se a sessão será contabilizada no pacote.</li>
                 <li>• Não haverá reposição automática.</li>
                 <li>• Nenhuma atividade ou mídia será solicitada.</li>
               </ul>
             </div>
+
+            <PackageConsumptionDecisionField
+              value={noReplacementModal.consumesPackage}
+              onChange={consumesPackage => setNoReplacementModal(current => current ? { ...current, consumesPackage } : current)}
+              disabled={isSavingNoReplacement}
+            />
 
             {noReplacementModal.session.status === SessionStatus.REALIZADA && (
               <label className="flex items-start gap-3 rounded-xl border border-status-orange-text/30 bg-status-orange-bg p-3 text-xs text-status-orange-text">
@@ -1877,16 +2001,18 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               <button
                 type="button"
                 onClick={() => setNoReplacementModal(null)}
-                className="rounded-xl border border-clinic-border bg-white px-4 py-2.5 text-xs font-black uppercase tracking-wide text-clinic-text-muted"
+                disabled={isSavingNoReplacement}
+                className="rounded-xl border border-clinic-border bg-white px-4 py-2.5 text-xs font-black uppercase tracking-wide text-clinic-text-muted disabled:opacity-60"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={() => void handleConfirmNoReplacement()}
-                className="rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white hover:bg-clinic-primary-hover"
+                disabled={noReplacementModal.consumesPackage === null || isSavingNoReplacement}
+                className="rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase tracking-wide text-white hover:bg-clinic-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Confirmar falta sem reposição
+                {isSavingNoReplacement ? 'Salvando...' : (noReplacementModal.isEditing ? 'Salvar alteração' : 'Confirmar falta sem reposição')}
               </button>
             </div>
           </div>

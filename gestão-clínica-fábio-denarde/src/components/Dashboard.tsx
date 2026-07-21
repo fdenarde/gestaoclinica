@@ -12,6 +12,7 @@ import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
+import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
 
 interface DashboardProps {
   state: AppState;
@@ -35,6 +36,10 @@ export default function Dashboard({
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
   const [whatsappReportOpen, setWhatsappReportOpen] = useState(false);
   const [renewalDetailsOpen, setRenewalDetailsOpen] = useState(false);
+  const [absenceDecisionModal, setAbsenceDecisionModal] = useState<{
+    session: ProcessedSession;
+    consumesPackage: boolean | null;
+  } | null>(null);
   const currentSaoPauloDay = whatsappReportState.dateKey;
 
   useEffect(() => {
@@ -68,17 +73,21 @@ export default function Dashboard({
     }
   };
 
-  const markAsMissed = async (session: Session) => {
-    const consumesPackage = window.confirm(
-      'Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim, consumir a sessão.\nCancelar = Não consumir a sessão.'
-    );
+  const markAsMissed = async (session: Session, consumesPackage: boolean): Promise<boolean> => {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
-      return;
+      return false;
     }
 
+    const decidedAt = new Date().toISOString();
     const updatedSessions = state.sessions.map(s => 
-      s.id === session.id ? { ...s, status: SessionStatus.FALTA, consumesPackage } : s
+      s.id === session.id ? {
+        ...s,
+        status: SessionStatus.FALTA,
+        consumesPackage,
+        packageConsumptionDecidedAt: decidedAt,
+        packageConsumptionDecidedBy: 'Profissional',
+      } : s
     );
     
     const newReposition: Reposition = {
@@ -94,9 +103,11 @@ export default function Dashboard({
         repositions: [...state.repositions, newReposition]
       });
       showToast('Falta registrada. Reposição pendente criada.');
+      return true;
     } catch (error) {
       console.error('Falha ao registrar falta pelo Dashboard:', error);
       showToast('Não foi possível registrar a falta.', 'error');
+      return false;
     }
   };
 
@@ -129,7 +140,11 @@ export default function Dashboard({
     }
   };
 
-  const createRealFromVirtual = (virtualSession: ProcessedSession, newStatus: SessionStatus): { session: Session; reposition?: Reposition } | null => {
+  const createRealFromVirtual = (
+    virtualSession: ProcessedSession,
+    newStatus: SessionStatus,
+    extraSessionData: Partial<Session> = {},
+  ): { session: Session; reposition?: Reposition } | null => {
     const patient = state.patients.find(p => p.id === virtualSession.patientId);
     if (!patient || patient.status !== 'Ativo' || virtualSession.isBlocked) return null;
 
@@ -151,9 +166,8 @@ export default function Dashboard({
       packageNumber: 0,
       isFixedSchedule: true,
       source: 'fixed',
-      consumesPackage: newStatus === SessionStatus.FALTA
-        ? window.confirm('Esta falta deve consumir uma das 10 sessões do pacote?\n\nOK = Sim.\nCancelar = Não.')
-        : false
+      consumesPackage: newStatus === SessionStatus.REALIZADA || newStatus === SessionStatus.REPOSICAO,
+      ...extraSessionData,
     };
 
     const nextSessionNumber = getSessionCycleNumber([...state.sessions, previewSession], previewSession);
@@ -183,6 +197,7 @@ export default function Dashboard({
     session: ProcessedSession,
     newStatus: SessionStatus,
     successMessage: string,
+    extraSessionData: Partial<Session> = {},
   ): Promise<boolean> => {
     const actionKey = getVirtualActionKey(session);
     if (virtualActionLocksRef.current.has(actionKey)) {
@@ -190,7 +205,7 @@ export default function Dashboard({
       return false;
     }
 
-    const result = createRealFromVirtual(session, newStatus);
+    const result = createRealFromVirtual(session, newStatus, extraSessionData);
     if (!result) {
       showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
       return false;
@@ -223,13 +238,31 @@ export default function Dashboard({
     await persistVirtualAction(session, SessionStatus.REALIZADA, 'Presença registrada.');
   };
 
-  const handleMarkAsMissed = async (session: ProcessedSession) => {
-    if (!session.isVirtual) {
-      await markAsMissed(session);
-      return;
-    }
+  const handleMarkAsMissed = (session: ProcessedSession) => {
+    setAbsenceDecisionModal({ session, consumesPackage: null });
+  };
 
-    await persistVirtualAction(session, SessionStatus.FALTA, 'Falta registrada. Reposição pendente criada.');
+  const handleConfirmAbsenceDecision = async (consumesPackage: boolean) => {
+    if (!absenceDecisionModal) return;
+    const { session } = absenceDecisionModal;
+    const decidedAt = new Date().toISOString();
+    if (session.isVirtual) {
+      const saved = await persistVirtualAction(
+        session,
+        SessionStatus.FALTA,
+        'Falta registrada. Reposição pendente criada.',
+        {
+          consumesPackage,
+          packageConsumptionDecidedAt: decidedAt,
+          packageConsumptionDecidedBy: 'Profissional',
+        },
+      );
+      if (!saved) return;
+    } else {
+      const saved = await markAsMissed(session, consumesPackage);
+      if (!saved) return;
+    }
+    setAbsenceDecisionModal(null);
   };
 
   const handleMarkAsMissedProf = async (session: ProcessedSession) => {
@@ -462,6 +495,15 @@ export default function Dashboard({
 
   return (
     <div className="flex flex-col gap-6 py-6">
+      {absenceDecisionModal && (
+        <PackageConsumptionDecisionModal
+          isOpen={true}
+          value={absenceDecisionModal.consumesPackage}
+          onChange={consumesPackage => setAbsenceDecisionModal(current => current ? { ...current, consumesPackage } : current)}
+          onClose={() => setAbsenceDecisionModal(null)}
+          onConfirm={handleConfirmAbsenceDecision}
+        />
+      )}
       {isPrimaryAdmin && <AccessRequestsAdminCard patients={state.patients} />}
 
       {isPrimaryAdmin && onOpenMonitoringPreview && (

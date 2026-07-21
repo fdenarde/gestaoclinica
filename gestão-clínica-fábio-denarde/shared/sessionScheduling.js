@@ -1,6 +1,10 @@
 const PACKAGE_CONSUMING_STATUSES = new Set([
   'Realizada',
   'Reposição',
+]);
+
+const ABSENCE_STATUSES = new Set([
+  'Falta',
   'late_cancellation_no_replacement',
 ]);
 
@@ -80,13 +84,18 @@ export function isSessionRemovedOrBlocked(session = {}) {
   return session.removedFromAgenda === true || session.isBlocked === true;
 }
 
-function normalizeBoolean(value) {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
-
 function normalizeThroughDate(value) {
   const normalized = String(value || '').trim().slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : '';
+}
+
+export function getPackageConsumptionDecision(session = {}) {
+  if (!ABSENCE_STATUSES.has(String(session.status || ''))) return null;
+  return typeof session.consumesPackage === 'boolean' ? session.consumesPackage : null;
+}
+
+export function hasExplicitPackageConsumptionDecision(session = {}) {
+  return getPackageConsumptionDecision(session) !== null;
 }
 
 export function dedupeSessionsByStableIdentity(sessions = []) {
@@ -113,12 +122,8 @@ export function sessionConsumesPackage(session = {}, { throughDate = '' } = {}) 
 
   const status = String(session.status || '');
   if (PACKAGE_CONSUMING_STATUSES.has(status)) return true;
-  if (status !== 'Falta') return false;
-  return normalizeBoolean(
-    session.consumesPackage
-    ?? session.consumePackageSession
-    ?? session.countsTowardPackage,
-  );
+  if (!ABSENCE_STATUSES.has(status)) return false;
+  return getPackageConsumptionDecision(session) === true;
 }
 
 export function isCountedAbsenceSession(session = {}, options = {}) {
@@ -136,9 +141,15 @@ export function sessionAllowsActivity(session = {}, { throughDate = '' } = {}) {
 }
 
 export function getSessionPresentationStatus(session = {}) {
-  if (isCountedAbsenceSession(session)) return 'Falta contabilizada';
-  if (String(session.status || '') === 'Falta.Prof') return 'Falta do profissional';
-  return String(session.status || 'Agendada');
+  const status = String(session.status || '');
+  if (ABSENCE_STATUSES.has(status)) {
+    const decision = getPackageConsumptionDecision(session);
+    if (decision === true) return 'Falta contabilizada';
+    if (decision === false) return 'Falta não contabilizada';
+    return 'Falta — situação legada sem decisão explícita';
+  }
+  if (status === 'Falta.Prof') return 'Falta do profissional';
+  return status || 'Agendada';
 }
 
 // Uma posição clínica avança sempre que o evento efetivamente consome o
@@ -406,6 +417,8 @@ export function buildEffectiveSessionHistory(sessions = [], {
       originalStatus: String(session.status || ''),
       presentationStatus: getSessionPresentationStatus(session),
       consumesPackage: sessionConsumesPackage(session, { throughDate: normalizedThroughDate }),
+      packageConsumptionDecision: getPackageConsumptionDecision(session),
+      packageConsumptionDecisionRecorded: hasExplicitPackageConsumptionDecision(session),
       hasActivity: activityCount > 0,
       activityCount,
       sessionKind: String(session.status || '') === 'Reposição' || String(session.source || '') === 'reposition'
