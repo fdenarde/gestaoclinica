@@ -14,31 +14,159 @@ function normalizePackageNumber(value) {
   return Number.isInteger(packageNumber) && packageNumber > 0 ? packageNumber : 0;
 }
 
+function normalizeDateKey(value) {
+  const date = String(value || '').trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
+}
+
+function todayDateKey() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function isPaymentActive(payment) {
+  return !!payment && String(payment.status || 'active') !== 'voided';
+}
+
+export function isExpenseActive(expense) {
+  return !!expense && String(expense.status || 'active') !== 'voided';
+}
+
+export function isPaymentReceived(payment, { throughDate = todayDateKey() } = {}) {
+  if (!isPaymentActive(payment) || normalizePositiveAmount(payment.amount) <= 0) return false;
+  const paymentDate = normalizeDateKey(payment.date);
+  const normalizedThroughDate = normalizeDateKey(throughDate);
+  return !normalizedThroughDate || !paymentDate || paymentDate <= normalizedThroughDate;
+}
+
+export function isExpenseRealized(expense, { throughDate = todayDateKey() } = {}) {
+  if (!isExpenseActive(expense) || normalizePositiveAmount(expense.amount) <= 0) return false;
+  const expenseDate = normalizeDateKey(expense.date);
+  const normalizedThroughDate = normalizeDateKey(throughDate);
+  return !normalizedThroughDate || !expenseDate || expenseDate <= normalizedThroughDate;
+}
+
+function getEligiblePayments(rawPayments, {
+  patientId = '',
+  throughDate = todayDateKey(),
+} = {}) {
+  const normalizedPatientId = normalizePatientId(patientId);
+  const normalizedThroughDate = normalizeDateKey(throughDate);
+
+  return (Array.isArray(rawPayments) ? rawPayments : [])
+    .filter(payment => (
+      isPaymentReceived(payment, { throughDate: normalizedThroughDate })
+      && (!normalizedPatientId || normalizePatientId(payment.patientId) === normalizedPatientId)
+      && normalizePositiveAmount(payment.amount) > 0
+    ))
+    .filter(payment => {
+      const paymentDate = normalizeDateKey(payment.date);
+      return !normalizedThroughDate || !paymentDate || paymentDate <= normalizedThroughDate;
+    })
+    .slice()
+    .sort((left, right) => {
+      const dateCompare = String(left.date || '').localeCompare(String(right.date || ''));
+      return dateCompare || String(left.id || '').localeCompare(String(right.id || ''));
+    });
+}
+
+function buildPackageAllocations(rawPayments, options = {}) {
+  const normalizedPackageValue = Number(options.packageValue) > 0
+    ? Number(options.packageValue)
+    : CLINIC_PACKAGE_VALUE;
+  const payments = getEligiblePayments(rawPayments, options);
+  const allocations = new Map();
+  const paymentIdsByPackage = new Map();
+  let highestExplicitPackage = 0;
+
+  const addAllocation = (packageNumber, amount, payment) => {
+    if (amount <= 0) return;
+    allocations.set(packageNumber, (allocations.get(packageNumber) || 0) + amount);
+    const ids = paymentIdsByPackage.get(packageNumber) || new Set();
+    ids.add(String(payment.id || ''));
+    paymentIdsByPackage.set(packageNumber, ids);
+  };
+
+  for (const payment of payments) {
+    const packageNumber = normalizePackageNumber(payment.packageNumber);
+    if (!packageNumber) continue;
+    highestExplicitPackage = Math.max(highestExplicitPackage, packageNumber);
+    const alreadyAllocated = allocations.get(packageNumber) || 0;
+    const available = Math.max(normalizedPackageValue - alreadyAllocated, 0);
+    addAllocation(
+      packageNumber,
+      Math.min(normalizePositiveAmount(payment.amount), available),
+      payment,
+    );
+  }
+
+  for (const payment of payments) {
+    if (normalizePackageNumber(payment.packageNumber)) continue;
+    let remaining = normalizePositiveAmount(payment.amount);
+    let packageNumber = 1;
+
+    while (remaining > 0) {
+      const alreadyAllocated = allocations.get(packageNumber) || 0;
+      const available = Math.max(normalizedPackageValue - alreadyAllocated, 0);
+      const allocated = Math.min(remaining, available);
+      addAllocation(packageNumber, allocated, payment);
+      remaining -= allocated;
+      packageNumber += 1;
+    }
+  }
+
+  return {
+    payments,
+    allocations,
+    paymentIdsByPackage,
+    packageValue: normalizedPackageValue,
+    highestExplicitPackage,
+  };
+}
+
+export function getPackagePaymentSummary(rawPayments, packageNumber, options = {}) {
+  const normalizedPackageNumber = normalizePackageNumber(packageNumber);
+  const allocation = buildPackageAllocations(rawPayments, options);
+  const paidAmount = normalizedPackageNumber
+    ? Math.min(allocation.allocations.get(normalizedPackageNumber) || 0, allocation.packageValue)
+    : 0;
+  const ids = allocation.paymentIdsByPackage.get(normalizedPackageNumber) || new Set();
+  const payments = allocation.payments.filter(payment => ids.has(String(payment.id || '')));
+
+  return {
+    packageNumber: normalizedPackageNumber,
+    packageValue: allocation.packageValue,
+    paidAmount,
+    pendingAmount: Math.max(allocation.packageValue - paidAmount, 0),
+    payments,
+    installments: payments,
+    isPaid: paidAmount >= allocation.packageValue,
+    financialStatus: paidAmount >= allocation.packageValue ? 'quitado' : 'pendente',
+  };
+}
+
 export function getActivatedPackageNumber(rawPayments, {
   patientId = '',
   packageValue = CLINIC_PACKAGE_VALUE,
   allowLegacyFirstPackage = true,
+  throughDate = todayDateKey(),
 } = {}) {
-  const normalizedPatientId = normalizePatientId(patientId);
-  const normalizedPackageValue = Number(packageValue) > 0 ? Number(packageValue) : CLINIC_PACKAGE_VALUE;
-  const payments = (Array.isArray(rawPayments) ? rawPayments : [])
-    .filter(payment => payment && (!normalizedPatientId || normalizePatientId(payment.patientId) === normalizedPatientId));
+  const allocation = buildPackageAllocations(rawPayments, {
+    patientId,
+    packageValue,
+    throughDate,
+  });
+  const highestAllocatedPackage = [...allocation.allocations.entries()]
+    .reduce((highest, [packageNumber, amount]) => amount > 0 ? Math.max(highest, packageNumber) : highest, 0);
 
-  let totalPaid = 0;
-  let highestExplicitPackage = 0;
-
-  for (const payment of payments) {
-    const amount = normalizePositiveAmount(payment.amount);
-    if (amount <= 0) continue;
-    totalPaid += amount;
-    highestExplicitPackage = Math.max(highestExplicitPackage, normalizePackageNumber(payment.packageNumber));
-  }
-
-  const inferredPackage = totalPaid > 0
-    ? Math.floor(Math.max(totalPaid - 0.01, 0) / normalizedPackageValue) + 1
-    : 0;
-
-  return Math.max(allowLegacyFirstPackage ? 1 : 0, highestExplicitPackage, inferredPackage);
+  return Math.max(
+    allowLegacyFirstPackage ? 1 : 0,
+    allocation.highestExplicitPackage,
+    highestAllocatedPackage,
+  );
 }
 
 export function isPackageActivated(rawPayments, packageNumber, options = {}) {

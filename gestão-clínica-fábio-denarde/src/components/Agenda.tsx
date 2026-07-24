@@ -7,6 +7,7 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { PackageConsumptionDecisionField } from './Common/PackageConsumptionDecisionField';
 import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
+import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
 import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, getSessionPresentationStatus, isCompletedClinicalSession, mergeSessionSequenceSource, sessionAllowsActivity } from '../lib/sessionSequence';
@@ -262,10 +263,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       .reverse();
 
   const getPatientFinancialSummary = (targetPatientId: string) => {
-    const payments = state.payments.filter(p => p.patientId === targetPatientId);
-    const total = payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-    if (payments.length === 0) return 'Sem pagamentos registrados';
-    return `${payments.length} pagamento(s) - ${total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
+    const patient = state.patients.find(item => item.id === targetPatientId);
+    if (!patient) return 'Sem situação financeira';
+    const summary = calculatePackageFinancialSummary(patient, state.sessions, state.payments, new Date());
+    if (!summary.hasCurrentPackage) return 'Sem pagamentos registrados';
+    return `Pacote ${summary.packageNumber}: ${summary.status} - pago ${summary.paidGross.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} - saldo ${summary.pendingGross.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
   };
 
   const buildPreviewSession = (): Session | null => {

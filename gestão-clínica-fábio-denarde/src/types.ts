@@ -279,6 +279,13 @@ export interface Payment {
   installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral';
   method: 'Pix' | 'Dinheiro' | 'Transferência' | 'Outro';
   packageNumber?: number;
+  status?: 'active' | 'voided';
+  operationKey?: string;
+  createdAt?: string;
+  createdBy?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
 }
 
 export interface ClinicSettings {
@@ -303,6 +310,13 @@ export interface Expense {
   category: 'Aluguel' | 'Energia' | 'Internet' | 'Materiais' | 'Impostos' | 'Repasse Sócia' | 'Outro';
   auto_gerado?: boolean;
   pagamento_origem_id?: string;
+  status?: 'active' | 'voided';
+  operationKey?: string;
+  createdAt?: string;
+  createdBy?: string;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
 }
 
 export interface Evolution {

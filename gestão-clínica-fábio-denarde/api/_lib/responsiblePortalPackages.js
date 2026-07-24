@@ -45,7 +45,7 @@ export function buildResponsiblePackages(rawSessions, {
     .sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
 
   const patientId = String(sessions.find(session => session?.patientId)?.patientId || payments.find(payment => payment?.patientId)?.patientId || '');
-  const activatedPackageNumber = getActivatedPackageNumber(payments, { patientId });
+  const activatedPackageNumber = getActivatedPackageNumber(payments, { patientId, throughDate: today });
   const consumedTotal = sessions.filter(session => sharedSessionConsumesPackage(session, { throughDate: today })).length;
   const naturalCurrentPackageNumber = consumedTotal > 0
     ? Math.floor((consumedTotal - 1) / 10) + 1

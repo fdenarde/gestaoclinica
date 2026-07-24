@@ -8,10 +8,13 @@ import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { calculatePackageFinancialSummary, FinancialStatus, PACKAGE_GROSS_VALUE, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE, type PackageFinancialSummary } from '../lib/financePackages';
+import { createPaymentOperationKey, preparePaymentCreation, preparePaymentVoid } from '../../shared/paymentOperations.js';
+import { isExpenseActive, isExpenseRealized, isPaymentActive, isPaymentReceived } from '../../shared/packagePayments.js';
 
 interface FinanceProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void;
+  onUpdate: (newState: Partial<AppState>) => void | Promise<void>;
+  currentUserName: string;
 }
 
 type MetricBadgeTone = 'green' | 'orange' | 'red' | 'blue';
@@ -157,7 +160,7 @@ function FinancialStatusBadge({ status }: { status: FinancialStatus }) {
   );
 }
 
-export default function Finance({ state, onUpdate }: FinanceProps) {
+export default function Finance({ state, onUpdate, currentUserName }: FinanceProps) {
   const [viewMode, setViewMode] = useState<'Receitas' | 'Despesas'>('Receitas');
   
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -166,7 +169,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedPatientId, setExpandedPatientId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('Todos');
-  const [paymentToDelete, setPaymentToDelete] = useState<string | null>(null);
+  const [paymentToVoid, setPaymentToVoid] = useState<string | null>(null);
+  const [paymentVoidReason, setPaymentVoidReason] = useState('');
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
   const [paymentContext, setPaymentContext] = useState<PaymentContext>(null);
 
@@ -181,72 +185,15 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [installment, setInstallment] = useState<'1ª parcela' | '2ª parcela' | 'Pagamento integral'>('Pagamento integral');
   const [method, setMethod] = useState<'Pix' | 'Dinheiro' | 'Transferência' | 'Outro'>('Pix');
+  const [paymentOperationKey, setPaymentOperationKey] = useState('');
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+  const paymentWriteLockRef = useRef(false);
 
   // Expense Form State
   const [expenseDesc, setExpenseDesc] = useState('');
   const [expenseAmount, setExpenseAmount] = useState<number>(0);
   const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [expenseCategory, setExpenseCategory] = useState<Expense['category']>('Outro');
-
-  const syncLock = useRef(false);
-
-  // Sincronização, Limpeza e Blindagem de Alterações (Datas/Valores)
-  useEffect(() => {
-    if (!state.payments || !state.expenses) return;
-    if (syncLock.current) return;
-
-    const currentExpenses = state.expenses;
-    const expensesToDelete: string[] = [];
-    const missingExpenses: Expense[] = [];
-
-    const validPaymentsMap = new Map(state.payments.map(p => [p.id, p]));
-    const repasseByPaymentId = new Map();
-
-    currentExpenses.forEach(e => {
-      if (e.auto_gerado && e.pagamento_origem_id) {
-        const parentPayment = validPaymentsMap.get(e.pagamento_origem_id);
-        
-        if (!parentPayment) {
-          expensesToDelete.push(e.id);
-        } else if (repasseByPaymentId.has(e.pagamento_origem_id)) {
-          expensesToDelete.push(e.id);
-        } else if (e.date !== parentPayment.date || e.amount !== (parentPayment.amount * 0.2)) {
-          expensesToDelete.push(e.id);
-        } else {
-          repasseByPaymentId.set(e.pagamento_origem_id, e);
-        }
-      }
-    });
-
-    state.payments.forEach(payment => {
-      if (!repasseByPaymentId.has(payment.id)) {
-        const patientName = state.patients?.find(p => p.id === payment.patientId)?.name || 'Atendente';
-        missingExpenses.push({
-          id: Math.random().toString(36).substr(2, 9) + Date.now().toString(36),
-          description: `Repasse Sócia - ${patientName}`,
-          amount: payment.amount * 0.2, 
-          date: payment.date, 
-          category: 'Repasse Sócia',
-          auto_gerado: true,
-          pagamento_origem_id: payment.id,
-        });
-      }
-    });
-
-    if (expensesToDelete.length > 0 || missingExpenses.length > 0) {
-      syncLock.current = true;
-      const updatedExpenses = currentExpenses.filter(e => !expensesToDelete.includes(e.id));
-      onUpdate({ expenses: [...updatedExpenses, ...missingExpenses] });
-      
-      if (expensesToDelete.length > 0) {
-        showToast(`Manutenção: Repasses corrigidos para acompanhar as datas originais.`, 'success');
-      }
-
-      setTimeout(() => {
-        syncLock.current = false;
-      }, 2000);
-    }
-  }, [state.payments, state.expenses, state.patients, onUpdate]);
 
   const interval = useMemo(() => {
     const now = new Date();
@@ -288,11 +235,11 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     let saldoAtrasado = 0;
     let despesasNoPeriodo = 0;
   
-    state.payments.forEach(p => {
+    state.payments.filter(payment => isPaymentReceived(payment)).forEach(p => {
       if (isWithinInterval(parseISO(p.date), interval)) recebidoNoPeriodo += p.amount;
     });
     
-    (state.expenses || []).forEach(e => {
+    (state.expenses || []).filter(expense => isExpenseRealized(expense)).forEach(e => {
       if (isWithinInterval(parseISO(e.date), interval)) despesasNoPeriodo += e.amount;
     });
   
@@ -378,7 +325,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   }, [patientFinancials, interval, searchTerm, statusFilter]);
 
   const groupedTransactions = useMemo(() => {
-    const inPeriod = state.payments.filter(p => isWithinInterval(parseISO(p.date), interval))
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const inPeriod = state.payments.filter(payment => payment.date <= today).filter(p => isWithinInterval(parseISO(p.date), interval))
       .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       
     const groups: Record<string, { total: number, count: number, items: Payment[] }> = {};
@@ -386,7 +334,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       const monthStr = format(parseISO(p.date), "MMMM yyyy", { locale: ptBR });
       const key = monthStr.charAt(0).toUpperCase() + monthStr.slice(1);
       if (!groups[key]) groups[key] = { total: 0, count: 0, items: [] };
-      groups[key].total += p.amount;
+      if (isPaymentReceived(p)) groups[key].total += p.amount;
       groups[key].count += 1;
       groups[key].items.push(p);
     });
@@ -394,7 +342,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
   }, [state.payments, interval]);
 
   const groupedExpenses = useMemo(() => {
-    const inPeriod = (state.expenses || []).filter(e => isWithinInterval(parseISO(e.date), interval))
+    const today = format(new Date(), 'yyyy-MM-dd');
+    const inPeriod = (state.expenses || []).filter(expense => expense.date <= today).filter(e => isWithinInterval(parseISO(e.date), interval))
       .sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       
     const groups: Record<string, { total: number, count: number, items: Expense[] }> = {};
@@ -402,7 +351,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
       const monthStr = format(parseISO(e.date), "MMMM yyyy", { locale: ptBR });
       const key = monthStr.charAt(0).toUpperCase() + monthStr.slice(1);
       if (!groups[key]) groups[key] = { total: 0, count: 0, items: [] };
-      groups[key].total += e.amount;
+      if (isExpenseRealized(e)) groups[key].total += e.amount;
       groups[key].count += 1;
       groups[key].items.push(e);
     });
@@ -413,27 +362,34 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     setIsPaymentModalOpen(false);
     setPaymentContext(null);
     resetPaymentForm();
+    setPaymentOperationKey('');
   };
 
   const openPaymentModal = (summary?: PackageFinancialSummary) => {
     resetPaymentForm();
+    setPaymentOperationKey(createPaymentOperationKey());
 
     if (summary) {
+      const targetPackageNumber = summary.hasNewPackageWithoutPayment && summary.pendingGross <= 0
+        ? summary.packageNumber + 1
+        : summary.packageNumber;
+      const targetPaidGross = targetPackageNumber === summary.packageNumber ? summary.paidGross : 0;
+      const targetPendingGross = targetPackageNumber === summary.packageNumber ? summary.pendingGross : PACKAGE_GROSS_VALUE;
       const isInstallmentPlan = summary.patient.paymentModal === PaymentModal.PARCELADO;
       const firstInstallmentTarget = PACKAGE_GROSS_VALUE / 2;
       const suggestedInstallment = isInstallmentPlan
-        ? summary.paidGross < firstInstallmentTarget ? '1ª parcela' : '2ª parcela'
+        ? targetPaidGross < firstInstallmentTarget ? '1ª parcela' : '2ª parcela'
         : 'Pagamento integral';
       const suggestedAmount = isInstallmentPlan
-        ? summary.paidGross < firstInstallmentTarget
-          ? Math.max(firstInstallmentTarget - summary.paidGross, 0)
-          : Math.max(PACKAGE_GROSS_VALUE - summary.paidGross, 0)
-        : summary.pendingGross;
+        ? targetPaidGross < firstInstallmentTarget
+          ? Math.max(firstInstallmentTarget - targetPaidGross, 0)
+          : Math.max(PACKAGE_GROSS_VALUE - targetPaidGross, 0)
+        : targetPendingGross;
 
       setPaymentContext({
         patientId: summary.patient.id,
-        packageNumber: summary.packageNumber,
-        pendingGross: summary.pendingGross,
+        packageNumber: targetPackageNumber,
+        pendingGross: targetPendingGross,
       });
       setPatientId(summary.patient.id);
       setAmount(suggestedAmount);
@@ -445,7 +401,8 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     setIsPaymentModalOpen(true);
   };
 
-  const handleSavePayment = () => {
+  const handleSavePayment = async () => {
+    if (paymentWriteLockRef.current) return;
     if (!patientId || amount <= 0) {
       showToast('Preencha os dados corretamente.', 'error');
       return;
@@ -454,63 +411,68 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
     const selectedSummary = patientFinancials.find(summary => summary.patient.id === patientId);
     const targetPackageNumber = paymentContext?.patientId === patientId
       ? paymentContext.packageNumber
-      : selectedSummary?.packageNumber || 1;
-
-    if (paymentContext?.patientId === patientId) {
-      if (paymentContext.pendingGross <= 0) {
-        showToast('O pacote atual já está quitado. Nenhum pagamento foi registrado.', 'error');
-        return;
-      }
-      if (amount > paymentContext.pendingGross + 0.009) {
-        showToast(`O valor informado ultrapassa o saldo pendente de ${formatCurrency(paymentContext.pendingGross)}.`, 'error');
-        return;
-      }
-    }
-
-    const isDuplicate = state.payments.some(payment =>
-      payment.patientId === patientId &&
-      Number(payment.packageNumber || 1) === targetPackageNumber &&
-      payment.date === date &&
-      Number(payment.amount) === amount &&
-      payment.installment === installment &&
-      payment.method === method
-    );
-
-    if (isDuplicate) {
-      showToast('Este pagamento já está registrado com os mesmos dados. Nenhuma duplicação foi criada.', 'error');
+      : selectedSummary?.hasNewPackageWithoutPayment && selectedSummary.pendingGross <= 0
+        ? selectedSummary.packageNumber + 1
+        : selectedSummary?.packageNumber || 1;
+    const selectedPatient = state.patients.find(p => p.id === patientId);
+    if (!selectedPatient) {
+      showToast('Atendente não encontrado.', 'error');
       return;
     }
-
-    const patientName = state.patients.find(p => p.id === patientId)?.name || 'Atendente';
+    const patientName = selectedPatient.name || 'Atendente';
     if (paymentContext && !window.confirm(
       `Confirmar pagamento real de ${formatCurrency(amount)} para ${patientName}, Pacote ${targetPackageNumber}, em ${safeFormatDate(date, 'dd/MM/yyyy')} via ${method}?`
     )) {
       return;
     }
 
-    const newPayment: Payment = {
-      id: Math.random().toString(36).substr(2, 9),
-      patientId, amount, date, installment, method, packageNumber: targetPackageNumber
-    };
+    paymentWriteLockRef.current = true;
+    setIsSavingPayment(true);
+    try {
+      const prepared = preparePaymentCreation({
+        patient: selectedPatient,
+        sessions: state.sessions,
+        payments: state.payments,
+        expenses: state.expenses || [],
+        input: { patientId, amount, date, installment, method, packageNumber: targetPackageNumber },
+        operationKey: paymentOperationKey || createPaymentOperationKey(),
+        actor: currentUserName || 'Profissional',
+        now: new Date().toISOString(),
+      });
+      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
+      showToast(`Pagamento registrado! Repasse de ${formatCurrency(amount * PARTNER_SHARE_RATE)} gerado automaticamente.`);
+      closePaymentModal();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível registrar o pagamento.', 'error');
+    } finally {
+      paymentWriteLockRef.current = false;
+      setIsSavingPayment(false);
+    }
+  };
 
-    const repasseAmount = amount * PARTNER_SHARE_RATE;
-    const novaDepesa: Expense = {
-      id: Math.random().toString(36).substr(2, 9),
-      description: `Repasse Sócia - ${patientName}`,
-      amount: repasseAmount,
-      date: date,
-      category: 'Repasse Sócia',
-      auto_gerado: true,
-      pagamento_origem_id: newPayment.id,
-    };
-
-    onUpdate({
-      payments: [...state.payments, newPayment],
-      expenses: [...(state.expenses || []), novaDepesa],
-    });
-
-    showToast(`Pagamento registrado! Repasse de ${formatCurrency(repasseAmount)} gerado automaticamente.`);
-    closePaymentModal();
+  const handleVoidPayment = async () => {
+    if (!paymentToVoid || paymentWriteLockRef.current) return;
+    paymentWriteLockRef.current = true;
+    setIsSavingPayment(true);
+    try {
+      const prepared = preparePaymentVoid({
+        payments: state.payments,
+        expenses: state.expenses || [],
+        paymentId: paymentToVoid,
+        reason: paymentVoidReason,
+        actor: currentUserName || 'Profissional',
+        now: new Date().toISOString(),
+      });
+      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
+      showToast('Receita e repasse cancelados, com histórico preservado.');
+      setPaymentToVoid(null);
+      setPaymentVoidReason('');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível cancelar o pagamento.', 'error');
+    } finally {
+      paymentWriteLockRef.current = false;
+      setIsSavingPayment(false);
+    }
   };
 
   const handleSaveExpense = () => {
@@ -631,7 +593,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
 
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <MetricChip icon={<CheckCircle2 size={14} />} label="Recebido" value={metrics.recebidoNoPeriodo} tone="green" />
-            <MetricChip icon={<Clock3 size={14} />} label="Previsto" value={metrics.previstoNoPeriodo} tone="orange" align="right" />
+            <MetricChip icon={<Clock3 size={14} />} label="Saldo atual pendente" value={metrics.previstoNoPeriodo} tone="orange" align="right" />
           </div>
         </motion.div>
 
@@ -650,7 +612,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                   <HandCoins size={20} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-base font-black tracking-[0.04em] text-clinic-text">Saldo a Receber</p>
+                  <p className="text-base font-black tracking-[0.04em] text-clinic-text">Saldo atual a receber</p>
                   <p className="text-sm text-clinic-text-muted">Pendências financeiras com destaque para atrasos</p>
                   <div className="mt-2">
                     <MetricBadge label={financeDashboard.saldoBadge.label} tone={financeDashboard.saldoBadge.tone} />
@@ -663,7 +625,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
 
           <div className="border-y border-clinic-border py-4">
             <AnimatedCurrencyValue value={metrics.saldoEmAberto + metrics.saldoAtrasado} className="block text-[28px] font-black leading-none text-clinic-text sm:text-[32px] xl:text-[36px]" />
-            <p className="mt-2 text-sm text-clinic-text-muted">Saldo total pendente no período atual.</p>
+            <p className="mt-2 text-sm text-clinic-text-muted">Saldo pendente dos pacotes atuais, independentemente do filtro de recebimentos.</p>
             <CardLegend>Separa valores pendentes entre em aberto e atrasados.</CardLegend>
           </div>
 
@@ -911,9 +873,9 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-clinic-border bg-white px-3 py-3">
                             <div>
                               <p className="text-sm font-black text-clinic-text">Ações financeiras do pacote atual</p>
-                              <p className="text-xs text-clinic-text-muted">O registro será vinculado ao Pacote {item.packageNumber} e atualizará os saldos e avisos automaticamente.</p>
+                              <p className="text-xs text-clinic-text-muted">O registro será vinculado ao Pacote {item.hasNewPackageWithoutPayment && item.pendingGross <= 0 ? item.packageNumber + 1 : item.packageNumber} e atualizará os saldos e avisos automaticamente.</p>
                             </div>
-                            {item.pendingGross > 0 ? (
+                            {item.pendingGross > 0 || item.hasNewPackageWithoutPayment ? (
                               <button
                                 type="button"
                                 onClick={() => openPaymentModal(item)}
@@ -1015,10 +977,10 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                           <td data-label="Pacote" className="px-6 py-4"><span className="px-2.5 py-1.5 bg-clinic-bg rounded text-[13px] font-semibold text-clinic-text-muted">{p.packageNumber ? `Pacote ${p.packageNumber}` : 'Histórico'}</span></td>
                           <td data-label="Parcela" className="px-6 py-4 text-sm">{p.installment}</td>
                           <td data-label="Forma" className="px-6 py-4"><span className="px-2.5 py-1.5 bg-clinic-bg rounded text-[13px] font-semibold text-clinic-text-muted">{p.method}</span></td>
-                          <td data-label="Status" className="px-6 py-4"><span className="px-2.5 py-1.5 rounded-full bg-status-green-bg text-status-green-text text-[11px] font-black uppercase tracking-wider">Recebido</span></td>
-                          <td data-label="Valor" className="px-6 py-4 text-right text-sm font-bold text-status-green-text flex items-center justify-end gap-3">
+                          <td data-label="Status" className="px-6 py-4"><span className={cn('px-2.5 py-1.5 rounded-full text-[11px] font-black uppercase tracking-wider', isPaymentActive(p) ? 'bg-status-green-bg text-status-green-text' : 'bg-status-red-bg text-status-red-text')}>{isPaymentActive(p) ? 'Recebido' : 'Cancelado'}</span></td>
+                          <td data-label="Valor" className={cn('px-6 py-4 text-right text-sm font-bold flex items-center justify-end gap-3', isPaymentActive(p) ? 'text-status-green-text' : 'text-clinic-text-muted line-through')}>
                             {formatCurrency(p.amount)}
-                            <button onClick={() => setPaymentToDelete(p.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                            {isPaymentActive(p) && <button onClick={() => setPaymentToVoid(p.id)} title="Cancelar pagamento" className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>}
                           </td>
                         </tr>
                       ))}
@@ -1084,11 +1046,12 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
                           </div>
                         </td>
                         <td data-label="Categoria" className="px-6 py-4"><span className="px-2.5 py-1.5 bg-clinic-bg rounded text-[13px] font-semibold text-clinic-text-muted">{e.category}</span></td>
-                        <td data-label="Valor" className="px-6 py-4 text-right text-sm font-bold text-status-red-text flex items-center justify-end gap-3">
+                        <td data-label="Valor" className={cn('px-6 py-4 text-right text-sm font-bold flex items-center justify-end gap-3', isExpenseActive(e) ? 'text-status-red-text' : 'text-clinic-text-muted line-through')}>
                           - {formatCurrency(e.amount)}
-                          {!e.auto_gerado && (
+                          {!e.auto_gerado && isExpenseActive(e) && (
                             <button onClick={() => setExpenseToDelete(e.id)} className="p-1.5 text-status-red-text bg-status-red-bg rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
                           )}
+                          {!isExpenseActive(e) && <span className="rounded-full bg-status-red-bg px-2 py-1 text-[10px] uppercase text-status-red-text no-underline">Cancelado</span>}
                         </td>
                       </tr>
                     ))}
@@ -1101,26 +1064,21 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
         </div>
       )}
 
-      {/* Modais de Exclusão e Inclusão mantidos idênticos... */}
-      <Modal isOpen={!!paymentToDelete} onClose={() => setPaymentToDelete(null)} title="Confirmar Exclusão" width="max-w-md">
+      <Modal isOpen={!!paymentToVoid} onClose={() => { setPaymentToVoid(null); setPaymentVoidReason(''); }} title="Cancelar pagamento" width="max-w-md">
         <div className="space-y-6">
-          <p className="text-clinic-text">Deseja realmente excluir esta receita? O repasse automático da sócia vinculado também será removido.</p>
+          <p className="text-clinic-text">O lançamento original e o repasse serão preservados no histórico, marcados como cancelados.</p>
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-clinic-text-faint">Justificativa obrigatória</label>
+            <textarea value={paymentVoidReason} onChange={event => setPaymentVoidReason(event.target.value)} rows={3} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 outline-none focus:ring-2 focus:ring-clinic-primary" placeholder="Informe o motivo do cancelamento" />
+          </div>
           <div className="flex justify-end gap-3">
-            <button onClick={() => setPaymentToDelete(null)} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all tracking-[0.04em] text-sm">Cancelar</button>
+            <button onClick={() => { setPaymentToVoid(null); setPaymentVoidReason(''); }} className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all tracking-[0.04em] text-sm">Voltar</button>
             <button
-              onClick={() => {
-                if (paymentToDelete) {
-                  onUpdate({
-                    payments: state.payments.filter(pm => pm.id !== paymentToDelete),
-                    expenses: (state.expenses || []).filter(e => e.pagamento_origem_id !== paymentToDelete),
-                  });
-                  showToast('Receita e repasse excluídos');
-                  setPaymentToDelete(null);
-                }
-              }}
+              onClick={handleVoidPayment}
+              disabled={!paymentVoidReason.trim() || isSavingPayment}
               className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all tracking-[0.04em] text-sm"
             >
-              Excluir
+              {isSavingPayment ? 'Cancelando...' : 'Confirmar cancelamento'}
             </button>
           </div>
         </div>
@@ -1175,7 +1133,7 @@ export default function Finance({ state, onUpdate }: FinanceProps) {
               Repasse automático para sócia: <span className="font-bold text-clinic-text">{formatCurrency(amount * 0.2)}</span>
             </div>
           )}
-          <button onClick={handleSavePayment} disabled={!patientId || amount <= 0} className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm disabled:opacity-50">Confirmar Recebimento</button>
+          <button onClick={handleSavePayment} disabled={!patientId || amount <= 0 || isSavingPayment} className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm disabled:opacity-50">{isSavingPayment ? 'Registrando...' : 'Confirmar Recebimento'}</button>
         </div>
       </Modal>
 

@@ -1426,7 +1426,7 @@ export default function App() {
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
               {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
-              {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} />}
+              {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} isAdmin={accessProfile?.role === 'admin'} whatsappReportState={whatsappOperationalReportState} />}
               {activeTab === 'ajustes' && <Settings state={state} onUpdate={updateState} onThemeChange={updateVisualTheme} canManageActivityMonitoring={accessProfile?.role === 'admin'} navigationMode={navigationMode} onNavigationModeChange={changeNavigationMode} />}
             </motion.div>

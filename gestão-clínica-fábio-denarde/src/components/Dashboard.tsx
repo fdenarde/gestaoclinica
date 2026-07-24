@@ -13,6 +13,7 @@ import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
 import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
+import { isPaymentActive, isPaymentReceived } from '../../shared/packagePayments.js';
 
 interface DashboardProps {
   state: AppState;
@@ -316,7 +317,7 @@ export default function Dashboard({
     }).length;
 
     // Monthly income
-    const monthlyPayments = state.payments.filter(p => {
+    const monthlyPayments = state.payments.filter(isPaymentActive).filter(payment => isPaymentReceived(payment)).filter(p => {
       const d = new Date(p.date);
       return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
     }).reduce((sum, p) => sum + p.amount, 0);

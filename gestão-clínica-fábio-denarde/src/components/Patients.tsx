@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution, ExternalRegistrationForm } from '../types';
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera, Eye } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
@@ -23,6 +23,9 @@ import PatientRegistrationFields, { PatientRegistrationSummary } from './Common/
 import { PATIENT_REGISTRATION_FIELD_LABELS, formatPatientRegistrationValue } from '../lib/patientRegistration';
 import ResponsiblePortal from './Auth/ResponsiblePortal';
 import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
+import { calculatePackageFinancialSummary } from '../lib/financePackages';
+import { createPaymentOperationKey, preparePaymentCreation, preparePaymentVoid } from '../../shared/paymentOperations.js';
+import { isPaymentActive } from '../../shared/packagePayments.js';
 
 interface PatientsProps {
   state: AppState;
@@ -154,7 +157,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       activityMediaAuthorization: newPatient.activityMediaAuthorization || getDefaultActivityAuthorization(),
     };
 
-    // Auto-generate 1st package sessions and payments
+    // Auto-generate the initial clinical schedule. Financial records are created only after confirmed receipt.
     const DAYS_MAP: Record<string, number> = {
       'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6
     };
@@ -188,35 +191,6 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       }
     }
 
-    const generatedPayments: Payment[] = [];
-    if (patient.paymentModal === PaymentModal.PIX_FULL) {
-      generatedPayments.push({
-        id: Math.random().toString(36).substr(2, 9),
-        patientId: id,
-        amount: 1000,
-        date: generatedSessions[0].date,
-        installment: 'Pagamento integral',
-        method: 'Pix'
-      });
-    } else {
-      generatedPayments.push({
-        id: Math.random().toString(36).substr(2, 9),
-        patientId: id,
-        amount: 500,
-        date: generatedSessions[0].date,
-        installment: '1ª parcela',
-        method: 'Pix'
-      });
-      generatedPayments.push({
-        id: Math.random().toString(36).substr(2, 9),
-        patientId: id,
-        amount: 500,
-        date: generatedSessions[4].date,
-        installment: '2ª parcela',
-        method: 'Pix'
-      });
-    }
-
     let uploadedPhotoPath: string | undefined;
     setIsCreatingPatient(true);
 
@@ -238,8 +212,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 
       await Promise.resolve(onUpdate({
         patients: [...state.patients, patient],
-        sessions: [...state.sessions, ...generatedSessions],
-        payments: [...state.payments, ...generatedPayments]
+        sessions: [...state.sessions, ...generatedSessions]
       }));
 
       showToast('Atendente e ciclo inicial cadastrados com sucesso!');
@@ -298,10 +271,13 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
     const patientBeingDeleted = state.patients.find(item => item.id === patientToDelete);
     const updatedPatients = state.patients.filter(p => p.id !== patientToDelete);
     const updatedSessions = state.sessions.filter(s => s.patientId !== patientToDelete);
-    const updatedPayments = state.payments.filter(p => p.patientId !== patientToDelete);
     const updatedRepositions = state.repositions.filter(r => r.patientId !== patientToDelete);
 
     try {
+      if (state.payments.some(payment => payment.patientId === patientToDelete)) {
+        showToast('Este atendente possui histórico financeiro. Desative o cadastro para preservar os lançamentos.', 'error');
+        return;
+      }
       if (currentUserId && await hasPatientActivityRecords(patientToDelete)) {
         showToast('Este atendente possui registros históricos de atividades preservados. O cadastro não pode ser excluído sem uma auditoria específica desses dados.', 'error');
         return;
@@ -310,7 +286,6 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
       await Promise.resolve(onUpdate({
         patients: updatedPatients,
         sessions: updatedSessions,
-        payments: updatedPayments,
         repositions: updatedRepositions
       }));
 
@@ -797,6 +772,9 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const [repoTime, setRepoTime] = useState(patient?.fixedTime || '08:00');
   
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentOperationKey, setPaymentOperationKey] = useState('');
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+  const paymentWriteLockRef = useRef(false);
   const [paymentData, setPaymentData] = useState<{
     id?: string;
     date: string;
@@ -875,6 +853,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     sessions: state.sessions,
   }).sort((a, b) => `${b.date}T${b.time}`.localeCompare(`${a.date}T${a.time}`));
   const patientPayments = state.payments.filter(p => p.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const activePatientPayments = patientPayments.filter(isPaymentActive);
+  const packageFinancialSummary = calculatePackageFinancialSummary(patient, state.sessions, state.payments, new Date());
   const patientEvolutions = (state.evolutions || []).filter(e => e.patientId === patient.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const latestExternalHistory = patient.externalRegistrationHistory?.[patient.externalRegistrationHistory.length - 1];
 
@@ -979,10 +959,10 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     { throughDate: format(new Date(), 'yyyy-MM-dd') },
   ).count;
 
-  const isLate = patient.paymentModal === PaymentModal.PARCELADO && realizedCount >= 6 && !patientPayments.some(p => p.installment === '2ª parcela');
+  const isLate = packageFinancialSummary.status === 'ATRASADO';
   let daysLate = 0;
-  if (isLate && realizedSessionsChronological[5]) {
-    daysLate = differenceInDays(new Date(), new Date(realizedSessionsChronological[5].date));
+  if (isLate && packageFinancialSummary.dueDate) {
+    daysLate = Math.max(0, differenceInDays(new Date(), new Date(packageFinancialSummary.dueDate)));
   }
 
   const clearPendingPhoto = () => {
@@ -1460,61 +1440,127 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
 
   const handleRegisterPaymentClick = () => {
-    const currentPackageNumber = Math.max(1, Math.ceil(patientSessions.length / 10));
+    const currentPackageNumber = packageFinancialSummary.hasNewPackageWithoutPayment
+      && packageFinancialSummary.pendingGross <= 0
+      ? packageFinancialSummary.packageNumber + 1
+      : packageFinancialSummary.packageNumber;
+    const currentPaid = currentPackageNumber === packageFinancialSummary.packageNumber
+      ? packageFinancialSummary.paidGross
+      : 0;
       
     setPaymentData({
       date: format(new Date(), 'yyyy-MM-dd'),
-      installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
-      amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
+      installment: patient?.paymentModal === PaymentModal.PIX_FULL
+        ? 'Pagamento integral'
+        : currentPaid >= 500 ? '2ª parcela' : '1ª parcela',
+      amount: patient?.paymentModal === PaymentModal.PIX_FULL
+        ? Math.max(1000 - currentPaid, 0)
+        : Math.min(500, Math.max(1000 - currentPaid, 0)),
       method: 'Pix',
       packageNumber: currentPackageNumber
     });
+    setPaymentOperationKey(createPaymentOperationKey());
     setPaymentModalOpen(true);
   };
 
-  const handleEditPaymentClick = (payment: Payment) => {
+  const handleEditPaymentClick = async (payment: Payment) => {
+    if (!isPaymentActive(payment) || paymentWriteLockRef.current) return;
+    const reason = window.prompt('Informe a justificativa para cancelar este lançamento antes de registrar a correção:');
+    if (!reason?.trim()) {
+      showToast('A justificativa do cancelamento é obrigatória.', 'error');
+      return;
+    }
+    paymentWriteLockRef.current = true;
+    setIsSavingPayment(true);
+    try {
+      const prepared = preparePaymentVoid({
+        payments: state.payments,
+        expenses: state.expenses || [],
+        paymentId: payment.id,
+        reason,
+        actor: currentUserName || 'Profissional',
+        now: new Date().toISOString(),
+      });
+      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
+      showToast('Lançamento anterior cancelado. Registre agora o valor corrigido.', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível cancelar o pagamento.', 'error');
+      return;
+    } finally {
+      paymentWriteLockRef.current = false;
+      setIsSavingPayment(false);
+    }
     setPaymentData({
-      id: payment.id,
       date: payment.date,
       installment: payment.installment as any,
       amount: payment.amount,
       method: payment.method as any,
       packageNumber: payment.packageNumber || 1
     });
+    setPaymentOperationKey(createPaymentOperationKey());
     setPaymentModalOpen(true);
   };
 
-  const handleDeletePaymentClick = (paymentId: string) => {
-    if (window.confirm("Tem certeza que deseja excluir este pagamento?")) {
-      onUpdate({ payments: state.payments.filter(p => p.id !== paymentId) });
-      showToast('Pagamento excluído com sucesso!');
+  const handleDeletePaymentClick = async (paymentId: string) => {
+    if (paymentWriteLockRef.current) return;
+    const reason = window.prompt('Informe a justificativa obrigatória para cancelar este pagamento:');
+    if (!reason?.trim()) {
+      showToast('A justificativa do cancelamento é obrigatória.', 'error');
+      return;
+    }
+    paymentWriteLockRef.current = true;
+    setIsSavingPayment(true);
+    try {
+      const prepared = preparePaymentVoid({
+        payments: state.payments,
+        expenses: state.expenses || [],
+        paymentId,
+        reason,
+        actor: currentUserName || 'Profissional',
+        now: new Date().toISOString(),
+      });
+      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
+      showToast('Pagamento e repasse cancelados, com histórico preservado.');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível cancelar o pagamento.', 'error');
+    } finally {
+      paymentWriteLockRef.current = false;
+      setIsSavingPayment(false);
     }
   };
 
-  const handleSavePayment = () => {
-    if (paymentData.id) {
-      const updatedPayments = state.payments.map(p => 
-        p.id === paymentData.id 
-          ? { ...p, amount: paymentData.amount, date: paymentData.date, installment: paymentData.installment, method: paymentData.method, packageNumber: paymentData.packageNumber } 
-          : p
-      );
-      onUpdate({ payments: updatedPayments });
-      showToast('Pagamento atualizado com sucesso!', 'success');
-    } else {
-      const newPayment: Payment = {
-        id: Math.random().toString(36).substr(2, 9),
-        patientId: patient.id,
-        amount: paymentData.amount,
-        date: paymentData.date,
-        installment: paymentData.installment,
-        method: paymentData.method,
-        packageNumber: paymentData.packageNumber
-      };
-      
-      onUpdate({ payments: [...state.payments, newPayment] });
+  const handleSavePayment = async () => {
+    if (paymentWriteLockRef.current) return;
+    paymentWriteLockRef.current = true;
+    setIsSavingPayment(true);
+    try {
+      const prepared = preparePaymentCreation({
+        patient,
+        sessions: state.sessions,
+        payments: state.payments,
+        expenses: state.expenses || [],
+        input: {
+          patientId: patient.id,
+          amount: paymentData.amount,
+          date: paymentData.date,
+          installment: paymentData.installment,
+          method: paymentData.method,
+          packageNumber: paymentData.packageNumber,
+        },
+        operationKey: paymentOperationKey || createPaymentOperationKey(),
+        actor: currentUserName || 'Profissional',
+        now: new Date().toISOString(),
+      });
+      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
       showToast('Pagamento registrado com sucesso!', 'success');
+      setPaymentModalOpen(false);
+      setPaymentOperationKey('');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível registrar o pagamento.', 'error');
+    } finally {
+      paymentWriteLockRef.current = false;
+      setIsSavingPayment(false);
     }
-    setPaymentModalOpen(false);
   };
 
   const handleScheduleReposition = () => {
@@ -1590,13 +1636,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     .filter(s => s.status === SessionStatus.AGENDADA && s.date >= format(new Date(), 'yyyy-MM-dd'))
     .sort((a,b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))[0];
   const pendingRepositionsCount = state.repositions.filter(r => r.patientId === patient.id && r.status === 'Pendente').length;
-  const totalPaid = patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
-  const hasSecondPayment = patientPayments.some(p => p.installment === '2ª parcela');
   const financialStatus = isLate
     ? { label: 'Atraso', detail: `${daysLate} dias`, tone: 'red' }
-    : patient.paymentModal === PaymentModal.PARCELADO && realizedInPackage >= 4 && !hasSecondPayment
+    : patient.paymentModal === PaymentModal.PARCELADO && realizedInPackage >= 4 && packageFinancialSummary.pendingGross > 0
       ? { label: 'Cobrar em breve', detail: '2ª parcela', tone: 'orange' }
-      : { label: 'Em dia', detail: formatCurrency(totalPaid), tone: 'green' };
+      : { label: packageFinancialSummary.status, detail: formatCurrency(packageFinancialSummary.paidGross), tone: 'green' };
   const packageStatus = realizedInPackage >= 8
     ? { label: 'Renovar', detail: `${realizedInPackage}/10`, tone: 'orange' }
     : realizedInPackage === 0
@@ -2499,8 +2543,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
 
                 <div className="grid grid-cols-2 gap-4">
                    <div className="p-4 bg-status-green-bg text-status-green-text rounded-2xl border border-green-100 h-full">
-                      <span className="block text-[10px] font-bold uppercase">Total Pago</span>
-                      <span className="text-2xl font-bold">{formatCurrency(patientPayments.reduce((s, p) => s + p.amount, 0))}</span>
+                      <span className="block text-[10px] font-bold uppercase">Pago no pacote atual</span>
+                      <span className="text-2xl font-bold">{formatCurrency(packageFinancialSummary.paidGross)}</span>
                    </div>
                    <div className="p-4 bg-status-orange-bg text-status-orange-text rounded-2xl border border-orange-100 h-full">
                       <span className="block text-[10px] font-bold uppercase">Status Financeiro</span>
@@ -2527,18 +2571,19 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                                <div className="flex items-center gap-4">
                                   <DollarSign size={18} className="text-status-green-text" />
                                   <div className="flex flex-col">
-                                    <span className="font-bold text-sm">{formatCurrency(payment.amount)} — {payment.installment}</span>
+                                    <span className={cn('font-bold text-sm', !isPaymentActive(payment) && 'line-through text-clinic-text-muted')}>{formatCurrency(payment.amount)} — {payment.installment}</span>
                                     <span className="text-[10px] text-clinic-text-muted">{safeFormatDate(payment.date, 'dd/MM/yyyy')} via {payment.method}</span>
+                                    {!isPaymentActive(payment) && <span className="text-[10px] text-status-red-text">Cancelado por {payment.voidedBy || 'Profissional'}: {payment.voidReason}</span>}
                                   </div>
                                </div>
                                <div className="flex items-center gap-2">
-                                  <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Editar Pagamento">
+                                  {isPaymentActive(payment) && <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Corrigir pagamento">
                                      <Edit3 size={14} />
-                                  </button>
-                                  <button onClick={() => handleDeletePaymentClick(payment.id)} className="p-1.5 text-clinic-text-muted hover:text-status-red-text hover:bg-status-red-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Excluir Pagamento">
+                                  </button>}
+                                  {isPaymentActive(payment) && <button onClick={() => handleDeletePaymentClick(payment.id)} className="p-1.5 text-clinic-text-muted hover:text-status-red-text hover:bg-status-red-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Cancelar pagamento">
                                      <Trash2 size={14} />
-                                  </button>
-                                  <span className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-status-green-bg text-status-green-text">Recebido</span>
+                                  </button>}
+                                  <span className={cn('px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider', isPaymentActive(payment) ? 'bg-status-green-bg text-status-green-text' : 'bg-status-red-bg text-status-red-text')}>{isPaymentActive(payment) ? 'Recebido' : 'Cancelado'}</span>
                                </div>
                              </div>
                            ))}
@@ -2761,9 +2806,10 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
               </button>
               <button
                 onClick={handleSavePayment}
+                disabled={isSavingPayment}
                 className="px-4 py-2 bg-status-green-bg text-status-green-text font-bold rounded-lg hover:bg-green-200 transition-all uppercase tracking-wide text-xs"
               >
-                Confirmar Recebimento
+                {isSavingPayment ? 'Registrando...' : 'Confirmar Recebimento'}
               </button>
             </div>
           </div>

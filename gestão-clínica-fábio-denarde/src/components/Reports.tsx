@@ -13,6 +13,8 @@ import { getCompletedSessions, getSessionCycleNumber, isCountedAbsenceSession } 
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
+import { calculatePackageFinancialSummary } from '../lib/financePackages';
+import { isPaymentReceived } from '../../shared/packagePayments.js';
 import {
   buildCurrentPackageSessionSummaries,
   buildCurrentPackageSessionSummary,
@@ -157,26 +159,25 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
     generateHeader(doc, 'Relatório de Situação Financeira');
 
     const body = state.patients.map(p => {
-      const paid = state.payments.filter(pay => pay.patientId === p.id).reduce((s, pay) => s + pay.amount, 0);
-      const remaining = 1000 - paid;
+      const summary = calculatePackageFinancialSummary(p, state.sessions, state.payments, new Date());
       return [
         p.name,
         p.paymentModal.split(': ')[0],
-        formatCurrency(paid),
-        formatCurrency(remaining),
-        paid >= 1000 ? 'QUITADO' : (paid > 0 ? 'PARCIAL' : 'PENDENTE')
+        formatCurrency(summary.paidGross),
+        formatCurrency(summary.pendingGross),
+        summary.status,
       ];
     });
 
     autoTable(doc, {
       startY: 60,
-      head: [['Atendente', 'Modalidade', 'Total Pago', 'Saldo Devedor', 'Status']],
+      head: [['Atendente', 'Modalidade', 'Pago no Pacote Atual', 'Saldo Atual Pendente', 'Status']],
       body: body,
       headStyles: { fillColor: [196, 96, 58], textColor: [255, 255, 255] },
       styles: { fontSize: 9 }
     });
 
-    const totalReceived = state.payments.reduce((s, p) => s + p.amount, 0);
+    const totalReceived = state.payments.filter(payment => isPaymentReceived(payment)).reduce((s, p) => s + p.amount, 0);
     const finalY = (doc as any).lastAutoTable.finalY + 10;
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
@@ -243,14 +244,13 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
 
   const exportFinanceCSV = () => {
     const csvData = state.patients.map(p => {
-      const paid = state.payments.filter(pay => pay.patientId === p.id).reduce((s, pay) => s + pay.amount, 0);
-      const remaining = 1000 - paid;
+      const summary = calculatePackageFinancialSummary(p, state.sessions, state.payments, new Date());
       return {
         Atendente: p.name,
         Modalidade: p.paymentModal.split(': ')[0],
-        'Total Pago': paid,
-        'Saldo Devedor': remaining,
-        Status: paid >= 1000 ? 'QUITADO' : (paid > 0 ? 'PARCIAL' : 'PENDENTE')
+        'Pago no Pacote Atual': summary.paidGross,
+        'Saldo Atual Pendente': summary.pendingGross,
+        Status: summary.status,
       };
     });
     const csv = Papa.unparse(csvData);

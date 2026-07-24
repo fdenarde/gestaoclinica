@@ -15,6 +15,7 @@ import {
   buildMonitoringSessionDataset,
   getSaoPauloWeekRange,
 } from '../shared/monitoringPanel.js';
+import { getPackagePaymentSummary } from '../shared/packagePayments.js';
 import {
   assertAccessUsername,
   directAccessPathForRole,
@@ -2583,6 +2584,7 @@ function serializeResponsiblePayment(snapshot) {
     date: normalizeText(data.date, 10),
     installment: normalizeText(data.installment, 80),
     method: normalizeText(data.method, 40),
+    status: normalizeText(data.status, 20) || 'active',
     packageNumber: Number.isFinite(Number(data.packageNumber)) && Number(data.packageNumber) > 0
       ? Number(data.packageNumber)
       : null,
@@ -2602,29 +2604,6 @@ function serializeResponsibleDocument(snapshot) {
     uploadedByName: normalizeText(data.responsibleName, 120) || 'Responsável',
     createdAt: serializeDate(data.createdAt),
     status: normalizeText(data.status, 30) || 'available',
-  };
-}
-
-function getPackagePaymentSummary(payments, packageNumber) {
-  const sorted = [...payments].sort((a, b) => `${a.date}|${a.id}`.localeCompare(`${b.date}|${b.id}`));
-  const explicit = sorted.filter(payment => payment.packageNumber === packageNumber);
-  const totalPaid = sorted.reduce((sum, payment) => sum + payment.amount, 0);
-  const inferred = Math.min(Math.max(totalPaid - ((packageNumber - 1) * 1000), 0), 1000);
-  const explicitPaid = explicit.reduce((sum, payment) => sum + payment.amount, 0);
-  const paidAmount = Math.max(explicitPaid, inferred);
-  return {
-    financialStatus: paidAmount >= 1000 ? 'quitado' : 'pendente',
-    paidAmount,
-    pendingAmount: Math.max(1000 - paidAmount, 0),
-    installments: explicit.length > 0 ? explicit : sorted.filter(payment => {
-      if (payment.packageNumber) return false;
-      const paidBefore = sorted
-        .filter(candidate => `${candidate.date}|${candidate.id}` < `${payment.date}|${payment.id}`)
-        .reduce((sum, candidate) => sum + candidate.amount, 0);
-      const firstPackage = Math.floor(paidBefore / 1000) + 1;
-      const lastPackage = Math.floor(Math.max(paidBefore + payment.amount - 0.01, 0) / 1000) + 1;
-      return packageNumber >= firstPackage && packageNumber <= lastPackage;
-    }),
   };
 }
 
@@ -3407,7 +3386,7 @@ async function getResponsiblePortalData(db, decodedToken, req) {
     const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
     const packageResult = buildResponsiblePackages(sessions, { today, payments });
     for (const pkg of packageResult.packages) {
-      Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number));
+      Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number, { patientId, throughDate: today }));
     }
 
     const media = [];
@@ -3569,7 +3548,7 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
   const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
   const packageResult = buildResponsiblePackages(sessions, { today, payments });
   for (const pkg of packageResult.packages) {
-    Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number));
+    Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number, { patientId, throughDate: today }));
   }
 
   const media = [];

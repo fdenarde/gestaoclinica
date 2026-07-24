@@ -1,4 +1,5 @@
-import { Payment, PaymentModal, Patient, Session, SessionStatus } from '../types';
+import { Payment, Patient, Session } from '../types';
+import { calculateCanonicalPackageFinancialSummary } from '../../shared/packageFinancialSummary.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import { sessionConsumesPackage } from '../../shared/sessionScheduling.js';
 
@@ -33,156 +34,54 @@ export interface PackageFinancialSummary {
   lastPayment: Payment | null;
   hasCurrentPackage: boolean;
   hasNewPackageWithoutPayment: boolean;
-}
-
-function sortSessionsChronologically(a: Session, b: Session) {
-  const dateCompare = (a.date || '').localeCompare(b.date || '');
-  if (dateCompare !== 0) return dateCompare;
-  const timeCompare = (a.time || '').localeCompare(b.time || '');
-  if (timeCompare !== 0) return timeCompare;
-  return (a.id || '').localeCompare(b.id || '');
-}
-
-function sortPaymentsChronologically(a: Payment, b: Payment) {
-  const dateCompare = (a.date || '').localeCompare(b.date || '');
-  if (dateCompare !== 0) return dateCompare;
-  return (a.id || '').localeCompare(b.id || '');
-}
-
-function clampCurrency(value: number) {
-  return Math.min(Math.max(value, 0), PACKAGE_GROSS_VALUE);
-}
-
-function localDateKey(value: Date) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function getExplicitPackageNumber(payment: Payment) {
-  const packageNumber = Number(payment.packageNumber || 0);
-  return packageNumber > 0 ? packageNumber : null;
+  dueSessionNumber: number;
+  dueDate: string;
 }
 
 export function getPaymentPackageNumber(payment: Payment, _packageStarts: { packageNumber: number; startDate: string }[]) {
-  return getExplicitPackageNumber(payment) || 1;
-}
-
-function getPaymentsForPackage(patientPayments: Payment[], packageNumber: number) {
-  const packagePayments: Payment[] = [];
-  let cumulativePaid = 0;
-
-  patientPayments.forEach(payment => {
-    const amount = Number(payment.amount) || 0;
-    const explicitPackageNumber = getExplicitPackageNumber(payment);
-
-    if (explicitPackageNumber === packageNumber) {
-      packagePayments.push(payment);
-    } else if (!explicitPackageNumber && amount > 0) {
-      const firstCoveredPackage = Math.floor(cumulativePaid / PACKAGE_GROSS_VALUE) + 1;
-      const lastCoveredPackage = Math.floor(Math.max(cumulativePaid + amount - 0.01, 0) / PACKAGE_GROSS_VALUE) + 1;
-
-      if (packageNumber >= firstCoveredPackage && packageNumber <= lastCoveredPackage) {
-        packagePayments.push(payment);
-      }
-    }
-
-    cumulativePaid += amount;
-  });
-
-  return packagePayments;
+  const packageNumber = Number(payment.packageNumber || 0);
+  return packageNumber > 0 ? packageNumber : 1;
 }
 
 export function calculatePackageFinancialSummary(
   patient: Patient,
   sessions: Session[],
   payments: Payment[],
-  today = new Date()
+  today = new Date(),
 ): PackageFinancialSummary {
-  const patientSessions = sessions
-    .filter(session => session.patientId === patient.id && !session.isBlocked && session.status !== SessionStatus.CANCELADA)
-    .sort(sortSessionsChronologically);
-
-  const completedSessions = patientSessions.filter(session => sessionConsumesPackage(session, { throughDate: localDateKey(today) }));
-  const completedPackageNumber = completedSessions.length > 0
-    ? Math.floor((completedSessions.length - 1) / SESSIONS_PER_PACKAGE) + 1
-    : 0;
-
-  const patientPayments = payments
-    .filter(payment => payment.patientId === patient.id)
-    .sort(sortPaymentsChronologically);
-
-  const totalPaidGross = patientPayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-  const activatedPackageNumber = getActivatedPackageNumber(patientPayments, { patientId: patient.id });
-  const packageNumber = Math.max(1, activatedPackageNumber);
-  const hasStartedNextPackageWithoutPayment = completedPackageNumber > activatedPackageNumber && completedPackageNumber > 1;
-
-  const previousPackageNumber = packageNumber > 1 ? packageNumber - 1 : null;
-  const currentPackageStartIndex = (packageNumber - 1) * SESSIONS_PER_PACKAGE;
-  const currentPackageSessions = completedSessions.slice(currentPackageStartIndex, currentPackageStartIndex + SESSIONS_PER_PACKAGE);
-  const completedSessionsInCurrentPackage = currentPackageSessions.length;
-  const sessionsInCurrentPackage = completedSessionsInCurrentPackage;
-  const remainingSessionsInCurrentPackage = Math.max(SESSIONS_PER_PACKAGE - completedSessionsInCurrentPackage, 0);
-
-  const currentPackagePayments = getPaymentsForPackage(patientPayments, packageNumber);
-  const previousPackagePayments = previousPackageNumber ? getPaymentsForPackage(patientPayments, previousPackageNumber) : [];
-
-  const packagePaymentsGross = currentPackagePayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-  const inferredPaidGrossFromTotal = clampCurrency(totalPaidGross - ((packageNumber - 1) * PACKAGE_GROSS_VALUE));
-  const paidGross = Math.max(packagePaymentsGross, inferredPaidGrossFromTotal);
-  const packageHasStarted = completedSessionsInCurrentPackage > 0;
-  const hasUnpaidStartedPackage = packageHasStarted && paidGross <= 0;
-  const hasPartialPayment = paidGross > 0 && paidGross < PACKAGE_GROSS_VALUE;
-  const pendingGross = hasUnpaidStartedPackage || hasPartialPayment
-    ? Math.max(PACKAGE_GROSS_VALUE - paidGross, 0)
-    : 0;
-
-  const dueSessionIndex = patient.paymentModal === PaymentModal.PARCELADO ? 5 : 0;
-  const dueSession = currentPackageSessions[dueSessionIndex];
-  const dueDate = dueSession?.date || currentPackageSessions[0]?.date || patient.startDate || '';
-  const isOverdue = patient.paymentModal === PaymentModal.PARCELADO
-    && pendingGross > 0
-    && paidGross > 0
-    && completedSessionsInCurrentPackage >= 6
-    && !!dueDate
-    && new Date(`${dueDate}T23:59:59`).getTime() < today.getTime();
-
-  const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0;
-  let status: FinancialStatus = 'SEM MOVIMENTAÇÃO';
-  if (hasCurrentPackage) {
-    if (pendingGross <= 0) status = 'QUITADO';
-    else if (isOverdue) status = 'ATRASADO';
-    else if (paidGross > 0) status = 'PARCIAL';
-    else status = 'EM ABERTO';
-  }
-
-  const lastPayment = patientPayments.length > 0 ? patientPayments[patientPayments.length - 1] : null;
-  const hasNewPackageWithoutPayment = hasStartedNextPackageWithoutPayment;
-
-  return {
+  const patientPayments = payments.filter(payment => payment.patientId === patient.id);
+  const activatedPackageNumberAtPresent = getActivatedPackageNumber(patientPayments, { patientId: patient.id });
+  const calculationDate = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0'),
+  ].join('-');
+  const present = new Date();
+  const presentDate = [
+    present.getFullYear(),
+    String(present.getMonth() + 1).padStart(2, '0'),
+    String(present.getDate()).padStart(2, '0'),
+  ].join('-');
+  const activatedPackageNumber = calculationDate === presentDate
+    ? activatedPackageNumberAtPresent
+    : getActivatedPackageNumber(patientPayments, { patientId: patient.id, throughDate: calculationDate });
+  const completedPackageNumber = Math.ceil(
+    sessions.filter(session => (
+      session.patientId === patient.id
+      && sessionConsumesPackage(session, { throughDate: calculationDate })
+    )).length / SESSIONS_PER_PACKAGE,
+  );
+  const summary = calculateCanonicalPackageFinancialSummary({
     patient,
-    packageNumber,
-    previousPackageNumber,
-    currentPackageSessions,
-    previousPackagePayments,
-    currentPackagePayments,
-    allPayments: patientPayments,
-    sessionsInCurrentPackage,
-    completedSessionsInCurrentPackage,
-    remainingSessionsInCurrentPackage,
-    grossExpected: PACKAGE_GROSS_VALUE,
-    partnerShareExpected: PACKAGE_GROSS_VALUE * PARTNER_SHARE_RATE,
-    netExpected: PACKAGE_NET_VALUE,
-    paidGross,
-    pendingGross,
-    paidNet: paidGross * (1 - PARTNER_SHARE_RATE),
-    pendingNet: pendingGross * (1 - PARTNER_SHARE_RATE),
-    overdueGross: isOverdue ? pendingGross : 0,
-    overdueNet: isOverdue ? pendingGross * (1 - PARTNER_SHARE_RATE) : 0,
-    status,
-    lastPayment,
-    hasCurrentPackage,
-    hasNewPackageWithoutPayment,
+    sessions,
+    payments,
+    today,
+    activatedPackageNumber,
+    sessionConsumesPackageFn: sessionConsumesPackage,
+  }) as PackageFinancialSummary;
+  return {
+    ...summary,
+    hasNewPackageWithoutPayment: completedPackageNumber > activatedPackageNumber
+      && completedPackageNumber > 1,
   };
 }
