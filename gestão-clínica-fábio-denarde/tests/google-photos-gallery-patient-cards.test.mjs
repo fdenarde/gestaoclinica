@@ -6,16 +6,22 @@ const source = await readFile(
   new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url),
   'utf8',
 );
+const identitySource = await readFile(
+  new URL('../shared/galleryPatientCards.js', import.meta.url),
+  'utf8',
+);
 
 test('atendentes são ordenados alfabeticamente sem priorizar sessão do dia', () => {
-  assert.match(source, /localeCompare\(right\.name, 'pt-BR', \{ sensitivity: 'base' \}\)/);
-  assert.doesNotMatch(source, /left\.hasSessionToday !== right\.hasSessionToday/);
+  assert.match(identitySource, /localeCompare\(right\.name, 'pt-BR', \{ sensitivity: 'base' \}\)/);
+  assert.doesNotMatch(identitySource, /left\.hasSessionToday !== right\.hasSessionToday/);
   assert.match(source, /Sessão hoje/);
 });
 
 test('cards e cabeçalho usam a foto real do atendente com fallback', () => {
   assert.match(source, /import PatientPhoto from '\.\.\/Common\/PatientPhoto';/);
-  assert.match(source, /photoDriveFileId: patient\?\.photoDriveFileId \|\| ''/);
+  assert.match(source, /buildProfessionalGalleryPatientCards/);
+  assert.match(identitySource, /photoDriveFileId: normalizeText\(patient\.photoDriveFileId\)/);
+  assert.doesNotMatch(identitySource, /fallbackOption\?\.(?:photoUrl|photoDriveFileId)/);
   assert.ok((source.match(/<PatientPhoto/g) || []).length >= 2);
   assert.match(source, /fallbackText=\{initials\}/);
   assert.match(source, /fallbackText=\{selectedPatientInitials\}/);

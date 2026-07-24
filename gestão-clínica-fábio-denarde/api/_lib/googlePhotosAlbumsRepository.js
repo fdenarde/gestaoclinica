@@ -20,6 +20,7 @@ import {
 } from '../../shared/googlePhotosAlbums.js';
 import { buildActivityMediaPackageModel } from '../../shared/activityMediaPackages.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
+import { normalizePackageConsumptionDecision } from '../../shared/sessionScheduling.js';
 import { createEmptyGooglePhotosAlbum } from './googlePhotosClient.js';
 
 const MAX_CARDS_PER_PACKAGE = 24;
@@ -1040,18 +1041,22 @@ export async function listGooglePhotosAlbumSessionOptions(context, patientId) {
   const normalizedPatientId = assertActivityPatientAccess(context, patientId);
   const sessions = await listPatientSessions(context, normalizedPatientId);
   return {
-    sessions: sessions.map(session => ({
-      id: session.id,
-      patientId: normalizedPatientId,
-      date: sanitizeText(session.date, 10),
-      time: normalizeTime(session.time),
-      type: sanitizeText(session.type, 80),
-      status: sanitizeText(session.status, 40),
-      packageNumber: Number.isFinite(Number(session.packageNumber)) ? Number(session.packageNumber) : null,
-      isBlocked: false,
-      consumesPackage: session.consumesPackage === true,
-      source: sanitizeText(session.source, 40),
-    })),
+    sessions: sessions.map(session => {
+      const consumptionDecision = normalizePackageConsumptionDecision(session.consumesPackage);
+      return {
+        id: session.id,
+        patientId: normalizedPatientId,
+        date: sanitizeText(session.date, 10),
+        time: normalizeTime(session.time),
+        type: sanitizeText(session.type, 80),
+        status: sanitizeText(session.status, 40),
+        packageNumber: Number.isFinite(Number(session.packageNumber)) ? Number(session.packageNumber) : null,
+        isBlocked: false,
+        ...(consumptionDecision === null ? {} : { consumesPackage: consumptionDecision }),
+        packageConsumptionDecisionRecorded: consumptionDecision !== null,
+        source: sanitizeText(session.source, 40),
+      };
+    }),
     queryCount: 1,
     readUpperBound: MAX_SESSIONS_PER_PATIENT,
   };

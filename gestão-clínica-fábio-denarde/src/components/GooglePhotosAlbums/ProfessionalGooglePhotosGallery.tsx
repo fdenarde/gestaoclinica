@@ -50,6 +50,10 @@ import {
   mergeGooglePhotosAlbumCards,
   normalizeGooglePhotosAlbumUrl,
 } from '../../../shared/googlePhotosAlbums.js';
+import {
+  buildProfessionalGalleryPatientCards,
+  resolveProfessionalGalleryPatientIdentity,
+} from '../../../shared/galleryPatientCards.js';
 
 interface Props {
   patients: Patient[];
@@ -230,41 +234,20 @@ export default function ProfessionalGooglePhotosGallery({
     () => patients.find(patient => patient.id === selectedPatientId) || null,
     [patients, selectedPatientId],
   );
-  const selectedPatientName = selectedPatient?.fullName
-    || selectedPatient?.name
-    || patientOptions.find(patient => patient.id === selectedPatientId)?.name
-    || '';
+  const selectedPatientIdentity = useMemo(() => resolveProfessionalGalleryPatientIdentity(
+    selectedPatient,
+    patientOptions.find(patient => patient.id === selectedPatientId) || null,
+  ), [patientOptions, selectedPatient, selectedPatientId]);
+  const selectedPatientName = selectedPatientIdentity.name;
 
-  const patientCards = useMemo(() => {
-    const today = todayIsoDate();
-    const search = patientSearch.trim().toLowerCase();
-    return patientOptions
-      .map(option => {
-        const patient = patients.find(item => item.id === option.id) || null;
-        const patientSessions = sessions.filter(session => session.patientId === option.id);
-        const model = buildActivityMediaPackageModel({ patientId: option.id, sessions: patientSessions, payments });
-        const currentSessions = model.currentSessions || [];
-        const latestSession = currentSessions[0] || patientSessions
-          .slice()
-          .filter(session => !session.isBlocked)
-          .sort((left, right) => sessionSortKey(right).localeCompare(sessionSortKey(left)))[0] || null;
-        const latestSessionNumber = Number((latestSession as Session & { activitySessionNumber?: number } | null)?.activitySessionNumber || 0);
-        return {
-          id: option.id,
-          name: patient?.fullName || patient?.name || option.name,
-          photoUrl: patient?.photoUrl || '',
-          photoDriveFileId: patient?.photoDriveFileId || '',
-          packageNumber: model.currentPackageNumber || 1,
-          progressLabel: latestSessionNumber > 0 ? `Sessão ${latestSessionNumber} de 10` : '',
-          latestSessionDate: latestSession?.date || '',
-          hasSessionToday: patientSessions.some(session => session.date === today && !session.isBlocked),
-        };
-      })
-      .filter(card => !search || card.name.toLowerCase().includes(search))
-      .sort((left, right) => (
-        left.name.localeCompare(right.name, 'pt-BR', { sensitivity: 'base' })
-      ));
-  }, [patientOptions, patientSearch, patients, payments, sessions]);
+  const patientCards = useMemo(() => buildProfessionalGalleryPatientCards({
+    patients,
+    patientOptions,
+    sessions,
+    payments,
+    search: patientSearch,
+    now: new Date(),
+  }), [patientOptions, patientSearch, patients, payments, sessions]);
 
   const sessionSource = useMemo(() => {
     const local = sessions.filter(session => session.patientId === selectedPatientId);
@@ -278,6 +261,10 @@ export default function ProfessionalGooglePhotosGallery({
   }), [payments, selectedPatientId, sessionSource]);
 
   const currentPackageNumber = packageModel.currentPackageNumber || 1;
+  const currentPackageConsumedCount = Math.min(
+    10,
+    Math.max(0, packageModel.consumedSessionCount - ((currentPackageNumber - 1) * 10)),
+  );
   const currentPackage = useMemo(() => (
     packageModel.packages.find(pkg => pkg.number === currentPackageNumber) || null
   ), [currentPackageNumber, packageModel.packages]);
@@ -928,7 +915,7 @@ export default function ProfessionalGooglePhotosGallery({
                   <div className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-bold text-clinic-text">{patient.name}</span>
                     <span className="mt-1 block text-xs text-clinic-text-muted">
-                      Pacote atual {patient.packageNumber}{patient.progressLabel ? ` • ${patient.progressLabel}` : ''}
+                      Pacote atual {patient.packageNumber} • {patient.progressLabel}
                     </span>
                     {patient.latestSessionDate && <span className="mt-1 block text-[11px] text-clinic-text-faint">Última sessão: {safeFormatDate(patient.latestSessionDate, 'dd/MM/yyyy')}</span>}
                     {patient.hasSessionToday && <span className="mt-2 inline-flex rounded-full bg-status-green-bg px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-status-green-text">Sessão hoje</span>}
@@ -966,7 +953,7 @@ export default function ProfessionalGooglePhotosGallery({
                 <h2 className="truncate text-lg font-bold text-clinic-text">{selectedPatientName}</h2>
                 <p className="text-xs text-clinic-text-muted">
                   Pacote atual {currentPackageNumber}
-                  {latestEffectiveSession ? ` • Sessão ${latestEffectiveSession.sessionNumber} de 10` : latestSelectedSession ? ` • ${formatSessionNumbers([Number((latestSelectedSession as Session & { activitySessionNumber?: number }).activitySessionNumber || 0)]) || 'Sessão atual'} de 10` : ''}
+                  {` • ${currentPackageConsumedCount}/10`}
                   {latestEffectiveSession?.date ? ` • ${safeFormatDate(latestEffectiveSession.date, 'dd/MM/yyyy')}` : latestSelectedSession?.date ? ` • ${safeFormatDate(latestSelectedSession.date, 'dd/MM/yyyy')}` : ''}
                 </p>
               </div>

@@ -89,9 +89,17 @@ function normalizeThroughDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : '';
 }
 
+export function normalizePackageConsumptionDecision(value) {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return null;
+}
+
 export function getPackageConsumptionDecision(session = {}) {
   if (!ABSENCE_STATUSES.has(String(session.status || ''))) return null;
-  return typeof session.consumesPackage === 'boolean' ? session.consumesPackage : null;
+  return normalizePackageConsumptionDecision(session.consumesPackage);
 }
 
 export function hasExplicitPackageConsumptionDecision(session = {}) {

@@ -16,6 +16,7 @@ import {
   getSaoPauloWeekRange,
 } from '../shared/monitoringPanel.js';
 import { getPackagePaymentSummary } from '../shared/packagePayments.js';
+import { normalizePackageConsumptionDecision } from '../shared/sessionScheduling.js';
 import {
   assertAccessUsername,
   directAccessPathForRole,
@@ -2518,6 +2519,7 @@ function serializeResponsibleSession(snapshot) {
   const status = normalizeText(data.status, 40) || 'Agendada';
   const isAutomaticallyConsumed = status === 'Realizada' || status === 'Reposição';
   const isAbsence = status === 'Falta' || status === 'late_cancellation_no_replacement';
+  const consumptionDecision = normalizePackageConsumptionDecision(data.consumesPackage);
   const professionalName = normalizeText(
     data.professionalName || data.therapistName || data.providerName || DEFAULT_PROFESSIONAL_NAME,
     120,
@@ -2533,8 +2535,8 @@ function serializeResponsibleSession(snapshot) {
     notes: normalizeText(data.notes, 500),
     source: normalizeText(data.source, 30) || null,
     isBlocked: data.isBlocked === true,
-    consumesPackage: isAutomaticallyConsumed || (isAbsence && data.consumesPackage === true),
-    packageConsumptionDecisionRecorded: isAbsence && typeof data.consumesPackage === 'boolean',
+    consumesPackage: isAutomaticallyConsumed || (isAbsence && consumptionDecision === true),
+    packageConsumptionDecisionRecorded: isAbsence && consumptionDecision !== null,
     packageConsumptionDecidedAt: serializeDate(data.packageConsumptionDecidedAt),
     packageConsumptionDecidedBy: normalizeText(data.packageConsumptionDecidedBy, 120),
     noReplacementReasonCode: normalizeText(data.noReplacementReasonCode, 80),
@@ -3012,6 +3014,7 @@ function serializeMonitoringSession(snapshot, patientsById) {
   const data = snapshot.data ? snapshot.data() || {} : snapshot || {};
   const patientId = normalizeText(data.patientId, 128);
   const patient = patientsById.get(patientId);
+  const consumptionDecision = normalizePackageConsumptionDecision(data.consumesPackage);
   return {
     id: snapshot.id ? String(snapshot.id) : normalizeText(data.id, 128),
     patientId,
@@ -3028,7 +3031,8 @@ function serializeMonitoringSession(snapshot, patientsById) {
     packageNumber: Number.isFinite(Number(data.packageNumber)) ? Number(data.packageNumber) : null,
     isBlocked: data.isBlocked === true,
     removedFromAgenda: data.removedFromAgenda === true,
-    consumesPackage: data.consumesPackage === true,
+    ...(consumptionDecision === null ? {} : { consumesPackage: consumptionDecision }),
+    packageConsumptionDecisionRecorded: consumptionDecision !== null,
     source: normalizeText(data.source, 40) || null,
   };
 }

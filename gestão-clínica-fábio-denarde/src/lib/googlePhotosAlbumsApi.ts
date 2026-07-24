@@ -293,6 +293,7 @@ export async function listGooglePhotosAlbumSessionOptions(patientId: string): Pr
   packageNumber: number | null;
   isBlocked: boolean;
   consumesPackage?: boolean;
+  packageConsumptionDecisionRecorded?: boolean;
   source?: string;
 }>> {
   const params = new URLSearchParams({ mode: 'sessions', patientId });
@@ -306,6 +307,7 @@ export async function listGooglePhotosAlbumSessionOptions(patientId: string): Pr
     packageNumber: number | null;
     isBlocked: boolean;
     consumesPackage?: boolean;
+    packageConsumptionDecisionRecorded?: boolean;
     source?: string;
   }> }>('GET', `?${params.toString()}`);
   return result.sessions;
