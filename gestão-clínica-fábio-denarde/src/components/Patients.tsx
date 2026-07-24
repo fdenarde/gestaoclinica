@@ -3,8 +3,9 @@ import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, R
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera, Eye } from 'lucide-react';
 import { calculateAge, cn, getStatusColor, formatCurrency, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getDayOfWeekIndex, schedulesOverlap, getNextValidDates } from '../lib/utils';
 import { getPatientSessionsThroughDate } from '../lib/sessionVisibility';
-import { getCompletedSessions, getSessionCycleNumber, getSessionPresentationStatus, isCountedAbsenceSession } from '../lib/sessionSequence';
+import { getCompletedSessions, getSessionCycleLabel, getSessionPresentationStatus, isCountedAbsenceSession } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
+import { buildCurrentPackageSessionSummary } from '../../shared/sessionPackageSummary.js';
 import Modal from './Common/Modal';
 import PatientPhoto from './Common/PatientPhoto';
 import { showToast } from './Common/Toast';
@@ -971,7 +972,12 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   const realizedCount = realizedSessionsChronological.length;
-  const realizedInPackage = realizedCount === 0 ? 0 : (realizedCount % 10 === 0 ? 10 : realizedCount % 10);
+  const realizedInPackage = buildCurrentPackageSessionSummary(
+    patient,
+    state.sessions,
+    10,
+    { throughDate: format(new Date(), 'yyyy-MM-dd') },
+  ).count;
 
   const isLate = patient.paymentModal === PaymentModal.PARCELADO && realizedCount >= 6 && !patientPayments.some(p => p.installment === '2ª parcela');
   let daysLate = 0;
@@ -2334,7 +2340,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                          <div className="flex items-center gap-4">
                             <Calendar size={18} className="text-clinic-text-faint" />
                             <div className="flex flex-col">
-                              <span className="font-bold text-sm">Sessão {getSessionCycleNumber(state.sessions, session) || '—'}</span>
+                              <span className="font-bold text-sm">{getSessionCycleLabel(state.sessions, session) || 'Sessão —'}</span>
                               <span className="text-xs text-clinic-text-muted">{safeFormatDate(session.date, 'dd/MM/yyyy')} às {session.time}</span>
                               <span className="text-[10px] text-clinic-text-muted italic">{session.type}</span>
                               {isCountedAbsenceSession(session) && <span className="mt-1 text-[10px] font-bold text-[#A94444]">Sem atividade registrada</span>}

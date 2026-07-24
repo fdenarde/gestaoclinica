@@ -54,12 +54,9 @@ export function buildCurrentPackageSessionSummary(patient = {}, sessions = [], p
     || '',
   );
 
-  // Mantém exatamente o critério já utilizado em Relatórios: o pacote atual
-  // começa na data da primeira sessão do ciclo e inclui as sessões realizadas
-  // a partir dessa data.
-  const currentPackageSessions = packageStartDate
-    ? realizedSessions.filter(session => String(session.date || '') >= packageStartDate)
-    : realizedSessions;
+  // A fronteira do pacote é posicional. Usar apenas a data mistura ciclos
+  // quando a 10ª e a 1ª sessões de pacotes consecutivos ocorrem no mesmo dia.
+  const currentPackageSessions = realizedSessions.slice(currentPackageIndex);
   const count = currentPackageSessions.length;
 
   return {

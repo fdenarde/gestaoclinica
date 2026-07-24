@@ -6,7 +6,7 @@ import { addDays, format, isAfter, subDays, differenceInDays, parseISO } from 'd
 import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
-import { getSessionCycleLabel, getSessionCycleNumber } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber, mergeSessionSequenceSource } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
@@ -464,6 +464,13 @@ export default function Dashboard({
     };
   }, [currentSaoPauloDay, state.patients, state.sessions, state.settings, todaySessions]);
 
+  const dashboardSequenceSource = useMemo(() => (
+    mergeSessionSequenceSource(
+      state.sessions,
+      [...todaySessions, ...nextSessionsPanel.sessions],
+    )
+  ), [nextSessionsPanel.sessions, state.sessions, todaySessions]);
+
   const operationalPanel = useMemo(() => {
     const todayPlanned = todaySessions.filter(s => s.status === SessionStatus.AGENDADA).length;
     const todayRealized = todaySessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
@@ -756,7 +763,7 @@ export default function Dashboard({
                   <div className="text-clinic-header font-black text-lg w-16">{session.time}</div>
                   <div className="flex-1">
                     <p className="font-bold text-clinic-text tracking-tight">{session.patient?.name}</p>
-                    <p className="text-xs text-clinic-text-muted">{getSessionCycleLabel(state.sessions, session) || 'Sessão sem número definido'}</p>
+                    <p className="text-xs text-clinic-text-muted">{getSessionCycleLabel(dashboardSequenceSource, session) || 'Sessão sem número definido'}</p>
                   </div>
                   
                   {session.status === SessionStatus.AGENDADA ? (
@@ -810,7 +817,7 @@ export default function Dashboard({
                     <div className="w-16 text-lg font-black text-clinic-header">{session.time}</div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-bold text-clinic-text">{session.patient?.name}</p>
-                      <p className="text-xs text-clinic-text-muted">{getSessionCycleLabel(state.sessions, session) || 'Sessão sem número definido'}</p>
+                      <p className="text-xs text-clinic-text-muted">{getSessionCycleLabel(dashboardSequenceSource, session) || 'Sessão sem número definido'}</p>
                     </div>
                     <span className={cn(
                       'rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-widest',

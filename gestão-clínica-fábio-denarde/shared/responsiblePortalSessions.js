@@ -37,24 +37,28 @@ export function buildResponsiblePortalSessionProgress(
 ) {
   const normalizedToday = normalizeDate(today) || localTodayIso();
   const safeTargetCount = Number.isInteger(targetCount) && targetCount > 0 ? targetCount : 10;
-  const sessionsByNumber = new Map();
+  const sessionGroups = new Map();
 
   for (const session of Array.isArray(sessions) ? sessions : []) {
     const number = Number(session?.sessionNumber);
     if (!Number.isInteger(number) || number < 1 || number > safeTargetCount) continue;
-    const items = sessionsByNumber.get(number) || [];
-    items.push(session);
-    sessionsByNumber.set(number, items);
+    const groupKey = session?.positionType === 'projected'
+      ? `projected:${number}:${String(session?.id || sessionSortKey(session))}`
+      : `position:${number}`;
+    const group = sessionGroups.get(groupKey) || { groupKey, number, events: [] };
+    group.events.push(session);
+    sessionGroups.set(groupKey, group);
   }
 
-  const groups = Array.from(sessionsByNumber.entries())
-    .map(([number, events]) => {
+  const groups = Array.from(sessionGroups.values())
+    .map(({ groupKey, number, events }) => {
       const orderedEvents = [...events].sort((left, right) => sessionSortKey(left).localeCompare(sessionSortKey(right)));
       const referenceEvent = referenceEventForGroup(orderedEvents);
       const dates = orderedEvents.map(item => normalizeDate(item?.date)).filter(Boolean);
       const hasReachedDate = dates.some(date => date <= normalizedToday);
       const earliestFutureDate = dates.filter(date => date > normalizedToday).sort()[0] || '';
       return {
+        groupKey,
         number,
         events: orderedEvents,
         referenceEvent,

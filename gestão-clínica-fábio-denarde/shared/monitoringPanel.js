@@ -1,6 +1,7 @@
 import { hasPersistedScheduleOccurrence, isSessionRemovedFromAgenda } from './sessionRemoval.js';
+import { buildCurrentPackageSessionSummary } from './sessionPackageSummary.js';
+import { sessionConsumesPackage } from './sessionScheduling.js';
 
-const REALIZED_SESSION_STATUSES = new Set(['Realizada', 'Reposição']);
 const CLOSED_PATIENT_STATUS = new Set(['Concluído', 'Concluido', 'Encerrado']);
 const DEFAULT_PACKAGE_SESSION_TOTAL = 10;
 const SAFE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -16,7 +17,7 @@ export function normalizeMonitoringText(value = '') {
 }
 
 export function isMonitoringRealizedSession(session) {
-  return REALIZED_SESSION_STATUSES.has(String(session?.status || ''));
+  return sessionConsumesPackage(session);
 }
 
 export function calculateMonitoringProgress({
@@ -55,7 +56,11 @@ export function buildMonitoringPatientSummary(patient, sessions = [], activityCo
     .sort((left, right) => `${left.date || ''}T${left.time || ''}`.localeCompare(`${right.date || ''}T${right.time || ''}`));
   const realizedSessions = patientSessions.filter(isMonitoringRealizedSession);
   const futureSessions = patientSessions.filter(session => String(session?.status || '') === 'Agendada');
-  const currentPackageRealized = getCurrentPackageSessionCount(patientSessions, plannedSessions);
+  const currentPackageRealized = buildCurrentPackageSessionSummary(
+    patient,
+    patientSessions,
+    plannedSessions,
+  ).count;
   const progress = calculateMonitoringProgress({
     realizedSessions: currentPackageRealized,
     plannedSessions,

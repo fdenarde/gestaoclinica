@@ -174,20 +174,6 @@ function normalizeStableLogicalPosition(session = {}) {
   return position > 0 ? position : 0;
 }
 
-function normalizeStoredCycleNumber(session = {}) {
-  const candidates = [
-    session.logicalSessionNumber,
-    session.packageNumber,
-  ];
-
-  for (const candidate of candidates) {
-    const number = Math.floor(Number(candidate) || 0);
-    if (number >= 1 && number <= 10) return number;
-  }
-
-  return 0;
-}
-
 function getPatientRealizedSessions(sessions = [], patientId = '', options = {}) {
   const normalizedPatientId = String(patientId || '');
   return dedupeSessionsByStableIdentity(sessions)
@@ -199,13 +185,13 @@ function getPatientRealizedSessions(sessions = [], patientId = '', options = {})
     .sort((left, right) => getSessionSequenceSortKey(left).localeCompare(getSessionSequenceSortKey(right)));
 }
 
-function buildPatientSequencePositionMap(sessions = [], patientId = '') {
+function buildPatientSequencePositionMap(sessions = [], patientId = '', options = {}) {
   const normalizedPatientId = String(patientId || '');
   const source = Array.isArray(sessions) ? sessions : [];
   const positions = new Map();
   const usedPositions = new Set();
 
-  const realized = getPatientRealizedSessions(source, normalizedPatientId);
+  const realized = getPatientRealizedSessions(source, normalizedPatientId, options);
   const reservedRealizedPositions = new Set(
     realized
       .map(normalizeStableLogicalPosition)
@@ -289,27 +275,47 @@ function buildPatientSequencePositionMap(sessions = [], patientId = '') {
   return positions;
 }
 
-export function getSessionLogicalPosition(sessions = [], session = {}) {
-  if (isSessionRemovedOrBlocked(session)) return 0;
+export function getSessionPackagePosition(sessions = [], session = {}, options = {}) {
+  const empty = {
+    logicalPosition: 0,
+    packageNumber: 0,
+    sessionNumber: 0,
+    positionType: 'none',
+    consumesPackage: false,
+  };
+  if (isSessionRemovedOrBlocked(session)) return empty;
 
-  if (isCompletedClinicalSession(session) || isPlannedClinicalSession(session)) {
-    const positions = buildPatientSequencePositionMap(sessions, session.patientId);
-    const mappedPosition = positions.get(String(session?.id || '')) || 0;
-    if (mappedPosition > 0) return mappedPosition;
-  }
+  const consumesPackage = sessionConsumesPackage(session, options);
+  const planned = isPlannedClinicalSession(session);
+  const projected = isWouldBeClinicalSession(session) && !consumesPackage;
+  let logicalPosition = 0;
+  let positionType = 'none';
 
-  if (isWouldBeClinicalSession(session)) {
-    const stablePosition = normalizeStableLogicalPosition(session);
-    if (stablePosition > 0) return stablePosition;
-
+  if (consumesPackage || planned) {
+    const positions = buildPatientSequencePositionMap(sessions, session.patientId, options);
+    logicalPosition = positions.get(String(session?.id || '')) || 0;
+    positionType = consumesPackage ? 'consumed' : 'planned';
+  } else if (projected) {
     const targetKey = getSessionSequenceSortKey(session);
-    const realizedBefore = getPatientRealizedSessions(sessions, session.patientId)
+    const consumedBefore = getPatientRealizedSessions(sessions, session.patientId, options)
       .filter(item => getSessionSequenceSortKey(item) < targetKey)
       .length;
-    return realizedBefore + 1;
+    logicalPosition = consumedBefore + 1;
+    positionType = 'projected';
   }
 
-  return 0;
+  if (logicalPosition <= 0) return empty;
+  return {
+    logicalPosition,
+    packageNumber: Math.floor((logicalPosition - 1) / 10) + 1,
+    sessionNumber: getSessionCycleNumberFromPosition(logicalPosition),
+    positionType,
+    consumesPackage,
+  };
+}
+
+export function getSessionLogicalPosition(sessions = [], session = {}, options = {}) {
+  return getSessionPackagePosition(sessions, session, options).logicalPosition;
 }
 
 export function getCompletedSessions(sessions = [], patientId = '', options = {}) {
@@ -325,23 +331,7 @@ export function getPlannedSessionCycleNumber(sessions = [], session = {}) {
 }
 
 export function getSessionCycleNumber(sessions = [], session = {}) {
-  if (isSessionRemovedOrBlocked(session)) return 0;
-
-  if (isCompletedClinicalSession(session) || isPlannedClinicalSession(session)) {
-    return getSessionCycleNumberFromPosition(getSessionLogicalPosition(sessions, session));
-  }
-
-  if (isWouldBeClinicalSession(session)) {
-    const stablePosition = normalizeStableLogicalPosition(session);
-    if (stablePosition > 0) return getSessionCycleNumberFromPosition(stablePosition);
-
-    const storedCycleNumber = normalizeStoredCycleNumber(session);
-    if (storedCycleNumber > 0) return storedCycleNumber;
-
-    return getSessionCycleNumberFromPosition(getSessionLogicalPosition(sessions, session));
-  }
-
-  return 0;
+  return getSessionPackagePosition(sessions, session).sessionNumber;
 }
 
 export function getSessionCycleLabel(sessions = [], session = {}) {

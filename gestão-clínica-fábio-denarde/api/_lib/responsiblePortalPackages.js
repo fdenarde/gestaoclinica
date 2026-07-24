@@ -1,6 +1,7 @@
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import {
   dedupeSessionsByStableIdentity,
+  getSessionPackagePosition,
   sessionConsumesPackage as sharedSessionConsumesPackage,
 } from '../../shared/sessionScheduling.js';
 
@@ -51,28 +52,14 @@ export function buildResponsiblePackages(rawSessions, {
     : 1;
   const currentPackageNumber = Math.max(1, Math.min(naturalCurrentPackageNumber, activatedPackageNumber));
   const packages = new Map();
-  let consumedSeen = 0;
-  let plannedSeen = 0;
   let awaitingPaymentSessionCount = 0;
 
   for (const session of sessions) {
-    const consumesPackage = sharedSessionConsumesPackage(session, { throughDate: today });
-    const status = String(session.status || 'Agendada');
-    let ordinal;
-
-    if (consumesPackage) {
-      ordinal = consumedSeen;
-      consumedSeen += 1;
-      plannedSeen = 0;
-    } else if (status === 'Agendada') {
-      ordinal = consumedSeen + plannedSeen;
-      plannedSeen += 1;
-    } else {
-      ordinal = consumedSeen;
-    }
-
-    const packageNumber = Math.floor(ordinal / 10) + 1;
-    const sessionNumber = (ordinal % 10) + 1;
+    const position = getSessionPackagePosition(sessions, session, { throughDate: today });
+    const consumesPackage = position.consumesPackage;
+    const packageNumber = position.packageNumber;
+    const sessionNumber = position.sessionNumber;
+    if (packageNumber <= 0 || sessionNumber <= 0) continue;
     if (packageNumber > activatedPackageNumber) {
       awaitingPaymentSessionCount += 1;
       continue;
@@ -84,6 +71,7 @@ export function buildResponsiblePackages(rawSessions, {
       ...session,
       packageNumber,
       sessionNumber,
+      positionType: position.positionType,
       consumesPackage,
       isFuture: String(session.date) > today,
     };

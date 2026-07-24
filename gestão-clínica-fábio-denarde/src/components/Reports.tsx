@@ -15,6 +15,7 @@ import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalR
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
 import {
   buildCurrentPackageSessionSummaries,
+  buildCurrentPackageSessionSummary,
   formatCurrentPackageSessionSummaries,
   formatCurrentPackageSessionSummary,
 } from '../../shared/sessionPackageSummary.js';
@@ -115,7 +116,12 @@ export default function Reports({ state, isAdmin = false, whatsappReportState }:
         .filter(s => s.patientId === patient.id && !isSessionRemovedFromAgenda(s))
         .sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-      const realized = getCompletedSessions(patientSessions, patient.id, format(new Date(), 'yyyy-MM-dd')).length;
+      const realized = buildCurrentPackageSessionSummary(
+        patient,
+        patientSessions,
+        10,
+        { throughDate: format(new Date(), 'yyyy-MM-dd') },
+      ).count;
 
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');

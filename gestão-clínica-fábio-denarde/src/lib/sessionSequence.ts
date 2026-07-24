@@ -9,6 +9,7 @@ import {
   getSessionCycleNumber as getSessionCycleNumberShared,
   getSessionCycleNumberFromPosition as getSessionCycleNumberFromPositionShared,
   getSessionLogicalPosition as getSessionLogicalPositionShared,
+  getSessionPackagePosition as getSessionPackagePositionShared,
   getSessionSequenceSortKey as getSessionSequenceSortKeyShared,
   isCompletedClinicalSession as isCompletedClinicalSessionShared,
   isCountedAbsenceSession as isCountedAbsenceSessionShared,
@@ -59,6 +60,14 @@ export interface EffectiveSessionHistoryItem {
   reopened: boolean;
   reverted: boolean;
   removed: boolean;
+}
+
+export interface SessionPackagePosition {
+  logicalPosition: number;
+  packageNumber: number;
+  sessionNumber: number;
+  positionType: 'none' | 'consumed' | 'planned' | 'projected';
+  consumesPackage: boolean;
 }
 
 export function getSessionSequenceSortKey(session: Pick<Session, 'date' | 'time' | 'id'>) {
@@ -118,6 +127,10 @@ export function getPlannedSessionCycleNumber(sessions: SequencedSession[], sessi
 
 export function getSessionLogicalPosition(sessions: SequencedSession[], session: SequencedSession) {
   return getSessionLogicalPositionShared(sessions, session);
+}
+
+export function getSessionPackagePosition(sessions: SequencedSession[], session: SequencedSession) {
+  return getSessionPackagePositionShared(sessions, session) as SessionPackagePosition;
 }
 
 export function getSessionCycleNumber(sessions: SequencedSession[], session: SequencedSession) {

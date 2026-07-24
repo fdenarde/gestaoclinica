@@ -301,6 +301,7 @@ export interface ResponsiblePortalSession {
   noReplacementRecordedBy?: string;
   packageNumber: number;
   sessionNumber: number;
+  positionType?: 'none' | 'consumed' | 'planned' | 'projected';
   isFuture: boolean;
 }
 

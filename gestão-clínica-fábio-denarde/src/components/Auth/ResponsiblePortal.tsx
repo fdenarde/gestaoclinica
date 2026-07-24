@@ -321,11 +321,14 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
           <div className="rounded-xl border border-dashed border-clinic-border bg-white px-4 py-5 text-sm text-clinic-text-muted">
             A primeira sessão ainda não foi agendada.
           </div>
-        ) : progress.visibleGroups.map(({ number, events, referenceEvent }) => {
-          const detailsId = `package-${pkg.number}-session-${number}`;
+        ) : progress.visibleGroups.map(({ groupKey, number, events, referenceEvent }) => {
+          const detailsId = `package-${pkg.number}-${groupKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+          const sessionTitle = referenceEvent?.positionType === 'projected'
+            ? `Sessão seria ${number}`
+            : `Sessão ${number}`;
           return (
             <details
-              key={number}
+              key={groupKey}
               className="group overflow-hidden rounded-2xl border border-clinic-border bg-white shadow-sm transition-colors"
             >
               <summary className="flex cursor-pointer list-none items-center gap-3 p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/30 [&::-webkit-details-marker]:hidden">
@@ -335,7 +338,7 @@ function PackageSessionsTable({ pkg }: { pkg: ResponsiblePortalPackage }) {
 
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-black text-clinic-text">Sessão {number}</p>
+                    <p className="text-sm font-black text-clinic-text">{sessionTitle}</p>
                     {referenceEvent && (
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass(referenceEvent.status)}`}>
                         {responsibleSessionStatusLabel(referenceEvent)}
