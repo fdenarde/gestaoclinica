@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment, ExternalRegistrationForm } from './types';
@@ -36,6 +36,10 @@ import type {
   ProfessionalPortalNotification,
 } from './types/access';
 import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
+import { GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT } from './lib/googlePhotosAlbumsApi';
+import { loadUnregisteredActivities } from './lib/unregisteredActivities';
+import type { UnregisteredActivityGroup } from './types/unregisteredActivities';
+import { buildPackageToleranceAlerts } from './lib/packageTolerance';
 import { useDailyWhatsappOperationalReport } from './lib/useDailyWhatsappOperationalReport';
 import SidebarNavigation, { type AppNavigationItem } from './components/Navigation/SidebarNavigation';
 import {
@@ -233,6 +237,10 @@ export default function App() {
   const [selectedPatientSubTab, setSelectedPatientSubTab] = useState<string | null>(null);
   const [selectedGalleryPatientId, setSelectedGalleryPatientId] = useState<string | null>(null);
   const [selectedGallerySessionId, setSelectedGallerySessionId] = useState<string | null>(null);
+  const [selectedGalleryPackageNumber, setSelectedGalleryPackageNumber] = useState<number | null>(null);
+  const [unregisteredActivities, setUnregisteredActivities] = useState<UnregisteredActivityGroup[]>([]);
+  const [unregisteredActivitiesLoading, setUnregisteredActivitiesLoading] = useState(false);
+  const [unregisteredActivitiesWarning, setUnregisteredActivitiesWarning] = useState('');
   const [galleryNavigationKey, setGalleryNavigationKey] = useState(0);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
   const notificationCursorRef = useRef<string | null>(null);
@@ -247,6 +255,7 @@ export default function App() {
       && accessProfile?.status === 'approved'
       && accessProfile.role === 'admin',
   );
+  const packageToleranceAlerts = useMemo(() => buildPackageToleranceAlerts(state), [state]);
 
   if (publicRegistrationMatch) {
     return <ExternalRegistrationPage token={publicRegistrationMatch[1]} />;
@@ -258,16 +267,21 @@ export default function App() {
     setActiveTab('atendentes');
   };
 
-  const openActivityGallery = (patientId: string | null = null, sessionId: string | null = null) => {
+  const openActivityGallery = (
+    patientId: string | null = null,
+    sessionId: string | null = null,
+    packageNumber: number | null = null,
+  ) => {
     setSelectedGalleryPatientId(patientId);
     setSelectedGallerySessionId(sessionId);
+    setSelectedGalleryPackageNumber(packageNumber);
     setGalleryNavigationKey(current => current + 1);
     setActiveTab('galeria-atividades');
     setMobileSidebarOpen(false);
   };
 
-  const navigateToPatientGallery = (id: string, sessionId?: string) => {
-    openActivityGallery(id, sessionId || null);
+  const navigateToPatientGallery = (id: string, sessionId?: string, packageNumber?: number) => {
+    openActivityGallery(id, sessionId || null, packageNumber || null);
   };
 
   const changeNavigationMode = (mode: NavigationMode) => {
@@ -288,6 +302,7 @@ export default function App() {
     if (id === 'galeria-atividades') {
       setSelectedGalleryPatientId(null);
       setSelectedGallerySessionId(null);
+      setSelectedGalleryPackageNumber(null);
       setGalleryNavigationKey(current => current + 1);
     }
     setActiveTab(id);
@@ -375,6 +390,9 @@ export default function App() {
     setSelectedPatientSubTab(null);
     setSelectedGalleryPatientId(null);
     setSelectedGallerySessionId(null);
+    setSelectedGalleryPackageNumber(null);
+    setUnregisteredActivities([]);
+    setUnregisteredActivitiesWarning('');
     setActiveTab('dashboard');
     loadedCollectionsRef.current.clear();
     notificationCursorRef.current = null;
@@ -409,6 +427,53 @@ export default function App() {
   const canAccessMonitoringPanel =
     accessProfile?.status === 'approved'
     && accessProfile.role === 'monitoring';
+
+  const refreshUnregisteredActivities = useCallback(async (force = false): Promise<void> => {
+    if (!canAccessInternalSystem) return;
+    setUnregisteredActivitiesLoading(true);
+    try {
+      const result = await loadUnregisteredActivities(state, { force });
+      setUnregisteredActivities(result.groups);
+      setUnregisteredActivitiesWarning(result.warning);
+    } catch (error) {
+      console.error('Falha ao verificar atividades não registradas:', error);
+      setUnregisteredActivitiesWarning('Não foi possível atualizar as atividades não registradas agora.');
+    } finally {
+      setUnregisteredActivitiesLoading(false);
+    }
+  }, [canAccessInternalSystem, state]);
+
+  useEffect(() => {
+    if (!canAccessInternalSystem) {
+      setUnregisteredActivities([]);
+      setUnregisteredActivitiesWarning('');
+      return;
+    }
+    const coreCollectionsReady = ['settings', 'patients', 'sessions', 'payments']
+      .every(collectionName => loadedCollectionsRef.current.has(collectionName));
+    if (dataLoading || !coreCollectionsReady) return;
+    const timer = window.setTimeout(() => { void refreshUnregisteredActivities(false); }, 900);
+    return () => window.clearTimeout(timer);
+  }, [canAccessInternalSystem, dataLoading, refreshUnregisteredActivities]);
+
+  useEffect(() => {
+    if (!canAccessInternalSystem) return;
+    let refreshTimer: number | null = null;
+    const refresh = () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshUnregisteredActivities(false);
+      }, 1200);
+    };
+    window.addEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
+    window.addEventListener(GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT, refresh);
+    return () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      window.removeEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
+      window.removeEventListener(GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT, refresh);
+    };
+  }, [canAccessInternalSystem, refreshUnregisteredActivities]);
 
   const refreshPortalNotifications = useCallback(async (options?: {
     initial?: boolean;
@@ -638,8 +703,8 @@ export default function App() {
     };
   }, [canAccessInternalSystem, user]);
 
-  const updateState = async (newState: Partial<AppState>) => {
-    if (!user || !canAccessInternalSystem) return;
+  const updateState = async (newState: Partial<AppState>): Promise<boolean> => {
+    if (!user || !canAccessInternalSystem) return false;
     const userDocRef = doc(db, 'users', user.uid);
     const activityGalleryRelevantChange = Boolean(
       newState.settings
@@ -706,7 +771,7 @@ export default function App() {
       }
       
       if (newState.patients) {
-        await syncCollection('patients', state.patients, newState.patients);
+        await syncCollection('patients', state.patients, newState.patients, sanitizeForFirestore);
       }
       
       if (newState.sessions) {
@@ -781,8 +846,10 @@ export default function App() {
         }));
       }
 
+      return true;
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'users/' + user.uid);
+      return false;
     }
   };
 
@@ -923,11 +990,21 @@ export default function App() {
   const notificationAttentionCount = activePortalNotifications.filter(notification => (
     !notification.read || (notification.pendingAction && !notification.completed)
   )).length;
+  const activityAttentionCount = unregisteredActivities.length;
+  const packageToleranceAttentionCount = packageToleranceAlerts.length;
+  const administrativeAttentionCount = canManagePortalNotifications
+    ? notificationAttentionCount + pendingExternalForms
+    : 0;
 
   const togglePortalNotifications = async () => {
     const opening = !notificationsOpen;
     setNotificationsOpen(opening);
-    if (opening) await refreshPortalNotifications({ force: true });
+    if (opening) {
+      await Promise.all([
+        canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false),
+        refreshUnregisteredActivities(true),
+      ]);
+    }
   };
 
   const openPortalNotification = (notification: PortalNotification) => {
@@ -1217,9 +1294,9 @@ export default function App() {
               aria-label="Abrir notificações"
             >
               <Bell size={20} />
-              {(notificationAttentionCount + pendingExternalForms) > 0 && (
+              {(administrativeAttentionCount + activityAttentionCount + packageToleranceAttentionCount) > 0 && (
                 <span className="absolute -right-1 -top-1 rounded-full border border-clinic-primary bg-white px-1.5 text-[10px] font-bold text-clinic-primary">
-                  {notificationAttentionCount + pendingExternalForms}
+                  {administrativeAttentionCount + activityAttentionCount + packageToleranceAttentionCount}
                 </span>
               )}
             </button>
@@ -1229,22 +1306,64 @@ export default function App() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-black uppercase tracking-wide text-clinic-primary">Notificações</p>
-                      <p className="mt-1 text-[11px] text-clinic-text-muted">{unreadPortalNotifications.length} não lida(s) • {pendingPortalNotifications.length} pendente(s)</p>
+                      <p className="mt-1 text-[11px] text-clinic-text-muted">{activityAttentionCount} atividade(s) não registrada(s) • {packageToleranceAttentionCount} pacote(s) em tolerância{canManagePortalNotifications ? ` • ${unreadPortalNotifications.length} não lida(s)` : ''}</p>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button type="button" onClick={() => void refreshPortalNotifications({ force: true })} disabled={notificationLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading ? 'animate-spin' : ''} /></button>
+                      <button type="button" onClick={() => void Promise.all([canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false), refreshUnregisteredActivities(true)])} disabled={notificationLoading || unregisteredActivitiesLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading || unregisteredActivitiesLoading ? 'animate-spin' : ''} /></button>
                       <button type="button" onClick={() => setNotificationsOpen(false)} className="rounded-full bg-white p-2 text-clinic-text-muted" aria-label="Fechar notificações"><X size={15} /></button>
                     </div>
                   </div>
-                  {unreadPortalNotifications.length > 0 && (
+                  {canManagePortalNotifications && unreadPortalNotifications.length > 0 && (
                     <button type="button" onClick={() => void bulkManageNotifications('all_unread', 'mark_read')} className="mt-3 flex items-center gap-1 text-[10px] font-black uppercase text-clinic-primary"><CheckCheck size={14} /> Marcar todas como lidas</button>
                   )}
                 </div>
                 <div className="max-h-96 divide-y divide-clinic-border overflow-auto">
-                  {activePortalNotifications.length === 0 && (
+                  {packageToleranceAlerts.map(alert => (
+                    <button
+                      key={alert.id}
+                      type="button"
+                      onClick={() => {
+                        setNotificationsOpen(false);
+                        setActiveTab('pagamentos');
+                      }}
+                      className={cn(
+                        'block w-full px-4 py-3 text-left transition',
+                        ['expired', 'limit_reached'].includes(alert.status)
+                          ? 'bg-status-red-bg/50 hover:bg-status-red-bg'
+                          : 'bg-status-blue-bg/50 hover:bg-status-blue-bg',
+                      )}
+                    >
+                      <span className={cn(
+                        'rounded-full px-2 py-0.5 text-[9px] font-black uppercase',
+                        ['expired', 'limit_reached'].includes(alert.status)
+                          ? 'bg-status-red-bg text-status-red-text'
+                          : 'bg-status-blue-bg text-status-blue-text',
+                      )}>
+                        {alert.status === 'limit_reached' ? 'Limite atingido' : alert.status === 'expired' ? 'Tolerância vencida' : 'Pacote em tolerância'}
+                      </span>
+                      <p className="mt-1 text-xs font-black text-clinic-text">{alert.patientName} — Pacote {alert.packageNumber}</p>
+                      <p className="mt-1 text-[11px] text-clinic-text-muted">Prazo {alert.expiresAt.split('-').reverse().join('/')} • {alert.sessionsUsed}/{alert.maxSessions} sessão(ões)</p>
+                    </button>
+                  ))}
+                  {unregisteredActivities.map(activity => (
+                    <button
+                      key={activity.id}
+                      type="button"
+                      onClick={() => {
+                        setNotificationsOpen(false);
+                        openActivityGallery(activity.patientId, activity.sessionIds[0] || null, activity.packageNumber);
+                      }}
+                      className="block w-full bg-status-orange-bg/40 px-4 py-3 text-left transition hover:bg-status-orange-bg"
+                    >
+                      <span className="rounded-full bg-status-orange-bg px-2 py-0.5 text-[9px] font-black uppercase text-status-orange-text">Atividade não registrada</span>
+                      <p className="mt-1 text-xs font-black text-clinic-text">{activity.patientName} — {activity.date.split('-').reverse().join('/')}</p>
+                      <p className="mt-1 text-[11px] text-clinic-text-muted">Pacote {activity.packageNumber} • {activity.times.join(' e ')}</p>
+                    </button>
+                  ))}
+                  {activePortalNotifications.length === 0 && unregisteredActivities.length === 0 && packageToleranceAlerts.length === 0 && (
                     <p className="px-4 py-6 text-center text-sm text-clinic-text-muted">Nenhuma notificação ativa.</p>
                   )}
-                  {activePortalNotifications.slice(0, 10).map(notification => {
+                  {canManagePortalNotifications && activePortalNotifications.slice(0, 10).map(notification => {
                     const canQuickArchive = !notification.pendingAction || notification.completed;
                     const canQuickDelete = !notification.protectedFromDeletion && canQuickArchive;
                     return (
@@ -1321,9 +1440,11 @@ export default function App() {
                     );
                   })}
                 </div>
-                <div className="border-t border-clinic-border bg-clinic-bg px-4 py-3">
-                  <button type="button" onClick={() => void openNotificationCenter()} className="w-full rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase text-white">Ver todas</button>
-                </div>
+                {canManagePortalNotifications && (
+                  <div className="border-t border-clinic-border bg-clinic-bg px-4 py-3">
+                    <button type="button" onClick={() => void openNotificationCenter()} className="w-full rounded-xl bg-clinic-primary px-4 py-2.5 text-xs font-black uppercase text-white">Ver todas</button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1412,6 +1533,13 @@ export default function App() {
                   canViewWhatsappReport={accessProfile?.role === 'admin'}
                   whatsappReportState={whatsappOperationalReportState}
                   onOpenMonitoringPreview={() => setActiveTab('monitoramento')}
+                  unregisteredActivities={unregisteredActivities}
+                  unregisteredActivitiesLoading={unregisteredActivitiesLoading}
+                  unregisteredActivitiesWarning={unregisteredActivitiesWarning}
+                  onRefreshUnregisteredActivities={() => refreshUnregisteredActivities(true)}
+                  onRegisterUnregisteredActivity={activity => openActivityGallery(activity.patientId, activity.sessionIds[0] || null, activity.packageNumber)}
+                  packageToleranceAlerts={packageToleranceAlerts}
+                  onOpenFinance={() => setActiveTab('pagamentos')}
                 />
               )}
               {activeTab === 'monitoramento' && (
@@ -1421,10 +1549,10 @@ export default function App() {
                   onExitPreview={() => setActiveTab('dashboard')}
                 />
               )}
-              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} />}
+              {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserRole={accessProfile?.role || 'professional'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
-              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} />}
+              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} initialPackageNumber={selectedGalleryPackageNumber} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} isAdmin={accessProfile?.role === 'admin'} whatsappReportState={whatsappOperationalReportState} />}

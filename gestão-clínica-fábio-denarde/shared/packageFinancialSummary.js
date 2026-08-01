@@ -4,6 +4,11 @@ import {
   getPackagePaymentSummary,
 } from './packagePayments.js';
 import { sessionConsumesPackage } from './sessionScheduling.js';
+import {
+  getTemporaryAuthorizedPackageNumber,
+  getToleranceDisplayPackageNumber,
+  resolvePackageTolerance,
+} from './packageTolerance.js';
 
 export const CLINIC_PARTNER_SHARE_RATE = 0.2;
 export const CLINIC_SESSIONS_PER_PACKAGE = 10;
@@ -43,17 +48,40 @@ export function calculateCanonicalPackageFinancialSummary({
     ))
     .slice()
     .sort(sortSessions);
-  const activatedPackageNumber = Number.isInteger(suppliedActivatedPackageNumber)
+  const paidActivatedPackageNumber = Number.isInteger(suppliedActivatedPackageNumber)
     && suppliedActivatedPackageNumber > 0
     ? suppliedActivatedPackageNumber
     : getActivatedPackageNumber(payments, {
       patientId: patient.id,
       throughDate,
     });
+  const temporaryAuthorizedPackageNumber = getTemporaryAuthorizedPackageNumber({
+    patient,
+    sessions,
+    payments,
+    now: today,
+  });
+  const toleranceDisplayPackageNumber = getToleranceDisplayPackageNumber({
+    patient,
+    sessions,
+    payments,
+    now: today,
+  });
   const completedPackageNumber = completedSessions.length > 0
     ? Math.floor((completedSessions.length - 1) / CLINIC_SESSIONS_PER_PACKAGE) + 1
     : 0;
-  const packageNumber = Math.max(1, activatedPackageNumber);
+  const consumedSessionTotal = completedSessions.length;
+  const naturalCurrentPackageNumber = consumedSessionTotal > 0
+    ? Math.ceil(consumedSessionTotal / CLINIC_SESSIONS_PER_PACKAGE)
+    : 1;
+  const naturalCurrentPackageConsumedCount = consumedSessionTotal > 0
+    ? ((consumedSessionTotal - 1) % CLINIC_SESSIONS_PER_PACKAGE) + 1
+    : 0;
+  const nextPackageRequiringAuthorization = consumedSessionTotal > 0
+    && consumedSessionTotal % CLINIC_SESSIONS_PER_PACKAGE === 0
+    ? naturalCurrentPackageNumber + 1
+    : naturalCurrentPackageNumber;
+  const packageNumber = Math.max(1, paidActivatedPackageNumber, toleranceDisplayPackageNumber);
   const previousPackageNumber = packageNumber > 1 ? packageNumber - 1 : null;
   const startIndex = (packageNumber - 1) * CLINIC_SESSIONS_PER_PACKAGE;
   const currentPackageSessions = completedSessions.slice(
@@ -71,8 +99,16 @@ export function calculateCanonicalPackageFinancialSummary({
     })
     : { payments: [] };
   const paidGross = current.paidAmount;
+  const packageTolerance = resolvePackageTolerance({
+    patient,
+    sessions,
+    payments,
+    packageNumber,
+    now: today,
+    sessionConsumesPackageFn,
+  });
   const packageHasStarted = currentPackageSessions.length > 0;
-  const pendingGross = packageHasStarted || paidGross > 0
+  const pendingGross = packageHasStarted || paidGross > 0 || packageTolerance.record
     ? current.pendingAmount
     : 0;
   const dueSessionIndex = String(patient.paymentModal || '').includes('Parcelado') ? 4 : 0;
@@ -93,11 +129,13 @@ export function calculateCanonicalPackageFinancialSummary({
   const lastPayment = current.payments.length > 0
     ? current.payments[current.payments.length - 1]
     : null;
-  const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0;
+  const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0 || Boolean(packageTolerance.record);
 
   let status = 'SEM MOVIMENTAÇÃO';
   if (hasCurrentPackage) {
     if (pendingGross <= 0) status = 'QUITADO';
+    else if (packageTolerance.status === 'active') status = 'EM TOLERÂNCIA';
+    else if (packageTolerance.status === 'expired' || packageTolerance.status === 'limit_reached') status = 'TOLERÂNCIA VENCIDA';
     else if (isOverdue) status = 'ATRASADO';
     else if (paidGross > 0) status = 'PARCIAL';
     else status = 'EM ABERTO';
@@ -106,6 +144,14 @@ export function calculateCanonicalPackageFinancialSummary({
   return {
     patient,
     packageNumber,
+    consumedSessionTotal,
+    naturalCurrentPackageNumber,
+    naturalCurrentPackageConsumedCount,
+    nextPackageRequiringAuthorization,
+    paidActivatedPackageNumber,
+    temporaryAuthorizedPackageNumber,
+    toleranceDisplayPackageNumber,
+    packageTolerance,
     previousPackageNumber,
     currentPackageSessions,
     previousPackagePayments: previous.payments,
@@ -129,7 +175,7 @@ export function calculateCanonicalPackageFinancialSummary({
     status,
     lastPayment,
     hasCurrentPackage,
-    hasNewPackageWithoutPayment: completedPackageNumber > activatedPackageNumber
+    hasNewPackageWithoutPayment: completedPackageNumber > Math.max(paidActivatedPackageNumber, toleranceDisplayPackageNumber)
       && completedPackageNumber > 1,
     dueSessionNumber: dueSessionIndex + 1,
     dueDate,

@@ -325,6 +325,55 @@ function sessionMatchesDateFilter(session, filters) {
   return true;
 }
 
+export async function listActivityMediaPresence(context, rawEntries = []) {
+  if (!['admin', 'professional'].includes(context.role)) {
+    throw activityError(
+      'activity-records/presence-access-denied',
+      'Seu perfil não está autorizado a consultar o resumo de atividades.',
+      403,
+    );
+  }
+
+  const requestedBySessionId = new Map();
+  for (const rawEntry of Array.isArray(rawEntries) ? rawEntries.slice(0, MAX_MONITORED_SESSIONS) : []) {
+    const sessionId = sanitizeText(rawEntry?.sessionId || rawEntry?.id, 128);
+    const patientId = sanitizeText(rawEntry?.patientId, 128);
+    if (!sessionId || !patientId) continue;
+    requestedBySessionId.set(sessionId, patientId);
+  }
+
+  if (requestedBySessionId.size === 0) {
+    return { sessionIds: [], queryCount: 0, documentsRead: 0 };
+  }
+
+  const allowedPatientIds = context.role === 'professional'
+    ? new Set(Array.isArray(context.allowedPatientIds) ? context.allowedPatientIds.map(String) : [])
+    : null;
+  const requestedSessionIds = [...requestedBySessionId.keys()];
+  const snapshots = await getSnapshotsInChunks(
+    requestedSessionIds.map(sessionId => activityUploadStatusRef(context, sessionId)),
+  );
+
+  const sessionIds = snapshots
+    .filter(item => item.exists)
+    .filter(item => {
+      const data = item.data() || {};
+      const requestedPatientId = requestedBySessionId.get(item.id);
+      const storedPatientId = sanitizeText(data.patientId, 128);
+      if (!storedPatientId || storedPatientId !== requestedPatientId) return false;
+      if (allowedPatientIds && !allowedPatientIds.has(storedPatientId)) return false;
+      return data.hasMedia === true || Number(data.mediaCount || 0) > 0;
+    })
+    .map(item => item.id)
+    .sort();
+
+  return {
+    sessionIds,
+    queryCount: Math.ceil(requestedSessionIds.length / 400),
+    documentsRead: snapshots.length,
+  };
+}
+
 export async function listProfessionalActivityGallery(context, rawFilters = {}, { summaryOnly = false } = {}) {
   const now = new Date();
   const filters = normalizeGalleryFilters(rawFilters);

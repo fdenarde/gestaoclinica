@@ -21,6 +21,7 @@ const SIGNED_URL_CACHE = new Map<string, { url: string; expiresAt: number }>();
 const ACTIVITY_RECORD_LIST_CACHE_TTL_MS = 60_000;
 const ACTIVITY_GALLERY_CACHE_TTL_MS = 30_000;
 const ACTIVITY_GALLERY_SUMMARY_CACHE_TTL_MS = 5 * 60_000;
+const ACTIVITY_MEDIA_PRESENCE_CACHE_TTL_MS = 5 * 60_000;
 
 type TimedCacheEntry<T> = {
   value: T;
@@ -33,6 +34,8 @@ const activityGalleryCache = new Map<string, TimedCacheEntry<ProfessionalActivit
 const activityGalleryInFlight = new Map<string, Promise<ProfessionalActivityGalleryResponse>>();
 let activityGallerySummaryCache: (TimedCacheEntry<ProfessionalActivityGalleryResponse> & { scope: string }) | null = null;
 let activityGallerySummaryInFlight: { scope: string; request: Promise<ProfessionalActivityGalleryResponse> } | null = null;
+let activityMediaPresenceCache: (TimedCacheEntry<string[]> & { scope: string; signature: string }) | null = null;
+let activityMediaPresenceInFlight: { scope: string; signature: string; request: Promise<string[]> } | null = null;
 
 export const ACTIVITY_RECORDS_CHANGED_EVENT = 'activity-records:changed';
 export const ACTIVITY_GALLERY_CHANGED_EVENT = 'activity-gallery:changed';
@@ -52,6 +55,8 @@ function invalidateActivityCaches(patientId?: string): void {
   }
   activityGalleryCache.clear();
   activityGallerySummaryCache = null;
+  activityMediaPresenceCache = null;
+  activityMediaPresenceInFlight = null;
 }
 
 function notifyActivityRecordsChanged(patientId: string): void {
@@ -1005,6 +1010,67 @@ export async function getActivityPhotoUrl(recordId: string, patientId: string, f
   const normalizedResult = { ...result, url: normalizedUrl };
   SIGNED_URL_CACHE.set(recordId, normalizedResult);
   return normalizedUrl;
+}
+
+function activityMediaPresenceSignature(sessions: Array<{ sessionId?: string; id?: string; patientId: string }>): string {
+  return sessions
+    .map(item => `${String(item.sessionId || item.id || '').trim()}:${String(item.patientId || '').trim()}`)
+    .filter(value => !value.startsWith(':') && !value.endsWith(':'))
+    .sort()
+    .join('|');
+}
+
+export async function listActivityMediaPresence(
+  sessions: Array<{ sessionId?: string; id?: string; patientId: string }>,
+  options: { force?: boolean } = {},
+): Promise<string[]> {
+  const normalizedSessions = (Array.isArray(sessions) ? sessions : [])
+    .map(item => ({
+      sessionId: String(item.sessionId || item.id || '').trim(),
+      patientId: String(item.patientId || '').trim(),
+    }))
+    .filter(item => item.sessionId && item.patientId);
+  if (normalizedSessions.length === 0) return [];
+
+  const scope = currentActivityUserScope();
+  const signature = activityMediaPresenceSignature(normalizedSessions);
+  if (
+    !options.force
+    && activityMediaPresenceCache
+    && activityMediaPresenceCache.scope === scope
+    && activityMediaPresenceCache.signature === signature
+    && activityMediaPresenceCache.expiresAt > Date.now()
+  ) {
+    return activityMediaPresenceCache.value;
+  }
+  if (
+    activityMediaPresenceInFlight
+    && activityMediaPresenceInFlight.scope === scope
+    && activityMediaPresenceInFlight.signature === signature
+  ) {
+    return activityMediaPresenceInFlight.request;
+  }
+
+  const request = post<{ sessionIds: string[] }>({
+    action: 'listActivityMediaPresence',
+    sessions: normalizedSessions,
+  }).then(result => {
+    const sessionIds = [...new Set(Array.isArray(result.sessionIds) ? result.sessionIds.map(String) : [])].sort();
+    activityMediaPresenceCache = {
+      scope,
+      signature,
+      value: sessionIds,
+      expiresAt: Date.now() + ACTIVITY_MEDIA_PRESENCE_CACHE_TTL_MS,
+    };
+    return sessionIds;
+  });
+
+  activityMediaPresenceInFlight = { scope, signature, request };
+  try {
+    return await request;
+  } finally {
+    if (activityMediaPresenceInFlight?.request === request) activityMediaPresenceInFlight = null;
+  }
 }
 
 export async function listActivityRecords(

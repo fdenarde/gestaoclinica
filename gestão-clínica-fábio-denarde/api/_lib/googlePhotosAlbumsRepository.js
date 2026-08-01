@@ -20,6 +20,7 @@ import {
 } from '../../shared/googlePhotosAlbums.js';
 import { buildActivityMediaPackageModel } from '../../shared/activityMediaPackages.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
+import { getHighestRecordedTolerancePackageNumber } from '../../shared/packageTolerance.js';
 import { normalizePackageConsumptionDecision } from '../../shared/sessionScheduling.js';
 import { createEmptyGooglePhotosAlbum } from './googlePhotosClient.js';
 
@@ -188,7 +189,7 @@ async function getPatient(context, patientId) {
   const data = snapshot.data() || {};
   return {
     id: snapshot.id,
-    name: sanitizeText(data.fullName || data.name, 160) || 'Atendente',
+    name: sanitizeText(data.name || data.fullName, 160) || 'Atendente',
     data,
   };
 }
@@ -212,20 +213,33 @@ async function listPatientPayments(context, patientId) {
   return snapshot.docs.map(item => ({ id: item.id, ...(item.data() || {}) }));
 }
 
-function resolvePackageForSave(sessions, payments, patientId, packageNumber) {
-  const model = buildActivityMediaPackageModel(sessions, { patientId, payments });
+function resolvePackageForSave(sessions, payments, patient, packageNumber) {
+  const patientId = String(patient?.id || '');
+  const model = buildActivityMediaPackageModel(sessions, {
+    patientId,
+    payments,
+    packageTolerances: patient?.data?.packageTolerances || [],
+  });
   const targetPackageNumber = normalizeGooglePhotosPackageNumber(packageNumber);
   if (!targetPackageNumber) {
     throw albumError('google-photos-albums/invalid-package', 'Informe um pacote válido para salvar os links.');
   }
-  if (targetPackageNumber !== model.currentPackageNumber) {
+  const authorizedPackageNumber = Number(model.visiblePackageLimit || model.activatedPackageNumber || model.currentPackageNumber || 0);
+  if (authorizedPackageNumber && targetPackageNumber > authorizedPackageNumber) {
     throw albumError(
-      'google-photos-albums/current-package-only',
-      'Somente o pacote atual pode receber novos links nesta galeria.',
+      'google-photos-albums/package-not-activated',
+      'Este pacote ainda não foi liberado pelo pagamento e não pode receber links.',
       409,
     );
   }
   const targetPackage = model.packages.find(pkg => pkg.number === targetPackageNumber);
+  if (!targetPackage) {
+    throw albumError(
+      'google-photos-albums/package-not-started',
+      'O pacote informado ainda não possui sessões disponíveis para registro.',
+      409,
+    );
+  }
   const selectableSessions = (targetPackage?.sessions || []).filter(session => session.selectableForMedia);
   return {
     model,
@@ -404,8 +418,13 @@ export async function listGooglePhotosAlbums(context, { patientId, packageNumber
   let activatedPackageNumber = null;
   let paymentQueryCount = 0;
   if (normalizedScope === 'portal') {
-    const payments = await listPatientPayments(context, normalizedPatientId);
-    activatedPackageNumber = getActivatedPackageNumber(payments, { patientId: normalizedPatientId });
+    const [payments, patient] = await Promise.all([
+      listPatientPayments(context, normalizedPatientId),
+      getPatient(context, normalizedPatientId),
+    ]);
+    const paidActivatedPackageNumber = getActivatedPackageNumber(payments, { patientId: normalizedPatientId });
+    const tolerancePackageNumber = getHighestRecordedTolerancePackageNumber(patient?.data?.packageTolerances || []);
+    activatedPackageNumber = Math.max(paidActivatedPackageNumber, tolerancePackageNumber);
     paymentQueryCount = 1;
     if (normalizedPackageNumber > activatedPackageNumber) {
       return {
@@ -469,7 +488,7 @@ export async function saveGooglePhotosAlbumPackage(context, input) {
     listPatientPayments(context, patient.id),
     ref.get(),
   ]);
-  const packageContext = resolvePackageForSave(sessions, payments, patient.id, packageNumber);
+  const packageContext = resolvePackageForSave(sessions, payments, patient, packageNumber);
   const existingByGroupKey = buildExistingCardMap(existingSnapshot);
   const packageKey = ref.id;
   const now = FieldValue.serverTimestamp();
@@ -780,7 +799,7 @@ export async function createGooglePhotosAlbumForPackage(
     listPatientSessions(context, patient.id),
     listPatientPayments(context, patient.id),
   ]);
-  const packageContext = resolvePackageForSave(sessions, payments, patient.id, packageNumber);
+  const packageContext = resolvePackageForSave(sessions, payments, patient, packageNumber);
   const normalized = normalizeAlbumCreationInput({
     context,
     input,
@@ -1029,7 +1048,7 @@ export async function listGooglePhotosAlbumPatientOptions(context) {
       const data = snapshot.data() || {};
       return {
         id: snapshot.id,
-        name: sanitizeText(data.fullName || data.name, 160) || 'Atendente',
+        name: sanitizeText(data.name || data.fullName, 160) || 'Atendente',
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name, 'pt-BR'));

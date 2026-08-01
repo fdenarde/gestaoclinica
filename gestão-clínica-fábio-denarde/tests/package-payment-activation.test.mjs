@@ -31,9 +31,10 @@ test('pagamentos legados sem número usam o total acumulado sem criar pacote ape
   assert.equal(getActivatedPackageNumber([payment('p1', 1000), payment('p2', 1000)], { patientId: 'patient-1' }), 2);
 });
 
-test('financeiro usa o pacote ativado por pagamento e apenas sinaliza sessão excedente', () => {
+test('financeiro usa pagamento ou tolerância explícita sem ativar pacote apenas por sessão', () => {
   const financeSource = fs.readFileSync(new URL('../src/lib/financePackages.ts', import.meta.url), 'utf8');
   assert.match(financeSource, /getActivatedPackageNumber\(patientPayments, \{ patientId: patient\.id \}\)/);
-  assert.match(financeSource, /completedPackageNumber > activatedPackageNumber/);
+  assert.match(financeSource, /completedPackageNumber > Math\.max\(/);
+  assert.match(financeSource, /summary\.toleranceDisplayPackageNumber/);
   assert.doesNotMatch(financeSource, /hasStartedNextPackageWithoutPayment \? completedPackageNumber/);
 });

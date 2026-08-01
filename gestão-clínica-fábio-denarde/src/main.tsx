@@ -1,4 +1,3 @@
-import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
@@ -10,8 +9,6 @@ import { initializeTheme } from './lib/theme';
 
 initializeTheme();
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+// O ambiente local usa o Firebase real. Evitar StrictMode aqui impede a
+// montagem dupla de listeners em desenvolvimento e reduz leituras duplicadas.
+createRoot(document.getElementById('root')!).render(<App />);

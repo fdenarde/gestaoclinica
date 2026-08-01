@@ -5,6 +5,7 @@
 
 import type { AppTheme } from './lib/theme';
 import type { ActivityMediaAuthorization } from './types/activityRecords';
+import type { PackageToleranceRecord } from './types/packageTolerance';
 
 export enum PaymentModal {
   PIX_FULL = 'PADRÃO: Pix integral — R$1.000 antes da 1ª sessão',
@@ -141,6 +142,7 @@ export interface Patient extends PatientRegistrationData {
   photoDriveFileName?: string;
   photoMimeType?: string;
   activityMediaAuthorization?: ActivityMediaAuthorization;
+  packageTolerances?: PackageToleranceRecord[];
   lastExternalRegistrationUpdate?: string;
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;
@@ -227,6 +229,19 @@ export interface SessionRescheduleHistoryEntry {
   changedBy: string;
 }
 
+
+export type WhatsappReminderBlockType = 'AMANHA' | 'HOJE_MANHA' | 'HOJE_TARDE' | 'RETRY';
+
+export interface WhatsappAutomationControl {
+  version: 1;
+  blockAll: boolean;
+  blockedReminderTypes: WhatsappReminderBlockType[];
+  scope: 'session' | 'patient_date';
+  updatedAt: string;
+  updatedBy: string;
+  updatedByRole: string;
+}
+
 export interface Session {
   id: string;
   patientId: string;
@@ -261,6 +276,7 @@ export interface Session {
   fixedScheduleOriginalDate?: string; // mantém a ocorrência fixa original suprimida após mudança de data/horário
   fixedScheduleOriginalTime?: string;
   rescheduleHistory?: SessionRescheduleHistoryEntry[];
+  whatsappAutomationControl?: WhatsappAutomationControl;
 }
 
 export interface Reposition {

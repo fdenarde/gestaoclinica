@@ -3388,7 +3388,7 @@ async function getResponsiblePortalData(db, decodedToken, req) {
       .map(serializeResponsibleSession)
       .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
     const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
-    const packageResult = buildResponsiblePackages(sessions, { today, payments });
+    const packageResult = buildResponsiblePackages(sessions, { today, payments, packageTolerances: patient?.packageTolerances || [] });
     for (const pkg of packageResult.packages) {
       Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number, { patientId, throughDate: today }));
     }
@@ -3550,7 +3550,7 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
     .map(serializeResponsibleSession)
     .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
   const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
-  const packageResult = buildResponsiblePackages(sessions, { today, payments });
+  const packageResult = buildResponsiblePackages(sessions, { today, payments, packageTolerances: patient?.packageTolerances || [] });
   for (const pkg of packageResult.packages) {
     Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number, { patientId, throughDate: today }));
   }

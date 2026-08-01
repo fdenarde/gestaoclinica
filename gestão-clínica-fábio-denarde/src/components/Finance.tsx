@@ -1,19 +1,29 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, Payment, Expense, PaymentModal } from '../types';
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Calendar as CalendarIcon, CheckCircle2, ChevronDown, CircleDollarSign, Clock3, DollarSign, HandCoins, History, Info, Link, Minus, Plus, Search, Sparkles, Trash2, TrendingUp, Wallet } from 'lucide-react';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Ban, Calendar as CalendarIcon, CheckCircle2, ChevronDown, CircleDollarSign, Clock3, DollarSign, HandCoins, History, Info, Link, Minus, Plus, Search, ShieldCheck, Sparkles, TimerReset, Trash2, TrendingUp, Wallet } from 'lucide-react';
 import { motion } from 'motion/react';
 import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
-import { format, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, startOfDay, parseISO } from 'date-fns';
+import { addDays, format, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, startOfDay, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { calculatePackageFinancialSummary, FinancialStatus, PACKAGE_GROSS_VALUE, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE, type PackageFinancialSummary } from '../lib/financePackages';
 import { createPaymentOperationKey, preparePaymentCreation, preparePaymentVoid } from '../../shared/paymentOperations.js';
 import { isExpenseActive, isExpenseRealized, isPaymentActive, isPaymentReceived } from '../../shared/packagePayments.js';
+import type { PackageToleranceReasonCode } from '../types/packageTolerance';
+import {
+  DEFAULT_TOLERANCE_MAX_SESSIONS,
+  PACKAGE_TOLERANCE_REASON_OPTIONS,
+  endPackageTolerance,
+  endPackageToleranceAfterPayment,
+  getPackageToleranceOffer,
+  latestTolerance,
+  savePackageTolerance,
+} from '../lib/packageTolerance';
 
 interface FinanceProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void | Promise<void>;
+  onUpdate: (newState: Partial<AppState>) => boolean | void | Promise<boolean | void>;
   currentUserName: string;
 }
 
@@ -138,6 +148,8 @@ const statusClasses: Record<FinancialStatus, string> = {
   'PARCIAL': 'bg-status-blue-bg text-status-blue-text border-status-blue-text/20',
   'EM ABERTO': 'bg-status-orange-bg text-status-orange-text border-status-orange-text/20',
   'ATRASADO': 'bg-status-red-bg text-status-red-text border-status-red-text/20',
+  'EM TOLERÂNCIA': 'bg-status-blue-bg text-status-blue-text border-status-blue-text/20',
+  'TOLERÂNCIA VENCIDA': 'bg-status-red-bg text-status-red-text border-status-red-text/20',
   'SEM MOVIMENTAÇÃO': 'bg-clinic-bg text-clinic-text-muted border-clinic-border',
 };
 
@@ -146,6 +158,8 @@ const statusTooltips: Record<FinancialStatus, string> = {
   'PARCIAL': 'Existe pagamento registrado no pacote atual, mas ainda falta completar o valor do pacote.',
   'EM ABERTO': 'Pacote atual iniciado ou agendado sem pagamento registrado para este pacote.',
   'ATRASADO': 'Pacote atual possui pendência vencida conforme a regra de vencimento do plano.',
+  'EM TOLERÂNCIA': 'Pacote temporariamente autorizado, com pagamento ainda não confirmado.',
+  'TOLERÂNCIA VENCIDA': 'O prazo ou o limite de sessões da autorização temporária foi atingido.',
   'SEM MOVIMENTAÇÃO': 'Não há sessões, pacote ou pagamento relevante para leitura atual.',
 };
 
@@ -173,6 +187,15 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
   const [paymentVoidReason, setPaymentVoidReason] = useState('');
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
   const [paymentContext, setPaymentContext] = useState<PaymentContext>(null);
+  const [toleranceSummary, setToleranceSummary] = useState<PackageFinancialSummary | null>(null);
+  const [tolerancePackageNumber, setTolerancePackageNumber] = useState(1);
+  const [toleranceReasonCode, setToleranceReasonCode] = useState<PackageToleranceReasonCode>('requested_days');
+  const [toleranceReasonText, setToleranceReasonText] = useState('');
+  const [toleranceNotes, setToleranceNotes] = useState('');
+  const [tolerancePromisedDate, setTolerancePromisedDate] = useState(format(addDays(new Date(), 5), 'yyyy-MM-dd'));
+  const [toleranceExpiresAt, setToleranceExpiresAt] = useState(format(addDays(new Date(), 5), 'yyyy-MM-dd'));
+  const [toleranceMaxSessions, setToleranceMaxSessions] = useState(DEFAULT_TOLERANCE_MAX_SESSIONS);
+  const [isSavingTolerance, setIsSavingTolerance] = useState(false);
 
   // Period Filter State
   const [periodFilter, setPeriodFilter] = useState<'Semanal' | 'Mensal' | 'Anual' | 'Personalizado'>('Mensal');
@@ -316,6 +339,8 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
         return item.status === statusFilter;
       })
       .sort((a,b) => {
+        if (a.status === 'TOLERÂNCIA VENCIDA' && b.status !== 'TOLERÂNCIA VENCIDA') return -1;
+        if (b.status === 'TOLERÂNCIA VENCIDA' && a.status !== 'TOLERÂNCIA VENCIDA') return 1;
         if (a.status === 'ATRASADO' && b.status !== 'ATRASADO') return -1;
         if (b.status === 'ATRASADO' && a.status !== 'ATRASADO') return 1;
         if (a.status === 'EM ABERTO' && b.status !== 'EM ABERTO') return -1;
@@ -401,6 +426,105 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
     setIsPaymentModalOpen(true);
   };
 
+  const openToleranceModal = (summary: PackageFinancialSummary) => {
+    const offer = getPackageToleranceOffer(summary);
+    if (!offer.canOffer || !offer.targetPackageNumber) {
+      showToast('Este pacote não possui pagamento pendente elegível para tolerância.', 'error');
+      return;
+    }
+    const targetPackageNumber = offer.targetPackageNumber;
+    const existing = latestTolerance(summary.patient, targetPackageNumber);
+    const defaultDate = format(addDays(new Date(), 5), 'yyyy-MM-dd');
+    setToleranceSummary(summary);
+    setTolerancePackageNumber(targetPackageNumber);
+    setToleranceReasonCode(existing?.reasonCode || 'requested_days');
+    setToleranceReasonText(existing?.reasonText || '');
+    setToleranceNotes(existing?.notes || '');
+    setTolerancePromisedDate(existing?.promisedPaymentDate || defaultDate);
+    setToleranceExpiresAt(existing?.expiresAt || defaultDate);
+    setToleranceMaxSessions(existing?.maxSessions || DEFAULT_TOLERANCE_MAX_SESSIONS);
+  };
+
+  const closeToleranceModal = () => {
+    if (isSavingTolerance) return;
+    setToleranceSummary(null);
+  };
+
+  const handleSaveTolerance = async () => {
+    if (!toleranceSummary || isSavingTolerance) return;
+    const patient = state.patients.find(item => item.id === toleranceSummary.patient.id);
+    if (!patient) {
+      showToast('Atendente não encontrado.', 'error');
+      return;
+    }
+    if (!tolerancePromisedDate || !toleranceExpiresAt) {
+      showToast('Informe a data prometida e o prazo final da tolerância.', 'error');
+      return;
+    }
+    if (tolerancePromisedDate > toleranceExpiresAt) {
+      showToast('A data prometida não pode ser posterior ao prazo final da tolerância.', 'error');
+      return;
+    }
+    if (!window.confirm(
+      `Liberar temporariamente o Pacote ${tolerancePackageNumber} de ${patient.name} até ${safeFormatDate(toleranceExpiresAt, 'dd/MM/yyyy')}, com limite de ${toleranceMaxSessions} sessão(ões)? O pagamento continuará pendente.`
+    )) return;
+
+    setIsSavingTolerance(true);
+    try {
+      const updatedPatient = savePackageTolerance(patient, {
+        packageNumber: tolerancePackageNumber,
+        reasonCode: toleranceReasonCode,
+        reasonText: toleranceReasonText,
+        notes: toleranceNotes,
+        promisedPaymentDate: tolerancePromisedDate,
+        expiresAt: toleranceExpiresAt,
+        maxSessions: toleranceMaxSessions,
+        actor: currentUserName || 'Profissional',
+        now: new Date(),
+      });
+      const persisted = await onUpdate({
+        patients: state.patients.map(item => item.id === patient.id ? updatedPatient : item),
+      });
+      if (persisted === false) {
+        throw new Error('A tolerância não foi gravada. Nenhuma alteração foi confirmada no cadastro do atendente.');
+      }
+      showToast(`Pacote ${tolerancePackageNumber} liberado em tolerância. O pagamento continua pendente.`);
+      setToleranceSummary(null);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível salvar a tolerância.', 'error');
+    } finally {
+      setIsSavingTolerance(false);
+    }
+  };
+
+  const handleEndTolerance = async () => {
+    if (!toleranceSummary || isSavingTolerance) return;
+    const patient = state.patients.find(item => item.id === toleranceSummary.patient.id);
+    if (!patient) return;
+    if (!window.confirm(`Encerrar a tolerância do Pacote ${tolerancePackageNumber} de ${patient.name}? O histórico será preservado.`)) return;
+    setIsSavingTolerance(true);
+    try {
+      const updatedPatient = endPackageTolerance(patient, {
+        packageNumber: tolerancePackageNumber,
+        actor: currentUserName || 'Profissional',
+        reason: 'manual',
+        now: new Date(),
+      });
+      const persisted = await onUpdate({
+        patients: state.patients.map(item => item.id === patient.id ? updatedPatient : item),
+      });
+      if (persisted === false) {
+        throw new Error('O encerramento não foi gravado. A tolerância permanece inalterada.');
+      }
+      showToast('Tolerância encerrada. O histórico foi preservado.');
+      setToleranceSummary(null);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Não foi possível encerrar a tolerância.', 'error');
+    } finally {
+      setIsSavingTolerance(false);
+    }
+  };
+
   const handleSavePayment = async () => {
     if (paymentWriteLockRef.current) return;
     if (!patientId || amount <= 0) {
@@ -439,7 +563,16 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
         actor: currentUserName || 'Profissional',
         now: new Date().toISOString(),
       });
-      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
+      const patientAfterPayment = endPackageToleranceAfterPayment(selectedPatient, {
+        packageNumber: targetPackageNumber,
+        actor: currentUserName || 'Profissional',
+        now: new Date(),
+      });
+      await onUpdate({
+        payments: prepared.payments,
+        expenses: prepared.expenses,
+        patients: state.patients.map(item => item.id === selectedPatient.id ? patientAfterPayment : item),
+      });
       showToast(`Pagamento registrado! Repasse de ${formatCurrency(amount * PARTNER_SHARE_RATE)} gerado automaticamente.`);
       closePaymentModal();
     } catch (error) {
@@ -760,7 +893,7 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
                 </p>
               </div>
               <div className="flex flex-wrap gap-2 lg:justify-end">
-                {(['Todos', 'ATRASADO', 'EM ABERTO', 'PARCIAL', 'QUITADO', 'Com pagamento no período', 'Sem pagamento no período'] as StatusFilter[]).map(filter => (
+                {(['Todos', 'TOLERÂNCIA VENCIDA', 'EM TOLERÂNCIA', 'ATRASADO', 'EM ABERTO', 'PARCIAL', 'QUITADO', 'Com pagamento no período', 'Sem pagamento no período'] as StatusFilter[]).map(filter => (
                   <button
                     key={filter}
                     type="button"
@@ -867,27 +1000,71 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
                           </div>
                           {item.hasNewPackageWithoutPayment && (
                             <p className="mt-3 rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-3 py-2 text-xs font-bold text-status-orange-text">
-                              Há sessão além das 10 previstas no Pacote {item.packageNumber}, mas o Pacote {item.packageNumber + 1} não foi aberto porque ainda não existe pagamento confirmado. Registre o pagamento para liberar o novo pacote.
+                              Há atendimento em pacote sem pagamento confirmado. Registre o pagamento ou faça uma liberação temporária explícita para manter a continuidade sem misturar tolerância com receita recebida.
                             </p>
+                          )}
+                          {!item.hasNewPackageWithoutPayment
+                            && item.hasCurrentPackage
+                            && item.pendingGross > 0
+                            && item.paidGross <= 0
+                            && item.completedSessionsInCurrentPackage > 0 && (
+                              <p className="mt-3 rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-3 py-2 text-xs font-bold text-status-orange-text">
+                                Este pacote já possui atendimento realizado, mas ainda não recebeu pagamento. Registre o pagamento ou libere temporariamente o próprio pacote.
+                              </p>
+                            )}
+                          {item.packageTolerance?.record && !['closed', 'paid'].includes(item.packageTolerance.status) && (
+                            <div className={cn(
+                              'mt-3 rounded-xl border px-3 py-3 text-xs',
+                              item.packageTolerance.status === 'active'
+                                ? 'border-status-blue-text/20 bg-status-blue-bg text-status-blue-text'
+                                : 'border-status-red-text/20 bg-status-red-bg text-status-red-text',
+                            )}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="font-black uppercase tracking-wide">
+                                  {item.packageTolerance.status === 'active' ? 'Pacote em tolerância' : 'Tolerância vencida'}
+                                </p>
+                                <span className="font-black">
+                                  {item.packageTolerance.sessionsUsed}/{item.packageTolerance.record.maxSessions} sessão(ões) liberadas usadas
+                                </span>
+                              </div>
+                              <p className="mt-1 font-semibold">
+                                Pagamento prometido para {safeFormatDate(item.packageTolerance.record.promisedPaymentDate, 'dd/MM/yyyy')} • prazo final {safeFormatDate(item.packageTolerance.record.expiresAt, 'dd/MM/yyyy')}.
+                              </p>
+                              <p className="mt-1">O valor permanece integralmente pendente até o registro do pagamento real.</p>
+                            </div>
                           )}
                           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-clinic-border bg-white px-3 py-3">
                             <div>
                               <p className="text-sm font-black text-clinic-text">Ações financeiras do pacote atual</p>
                               <p className="text-xs text-clinic-text-muted">O registro será vinculado ao Pacote {item.hasNewPackageWithoutPayment && item.pendingGross <= 0 ? item.packageNumber + 1 : item.packageNumber} e atualizará os saldos e avisos automaticamente.</p>
                             </div>
-                            {item.pendingGross > 0 || item.hasNewPackageWithoutPayment ? (
-                              <button
-                                type="button"
-                                onClick={() => openPaymentModal(item)}
-                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-clinic-primary-hover"
-                              >
-                                <HandCoins size={17} /> Registrar pagamento
-                              </button>
-                            ) : (
-                              <span className="inline-flex items-center gap-2 rounded-full border border-status-green-text/20 bg-status-green-bg px-3 py-2 text-xs font-black text-status-green-text">
-                                <CheckCircle2 size={15} /> Pacote atual quitado
-                              </span>
-                            )}
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                              {getPackageToleranceOffer(item).canOffer && (
+                                <button
+                                  type="button"
+                                  onClick={() => openToleranceModal(item)}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-status-blue-text/25 bg-status-blue-bg px-4 py-2.5 text-sm font-black text-status-blue-text transition-colors hover:bg-status-blue-bg/70"
+                                >
+                                  <ShieldCheck size={17} />
+                                  {item.packageTolerance?.record && !['closed', 'paid'].includes(item.packageTolerance.status)
+                                    ? 'Gerenciar tolerância'
+                                    : 'Liberar temporariamente'}
+                                </button>
+                              )}
+                              {item.pendingGross > 0 || item.hasNewPackageWithoutPayment || item.packageTolerance?.record ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openPaymentModal(item)}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-clinic-primary-hover"
+                                >
+                                  <HandCoins size={17} /> Registrar pagamento
+                                </button>
+                              ) : (
+                                <span className="inline-flex items-center gap-2 rounded-full border border-status-green-text/20 bg-status-green-bg px-3 py-2 text-xs font-black text-status-green-text">
+                                  <CheckCircle2 size={15} /> Pacote atual quitado
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
                             <div>
@@ -1063,6 +1240,113 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
           </div>
         </div>
       )}
+
+      <Modal
+        isOpen={!!toleranceSummary}
+        onClose={closeToleranceModal}
+        title="Liberar pacote temporariamente"
+        width="max-w-2xl"
+      >
+        <div className="space-y-5">
+          <div className="rounded-xl border border-status-blue-text/20 bg-status-blue-bg px-4 py-3 text-sm text-status-blue-text">
+            <p className="flex items-center gap-2 font-black"><ShieldCheck size={18} /> Pacote {tolerancePackageNumber} — pagamento pendente</p>
+            <p className="mt-1">A tolerância autoriza continuidade temporária, mas não registra receita, não quita o pacote e não gera repasse.</p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="space-y-1 text-sm font-bold text-clinic-text-muted">
+              Motivo
+              <select
+                value={toleranceReasonCode}
+                onChange={event => setToleranceReasonCode(event.target.value as PackageToleranceReasonCode)}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+              >
+                {PACKAGE_TOLERANCE_REASON_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1 text-sm font-bold text-clinic-text-muted">
+              Limite de sessões
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={toleranceMaxSessions}
+                onChange={event => setToleranceMaxSessions(Math.min(10, Math.max(1, Number(event.target.value) || 1)))}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+              />
+            </label>
+            <label className="space-y-1 text-sm font-bold text-clinic-text-muted">
+              Data prometida para pagamento
+              <input
+                type="date"
+                min={format(new Date(), 'yyyy-MM-dd')}
+                max={toleranceExpiresAt || undefined}
+                value={tolerancePromisedDate}
+                onChange={event => setTolerancePromisedDate(event.target.value)}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+              />
+            </label>
+            <label className="space-y-1 text-sm font-bold text-clinic-text-muted">
+              Prazo final da tolerância
+              <input
+                type="date"
+                min={format(new Date(), 'yyyy-MM-dd')}
+                value={toleranceExpiresAt}
+                onChange={event => setToleranceExpiresAt(event.target.value)}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+              />
+            </label>
+          </div>
+
+          {toleranceReasonCode === 'other' && (
+            <label className="space-y-1 text-sm font-bold text-clinic-text-muted">
+              Motivo específico
+              <input
+                value={toleranceReasonText}
+                onChange={event => setToleranceReasonText(event.target.value)}
+                className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+                placeholder="Descreva o motivo"
+              />
+            </label>
+          )}
+
+          <label className="space-y-1 text-sm font-bold text-clinic-text-muted">
+            Observação administrativa
+            <textarea
+              value={toleranceNotes}
+              onChange={event => setToleranceNotes(event.target.value)}
+              rows={3}
+              className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-clinic-text outline-none focus:ring-2 focus:ring-clinic-primary"
+              placeholder="Ex.: responsável confirmou o pagamento para sexta-feira"
+            />
+          </label>
+
+          <div className="rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-4 py-3 text-xs font-semibold text-status-orange-text">
+            O limite padrão é de 5 dias corridos ou 2 sessões, valendo o que ocorrer primeiro. Sessões já realizadas e o histórico não serão apagados se o prazo vencer.
+          </div>
+
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+            <div>
+              {toleranceSummary?.packageTolerance?.record && !['closed', 'paid'].includes(toleranceSummary.packageTolerance.status) && (
+                <button
+                  type="button"
+                  onClick={handleEndTolerance}
+                  disabled={isSavingTolerance}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-status-red-text/25 bg-status-red-bg px-4 py-2.5 text-sm font-black text-status-red-text disabled:opacity-50"
+                >
+                  <Ban size={16} /> Encerrar tolerância
+                </button>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={closeToleranceModal} disabled={isSavingTolerance} className="rounded-xl border border-clinic-border bg-white px-4 py-2.5 text-sm font-black text-clinic-text-muted disabled:opacity-50">Cancelar</button>
+              <button type="button" onClick={handleSaveTolerance} disabled={isSavingTolerance} className="inline-flex items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-2.5 text-sm font-black text-white shadow-md disabled:opacity-50">
+                <TimerReset size={16} /> {isSavingTolerance ? 'Salvando...' : 'Salvar tolerância'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
 
       <Modal isOpen={!!paymentToVoid} onClose={() => { setPaymentToVoid(null); setPaymentVoidReason(''); }} title="Cancelar pagamento" width="max-w-md">
         <div className="space-y-6">

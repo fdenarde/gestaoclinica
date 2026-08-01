@@ -237,6 +237,35 @@ function isDoubleSession(session) {
   return session?.doubleSession === true || type.includes('sessão dupla') || type.includes('sessao dupla');
 }
 
+function isReplacementSession(session) {
+  const status = String(session?.status || '').toLocaleLowerCase('pt-BR');
+  const source = String(session?.source || '').toLocaleLowerCase('pt-BR');
+  const type = String(session?.type || '').toLocaleLowerCase('pt-BR');
+  return status === 'reposição'
+    || status === 'reposicao'
+    || source === 'reposition'
+    || type.includes('reposição')
+    || type.includes('reposicao');
+}
+
+function isConsecutiveSameDatePair(session, candidate) {
+  if (String(candidate?.patientId || '') !== String(session?.patientId || '')) return false;
+  if (String(candidate?.date || '') !== String(session?.date || '')) return false;
+  const sessionPackage = Number(session?.activityPackageNumber || 0);
+  const candidatePackage = Number(candidate?.activityPackageNumber || 0);
+  if (sessionPackage && candidatePackage && sessionPackage !== candidatePackage) return false;
+  const baseMinutes = timeToMinutes(session?.time);
+  const candidateMinutes = timeToMinutes(candidate?.time);
+  return baseMinutes !== null
+    && candidateMinutes !== null
+    && Math.abs(candidateMinutes - baseMinutes) === 60;
+}
+
+function isNormalAndReplacementPair(session, candidate) {
+  return isConsecutiveSameDatePair(session, candidate)
+    && isReplacementSession(session) !== isReplacementSession(candidate);
+}
+
 function normalizeActivitySessionNumber(session) {
   const number = Number(
     session?.activitySessionNumber
@@ -298,19 +327,14 @@ export function groupGooglePhotosActivitySessions(rawSessions, { patientDoubleSe
     const group = [session];
     used.add(sessionId);
 
-    const baseMinutes = timeToMinutes(session.time);
     const pair = automaticCandidates.find(candidate => {
       const candidateId = String(candidate?.id || '');
       if (!candidateId || used.has(candidateId)) return false;
 
       if (patientDoubleSession && isHistoricalDoubleSessionPair(session, candidate)) return true;
+      if (isNormalAndReplacementPair(session, candidate)) return true;
       if (!isDoubleSession(session) || !isDoubleSession(candidate)) return false;
-      if (String(candidate.date || '') !== String(session.date || '')) return false;
-
-      const candidateMinutes = timeToMinutes(candidate.time);
-      return baseMinutes !== null
-        && candidateMinutes !== null
-        && Math.abs(candidateMinutes - baseMinutes) === 60;
+      return isConsecutiveSameDatePair(session, candidate);
     });
 
     if (pair) {
@@ -389,8 +413,9 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
   packageNumber = 0,
   now = new Date(),
   payments = null,
+  packageTolerances = [],
 } = {}) {
-  const model = buildActivityMediaPackageModel(rawSessions, { patientId, now, payments });
+  const model = buildActivityMediaPackageModel(rawSessions, { patientId, now, payments, packageTolerances });
   const requestedPackageNumber = normalizeGooglePhotosPackageNumber(packageNumber) || model.currentPackageNumber;
   const targetPackage = model.packages.find(pkg => pkg.number === requestedPackageNumber)
     || model.packages.find(pkg => pkg.number === model.currentPackageNumber)
@@ -489,11 +514,52 @@ export function mergeGooglePhotosAlbumCards({
   removedCardIds = [],
 } = {}) {
   const removed = new Set((Array.isArray(removedCardIds) ? removedCardIds : []).map(value => String(value || '')));
+  const virtualSource = Array.isArray(virtualCards) ? virtualCards : [];
+  const virtualById = new Map(virtualSource.map(card => [String(card?.id || card?.sessionGroupKey || ''), card]));
+  const virtualBySessionId = new Map();
+  const virtualByDate = new Map();
+
+  for (const virtualCard of virtualSource) {
+    const patientId = String(virtualCard?.patientId || '');
+    const packageNumber = Number(virtualCard?.packageNumber || 0);
+    const activityDate = String(virtualCard?.activityDate || '');
+    const dateKey = `${patientId}|${packageNumber}|${activityDate}`;
+    if (patientId && packageNumber && activityDate && !virtualByDate.has(dateKey)) virtualByDate.set(dateKey, virtualCard);
+    for (const sessionId of normalizeGooglePhotosSessionIds(virtualCard?.sessionIds)) virtualBySessionId.set(sessionId, virtualCard);
+  }
+
+  function reconcileWithVirtual(card) {
+    const rawId = String(card?.id || card?.sessionGroupKey || '');
+    const sessionIds = normalizeGooglePhotosSessionIds(card?.sessionIds);
+    const byId = virtualById.get(rawId);
+    const bySession = sessionIds.map(sessionId => virtualBySessionId.get(sessionId)).find(Boolean);
+    const dateKey = `${String(card?.patientId || '')}|${Number(card?.packageNumber || 0)}|${String(card?.activityDate || '')}`;
+    const canonical = byId || bySession || virtualByDate.get(dateKey);
+    if (!canonical) return card;
+    const canonicalSessionIds = normalizeGooglePhotosSessionIds(canonical.sessionIds);
+    return {
+      ...canonical,
+      ...card,
+      id: String(canonical.id || canonical.sessionGroupKey || rawId),
+      sessionIds: canonicalSessionIds,
+      sessionId: canonicalSessionIds[0] || null,
+      sessionGroupKey: String(canonical.sessionGroupKey || canonical.id || rawId),
+      activityDate: canonical.activityDate || card?.activityDate || '',
+      sessionTime: canonical.sessionTime || card?.sessionTime || null,
+      sessionNumbers: Array.isArray(canonical.sessionNumbers) ? canonical.sessionNumbers : card?.sessionNumbers,
+      packageKey: canonical.packageKey || card?.packageKey || '',
+      packageNumber: canonical.packageNumber || card?.packageNumber || 0,
+      patientId: canonical.patientId || card?.patientId || '',
+      patientName: canonical.patientName || card?.patientName || '',
+    };
+  }
+
   const result = [];
   const byId = new Set();
   const coveredSessionIds = new Set();
 
-  function addCard(card, source) {
+  function addCard(rawCard, source) {
+    const card = source === 'virtual' ? rawCard : reconcileWithVirtual(rawCard);
     const id = String(card?.id || card?.sessionGroupKey || '');
     if (!id || removed.has(id) || byId.has(id)) return;
     const sessionIds = normalizeGooglePhotosSessionIds(card.sessionIds);
@@ -518,7 +584,7 @@ export function mergeGooglePhotosAlbumCards({
 
   for (const card of Array.isArray(draftCards) ? draftCards : []) addCard(card, 'draft');
   for (const card of Array.isArray(persistedCards) ? persistedCards : []) addCard(card, 'persisted');
-  for (const card of Array.isArray(virtualCards) ? virtualCards : []) addCard(card, 'virtual');
+  for (const card of virtualSource) addCard(card, 'virtual');
 
   return result.sort((left, right) => (
     `${right.activityDate}T${right.sessionTime || '00:00'}|${right.sessionGroupKey}`

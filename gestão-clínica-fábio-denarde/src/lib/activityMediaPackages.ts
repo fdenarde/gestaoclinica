@@ -1,4 +1,5 @@
 import type { Payment, Session } from '../types';
+import type { PackageToleranceRecord } from '../types/packageTolerance';
 import {
   buildActivityMediaPackageModel as buildSharedActivityMediaPackageModel,
   getCurrentActivityMediaSessions as getSharedCurrentActivityMediaSessions,
@@ -28,6 +29,9 @@ export interface ActivityMediaPackageModel {
   packages: ActivityMediaPackage[];
   currentSessions: ActivityMediaPackageSession[];
   activatedPackageNumber?: number | null;
+  temporarilyAuthorizedPackageNumber?: number | null;
+  historicallyAuthorizedPackageNumber?: number | null;
+  visiblePackageLimit?: number | null;
   awaitingPaymentSessions?: ActivityMediaPackageSession[];
 }
 
@@ -36,13 +40,15 @@ export function buildActivityMediaPackageModel({
   sessions,
   now = new Date(),
   payments = null,
+  packageTolerances = [],
 }: {
   patientId: string;
   sessions: Session[];
   now?: Date;
   payments?: Payment[] | null;
+  packageTolerances?: PackageToleranceRecord[];
 }): ActivityMediaPackageModel {
-  return buildSharedActivityMediaPackageModel(sessions, { patientId, now, payments }) as ActivityMediaPackageModel;
+  return buildSharedActivityMediaPackageModel(sessions, { patientId, now, payments, packageTolerances }) as ActivityMediaPackageModel;
 }
 
 export function getCurrentActivityMediaSessions({
@@ -50,13 +56,15 @@ export function getCurrentActivityMediaSessions({
   sessions,
   now = new Date(),
   payments = null,
+  packageTolerances = [],
 }: {
   patientId: string;
   sessions: Session[];
   now?: Date;
   payments?: Payment[] | null;
+  packageTolerances?: PackageToleranceRecord[];
 }): ActivityMediaPackageSession[] {
-  return getSharedCurrentActivityMediaSessions(sessions, { patientId, now, payments }) as ActivityMediaPackageSession[];
+  return getSharedCurrentActivityMediaSessions(sessions, { patientId, now, payments, packageTolerances }) as ActivityMediaPackageSession[];
 }
 
 export function isActivitySessionInProgress(session: Session, now = new Date()): boolean {

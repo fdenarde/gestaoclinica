@@ -55,6 +55,7 @@ import {
 import { checkPatientActivityMediaDuplicate } from './_lib/activityRecordsDuplicateService.js';
 import {
   listProfessionalActivityGallery,
+  listActivityMediaPresence,
   listActivitySessionAudit,
   reconcileActivitySessionMediaStatus,
   removeActivitySessionJustification,
@@ -529,6 +530,10 @@ export default async function handler(req, res) {
 
     if (body.action === 'getProfessionalGallerySummary') {
       return res.status(200).json(await listProfessionalActivityGallery(context, {}, { summaryOnly: true }));
+    }
+
+    if (body.action === 'listActivityMediaPresence') {
+      return res.status(200).json(await listActivityMediaPresence(context, body.sessions));
     }
 
     if (body.action === 'listProfessionalGallery') {

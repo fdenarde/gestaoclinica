@@ -1,4 +1,5 @@
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
+import { getHighestRecordedTolerancePackageNumber } from '../../shared/packageTolerance.js';
 import {
   dedupeSessionsByStableIdentity,
   getSessionPackagePosition,
@@ -38,6 +39,7 @@ function packageStatus(number, currentPackageNumber) {
 export function buildResponsiblePackages(rawSessions, {
   today = new Date().toISOString().slice(0, 10),
   payments = [],
+  packageTolerances = [],
 } = {}) {
   const sessions = dedupeSessionsByStableIdentity(rawSessions)
     .filter(session => session && !session.isBlocked && !EXCLUDED_STATUSES.has(String(session.status || '')))
@@ -45,7 +47,9 @@ export function buildResponsiblePackages(rawSessions, {
     .sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
 
   const patientId = String(sessions.find(session => session?.patientId)?.patientId || payments.find(payment => payment?.patientId)?.patientId || '');
-  const activatedPackageNumber = getActivatedPackageNumber(payments, { patientId, throughDate: today });
+  const paidActivatedPackageNumber = getActivatedPackageNumber(payments, { patientId, throughDate: today });
+  const tolerancePackageNumber = getHighestRecordedTolerancePackageNumber(packageTolerances);
+  const activatedPackageNumber = Math.max(paidActivatedPackageNumber, tolerancePackageNumber);
   const consumedTotal = sessions.filter(session => sharedSessionConsumesPackage(session, { throughDate: today })).length;
   const naturalCurrentPackageNumber = consumedTotal > 0
     ? Math.floor((consumedTotal - 1) / 10) + 1
@@ -100,6 +104,8 @@ export function buildResponsiblePackages(rawSessions, {
   return {
     currentPackageNumber,
     activatedPackageNumber,
+    paidActivatedPackageNumber,
+    tolerancePackageNumber,
     consumedTotal,
     awaitingPaymentSessionCount,
     packages: visiblePackages,

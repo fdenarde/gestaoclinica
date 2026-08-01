@@ -1,4 +1,5 @@
 import { Payment, Patient, Session } from '../types';
+import type { PackageToleranceResolution } from '../types/packageTolerance';
 import { calculateCanonicalPackageFinancialSummary } from '../../shared/packageFinancialSummary.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import { sessionConsumesPackage } from '../../shared/sessionScheduling.js';
@@ -8,11 +9,19 @@ export const PARTNER_SHARE_RATE = 0.2;
 export const PACKAGE_NET_VALUE = PACKAGE_GROSS_VALUE * (1 - PARTNER_SHARE_RATE);
 export const SESSIONS_PER_PACKAGE = 10;
 
-export type FinancialStatus = 'QUITADO' | 'PARCIAL' | 'EM ABERTO' | 'ATRASADO' | 'SEM MOVIMENTAÇÃO';
+export type FinancialStatus = 'QUITADO' | 'PARCIAL' | 'EM ABERTO' | 'ATRASADO' | 'EM TOLERÂNCIA' | 'TOLERÂNCIA VENCIDA' | 'SEM MOVIMENTAÇÃO';
 
 export interface PackageFinancialSummary {
   patient: Patient;
   packageNumber: number;
+  consumedSessionTotal: number;
+  naturalCurrentPackageNumber: number;
+  naturalCurrentPackageConsumedCount: number;
+  nextPackageRequiringAuthorization: number;
+  paidActivatedPackageNumber: number;
+  temporaryAuthorizedPackageNumber: number;
+  toleranceDisplayPackageNumber: number;
+  packageTolerance: PackageToleranceResolution;
   previousPackageNumber: number | null;
   currentPackageSessions: Session[];
   previousPackagePayments: Payment[];
@@ -81,7 +90,9 @@ export function calculatePackageFinancialSummary(
   }) as PackageFinancialSummary;
   return {
     ...summary,
-    hasNewPackageWithoutPayment: completedPackageNumber > activatedPackageNumber
-      && completedPackageNumber > 1,
+    hasNewPackageWithoutPayment: completedPackageNumber > Math.max(
+      activatedPackageNumber,
+      summary.toleranceDisplayPackageNumber || 0,
+    ) && completedPackageNumber > 1,
   };
 }

@@ -128,6 +128,7 @@ export function buildProfessionalGalleryPatientCards({
       const model = buildActivityMediaPackageModel(patientSessions, {
         patientId: identity.id,
         payments,
+        packageTolerances: patient?.packageTolerances || [],
         now,
       });
       const consumedTotal = patientSessions.filter(session => sessionConsumesPackage(session, {

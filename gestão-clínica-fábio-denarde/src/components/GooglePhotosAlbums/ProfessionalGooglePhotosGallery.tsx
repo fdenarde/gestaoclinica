@@ -62,6 +62,7 @@ interface Props {
   currentUserName: string;
   initialPatientId?: string | null;
   initialSessionId?: string | null;
+  initialPackageNumber?: number | null;
 }
 
 const EMPTY_PERMISSIONS: GooglePhotosAlbumCapabilities = {
@@ -184,10 +185,12 @@ export default function ProfessionalGooglePhotosGallery({
   currentUserName,
   initialPatientId = null,
   initialSessionId = null,
+  initialPackageNumber = null,
 }: Props) {
-  const [patientOptions, setPatientOptions] = useState<Array<{ id: string; name: string }>>(() => patients.map(patient => ({ id: patient.id, name: patient.fullName || patient.name })));
+  const [patientOptions, setPatientOptions] = useState<Array<{ id: string; name: string }>>(() => patients.map(patient => ({ id: patient.id, name: patient.name || patient.fullName })));
   const [remoteSessions, setRemoteSessions] = useState<Session[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState(() => String(initialPatientId || '').trim());
+  const [selectedPackageNumber, setSelectedPackageNumber] = useState(() => Number(initialPackageNumber || 0));
   const [patientSearch, setPatientSearch] = useState('');
   const [persistedCards, setPersistedCards] = useState<GooglePhotosAlbum[]>([]);
   const [draftCards, setDraftCards] = useState<Record<string, GooglePhotosAlbum>>({});
@@ -216,7 +219,7 @@ export default function ProfessionalGooglePhotosGallery({
 
   useEffect(() => {
     if (patients.length > 0) {
-      setPatientOptions(patients.map(patient => ({ id: patient.id, name: patient.fullName || patient.name })));
+      setPatientOptions(patients.map(patient => ({ id: patient.id, name: patient.name || patient.fullName })));
       return;
     }
     let active = true;
@@ -258,9 +261,17 @@ export default function ProfessionalGooglePhotosGallery({
     patientId: selectedPatientId,
     sessions: sessionSource,
     payments,
-  }), [payments, selectedPatientId, sessionSource]);
+    packageTolerances: selectedPatient?.packageTolerances || [],
+  }), [payments, selectedPatient?.packageTolerances, selectedPatientId, sessionSource]);
 
-  const currentPackageNumber = packageModel.currentPackageNumber || 1;
+  const naturalCurrentPackageNumber = packageModel.currentPackageNumber || 1;
+  const availablePackageNumbers = useMemo(
+    () => packageModel.packages.map(pkg => pkg.number).filter(number => number > 0),
+    [packageModel.packages],
+  );
+  const currentPackageNumber = availablePackageNumbers.includes(selectedPackageNumber)
+    ? selectedPackageNumber
+    : naturalCurrentPackageNumber;
   const currentPackageConsumedCount = Math.min(
     10,
     Math.max(0, packageModel.consumedSessionCount - ((currentPackageNumber - 1) * 10)),
@@ -268,6 +279,18 @@ export default function ProfessionalGooglePhotosGallery({
   const currentPackage = useMemo(() => (
     packageModel.packages.find(pkg => pkg.number === currentPackageNumber) || null
   ), [currentPackageNumber, packageModel.packages]);
+
+  useEffect(() => {
+    if (!selectedPatientId || availablePackageNumbers.length === 0) return;
+    const requested = Number(initialPackageNumber || 0);
+    if (requested > 0 && availablePackageNumbers.includes(requested)) {
+      setSelectedPackageNumber(requested);
+      return;
+    }
+    setSelectedPackageNumber(current => (
+      availablePackageNumbers.includes(current) ? current : naturalCurrentPackageNumber
+    ));
+  }, [availablePackageNumbers, initialPackageNumber, naturalCurrentPackageNumber, selectedPatientId]);
 
   const packageSessions = useMemo(
     () => (currentPackage?.sessions || []).slice().sort((left, right) => sessionSortKey(left).localeCompare(sessionSortKey(right))),
@@ -281,8 +304,9 @@ export default function ProfessionalGooglePhotosGallery({
       patientDoubleSession: Boolean(selectedPatient?.doubleSession),
       packageNumber: currentPackageNumber,
       payments,
+      packageTolerances: selectedPatient?.packageTolerances || [],
     }) as GooglePhotosAlbum[]
-  ), [currentPackageNumber, payments, selectedPatient?.doubleSession, selectedPatientId, selectedPatientName, sessionSource]);
+  ), [currentPackageNumber, payments, selectedPatient?.doubleSession, selectedPatient?.packageTolerances, selectedPatientId, selectedPatientName, sessionSource]);
 
   const allCards = useMemo(() => (
     mergeGooglePhotosAlbumCards({
@@ -451,6 +475,7 @@ export default function ProfessionalGooglePhotosGallery({
 
   const selectPatient = (patientId: string) => {
     setSelectedPatientId(patientId);
+    setSelectedPackageNumber(0);
     setQuickCreateCardId('');
     setPersistedCards([]);
     setDraftCards({});
@@ -461,6 +486,22 @@ export default function ProfessionalGooglePhotosGallery({
     setOwnerUserId('');
     setSaveStatus('idle');
     lastConfirmedSignatureRef.current = '[]';
+    setMessage('');
+    setError('');
+  };
+
+  const changePackage = (packageNumber: number) => {
+    if (!availablePackageNumbers.includes(packageNumber) || packageNumber === currentPackageNumber) return;
+    if (hasLocalChanges && !window.confirm('Existem alterações não salvas neste pacote. Deseja descartá-las e trocar de pacote?')) return;
+    setSelectedPackageNumber(packageNumber);
+    setQuickCreateCardId('');
+    setPersistedCards([]);
+    setDraftCards({});
+    setRemovedCardIds([]);
+    setEditingCardIds([]);
+    setExpandedObservationIds([]);
+    editorBaselineRef.current = {};
+    setSaveStatus('idle');
     setMessage('');
     setError('');
   };
@@ -952,12 +993,30 @@ export default function ProfessionalGooglePhotosGallery({
                 <p className="text-[10px] font-black uppercase tracking-wide text-clinic-primary">Atendente selecionado</p>
                 <h2 className="truncate text-lg font-bold text-clinic-text">{selectedPatientName}</h2>
                 <p className="text-xs text-clinic-text-muted">
-                  Pacote atual {currentPackageNumber}
+                  Pacote selecionado {currentPackageNumber}
                   {` • ${currentPackageConsumedCount}/10`}
                   {latestEffectiveSession?.date ? ` • ${safeFormatDate(latestEffectiveSession.date, 'dd/MM/yyyy')}` : latestSelectedSession?.date ? ` • ${safeFormatDate(latestSelectedSession.date, 'dd/MM/yyyy')}` : ''}
                 </p>
               </div>
             </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              {availablePackageNumbers.length > 1 && (
+                <label className="min-w-[170px]">
+                  <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-muted">Pacote da galeria</span>
+                  <select
+                    value={currentPackageNumber}
+                    onChange={event => changePackage(Number(event.target.value))}
+                    disabled={saving || loading}
+                    className="w-full rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black text-clinic-text disabled:opacity-60"
+                  >
+                    {packageModel.packages.map(pkg => (
+                      <option key={pkg.number} value={pkg.number}>
+                        Pacote {pkg.number}{pkg.number === naturalCurrentPackageNumber ? ' — atual/liberado' : ' — concluído'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <span className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold ${saveTone}`}>
                 {saveStatus === 'saving' ? <Loader2 size={14} className="animate-spin" /> : saveStatus === 'error' || saveStatus === 'invalid' ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
@@ -972,6 +1031,7 @@ export default function ProfessionalGooglePhotosGallery({
               <button type="button" onClick={() => returnToPatientSelection()} disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase tracking-wide text-clinic-text-muted disabled:opacity-50">
                 Trocar atendente
               </button>
+            </div>
             </div>
           </div>
         </section>
@@ -1044,7 +1104,7 @@ export default function ProfessionalGooglePhotosGallery({
       <section className="rounded-2xl border border-clinic-border bg-clinic-surface p-4 shadow-clinic sm:p-5">
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="font-black text-clinic-text">Pacote atual {currentPackageNumber}</h2>
+            <h2 className="font-black text-clinic-text">Pacote selecionado {currentPackageNumber}</h2>
             <p className="text-xs text-clinic-text-muted">
               {loadingSessions
                 ? 'Carregando sessões autorizadas...'
@@ -1095,7 +1155,7 @@ export default function ProfessionalGooglePhotosGallery({
         {!loading && allCards.length === 0 && (
           <div className="mt-5 rounded-xl border border-dashed border-clinic-border bg-clinic-bg p-8 text-center">
             <Images size={32} className="mx-auto text-clinic-text-faint" />
-            <p className="mt-3 font-black text-clinic-text">Nenhuma atividade disponível no pacote atual</p>
+            <p className="mt-3 font-black text-clinic-text">Nenhuma atividade disponível neste pacote</p>
             <p className="mt-1 text-sm text-clinic-text-muted">Quando uma sessão realizada ou em andamento admitir atividade, o card virtual aparecerá aqui.</p>
           </div>
         )}

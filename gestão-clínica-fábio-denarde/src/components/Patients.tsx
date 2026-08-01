@@ -26,6 +26,7 @@ import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDeci
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import { createPaymentOperationKey, preparePaymentCreation, preparePaymentVoid } from '../../shared/paymentOperations.js';
 import { isPaymentActive } from '../../shared/packagePayments.js';
+import { endPackageToleranceAfterPayment } from '../lib/packageTolerance';
 
 interface PatientsProps {
   state: AppState;
@@ -1551,7 +1552,16 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         actor: currentUserName || 'Profissional',
         now: new Date().toISOString(),
       });
-      await onUpdate({ payments: prepared.payments, expenses: prepared.expenses });
+      const patientAfterPayment = endPackageToleranceAfterPayment(patient, {
+        packageNumber: paymentData.packageNumber,
+        actor: currentUserName || 'Profissional',
+        now: new Date(),
+      });
+      await onUpdate({
+        payments: prepared.payments,
+        expenses: prepared.expenses,
+        patients: state.patients.map(item => item.id === patient.id ? patientAfterPayment : item),
+      });
       showToast('Pagamento registrado com sucesso!', 'success');
       setPaymentModalOpen(false);
       setPaymentOperationKey('');

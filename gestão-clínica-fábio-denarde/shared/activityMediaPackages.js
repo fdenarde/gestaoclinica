@@ -4,6 +4,10 @@ import {
 } from './activityGalleryStatus.js';
 import { getActivatedPackageNumber } from './packagePayments.js';
 import {
+  getHighestRecordedTolerancePackageNumber,
+  getTemporaryAuthorizedPackageNumber,
+} from './packageTolerance.js';
+import {
   dedupeSessionsByStableIdentity,
   sessionAllowsActivity,
   sessionConsumesPackage,
@@ -57,6 +61,7 @@ export function buildActivityMediaPackageModel(rawSessions, {
   patientId = '',
   now = new Date(),
   payments = null,
+  packageTolerances = [],
 } = {}) {
   const normalizedPatientId = normalizePatientId(patientId);
   const nowAt = normalizeNow(now);
@@ -70,10 +75,21 @@ export function buildActivityMediaPackageModel(rawSessions, {
   const activatedPackageNumber = paymentGateEnabled
     ? getActivatedPackageNumber(payments, { patientId: normalizedPatientId })
     : Number.POSITIVE_INFINITY;
+  const temporarilyAuthorizedPackageNumber = paymentGateEnabled
+    ? getTemporaryAuthorizedPackageNumber({
+        patient: { id: normalizedPatientId, packageTolerances },
+        packageTolerances,
+        sessions,
+        payments,
+        now: nowAt,
+      })
+    : Number.POSITIVE_INFINITY;
+  const historicallyAuthorizedPackageNumber = paymentGateEnabled
+    ? getHighestRecordedTolerancePackageNumber(packageTolerances)
+    : Number.POSITIVE_INFINITY;
   let consumedPosition = 0;
   let naturalInProgressPackageNumber = 0;
-  const enriched = [];
-  const awaitingPaymentSessions = [];
+  const packageCandidates = [];
 
   for (const session of sessions) {
     const consumesPackage = sessionConsumesPackage(session, { throughDate: localDateKey(nowAt) });
@@ -101,18 +117,29 @@ export function buildActivityMediaPackageModel(rawSessions, {
         inProgress,
         selectableForMedia: isActivityMediaSelectableSession(session, nowAt),
       };
-      if (packageNumber <= activatedPackageNumber) enriched.push(enrichedSession);
-      else awaitingPaymentSessions.push(enrichedSession);
+      packageCandidates.push(enrichedSession);
     }
   }
 
-  const startedSessions = enriched.filter(session => session.selectableForMedia);
   const consumedPackageNumber = consumedPosition > 0
     ? Math.floor((consumedPosition - 1) / 10) + 1
     : 1;
+  const fullyConsumedPackageNumber = Math.floor(consumedPosition / 10);
+  const visiblePackageLimit = paymentGateEnabled
+    ? Math.max(
+        1,
+        activatedPackageNumber,
+        temporarilyAuthorizedPackageNumber,
+        historicallyAuthorizedPackageNumber,
+        fullyConsumedPackageNumber,
+      )
+    : Number.POSITIVE_INFINITY;
+  const enriched = packageCandidates.filter(session => session.activityPackageNumber <= visiblePackageLimit);
+  const awaitingPaymentSessions = packageCandidates.filter(session => session.activityPackageNumber > visiblePackageLimit);
+  const startedSessions = enriched.filter(session => session.selectableForMedia);
   const naturalCurrentPackageNumber = Math.max(consumedPackageNumber, naturalInProgressPackageNumber || 1);
   const currentPackageNumber = paymentGateEnabled
-    ? Math.max(1, Math.min(naturalCurrentPackageNumber, activatedPackageNumber))
+    ? Math.max(1, Math.min(naturalCurrentPackageNumber, visiblePackageLimit))
     : naturalCurrentPackageNumber;
 
   const packagesByNumber = new Map();
@@ -159,6 +186,9 @@ export function buildActivityMediaPackageModel(rawSessions, {
     packages,
     currentSessions: packages.find(pkg => pkg.number === currentPackageNumber)?.sessions || [],
     activatedPackageNumber: Number.isFinite(activatedPackageNumber) ? activatedPackageNumber : null,
+    temporarilyAuthorizedPackageNumber: Number.isFinite(temporarilyAuthorizedPackageNumber) ? temporarilyAuthorizedPackageNumber : null,
+    historicallyAuthorizedPackageNumber: Number.isFinite(historicallyAuthorizedPackageNumber) ? historicallyAuthorizedPackageNumber : null,
+    visiblePackageLimit: Number.isFinite(visiblePackageLimit) ? visiblePackageLimit : null,
     awaitingPaymentSessions,
   };
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
-import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, ChevronDown, Monitor } from 'lucide-react';
+import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, ChevronDown, Monitor, ClipboardList, RefreshCw, Images, ShieldCheck, TimerReset } from 'lucide-react';
 import { formatCurrency, getStatusColor, cn, calculateAge, getSessionsForDate, normalizeTime, ProcessedSession } from '../lib/utils';
 import { addDays, format, isAfter, subDays, differenceInDays, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -14,6 +14,9 @@ import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalR
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
 import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
 import { isPaymentActive, isPaymentReceived } from '../../shared/packagePayments.js';
+import PatientPhoto from './Common/PatientPhoto';
+import type { UnregisteredActivityGroup } from '../types/unregisteredActivities';
+import type { PackageToleranceAlert } from '../types/packageTolerance';
 
 interface DashboardProps {
   state: AppState;
@@ -23,6 +26,13 @@ interface DashboardProps {
   canViewWhatsappReport?: boolean;
   whatsappReportState: WhatsappOperationalReportState;
   onOpenMonitoringPreview?: () => void;
+  unregisteredActivities?: UnregisteredActivityGroup[];
+  unregisteredActivitiesLoading?: boolean;
+  unregisteredActivitiesWarning?: string;
+  onRefreshUnregisteredActivities?: () => Promise<void> | void;
+  onRegisterUnregisteredActivity?: (activity: UnregisteredActivityGroup) => void;
+  packageToleranceAlerts?: PackageToleranceAlert[];
+  onOpenFinance?: () => void;
 }
 
 export default function Dashboard({
@@ -33,6 +43,13 @@ export default function Dashboard({
   canViewWhatsappReport = false,
   whatsappReportState,
   onOpenMonitoringPreview,
+  unregisteredActivities = [],
+  unregisteredActivitiesLoading = false,
+  unregisteredActivitiesWarning = '',
+  onRefreshUnregisteredActivities,
+  onRegisterUnregisteredActivity,
+  packageToleranceAlerts = [],
+  onOpenFinance,
 }: DashboardProps) {
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
   const [whatsappReportOpen, setWhatsappReportOpen] = useState(false);
@@ -535,7 +552,144 @@ export default function Dashboard({
         </section>
       )}
 
+      <section className="rounded-2xl border border-status-blue-text/25 bg-clinic-surface p-4 shadow-clinic sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-status-blue-bg p-2 text-status-blue-text"><ShieldCheck size={20} /></span>
+            <div>
+              <h2 className="text-lg font-black text-clinic-text">Pacotes em tolerância</h2>
+              <p className="mt-1 text-sm text-clinic-text-muted">Pacotes temporariamente liberados, com pagamento ainda não confirmado.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenFinance}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase text-clinic-primary"
+          >
+            <TimerReset size={15} /> Abrir pagamentos
+          </button>
+        </div>
 
+        {packageToleranceAlerts.length === 0 ? (
+          <div className="mt-4 flex items-center gap-2 rounded-xl border border-status-green-text/20 bg-status-green-bg px-4 py-3 text-sm font-bold text-status-green-text">
+            <CheckCircle size={17} /> Nenhum pacote está em tolerância.
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {packageToleranceAlerts.map(alert => {
+              const critical = ['expired', 'limit_reached'].includes(alert.status);
+              const statusLabel = alert.status === 'limit_reached'
+                ? 'Limite de sessões atingido'
+                : alert.status === 'expired'
+                  ? 'Prazo vencido'
+                  : alert.status === 'expires_today'
+                    ? 'Vence hoje'
+                    : alert.status === 'expiring'
+                      ? 'Vence em breve'
+                      : 'Dentro do prazo';
+              return (
+                <article key={alert.id} className={cn(
+                  'rounded-xl border p-3',
+                  critical ? 'border-status-red-text/20 bg-status-red-bg/55' : 'border-status-blue-text/20 bg-status-blue-bg/45',
+                )}>
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="font-black text-clinic-text">{alert.patientName} — Pacote {alert.packageNumber}</p>
+                      <p className="mt-1 text-xs text-clinic-text-muted">Responsável: {alert.guardianName}</p>
+                    </div>
+                    <span className={cn(
+                      'rounded-full px-2 py-1 text-[10px] font-black uppercase',
+                      critical ? 'bg-status-red-bg text-status-red-text' : 'bg-status-blue-bg text-status-blue-text',
+                    )}>{statusLabel}</span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-lg border border-clinic-border/70 bg-white/75 px-3 py-2">
+                      <p className="font-black uppercase text-clinic-text-faint">Pagamento prometido</p>
+                      <p className="mt-1 font-bold text-clinic-text">{alert.promisedPaymentDate.split('-').reverse().join('/')}</p>
+                    </div>
+                    <div className="rounded-lg border border-clinic-border/70 bg-white/75 px-3 py-2">
+                      <p className="font-black uppercase text-clinic-text-faint">Sessões usadas</p>
+                      <p className="mt-1 font-bold text-clinic-text">{alert.sessionsUsed}/{alert.maxSessions}</p>
+                    </div>
+                  </div>
+                  <button type="button" onClick={onOpenFinance} className="mt-3 text-xs font-black uppercase text-clinic-primary">Registrar pagamento ou gerenciar tolerância</button>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-status-orange-text/25 bg-clinic-surface p-4 shadow-clinic sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-status-orange-bg p-2 text-status-orange-text"><ClipboardList size={20} /></span>
+            <div>
+              <h2 className="text-lg font-black text-clinic-text">Atividades não registradas</h2>
+              <p className="mt-1 text-sm text-clinic-text-muted">Atendimentos realizados que ainda não possuem registro de atividade nem link do Google Fotos.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void onRefreshUnregisteredActivities?.()}
+            disabled={unregisteredActivitiesLoading}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black uppercase text-clinic-primary disabled:opacity-50"
+          >
+            <RefreshCw size={15} className={unregisteredActivitiesLoading ? 'animate-spin' : ''} />
+            Atualizar
+          </button>
+        </div>
+
+        {unregisteredActivitiesWarning && (
+          <div className="mt-4 rounded-xl border border-status-orange-text/20 bg-status-orange-bg px-4 py-3 text-sm font-bold text-status-orange-text">
+            {unregisteredActivitiesWarning}
+          </div>
+        )}
+
+        {!unregisteredActivitiesLoading && !unregisteredActivitiesWarning && unregisteredActivities.length === 0 && (
+          <div className="mt-4 flex items-center gap-2 rounded-xl border border-status-green-text/20 bg-status-green-bg px-4 py-3 text-sm font-bold text-status-green-text">
+            <CheckCircle size={17} /> Nenhuma atividade esquecida foi encontrada.
+          </div>
+        )}
+
+        {unregisteredActivities.length > 0 && (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {unregisteredActivities.map(activity => (
+              <article key={activity.id} className="flex flex-col gap-3 rounded-xl border border-clinic-border bg-clinic-bg/55 p-3 sm:flex-row sm:items-center">
+                <PatientPhoto
+                  patient={{
+                    name: activity.patientName,
+                    photoUrl: activity.patientPhotoUrl,
+                    photoDriveFileId: activity.patientPhotoDriveFileId,
+                  }}
+                  alt={`Foto de ${activity.patientName}`}
+                  className="h-12 w-12 shrink-0 rounded-xl border border-clinic-border object-cover"
+                  fallbackClassName="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-clinic-border bg-white text-xs font-black text-clinic-primary"
+                  fallbackText={activity.patientName.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase()}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-black text-clinic-text">{activity.patientName}</p>
+                  <p className="mt-1 text-xs text-clinic-text-muted">
+                    {activity.date.split('-').reverse().join('/')} • {activity.times.join(' e ')} • Pacote {activity.packageNumber}
+                  </p>
+                  {activity.sessionNumbers.length > 0 && (
+                    <p className="mt-1 text-[11px] font-bold text-clinic-text-faint">
+                      {activity.sessionNumbers.length === 1 ? 'Sessão' : 'Sessões'} {activity.sessionNumbers.join(' e ')}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRegisterUnregisteredActivity?.(activity)}
+                  className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2.5 text-xs font-black uppercase text-white"
+                >
+                  <Images size={15} /> Registrar atividade
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Birthdays Alert */}
       {birthdays.length > 0 && (

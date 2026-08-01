@@ -4,6 +4,7 @@ import {
   getPackagePaymentSummary,
   isPaymentActive,
 } from './packagePayments.js';
+import { getLatestPackageTolerance } from './packageTolerance.js';
 
 const PARTNER_SHARE_RATE = 0.2;
 
@@ -58,7 +59,6 @@ export function preparePaymentCreation({
   actor,
   now = new Date().toISOString(),
 } = {}) {
-  void sessions;
   const normalizedOperationKey = requiredText(operationKey, 'Chave da operação');
   const normalizedActor = requiredText(actor, 'Responsável pelo lançamento');
   const patientId = requiredText(patient?.id, 'Paciente');
@@ -87,15 +87,17 @@ export function preparePaymentCreation({
     patientId,
     throughDate: nowDate,
   });
-  if (packageNumber > activatedPackage + 1) {
-    throw new Error('O pagamento não pode ser associado a um pacote futuro.');
+  const toleranceRecord = getLatestPackageTolerance(patient, packageNumber);
+  const hasExplicitTolerance = Boolean(toleranceRecord && toleranceRecord.status !== 'closed');
+  if (packageNumber > activatedPackage + 1 && !hasExplicitTolerance) {
+    throw new Error('O pagamento não pode ser associado a um pacote futuro sem liberação temporária registrada.');
   }
   if (packageNumber > 1) {
     const previousSummary = getPackagePaymentSummary(payments, packageNumber - 1, {
       patientId,
       throughDate: nowDate,
     });
-    if (previousSummary.pendingAmount > 0) {
+    if (previousSummary.pendingAmount > 0 && !hasExplicitTolerance) {
       throw new Error('O pacote anterior ainda possui saldo pendente.');
     }
   }
