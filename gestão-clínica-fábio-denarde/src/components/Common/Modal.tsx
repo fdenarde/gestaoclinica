@@ -10,6 +10,7 @@ interface ModalProps {
   width?: string;
   closeDisabled?: boolean;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
+  descriptionId?: string;
 }
 
 export default function Modal({
@@ -20,9 +21,11 @@ export default function Modal({
   width = 'max-w-2xl',
   closeDisabled = false,
   initialFocusRef,
+  descriptionId,
 }: ModalProps) {
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   const closeDisabledRef = useRef(closeDisabled);
@@ -44,6 +47,20 @@ export default function Modal({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !closeDisabledRef.current) onCloseRef.current();
+      if (event.key !== 'Tab') return;
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
 
     document.addEventListener('keydown', handleKeyDown);
@@ -74,9 +91,11 @@ export default function Modal({
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
+            aria-describedby={descriptionId}
             className={`relative bg-clinic-surface w-full ${width} rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[94dvh] sm:max-h-[90vh] overflow-hidden`}
           >
             <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-clinic-border flex justify-between items-center gap-3 bg-clinic-header text-white">
