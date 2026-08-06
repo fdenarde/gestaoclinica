@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMem
 import { AnimatePresence, motion } from 'motion/react';
 import { CLINIC_INFO } from './constants';
 import { AppState, Patient, Session, Payment, Reposition, ClinicSettings, Expense, Evolution, PersonalAppointment, ExternalRegistrationForm } from './types';
-import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList, Images, X, ExternalLink, Monitor, MapPin, UserRound, Clock3, Check, CheckCheck, RefreshCw, Archive, Trash2, Mail, MailOpen, Menu } from 'lucide-react';
+import { Bell, Calendar, Users, DollarSign, BarChart3, LayoutDashboard, Settings as SettingsIcon, Loader2, BookOpen, ClipboardList, Images, X, ExternalLink, Monitor, MapPin, UserRound, Clock3, Check, CheckCheck, RefreshCw, Archive, Trash2, Mail, MailOpen, Menu, MessageCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
@@ -60,6 +60,7 @@ const Settings = lazy(() => import('./components/Settings'));
 const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
 const ProfessionalGooglePhotosGallery = lazy(() => import('./components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery'));
 const MonitoringPanel = lazy(() => import('./components/Monitoring/MonitoringPanel'));
+const WhatsappSimulationDashboard = lazy(() => import('./features/whatsapp-simulation/SimulationDashboard'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -299,6 +300,7 @@ export default function App() {
   };
 
   const selectNavigationItem = (id: string) => {
+    if (id === 'whatsapp' && !canAccessWhatsappSimulation) return;
     if (id === 'galeria-atividades') {
       setSelectedGalleryPatientId(null);
       setSelectedGallerySessionId(null);
@@ -416,6 +418,9 @@ export default function App() {
   }, [directAccessRole, resetSessionScopedData]);
 
   const canAccessInternalSystem =
+    accessProfile?.status === 'approved'
+    && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
+  const canAccessWhatsappSimulation =
     accessProfile?.status === 'approved'
     && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
   const canManagePortalNotifications =
@@ -1143,8 +1148,11 @@ export default function App() {
 
   const tabs: AppNavigationItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    ...(accessProfile?.role === 'admin'
-      ? [{ id: 'monitoramento', label: 'Visão do Monitoramento', icon: Monitor }]
+    ...(canAccessWhatsappSimulation
+      ? [
+        { id: 'monitoramento', label: 'Visão do Monitoramento', icon: Monitor },
+        { id: 'whatsapp', label: 'WhatsApp', icon: MessageCircle },
+      ]
       : []),
     { id: 'agenda', label: 'Agenda', icon: Calendar },
     { id: 'agenda-pessoal', label: 'Agenda Pessoal', icon: BookOpen },
@@ -1549,6 +1557,7 @@ export default function App() {
                   onExitPreview={() => setActiveTab('dashboard')}
                 />
               )}
+              {activeTab === 'whatsapp' && canAccessWhatsappSimulation && <WhatsappSimulationDashboard embedded />}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserRole={accessProfile?.role || 'professional'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}

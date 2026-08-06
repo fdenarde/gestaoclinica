@@ -38,7 +38,7 @@ interface SidebarNavigationProps {
 }
 
 const GROUPS: Array<{ label: string; ids: string[] }> = [
-  { label: 'Principal', ids: ['dashboard', 'agenda', 'agenda-pessoal'] },
+  { label: 'Principal', ids: ['dashboard', 'agenda', 'agenda-pessoal', 'whatsapp'] },
   { label: 'Atendimento', ids: ['atendentes', 'galeria-atividades', 'pre-cadastros'] },
   { label: 'Gestão', ids: ['pagamentos', 'relatorios'] },
   { label: 'Sistema', ids: ['ajustes'] },
