@@ -6,6 +6,7 @@ import {
   alarmAdvanceToMinutes,
   getAlarmSoundById,
 } from './alarmSounds';
+import { getNextPersonalAppointmentOccurrence } from './personalAgendaTemporal';
 
 export const ALARM_CHECK_INTERVAL_MS = 30_000;
 export const ALARM_POST_EVENT_GRACE_MS = 90_000;
@@ -59,45 +60,14 @@ function localTimeKey(date: Date): string {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
-function parseAppointmentDateTime(app: PersonalAppointment) {
-  const dateParts = app.date.split('-').map(Number);
-  const timeParts = app.time.split(':').map(Number);
-  if (dateParts.length !== 3 || timeParts.length < 2) return null;
-
-  const [year, month, day] = dateParts;
-  const [hour, minute] = timeParts;
-  if ([year, month, day, hour, minute].some(value => !Number.isFinite(value))) return null;
-  if (month < 1 || month > 12 || day < 1 || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-
-  const firstOccurrence = new Date(year, month - 1, day, hour, minute, 0, 0);
-  if (
-    firstOccurrence.getFullYear() !== year ||
-    firstOccurrence.getMonth() !== month - 1 ||
-    firstOccurrence.getDate() !== day
-  ) {
-    return null;
-  }
-
-  return { firstOccurrence, hour, minute };
-}
-
 export function getAlarmTimingForNow(app: PersonalAppointment, now: Date): AlarmTiming | null {
   if (!app.alarmEnabled || app.isDone) return null;
 
-  const parsed = parseAppointmentDateTime(app);
-  if (!parsed) return null;
-
-  const { firstOccurrence, hour, minute } = parsed;
-  const occurrenceTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
-  if (occurrenceTime.getTime() < firstOccurrence.getTime()) return null;
-
-  const recurrence = app.recurrence || 'Não repetir';
-  if (recurrence === 'Não repetir' && !sameLocalDate(firstOccurrence, now)) return null;
-  if (recurrence === 'Toda semana' && firstOccurrence.getDay() !== now.getDay()) return null;
-  if (recurrence === 'Todo mês' && firstOccurrence.getDate() !== now.getDate()) return null;
-  if (!['Não repetir', 'Toda semana', 'Todo mês'].includes(recurrence)) return null;
-
   const advanceMinutes = alarmAdvanceToMinutes(app.alarmAdvance);
+  const occurrence = getNextPersonalAppointmentOccurrence(app, addMinutes(now, -advanceMinutes));
+  if (!occurrence || !sameLocalDate(occurrence.occurrenceDateTime, now)) return null;
+
+  const occurrenceTime = occurrence.occurrenceDateTime;
   const triggerTime = addMinutes(occurrenceTime, -advanceMinutes);
   const latestTriggerTime = new Date(occurrenceTime.getTime() + ALARM_POST_EVENT_GRACE_MS);
   const alarmKey = [

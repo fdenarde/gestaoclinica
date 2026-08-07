@@ -660,7 +660,7 @@ export default function App() {
         const personalAppointments = snapshot.docs.map(doc => {
           const data = doc.data();
           return {
-            id: data.id,
+            id: typeof data.id === 'string' && data.id.trim() ? data.id : doc.id,
             date: data.data || '',
             time: data.hora || '',
             type: data.tipo_compromisso || 'Outro',

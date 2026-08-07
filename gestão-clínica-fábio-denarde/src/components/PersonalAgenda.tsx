@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance } from '../types';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Bell, CheckCircle2, Edit2, Trash2, BookOpen } from 'lucide-react';
-import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
+import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
 import { previewSound, prepareAlarmAudio } from '../lib/useAlarms';
 import { ALARM_ADVANCE_OPTIONS, loadAlarmSounds, AlarmSoundMeta, getDefaultSounds, DEFAULT_ALARM_SOUND_ID, getFallbackAlarmSoundId } from '../lib/alarmSounds';
+import { getNextPersonalAppointmentOccurrence, getPendingPersonalAppointmentOccurrences, getPersonalAppointmentOccurrences, PersonalAppointmentOccurrence } from '../lib/personalAgendaTemporal';
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
@@ -59,6 +60,10 @@ function getHourSlot(time: string): string {
   return `${h}:00`;
 }
 
+function occurrenceKey(app: PersonalAppointmentOccurrence): string {
+  return `${app.id}-${format(app.occDate, 'yyyy-MM-dd')}-${app.time}`;
+}
+
 const TIMES = Array.from({ length: 13 }, (_, i) => `${String(i + 7).padStart(2, '0')}:00`);
 
 const TIME_OPTIONS = (() => {
@@ -75,7 +80,7 @@ type ViewMode = 'semanal' | 'mensal' | 'lista' | 'proximos';
 
 interface PersonalAgendaProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void;
+  onUpdate: (newState: Partial<AppState>) => Promise<boolean>;
   activeAlarmId: string | null;
   activeAlarmLabel: string;
   stopAlarm: () => void;
@@ -99,6 +104,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [alarmVolume, setAlarmVolume] = useState(80);
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>(() => getDefaultSounds());
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     loadAlarmSounds().then(setAlarmSoundsList).catch(() => {});
@@ -140,8 +146,9 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     setIsModalOpen(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formDate || !formTime || !type) return;
+    if (isSaving) return;
 
     const newApp: PersonalAppointment = {
       id: selectedApptId || Math.random().toString(36).substr(2, 9),
@@ -168,80 +175,77 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       updatedList = [...currentList, newApp];
     }
 
-    onUpdate({ personalAppointments: updatedList });
-    showToast('Compromisso salvo com sucesso!');
-    setIsModalOpen(false);
-  };
-
-  const handleDelete = (id: string) => {
-    console.log('handleDelete called with id:', id, 'state.personalAppointments:', state.personalAppointments?.length);
-    if (window.confirm('Tem certeza que deseja excluir este compromisso?')) {
-      try {
-        const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
-        console.log('Antes do onUpdate, tamanho da lista filtrada:', updatedList.length);
-        onUpdate({ personalAppointments: updatedList });
-        showToast('Compromisso excluído com sucesso!');
-      } catch (error) {
-        console.error('Erro ao excluir compromisso:', error);
-        showToast('Erro ao excluir compromisso. Tente novamente.');
+    setIsSaving(true);
+    try {
+      const persisted = await onUpdate({ personalAppointments: updatedList });
+      if (!persisted) {
+        showToast('Não foi possível salvar o compromisso. Nenhuma alteração foi confirmada.', 'error');
+        return;
       }
+      showToast('Compromisso salvo com sucesso!');
+      setIsModalOpen(false);
+    } catch (error) {
+      console.error('Erro ao salvar compromisso:', error);
+      showToast('Não foi possível salvar o compromisso. Verifique a conexão e tente novamente.', 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  const toggleDone = (id: string) => {
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Tem certeza que deseja excluir este compromisso?')) return;
+
+    try {
+      const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
+      const persisted = await onUpdate({ personalAppointments: updatedList });
+      if (!persisted) {
+        showToast('Não foi possível excluir o compromisso. Nenhuma alteração foi confirmada.', 'error');
+        return;
+      }
+      showToast('Compromisso excluído com sucesso!');
+    } catch (error) {
+      console.error('Erro ao excluir compromisso:', error);
+      showToast('Erro ao excluir compromisso. Tente novamente.', 'error');
+    }
+  };
+
+  const toggleDone = async (id: string) => {
+    const currentAppointment = (state.personalAppointments || []).find(a => a.id === id);
+    if (!currentAppointment) return;
+
     const updatedList = (state.personalAppointments || []).map(a =>
       a.id === id ? { ...a, isDone: !a.isDone } : a
     );
-    onUpdate({ personalAppointments: updatedList });
-  };
 
-  const getOccurrences = (start: Date, end: Date) => {
-    const list = state.personalAppointments || [];
-    const occurrences: (PersonalAppointment & { occDate: Date })[] = [];
-
-    list.forEach(app => {
-      const [year, month, day] = app.date.split('-').map(Number);
-      const firstDate = new Date(year, month - 1, day);
-
-      if (app.recurrence === 'Não repetir') {
-        if (firstDate >= start && firstDate <= end) {
-          occurrences.push({ ...app, occDate: firstDate });
-        }
-      } else if (app.recurrence === 'Toda semana') {
-        let curr = new Date(start);
-        while (curr.getDay() !== firstDate.getDay()) {
-          curr = addDays(curr, 1);
-        }
-        while (curr <= end) {
-          if (curr >= firstDate) {
-            occurrences.push({ ...app, occDate: new Date(curr) });
-          }
-          curr = addDays(curr, 7);
-        }
-      } else if (app.recurrence === 'Todo mês') {
-        let curr = new Date(start);
-        if (curr < start) curr = addMonths(curr, 1);
-        while (curr <= end) {
-          if (curr >= firstDate) {
-            occurrences.push({ ...app, occDate: new Date(curr) });
-          }
-          curr = addMonths(curr, 1);
-        }
+    try {
+      const persisted = await onUpdate({ personalAppointments: updatedList });
+      if (!persisted) {
+        showToast('Não foi possível atualizar o compromisso. Nenhuma alteração foi confirmada.', 'error');
+        return;
       }
-    });
-
-    return occurrences;
+      showToast(currentAppointment.isDone ? 'Compromisso reativado!' : 'Compromisso concluído!');
+    } catch (error) {
+      console.error('Erro ao atualizar compromisso:', error);
+      showToast('Erro ao atualizar compromisso. Tente novamente.', 'error');
+    }
   };
+
+  const getOccurrences = (start: Date, end: Date): PersonalAppointmentOccurrence[] =>
+    getPersonalAppointmentOccurrences(state.personalAppointments || [], start, end);
 
   const weekDays = useMemo(() => {
     const start = startOfWeek(currentDate, { weekStartsOn: 1 });
     return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
   }, [currentDate]);
 
-  const monthDays = useMemo(() => {
+  const monthCells = useMemo<(Date | null)[]>(() => {
     const start = startOfMonth(currentDate);
     const end = endOfMonth(currentDate);
-    return eachDayOfInterval({ start, end });
+    const days = eachDayOfInterval({ start, end });
+    const leadingEmptyCells = Array.from({ length: start.getDay() }, () => null);
+    const usedCells = leadingEmptyCells.length + days.length;
+    const trailingEmptyCells = Array.from({ length: (7 - (usedCells % 7)) % 7 }, () => null);
+    return [...leadingEmptyCells, ...days, ...trailingEmptyCells];
   }, [currentDate]);
 
   const listDateRange = useMemo(() => {
@@ -297,6 +301,40 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
   const currentWeekOccurrences = getOccurrences(weekDays[0], weekDays[6]);
 
+  const pendingCount = useMemo(() => {
+    const appointments = state.personalAppointments || [];
+
+    if (viewMode === 'mensal') {
+      return getPendingPersonalAppointmentOccurrences(
+        appointments,
+        startOfMonth(currentDate),
+        endOfMonth(currentDate),
+      ).length;
+    }
+
+    if (viewMode === 'lista') {
+      return getPendingPersonalAppointmentOccurrences(
+        appointments,
+        listDateRange.start,
+        listDateRange.end,
+      ).length;
+    }
+
+    if (viewMode === 'proximos') {
+      return getPendingPersonalAppointmentOccurrences(
+        appointments,
+        startOfDay(new Date()),
+        endOfDay(addDays(new Date(), 21)),
+      ).length;
+    }
+
+    return getPendingPersonalAppointmentOccurrences(
+      appointments,
+      weekDays[0],
+      weekDays[6],
+    ).length;
+  }, [state.personalAppointments, viewMode, currentDate, listDateRange, weekDays]);
+
   return (
     <div className="flex flex-col gap-6 py-6 pb-24">
       {/* Header */}
@@ -306,7 +344,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
             <BookOpen className="text-clinic-primary" /> Agenda Pessoal
           </h2>
           <span className="bg-clinic-primary text-white text-[10px] font-bold px-2 py-1 rounded-full">
-            {currentWeekOccurrences.filter(o => !o.isDone).length} pendentes
+            {pendingCount} pendentes
           </span>
         </div>
 
@@ -332,6 +370,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openNew(new Date(), '08:00')}
+            className="px-3 py-1.5 text-xs font-black text-white bg-clinic-primary rounded-lg hover:bg-clinic-primary-hover transition-colors uppercase whitespace-nowrap"
+          >
+            + Novo Compromisso
+          </button>
           <button
             onClick={() => setCurrentDate(new Date())}
             className="px-3 py-1.5 text-xs font-bold text-clinic-primary border border-clinic-primary/30 rounded-lg hover:bg-clinic-primary/5 transition-colors uppercase"
@@ -383,7 +428,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                           const tooltipText = buildTooltip(app);
                           return (
                             <div
-                              key={app.id}
+                              key={occurrenceKey(app)}
                               title={tooltipText}
                               className={cn(
                                 "p-2 rounded-lg border relative group cursor-default transition-all",
@@ -424,13 +469,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                               )}
                               {/* Ações no Hover */}
                               <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5 z-10">
-                                <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); showToast(app.isDone ? 'Compromisso reativado!' : 'Compromisso concluído!'); }} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
+                                <button onClick={(e) => { e.stopPropagation(); void toggleDone(app.id); }} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
                                   <CheckCircle2 size={13} />
                                 </button>
                                 <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-1.5 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
                                   <Edit2 size={13} />
                                 </button>
-                                <button className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); handleDelete(app.id); }}>
+                                <button className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); void handleDelete(app.id); }}>
                                   <Trash2 size={13} />
                                 </button>
                               </div>
@@ -456,23 +501,55 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
             ))}
           </div>
           <div className="grid grid-cols-7">
-            {monthDays.map((day) => {
-              const isCurrentMonth = isSameMonth(day, currentDate);
+            {monthCells.map((day, index) => {
+              if (!day) {
+                return (
+                  <div
+                    key={`empty-${index}`}
+                    aria-hidden="true"
+                    className="min-h-[100px] border-b border-r border-clinic-border/50 bg-clinic-bg/40"
+                  />
+                );
+              }
+
               const isToday = isSameDay(day, new Date());
               const appts = getOccurrences(day, day);
 
               return (
-                <div key={day.toISOString()} onClick={() => openNew(day, "08:00")} className={cn("min-h-[100px] border-b border-r border-clinic-border/50 p-1 cursor-pointer hover:bg-gray-50", !isCurrentMonth ? "bg-gray-200 opacity-70" : '')}>
+                <div
+                  key={day.toISOString()}
+                  onClick={() => openNew(day, '08:00')}
+                  className="min-h-[100px] border-b border-r border-clinic-border/50 p-1 cursor-pointer hover:bg-gray-50"
+                >
                   <div className="flex justify-between items-start">
                     <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-clinic-primary text-white" : "text-gray-500")}>
                       {format(day, 'd')}
                     </span>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
+                  <div className="mt-1 space-y-1">
                     {appts.map(app => {
                       const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                       return (
-                        <div key={app.id} className={cn("inline-block w-4 h-4 rounded-full", config.bg, "border border-black/10", app.isDone ? "opacity-30" : '')} />
+                        <button
+                          key={occurrenceKey(app)}
+                          type="button"
+                          title={buildTooltip(app)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEdit(app);
+                          }}
+                          className={cn(
+                            "w-full rounded-md border border-black/10 px-1.5 py-1 text-left shadow-sm transition hover:brightness-95",
+                            config.bg,
+                            app.isDone ? "opacity-40 grayscale" : "",
+                          )}
+                        >
+                          <div className="flex min-w-0 items-center gap-1">
+                            <span className={cn("shrink-0 text-[9px] font-black", config.text)}>{app.time}</span>
+                            <span className="shrink-0 text-[10px] leading-none">{config.icon}</span>
+                            <span className={cn("truncate text-[9px] font-bold", config.text)}>{app.type}</span>
+                          </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -521,7 +598,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                 listOccurrences.map(app => {
                   const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                   return (
-                    <div key={app.id} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
+                    <div key={occurrenceKey(app)} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
                       <div className="flex items-center gap-4">
                         <div className="flex flex-col items-center min-w-[50px]">
                           <span className="text-[10px] font-bold uppercase text-gray-500">{format(app.occDate, 'dd/MM')}</span>
@@ -541,13 +618,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                         </div>
                       </div>
                       <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
-                        <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                        <button onClick={(e) => { e.stopPropagation(); void toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
                           <CheckCircle2 size={14} />
                         </button>
                         <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
                           <Edit2 size={14} />
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                        <button onClick={(e) => { e.stopPropagation(); void handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -580,7 +657,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               .map(app => {
                 const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                 return (
-                  <div key={`app-${app.id}`} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5')}>
+                  <div key={occurrenceKey(app)} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5')}>
                     <div className='flex items-center gap-4'>
                       <div className='flex flex-col items-center justify-center bg-white/50 p-3 text-sm rounded-lg'>
                         <span className={cn('text-xs font-bold uppercase tracking-widest', config.text)}>{format(app.occDate, 'MMM', { locale: ptBR })}</span>
@@ -596,13 +673,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                       </div>
                     </div>
                     <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
-                      <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                      <button onClick={(e) => { e.stopPropagation(); void toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
                         <CheckCircle2 size={14} />
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
                         <Edit2 size={14} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                      <button onClick={(e) => { e.stopPropagation(); void handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -642,6 +719,18 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               <option value="Todo mês">Todo mês</option>
             </select>
           </div>
+          {selectedApptId && (() => {
+            const selectedAppointment = (state.personalAppointments || []).find(app => app.id === selectedApptId);
+            const nextReminder = selectedAppointment
+              ? getNextPersonalAppointmentOccurrence(selectedAppointment, new Date())
+              : null;
+            return nextReminder ? (
+              <div className="rounded-lg border border-clinic-border bg-clinic-bg p-3 text-xs text-clinic-text">
+                <span className="font-bold uppercase text-clinic-text-muted">Próximo lembrete</span>
+                <div className="mt-1 font-bold">{format(nextReminder.occurrenceDateTime, "dd/MM/yyyy 'às' HH:mm")}</div>
+              </div>
+            ) : null;
+          })()}
           <div>
             <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Observações</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full p-2 border rounded-lg h-20" placeholder="Detalhes opcionais..." />
@@ -785,8 +874,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
              </div>
           )}
           <div className="pt-2">
-            <button onClick={handleSave} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98]">
-              {selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
+            <button onClick={() => void handleSave()} disabled={isSaving} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98] disabled:cursor-wait disabled:opacity-60">
+              {isSaving ? 'Salvando...' : selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
             </button>
           </div>
         </div>
