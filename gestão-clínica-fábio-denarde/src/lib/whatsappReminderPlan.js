@@ -1,5 +1,6 @@
 import { findWhatsappReminderSuppression } from './whatsappReminderSuppressions.js';
 import { maskPhoneShort, normalizeBrazilianWhatsappPhone } from './whatsappPhone.js';
+import { isWhatsappAutomationBlocked } from '../../shared/whatsappSessionAutomation.js';
 
 export function formatPhoneNumber(phoneStr) {
   return normalizeBrazilianWhatsappPhone(phoneStr).chatId;
@@ -62,7 +63,7 @@ export function formatLocalDateStr(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function getFixedScheduleForDate(patient, dateStr) {
+function getFixedScheduleForDate(patient, dateStr, referenceDateStr = formatLocalDateStr(new Date())) {
   const history = patient.fixedScheduleHistory || [];
   const historicalSchedule = history.find(item =>
     item.effectiveFrom &&
@@ -79,8 +80,7 @@ function getFixedScheduleForDate(patient, dateStr) {
     };
   }
 
-  const todayStr = formatLocalDateStr(new Date());
-  if (!patient.fixedScheduleEffectiveFrom && history.length === 0 && dateStr < todayStr) {
+  if (!patient.fixedScheduleEffectiveFrom && history.length === 0 && dateStr < referenceDateStr) {
     return null;
   }
 
@@ -96,7 +96,13 @@ function getFixedScheduleForDate(patient, dateStr) {
   };
 }
 
-export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
+export function getSessionsForDate({
+  dateStr,
+  patients,
+  sessions,
+  settings,
+  referenceDateStr = formatLocalDateStr(new Date())
+}) {
   const processed = [];
 
   const dateObj = new Date(`${dateStr}T12:00:00`);
@@ -160,7 +166,7 @@ export function getSessionsForDate({ dateStr, patients, sessions, settings }) {
     for (const p of patients) {
       if (p.status !== 'Ativo') continue;
 
-      const fixedSchedule = getFixedScheduleForDate(p, dateStr);
+      const fixedSchedule = getFixedScheduleForDate(p, dateStr, referenceDateStr);
       if (!fixedSchedule?.fixedDay || !fixedSchedule.fixedTime) continue;
 
       const fixedDayNorm = normalizeStr(fixedSchedule.fixedDay).replace('-feira', '');
@@ -242,7 +248,8 @@ export function getWhatsappReminderPlan({
   patients,
   sessions,
   settings,
-  suppressions = []
+  suppressions = [],
+  referenceDateStr = formatLocalDateStr(new Date())
 }) {
   const scheduledTimeByType = {
     HOJE_MANHA: '06:30',
@@ -277,7 +284,13 @@ export function getWhatsappReminderPlan({
     };
   }
 
-  const daySessions = getSessionsForDate({ dateStr, patients, sessions, settings });
+  const daySessions = getSessionsForDate({
+    dateStr,
+    patients,
+    sessions,
+    settings,
+    referenceDateStr
+  });
   const reminders = [];
   const diagnostics = [];
   const candidates = [];
@@ -352,6 +365,27 @@ export function getWhatsappReminderPlan({
     const isSent = selectedMap.get(s.patientId).id === s.id;
 
     if (isSent) {
+      if (isWhatsappAutomationBlocked(s, { reminderType: tipo, phase: 'plan' })) {
+        diagnostics.push({
+          id: s.id,
+          patientId: s.patientId,
+          time: s.time,
+          patientName: patient.name,
+          guardianName: patient.guardianName,
+          responsibleName: patient.guardianName,
+          responsibleRelationship: getSelectedReminderContact(patient).responsibleRelationship,
+          phoneMasked: maskPhoneShort(patient.whatsapp),
+          whatsapp: patient.whatsapp,
+          type: s.type,
+          isVirtual: s.isVirtual,
+          isValid: false,
+          blockedReason: 'mensagem automática bloqueada na Agenda',
+          isSessionAutomationBlocked: true,
+          reminderType: tipo,
+        });
+        continue;
+      }
+
       const suppression = findWhatsappReminderSuppression({
         suppressions,
         patient,
@@ -399,6 +433,7 @@ export function getWhatsappReminderPlan({
         patientId: s.patientId,
         patientName: patient.name,
         guardianName: contact.guardianName,
+        responsibleId: patient.responsibleId || patient.guardianId || patient.responsibleUid || '',
         responsibleName: contact.responsibleName,
         responsibleRelationship: contact.responsibleRelationship,
         responsiblePhoneSource: contact.responsiblePhoneSource,
@@ -409,7 +444,9 @@ export function getWhatsappReminderPlan({
         timeFormatted,
         message,
         isVirtual: s.isVirtual,
-        type: s.type
+        type: s.type,
+        reminderType: tipo,
+        sessionAutomationControl: s.whatsappAutomationControl || null,
       });
     } else {
       diagnostics.push({
