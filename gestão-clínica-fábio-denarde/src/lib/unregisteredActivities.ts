@@ -1,5 +1,6 @@
 import type { AppState } from '../types';
 import type { ActivityRecord } from '../types/activityRecords';
+import type { ActivityGalleryStatusRecord } from '../types/activityGallery';
 import type { GooglePhotosAlbum } from '../types/googlePhotosAlbums';
 import type { UnregisteredActivityResult } from '../types/unregisteredActivities';
 import { buildActivityMediaPackageModel } from './activityMediaPackages';
@@ -77,7 +78,7 @@ export async function loadUnregisteredActivities(
     patientBundlesPromise,
   ]);
   const sessionsById = new Map(candidateSessions.map(session => [String(session.id), session]));
-  const activityRecords = registeredSessionIds.flatMap(sessionId => {
+  const activityRecords = registeredSessionIds.sessionIds.flatMap(sessionId => {
     const session = sessionsById.get(String(sessionId));
     if (!session) return [];
     return [{
@@ -94,6 +95,7 @@ export async function loadUnregisteredActivities(
     sessions: state.sessions,
     payments: state.payments,
     activityRecords,
+    activityUploadStatus: registeredSessionIds.statusRecords as ActivityGalleryStatusRecord[],
     googlePhotosAlbums,
     monitoringStart,
     now,

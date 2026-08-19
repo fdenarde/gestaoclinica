@@ -77,7 +77,7 @@ test('administrador pode redefinir senha temporária sem reativar bloqueios admi
   assert.match(resetFunction, /passwordCredentialBaselineAt: null/);
   assert.doesNotMatch(resetFunction, /disabled\s*:\s*false/);
   assert.match(accessClient, /action: 'resetDirectAccessPassword'/);
-  assert.match(admin, /Gerar nova senha/);
+  assert.match(admin, /Gerar senha temporária/);
   assert.doesNotMatch(admin, /window\.confirm/);
 });
 

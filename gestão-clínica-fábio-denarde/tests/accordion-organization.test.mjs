@@ -14,10 +14,16 @@ const gallerySource = fs.readFileSync(
   new URL('../src/components/GooglePhotosAlbums/ResponsibleGooglePhotosGallery.tsx', import.meta.url),
   'utf8',
 );
+const sessionProgressSource = fs.readFileSync(
+  new URL('../shared/responsiblePortalSessions.js', import.meta.url),
+  'utf8',
+);
 
 test('Sessões Agendadas usam accordion recolhido e ordenação decrescente por data real', () => {
-  assert.match(portalSource, /const sessionGroups = useMemo/);
-  assert.match(portalSource, /right\.sortKey\.localeCompare\(left\.sortKey\)/);
+  assert.match(portalSource, /const progress = useMemo/);
+  assert.match(portalSource, /progress\.visibleGroups\.map/);
+  assert.match(sessionProgressSource, /right\.sortKey\.localeCompare\(left\.sortKey\)/);
+  assert.match(sessionProgressSource, /right\.number - left\.number/);
   assert.match(portalSource, /<details/);
   assert.match(portalSource, /<summary/);
   assert.match(portalSource, /group-open:rotate-180/);

@@ -32,7 +32,7 @@ test('atalhos da Agenda convergem para a mesma galeria sem abrir o modal antigo'
 });
 
 test('atalho explícito transporta atendente e sessão e abre o card correto sob demanda', () => {
-  assert.match(appSource, /const openActivityGallery = \(patientId: string \| null = null, sessionId: string \| null = null\)/);
+  assert.match(appSource, /const openActivityGallery = \(\s*patientId: string \| null = null,\s*sessionId: string \| null = null/);
   assert.match(appSource, /setSelectedGalleryPatientId\(patientId\)/);
   assert.match(appSource, /setSelectedGallerySessionId\(sessionId\)/);
   assert.match(appSource, /initialPatientId=\{selectedGalleryPatientId\}/);

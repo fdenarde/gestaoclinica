@@ -1,6 +1,38 @@
+import { sessionAllowsActivity } from './sessionScheduling.js';
+
 export const ACTIVITY_MONITORING_TIME_ZONE = 'America/Sao_Paulo';
 export const ACTIVITY_UPLOAD_GRACE_HOURS = 24;
 export const ACTIVITY_UPLOAD_ESCALATION_HOURS = [48, 72];
+export const ACTIVITY_NO_MEDIA_REASON_OPTIONS = Object.freeze([
+  { code: 'responsible_accompanied', label: 'Responsável acompanhou a sessão' },
+  { code: 'activity_without_media', label: 'Atividade sem necessidade de mídia' },
+  { code: 'recording_not_authorized', label: 'Registro não autorizado' },
+  { code: 'professional_opted_out', label: 'Profissional optou por não registrar mídia' },
+  { code: 'no_recording_opportunity', label: 'Não houve oportunidade de registro' },
+  { code: 'technical_issue', label: 'Problema técnico que impossibilitou o registro' },
+  { code: 'other', label: 'Outro motivo' },
+]);
+
+const LEGACY_NO_MEDIA_REASON_MAP = Object.freeze({
+  'atividade sem registro visual': 'activity_without_media',
+  'responsável não autorizou': 'recording_not_authorized',
+  'sessão administrativa': 'activity_without_media',
+  'atendimento virtual': 'activity_without_media',
+  'mídia não produzida': 'activity_without_media',
+  'problema técnico': 'technical_issue',
+  'outro': 'other',
+});
+
+export function normalizeActivityJustificationReason(value) {
+  const normalized = String(value || '').trim().toLocaleLowerCase('pt-BR');
+  if (ACTIVITY_NO_MEDIA_REASON_OPTIONS.some(option => option.code === normalized)) return normalized;
+  return LEGACY_NO_MEDIA_REASON_MAP[normalized] || '';
+}
+
+export function getActivityJustificationReasonLabel(value) {
+  const normalized = normalizeActivityJustificationReason(value);
+  return ACTIVITY_NO_MEDIA_REASON_OPTIONS.find(option => option.code === normalized)?.label || 'Sem mídia';
+}
 
 function parseDateTimeValue(value) {
   if (!value) return null;
@@ -55,7 +87,7 @@ export function resolveActivityUploadState({ session, monitoringStart, statusRec
     !endAt
     || !deadlineAt
     || !monitoringStartAt
-    || String(session?.status || '') !== 'Realizada'
+    || !sessionAllowsActivity(session)
     || Boolean(session?.isBlocked)
     || endAt.getTime() < monitoringStartAt.getTime()
     || nowAt.getTime() < endAt.getTime()

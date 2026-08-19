@@ -3,6 +3,7 @@ import {
   isCountedAbsenceSession,
   sessionConsumesPackage,
 } from './sessionScheduling.js';
+import { getSaoPauloDateKey } from './clinicalDate.js';
 
 const DEFAULT_PACKAGE_SESSION_TOTAL = 10;
 const ACTIVE_PATIENT_STATUS = 'Ativo';
@@ -11,13 +12,6 @@ const SAFE_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 function normalizePlannedSessions(value) {
   const planned = Math.floor(Number(value) || 0);
   return planned > 0 ? planned : DEFAULT_PACKAGE_SESSION_TOTAL;
-}
-
-function localTodayIso(now = new Date()) {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function sessionSortKey(session = {}) {
@@ -35,7 +29,7 @@ export function isActivePackagePatient(patient = {}) {
 export function buildCurrentPackageSessionSummary(patient = {}, sessions = [], plannedSessions = DEFAULT_PACKAGE_SESSION_TOTAL, options = {}) {
   const planned = normalizePlannedSessions(plannedSessions);
   const patientId = String(patient.id || '');
-  const throughDate = String(options.throughDate || localTodayIso());
+  const throughDate = String(options.throughDate || getSaoPauloDateKey());
   const realizedSessions = dedupeSessionsByStableIdentity(sessions)
     .filter(session => (
       String(session?.patientId || '') === patientId

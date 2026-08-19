@@ -8,7 +8,7 @@ const financeSource = readFileSync(new URL('../src/components/Finance.tsx', impo
 test('gravação de pacientes remove valores undefined antes de enviar ao Firestore', () => {
   assert.match(
     appSource,
-    /syncCollection\('patients', state\.patients, newState\.patients, sanitizeForFirestore\)/,
+    /syncCollection\('patients', state\.patients, stateToPersist\.patients, sanitizeForFirestore\)/,
   );
 });
 

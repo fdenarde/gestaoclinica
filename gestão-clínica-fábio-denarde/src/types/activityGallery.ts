@@ -1,7 +1,15 @@
 import type { Patient, Session } from '../types';
 
 export type ActivityGallerySessionState = 'not_applicable' | 'waiting' | 'overdue' | 'sent' | 'excused';
-export type ActivityGalleryJustificationReason =
+export type ActivityGalleryJustificationReasonCode =
+  | 'responsible_accompanied'
+  | 'activity_without_media'
+  | 'recording_not_authorized'
+  | 'professional_opted_out'
+  | 'no_recording_opportunity'
+  | 'technical_issue'
+  | 'other';
+export type ActivityGalleryLegacyJustificationReason =
   | 'atividade sem registro visual'
   | 'responsável não autorizou'
   | 'sessão administrativa'
@@ -9,6 +17,9 @@ export type ActivityGalleryJustificationReason =
   | 'mídia não produzida'
   | 'problema técnico'
   | 'outro';
+export type ActivityGalleryJustificationReason =
+  | ActivityGalleryJustificationReasonCode
+  | ActivityGalleryLegacyJustificationReason;
 
 export interface ActivityGalleryJustification {
   active: boolean;

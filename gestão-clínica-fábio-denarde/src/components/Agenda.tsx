@@ -13,6 +13,7 @@ import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normaliz
 import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, getSessionPresentationStatus, isCompletedClinicalSession, mergeSessionSequenceSource, sessionAllowsActivity } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
 import { rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
+import { getSaoPauloDateKey } from '../../shared/clinicalDate.js';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
@@ -53,21 +54,131 @@ function buildAgendaSequenceSourceThroughDate({
   return mergeSessionSequenceSource(sessions, virtualSessions) as Session[];
 }
 
-const NO_REPLACEMENT_REASON_OPTIONS: Array<{ code: NoReplacementReasonCode; label: string; defaultObservation: string }> = [
+const NO_REPLACEMENT_REASON_OPTIONS: Array<{
+  code: NoReplacementReasonCode;
+  label: string;
+  defaultObservation: string;
+  requiresObservation: boolean;
+}> = [
   {
     code: 'late_notice_or_out_of_policy_cancellation',
     label: NO_REPLACEMENT_PORTAL_REASON,
     defaultObservation: NO_REPLACEMENT_DEFAULT_NOTE,
+    requiresObservation: false,
   },
   {
     code: 'no_show_without_notice',
     label: 'Ausência sem aviso',
     defaultObservation: '',
+    requiresObservation: false,
   },
   {
     code: 'contractual_no_replacement',
     label: 'Outro motivo previsto no contrato',
     defaultObservation: '',
+    requiresObservation: true,
+  },
+  {
+    code: 'notice_in_advance',
+    label: 'Aviso com antecedência',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'late_notice',
+    label: 'Aviso tardio',
+    defaultObservation: 'Aviso registrado fora do prazo habitual.',
+    requiresObservation: false,
+  },
+  {
+    code: 'same_day_cancellation',
+    label: 'Cancelamento no mesmo dia',
+    defaultObservation: 'Cancelamento registrado no mesmo dia.',
+    requiresObservation: false,
+  },
+  {
+    code: 'health_issue',
+    label: 'Problema de saúde',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'family_emergency',
+    label: 'Emergência familiar',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'transportation_issue',
+    label: 'Problema de transporte',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'school_commitment',
+    label: 'Compromisso escolar',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'professional_commitment',
+    label: 'Compromisso profissional',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'travel',
+    label: 'Viagem',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'schedule_conflict',
+    label: 'Conflito de agenda',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'online_technical_issue',
+    label: 'Problema técnico no atendimento online',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'professional_absence',
+    label: 'Falta do profissional',
+    defaultObservation: 'Ausência do profissional registrada.',
+    requiresObservation: false,
+  },
+  {
+    code: 'clinic_cancellation',
+    label: 'Cancelamento pela clínica',
+    defaultObservation: 'Cancelamento registrado pela clínica.',
+    requiresObservation: false,
+  },
+  {
+    code: 'prior_agreement',
+    label: 'Acordo prévio',
+    defaultObservation: 'Ausência previamente acordada.',
+    requiresObservation: false,
+  },
+  {
+    code: 'exceptionally_justified',
+    label: 'Outro motivo excepcionalmente justificado',
+    defaultObservation: '',
+    requiresObservation: true,
+  },
+  {
+    code: 'reason_not_informed',
+    label: 'Motivo não informado',
+    defaultObservation: '',
+    requiresObservation: false,
+  },
+  {
+    code: 'other',
+    label: 'Outro',
+    defaultObservation: '',
+    requiresObservation: true,
   },
 ];
 
@@ -90,7 +201,7 @@ function getStatusLabel(session: ProcessedSession): string {
       return 'Agendada';
     case 'Realizada': return 'Realizada';
     case 'Falta': return getSessionPresentationStatus(session);
-    case 'Falta.Prof': return 'Falta Prof.';
+    case 'Falta.Prof': return getSessionPresentationStatus(session);
     case 'Cancelada': return 'Cancelada';
     case 'Reposição': return 'Reposição';
     case 'late_cancellation_no_replacement': return getSessionPresentationStatus(session).toUpperCase();
@@ -155,7 +266,7 @@ const STATUS_LEGEND = [
 
 interface AgendaProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => Promise<void>;
+  onUpdate: (newState: Partial<AppState>) => Promise<boolean>;
   onNavigateToPatient?: (id: string) => void;
   onNavigateToPatientGallery?: (id: string, sessionId?: string) => void;
   currentUserName: string;
@@ -165,6 +276,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const scheduleSaveLockRef = useRef(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
 
@@ -186,6 +299,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   } | null>(null);
   const [isRescheduling, setIsRescheduling] = useState(false);
   const rescheduleLockRef = useRef(false);
+  const [isReopening, setIsReopening] = useState(false);
+  const reopenLockRef = useRef(false);
   const [noReplacementModal, setNoReplacementModal] = useState<{
     session: ProcessedSession;
     reasonCode: NoReplacementReasonCode;
@@ -205,8 +320,10 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
 // Reposition Modal State
   const [repoModal, setRepoModal] = useState<{ reposition: Reposition; patient: AppState['patients'][0]; originalSession: Session | null } | null>(null);
-  const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [repoDate, setRepoDate] = useState(getSaoPauloDateKey());
   const [repoTime, setRepoTime] = useState('');
+  const [isSavingReposition, setIsSavingReposition] = useState(false);
+  const repositionSaveLockRef = useRef(false);
 
   const repoAvailableTimes = useMemo(() => {
     const dayIndex = getDay(new Date(repoDate + 'T12:00:00'));
@@ -341,12 +458,18 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     return warnings;
   };
 
-  const saveGeneralNotes = (targetPatientId: string, value: string) => {
+  const saveGeneralNotes = async (targetPatientId: string, value: string) => {
     const updatedPatients = state.patients.map(patient =>
       patient.id === targetPatientId ? { ...patient, clinicalNotes: value } : patient
     );
-    onUpdate({ patients: updatedPatients });
-    showToast('Anotações gerais do paciente atualizadas.', 'success');
+    try {
+      const persisted = await onUpdate({ patients: updatedPatients });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast('Anotações gerais do paciente atualizadas.', 'success');
+    } catch (error) {
+      console.error('Falha ao atualizar anotações gerais:', error);
+      showToast('Não foi possível atualizar as anotações gerais.', 'error');
+    }
   };
 
   // ── Create real session from virtual ──────────────────────────
@@ -426,12 +549,13 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
     virtualActionLocksRef.current.add(actionKey);
     try {
-      await onUpdate({
+      const persisted = await onUpdate({
         sessions: [...state.sessions, result.session],
         ...(result.reposition
           ? { repositions: [...state.repositions, result.reposition] }
           : {}),
       });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast(successMessage);
       return true;
     } catch (error) {
@@ -471,7 +595,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       }
       virtualActionLocksRef.current.add(actionKey);
       try {
-        await onUpdate({ sessions: [...state.sessions, result.session] });
+        const persisted = await onUpdate({ sessions: [...state.sessions, result.session] });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
         targetSessionId = result.session.id;
       } catch (error) {
         virtualActionLocksRef.current.delete(actionKey);
@@ -515,7 +640,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const { session, reasonCode, observation, confirmedNoRealActivity, consumesPackage, isEditing } = noReplacementModal;
     const reasonText = getNoReplacementReasonLabel(reasonCode);
     const trimmedObservation = observation.trim();
-    if (!trimmedObservation) {
+    const reasonOption = NO_REPLACEMENT_REASON_OPTIONS.find(option => option.code === reasonCode);
+    if (reasonOption?.requiresObservation !== false && !trimmedObservation) {
       showToast('Informe a observação antes de registrar a falta sem reposição.', 'error');
       return;
     }
@@ -577,10 +703,13 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       });
       if (!result) {
         showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
+        noReplacementSaveLockRef.current = false;
+        setIsSavingNoReplacement(false);
         return;
       }
       try {
-        await onUpdate({ sessions: [...state.sessions, result.session] });
+        const persisted = await onUpdate({ sessions: [...state.sessions, result.session] });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
         showToast(consumesPackage ? 'Falta contabilizada sem reposição registrada.' : 'Falta não contabilizada sem reposição registrada.');
       } catch (error) {
         console.error('Falha ao registrar falta sem reposição:', error);
@@ -598,7 +727,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
           }
         : item);
       try {
-        await onUpdate({ sessions: updatedSessions });
+        const persisted = await onUpdate({ sessions: updatedSessions });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
         showToast(isEditing ? 'Contabilização da falta atualizada.' : (consumesPackage ? 'Falta contabilizada sem reposição registrada.' : 'Falta não contabilizada sem reposição registrada.'));
       } catch (error) {
         console.error('Falha ao registrar falta sem reposição:', error);
@@ -649,7 +779,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         s.id === session.id ? { ...s, status: SessionStatus.CANCELADA } : s
       );
       try {
-        await onUpdate({ sessions: updatedSessions });
+        const persisted = await onUpdate({ sessions: updatedSessions });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
         showToast('Sessão cancelada.');
       } catch (error) {
         console.error('Falha ao cancelar sessão:', error);
@@ -741,7 +872,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     rescheduleLockRef.current = true;
     setIsRescheduling(true);
     try {
-      await onUpdate({ sessions: result.sessions as Session[] });
+      const persisted = await onUpdate({ sessions: result.sessions as Session[] });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast(
         `Sessão reagendada para ${safeFormatDate(date, 'dd/MM/yyyy')} às ${normalizedTime}. A numeração do pacote foi preservada.`,
         'success',
@@ -762,8 +894,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     setSessionToDelete(session.id);
   };
 
-  const handleActionReopen = (session: ProcessedSession) => {
-    if (session.isVirtual) return;
+  const handleActionReopen = async (session: ProcessedSession) => {
+    if (session.isVirtual || reopenLockRef.current) return;
     const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [session]);
     const logicalSessionPosition = getSessionLogicalPosition(sequenceSource, session);
     const logicalSessionNumber = getSessionCycleNumber(sequenceSource, session);
@@ -797,9 +929,20 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         } : {}),
       };
     });
-    onUpdate({ sessions: updatedSessions });
-    showToast(`Sessão de ${state.patients.find(p => p.id === session.patientId)?.name} reaberta como Agendada.`);
-    setActionSession(null);
+    reopenLockRef.current = true;
+    setIsReopening(true);
+    try {
+      const persisted = await onUpdate({ sessions: updatedSessions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast(`Sessão de ${state.patients.find(p => p.id === session.patientId)?.name} reaberta como Agendada.`);
+      setActionSession(null);
+    } catch (error) {
+      console.error('Falha ao reabrir sessão:', error);
+      showToast('Não foi possível reabrir a sessão. O estado anterior foi preservado.', 'error');
+    } finally {
+      reopenLockRef.current = false;
+      setIsReopening(false);
+    }
   };
 
   // ── Existing handlers ─────────────────────────────────────────
@@ -807,13 +950,14 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const patient = state.patients.find(p => p.id === reposition.patientId);
     const originalSession = state.sessions.find(s => s.id === reposition.originalSessionId) ?? null;
     if (!patient) return;
-    const nextDate = format(new Date(), 'yyyy-MM-dd');
+    const nextDate = getSaoPauloDateKey();
     setRepoDate(nextDate);
     setRepoTime(patient.fixedTime || AVAILABLE_TIMES[0]);
     setRepoModal({ reposition, patient, originalSession });
   };
 
-  const handleConfirmReposition = () => {
+  const handleConfirmReposition = async () => {
+    if (repositionSaveLockRef.current) return;
     if (!repoModal || !repoDate || !repoTime) {
       showToast('Selecione a data e o horário para a reposição.', 'error');
       return;
@@ -837,9 +981,20 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const updatedRepositions = state.repositions.map(r =>
       r.id === reposition.id ? { ...r, status: 'Agendada' as const } : r
     );
-    onUpdate({ sessions: [...state.sessions, newSession], repositions: updatedRepositions });
-    showToast(`Reposição de ${patient.name} agendada para ${format(new Date(repoDate + 'T12:00:00'), 'dd/MM')} às ${repoTime}!`, 'success');
-    setRepoModal(null);
+    repositionSaveLockRef.current = true;
+    setIsSavingReposition(true);
+    try {
+      const persisted = await onUpdate({ sessions: [...state.sessions, newSession], repositions: updatedRepositions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast(`Reposição de ${patient.name} agendada para ${format(new Date(repoDate + 'T12:00:00'), 'dd/MM')} às ${repoTime}!`, 'success');
+      setRepoModal(null);
+    } catch (error) {
+      console.error('Falha ao agendar reposição:', error);
+      showToast('Não foi possível agendar a reposição. Nenhuma confirmação foi gravada.', 'error');
+    } finally {
+      repositionSaveLockRef.current = false;
+      setIsSavingReposition(false);
+    }
   };
 
   const weekDays = useMemo(() => {
@@ -849,7 +1004,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   const activeDays = weekDays.filter(d => [1, 2, 3, 4, 5, 6].includes(d.getDay()));
 
-  const todayDate = format(new Date(), 'yyyy-MM-dd');
+  const todayDate = getSaoPauloDateKey();
   const agendaSequenceSource = useMemo(() => buildAgendaSequenceSourceThroughDate({
     sessions: state.sessions,
     patients: state.patients,
@@ -866,8 +1021,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     setIsModalOpen(true);
   };
 
-  const handleSaveSession = () => {
-    if (!selectedSlot) return;
+  const handleSaveSession = async () => {
+    if (!selectedSlot || scheduleSaveLockRef.current) return;
 
     if (!isValidTime(selectedSlot.time)) {
       showToast('Por favor, insira um horário de atendimento válido no formato HH:00 ou HH:30 (ex: 17:30).', 'error');
@@ -893,10 +1048,21 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         isBlocked: true,
         blockName: notes.trim(),
       };
-      onUpdate({ sessions: [...state.sessions, blockedSession] });
-      showToast('Horário bloqueado com sucesso!');
-      setIsModalOpen(false);
-      resetForm();
+      scheduleSaveLockRef.current = true;
+      setIsSavingSchedule(true);
+      try {
+        const persisted = await onUpdate({ sessions: [...state.sessions, blockedSession] });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
+        showToast('Horário bloqueado com sucesso!');
+        setIsModalOpen(false);
+        resetForm();
+      } catch (error) {
+        console.error('Falha ao bloquear horário:', error);
+        showToast('Não foi possível bloquear o horário. Nenhuma confirmação foi gravada.', 'error');
+      } finally {
+        scheduleSaveLockRef.current = false;
+        setIsSavingSchedule(false);
+      }
       return;
     }
 
@@ -946,10 +1112,21 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       packageNumber: nextSessionNumber
     };
 
-    onUpdate({ sessions: [...state.sessions, newSession] });
-    showToast('Sessão agendada com sucesso!');
-    setIsModalOpen(false);
-    resetForm();
+    scheduleSaveLockRef.current = true;
+    setIsSavingSchedule(true);
+    try {
+      const persisted = await onUpdate({ sessions: [...state.sessions, newSession] });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast('Sessão agendada com sucesso!');
+      setIsModalOpen(false);
+      resetForm();
+    } catch (error) {
+      console.error('Falha ao agendar sessão:', error);
+      showToast('Não foi possível agendar a sessão. Nenhuma confirmação foi gravada.', 'error');
+    } finally {
+      scheduleSaveLockRef.current = false;
+      setIsSavingSchedule(false);
+    }
   };
 
   const markAsRealized = async (session: Session) => {
@@ -958,7 +1135,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     );
     const updatedRepositions = state.repositions.filter(r => !(r.originalSessionId === session.id && r.status === 'Pendente'));
     try {
-      await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      const persisted = await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
     } catch (error) {
       console.error('Falha ao registrar presença:', error);
@@ -997,7 +1175,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       status: 'Pendente'
     };
     try {
-      await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
+      const persisted = await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast('Falta registrada. Reposição pendente criada.');
       return true;
     } catch (error) {
@@ -1014,17 +1193,24 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const decidedBy = currentUserName || 'Profissional';
 
     if (isEditing) {
-      await onUpdate({
-        sessions: state.sessions.map(item => item.id === session.id
-          ? {
-              ...item,
-              consumesPackage,
-              packageConsumptionDecidedAt: decidedAt,
-              packageConsumptionDecidedBy: decidedBy,
-            }
-          : item),
-      });
-      showToast('Contabilização da falta atualizada.');
+      try {
+        const persisted = await onUpdate({
+          sessions: state.sessions.map(item => item.id === session.id
+            ? {
+                ...item,
+                consumesPackage,
+                packageConsumptionDecidedAt: decidedAt,
+                packageConsumptionDecidedBy: decidedBy,
+              }
+            : item),
+        });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
+        showToast('Contabilização da falta atualizada.');
+      } catch (error) {
+        console.error('Falha ao atualizar contabilização da falta:', error);
+        showToast('Não foi possível atualizar a contabilização da falta.', 'error');
+        return;
+      }
     } else if (session.isVirtual) {
       const saved = await persistVirtualAction(
         session,
@@ -1059,7 +1245,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       status: 'Pendente'
     };
     try {
-      await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
+      const persisted = await onUpdate({ sessions: updatedSessions, repositions: [...state.repositions, newReposition] });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast('Sua falta registrada. Reposição pendente criada.');
     } catch (error) {
       console.error('Falha ao registrar falta do profissional:', error);
@@ -1087,7 +1274,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const updatedRepositions = state.repositions.filter(r => r.originalSessionId !== sessionToDelete);
     setDeletingSession(true);
     try {
-      await onUpdate({ sessions: removal.sessions, repositions: updatedRepositions });
+      const persisted = await onUpdate({ sessions: removal.sessions, repositions: updatedRepositions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast('Sessão removida com sucesso.');
       setSessionToDelete(null);
     } catch (error) {
@@ -1226,6 +1414,22 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
     details.push(session.isBlocked ? 'Passe o mouse no botão Remover para excluir este bloqueio.' : 'Clique para abrir as ações rápidas deste horário.');
     return details.join('\n');
+  };
+
+  const handleRepositionContactResult = async (repositionId: string, result: 'aceitou' | 'recusou') => {
+    const updatedRepositions = state.repositions.map(reposition =>
+      reposition.id === repositionId
+        ? { ...reposition, status: 'Concluída' as const, contactDate: getSaoPauloDateKey(), result }
+        : reposition,
+    );
+    try {
+      const persisted = await onUpdate({ repositions: updatedRepositions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast(result === 'aceitou' ? 'Reposição marcada como aceita.' : 'Reposição marcada como recusada.');
+    } catch (error) {
+      console.error('Falha ao registrar retorno da reposição:', error);
+      showToast('Não foi possível registrar o retorno da reposição.', 'error');
+    }
   };
 
   return (
@@ -1457,7 +1661,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                                   )}
                                   {!isBlocked && session.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT && (
                                     <span className="mt-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-snug" style={{ backgroundColor: '#FFF4F4', color: '#A94444' }}>
-                                      Sessão {getSessionCycleNumber(agendaSequenceSource, session)} contabilizada no pacote.
+                                      {session.consumesPackage === true
+                                        ? `Sessão ${getSessionCycleNumber(agendaSequenceSource, session)} contabilizada no pacote.`
+                                        : session.consumesPackage === false
+                                          ? 'Sessão não consumida do pacote.'
+                                          : 'Falta sem decisão de pacote.'}
                                     </span>
                                   )}
 
@@ -1633,7 +1841,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                         <button
                           type="button"
                           onClick={() => {
-                            saveGeneralNotes(patient.id, actionGeneralNotesDraft);
+                            void saveGeneralNotes(patient.id, actionGeneralNotesDraft);
                             setIsEditingActionGeneralNotes(false);
                           }}
                           className="py-2 rounded-lg bg-clinic-primary text-white font-black uppercase tracking-wide text-[10px] hover:bg-clinic-primary-hover transition"
@@ -1777,11 +1985,12 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                       )}
                       <button
                         type="button"
-                        onClick={() => handleActionReopen(actionSession)}
+                        onClick={() => void handleActionReopen(actionSession)}
+                        disabled={isReopening}
                         className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
                       >
                         <span>↻</span>
-                        <span className="text-sm font-black uppercase tracking-wide">Reabrir como Agendada</span>
+                        <span className="text-sm font-black uppercase tracking-wide">{isReopening ? 'Reabrindo...' : 'Reabrir como Agendada'}</span>
                       </button>
                     </div>
                   )}
@@ -2059,13 +2268,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     <button
                       onClick={() => {
                         const reposition = state.repositions.find(r => r.patientId === patient?.id && r.status === 'Pendente');
-                        if (reposition) {
-                          const updatedRepositions = state.repositions.map(r =>
-                            r.id === reposition.id ? { ...r, status: 'Concluída' as const, contactDate: format(new Date(), 'yyyy-MM-dd'), result: 'aceitou' } : r
-                          );
-                          onUpdate({ repositions: updatedRepositions });
-                          showToast('Reposição marcada como aceita.');
-                        }
+                        if (reposition) void handleRepositionContactResult(reposition.id, 'aceitou');
                       }}
                       className="w-full mt-1 py-2 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 transition-all uppercase tracking-wide"
                     >
@@ -2074,13 +2277,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     <button
                       onClick={() => {
                         const reposition = state.repositions.find(r => r.patientId === patient?.id && r.status === 'Pendente');
-                        if (reposition) {
-                          const updatedRepositions = state.repositions.map(r =>
-                            r.id === reposition.id ? { ...r, status: 'Concluída' as const, contactDate: format(new Date(), 'yyyy-MM-dd'), result: 'recusou' } : r
-                          );
-                          onUpdate({ repositions: updatedRepositions });
-                          showToast('Reposição marcada como recusada.');
-                        }
+                        if (reposition) void handleRepositionContactResult(reposition.id, 'recusou');
                       }}
                       className="w-full mt-1 py-2 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 transition-all uppercase tracking-wide"
                     >
@@ -2212,8 +2409,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 Limpar seleção
               </button>
               <button 
-                onClick={handleSaveSession}
-                disabled={isBlockMode ? !notes.trim() : !patientId}
+                onClick={() => void handleSaveSession()}
+                disabled={isSavingSchedule || (isBlockMode ? !notes.trim() : !patientId)}
                 className={cn(
                   "py-3 text-white font-bold rounded-xl shadow-lg transition-all uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed text-xs",
                   isBlockMode
@@ -2221,7 +2418,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     : "bg-clinic-primary hover:bg-clinic-primary-hover"
                 )}
               >
-                {isBlockMode ? 'Bloquear Horário' : 'Confirmar Agendamento'}
+                {isSavingSchedule ? 'Gravando...' : (isBlockMode ? 'Bloquear Horário' : 'Confirmar Agendamento')}
               </button>
             </div>
           </div>
@@ -2281,7 +2478,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                     {getPatientRecentSessions(selectedPatient.id).length > 0 ? getPatientRecentSessions(selectedPatient.id).map(session => (
                       <div key={session.id} className="flex items-center justify-between gap-2 text-xs border border-clinic-border/60 rounded-lg px-2 py-1.5">
                         <span className="font-bold text-clinic-text">{safeFormatDate(session.date, 'dd/MM')} às {session.time}</span>
-                        <span className={cn("font-black uppercase text-[9px] px-1.5 py-0.5 rounded", getStatusBadgeStyle(session.status))}>{session.status}</span>
+                        <span className={cn("font-black uppercase text-[9px] px-1.5 py-0.5 rounded", getStatusBadgeStyle(session.status))}>{getSessionPresentationStatus(session)}</span>
                       </div>
                     )) : (
                       <p className="text-xs text-clinic-text-muted italic">Sem histórico recente registrado.</p>
@@ -2302,7 +2499,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   />
                   <button
                     type="button"
-                    onClick={() => saveGeneralNotes(selectedPatient.id, generalNotesDraft)}
+                    onClick={() => void saveGeneralNotes(selectedPatient.id, generalNotesDraft)}
                     className="w-full py-2 rounded-lg bg-clinic-bg border border-clinic-border text-clinic-primary font-black uppercase tracking-wide text-[10px] hover:bg-clinic-border/40 transition"
                   >
                     Salvar anotações gerais
@@ -2431,11 +2628,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 Cancelar
               </button>
               <button
-                onClick={handleConfirmReposition}
-                disabled={!repoDate || !repoTime}
+                onClick={() => void handleConfirmReposition()}
+                disabled={isSavingReposition || !repoDate || !repoTime}
                 className="px-4 py-2 bg-clinic-primary text-white font-bold rounded-lg shadow hover:bg-clinic-primary-hover transition-all uppercase tracking-wide text-xs disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Confirmar Reposição
+                {isSavingReposition ? 'Gravando...' : 'Confirmar Reposição'}
               </button>
             </div>
           </div>

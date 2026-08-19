@@ -305,7 +305,8 @@ test('Agenda expõe reagendamento, preserva o mesmo registro real e não grava o
   assert.match(agenda, /const agendaSequenceSource = useMemo/);
   assert.match(agenda, /getSessionCycleLabel\(agendaSequenceSource, session\)/);
   assert.match(agenda, /mergeSessionSequenceSource\(agendaSequenceSource, \[previewSession\]\)/);
-  assert.match(app, /setState\(previousState => \(\{ \.\.\.previousState, \.\.\.newState \}\)\)/);
+  assert.match(app, /const updateState = async \(newState: Partial<AppState>\): Promise<boolean>/);
+  assert.match(app, /await commitBatch\(\);\s*setState\(previousState => \(\{ \.\.\.previousState, \.\.\.stateToPersist \}\)\)/);
 });
 
 

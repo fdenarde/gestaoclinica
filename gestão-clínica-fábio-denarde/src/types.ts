@@ -7,6 +7,19 @@ import type { AppTheme } from './lib/theme';
 import type { ActivityMediaAuthorization } from './types/activityRecords';
 import type { PackageToleranceRecord } from './types/packageTolerance';
 
+export type PackageContractSource = 'explicit' | 'legacy_fallback';
+
+export interface PackageContractSnapshot {
+  packageNumber: number;
+  packageContractValue: number;
+  contractValue?: number;
+  source: PackageContractSource;
+  createdAt: string;
+  createdBy?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export enum PaymentModal {
   PIX_FULL = 'PADRÃO: Pix integral — R$1.000 antes da 1ª sessão',
   PARCELADO = 'ALTERNATIVA: Parcelado — R$500 antes da 1ª / R$500 na 5ª sessão'
@@ -30,7 +43,24 @@ export enum SessionType {
 export type NoReplacementReasonCode =
   | 'late_notice_or_out_of_policy_cancellation'
   | 'no_show_without_notice'
-  | 'contractual_no_replacement';
+  | 'contractual_no_replacement'
+  | 'notice_in_advance'
+  | 'late_notice'
+  | 'same_day_cancellation'
+  | 'health_issue'
+  | 'family_emergency'
+  | 'transportation_issue'
+  | 'school_commitment'
+  | 'professional_commitment'
+  | 'travel'
+  | 'schedule_conflict'
+  | 'online_technical_issue'
+  | 'professional_absence'
+  | 'clinic_cancellation'
+  | 'prior_agreement'
+  | 'exceptionally_justified'
+  | 'reason_not_informed'
+  | 'other';
 
 export interface SessionNoReplacementHistoryEntry {
   previousStatus: SessionStatus | string;
@@ -143,6 +173,7 @@ export interface Patient extends PatientRegistrationData {
   photoMimeType?: string;
   activityMediaAuthorization?: ActivityMediaAuthorization;
   packageTolerances?: PackageToleranceRecord[];
+  packageContracts?: PackageContractSnapshot[];
   lastExternalRegistrationUpdate?: string;
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;

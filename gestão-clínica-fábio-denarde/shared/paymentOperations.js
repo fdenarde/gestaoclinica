@@ -1,10 +1,10 @@
 import {
-  CLINIC_PACKAGE_VALUE,
   getActivatedPackageNumber,
   getPackagePaymentSummary,
   isPaymentActive,
 } from './packagePayments.js';
 import { getLatestPackageTolerance } from './packageTolerance.js';
+import { resolvePackageContract } from './packageContract.js';
 
 const PARTNER_SHARE_RATE = 0.2;
 
@@ -82,10 +82,12 @@ export function preparePaymentCreation({
   const date = requiredText(input.date, 'Data do pagamento').slice(0, 10);
   const nowDate = String(now).slice(0, 10);
   if (date > nowDate) throw new Error('A data do pagamento não pode estar no futuro.');
+  const packageValueResolver = currentPackageNumber => resolvePackageContract(patient, currentPackageNumber).contractValue;
 
   const activatedPackage = getActivatedPackageNumber(payments, {
     patientId,
     throughDate: nowDate,
+    packageValueResolver,
   });
   const toleranceRecord = getLatestPackageTolerance(patient, packageNumber);
   const hasExplicitTolerance = Boolean(toleranceRecord && toleranceRecord.status !== 'closed');
@@ -96,6 +98,7 @@ export function preparePaymentCreation({
     const previousSummary = getPackagePaymentSummary(payments, packageNumber - 1, {
       patientId,
       throughDate: nowDate,
+      packageValueResolver,
     });
     if (previousSummary.pendingAmount > 0 && !hasExplicitTolerance) {
       throw new Error('O pacote anterior ainda possui saldo pendente.');
@@ -104,6 +107,7 @@ export function preparePaymentCreation({
   const summary = getPackagePaymentSummary(payments, packageNumber, {
     patientId,
     throughDate: nowDate,
+    packageValueResolver,
   });
   if (amount > summary.pendingAmount) {
     throw new Error(`O valor ultrapassa o saldo pendente de R$ ${summary.pendingAmount.toFixed(2)}.`);
@@ -111,11 +115,10 @@ export function preparePaymentCreation({
   if (
     String(patient.paymentModal || '').includes('Parcelado')
     && (input.installment === '1ª parcela' || input.installment === '2ª parcela')
-    && amount > CLINIC_PACKAGE_VALUE / 2
+    && amount > summary.packageValue / 2
   ) {
     throw new Error('O valor ultrapassa o saldo permitido para esta parcela.');
   }
-
   const candidate = {
     patientId,
     packageNumber,

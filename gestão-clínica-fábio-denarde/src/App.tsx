@@ -712,6 +712,7 @@ export default function App() {
     );
     
     try {
+      let stateToPersist = newState;
       let batch = writeBatch(db);
       let opCount = 0;
 
@@ -763,39 +764,39 @@ export default function App() {
         }
       };
 
-      if (newState.settings) {
+      if (stateToPersist.settings) {
         if (!loadedCollectionsRef.current.has('settings')) {
           throw new Error('Gravação bloqueada: as configurações ainda não concluíram o primeiro carregamento.');
         }
-        await addOp(b => b.set(doc(collection(userDocRef, 'settings'), 'config'), newState.settings!));
+        await addOp(b => b.set(doc(collection(userDocRef, 'settings'), 'config'), stateToPersist.settings!));
       }
       
-      if (newState.patients) {
-        await syncCollection('patients', state.patients, newState.patients, sanitizeForFirestore);
+      if (stateToPersist.patients) {
+        await syncCollection('patients', state.patients, stateToPersist.patients, sanitizeForFirestore);
       }
       
-      if (newState.sessions) {
-        await syncCollection('sessions', state.sessions, newState.sessions);
+      if (stateToPersist.sessions) {
+        await syncCollection('sessions', state.sessions, stateToPersist.sessions);
       }
       
-      if (newState.payments) {
-        await syncCollection('payments', state.payments, newState.payments);
+      if (stateToPersist.payments) {
+        await syncCollection('payments', state.payments, stateToPersist.payments);
       }
       
-      if (newState.repositions) {
-        await syncCollection('repositions', state.repositions, newState.repositions);
+      if (stateToPersist.repositions) {
+        await syncCollection('repositions', state.repositions, stateToPersist.repositions);
       }
       
-      if (newState.expenses) {
-        await syncCollection('expenses', state.expenses, newState.expenses);
+      if (stateToPersist.expenses) {
+        await syncCollection('expenses', state.expenses, stateToPersist.expenses);
       }
       
-      if (newState.evolutions) {
-        await syncCollection('evolutions', state.evolutions, newState.evolutions);
+      if (stateToPersist.evolutions) {
+        await syncCollection('evolutions', state.evolutions, stateToPersist.evolutions);
       }
 
-      if (newState.personalAppointments) {
-        await syncCollection('agenda_pessoal', state.personalAppointments, newState.personalAppointments, a => ({
+      if (stateToPersist.personalAppointments) {
+        await syncCollection('agenda_pessoal', state.personalAppointments, stateToPersist.personalAppointments, a => ({
             id: a.id,
             data: a.date,
             hora: a.time,
@@ -812,13 +813,13 @@ export default function App() {
           }));
       }
 
-      if (newState.externalRegistrationForms) {
+      if (stateToPersist.externalRegistrationForms) {
         if (!loadedCollectionsRef.current.has('externalRegistrationForms')) {
           throw new Error('Gravação bloqueada: os formulários externos ainda não concluíram o primeiro carregamento.');
         }
         const collectionName = 'externalRegistrationForms';
         const currentItems: ExternalRegistrationForm[] = state.externalRegistrationForms || [];
-        const nextItems: ExternalRegistrationForm[] = newState.externalRegistrationForms;
+        const nextItems: ExternalRegistrationForm[] = stateToPersist.externalRegistrationForms;
         const currentMap = new Map<string, ExternalRegistrationForm>(currentItems.map(item => [item.id, item]));
         const nextMap = new Map<string, ExternalRegistrationForm>(nextItems.map(item => [item.id, item]));
         const colRef = collection(db, collectionName);
@@ -838,7 +839,7 @@ export default function App() {
 
       await commitBatch();
 
-      setState(previousState => ({ ...previousState, ...newState }));
+      setState(previousState => ({ ...previousState, ...stateToPersist }));
 
       if (activityGalleryRelevantChange && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {

@@ -9,6 +9,7 @@ import {
   getToleranceDisplayPackageNumber,
   resolvePackageTolerance,
 } from './packageTolerance.js';
+import { resolvePackageContract } from './packageContract.js';
 
 export const CLINIC_PARTNER_SHARE_RATE = 0.2;
 export const CLINIC_SESSIONS_PER_PACKAGE = 10;
@@ -37,10 +38,19 @@ export function calculateCanonicalPackageFinancialSummary({
   today = new Date(),
   activatedPackageNumber: suppliedActivatedPackageNumber,
   sessionConsumesPackageFn = sessionConsumesPackage,
+  packageContractResolver,
 } = {}) {
   if (!patient?.id) throw new Error('Paciente é obrigatório para calcular o pacote financeiro.');
 
   const throughDate = normalizeDateKey(today) || normalizeDateKey(new Date());
+  const resolveContract = typeof packageContractResolver === 'function'
+    ? packageContractResolver
+    : packageNumber => resolvePackageContract(patient, packageNumber);
+  const packageValueResolver = packageNumber => {
+    const resolved = resolveContract(packageNumber);
+    const value = Number(resolved?.contractValue ?? resolved?.packageContractValue);
+    return Number.isFinite(value) && value > 0 ? value : CLINIC_PACKAGE_VALUE;
+  };
   const completedSessions = (Array.isArray(sessions) ? sessions : [])
     .filter(session => (
       String(session?.patientId || '') === String(patient.id)
@@ -54,18 +64,21 @@ export function calculateCanonicalPackageFinancialSummary({
     : getActivatedPackageNumber(payments, {
       patientId: patient.id,
       throughDate,
+      packageValueResolver,
     });
   const temporaryAuthorizedPackageNumber = getTemporaryAuthorizedPackageNumber({
     patient,
     sessions,
     payments,
     now: today,
+    packageValueResolver,
   });
   const toleranceDisplayPackageNumber = getToleranceDisplayPackageNumber({
     patient,
     sessions,
     payments,
     now: today,
+    packageValueResolver,
   });
   const completedPackageNumber = completedSessions.length > 0
     ? Math.floor((completedSessions.length - 1) / CLINIC_SESSIONS_PER_PACKAGE) + 1
@@ -91,11 +104,13 @@ export function calculateCanonicalPackageFinancialSummary({
   const current = getPackagePaymentSummary(payments, packageNumber, {
     patientId: patient.id,
     throughDate,
+    packageValueResolver,
   });
   const previous = previousPackageNumber
     ? getPackagePaymentSummary(payments, previousPackageNumber, {
       patientId: patient.id,
       throughDate,
+      packageValueResolver,
     })
     : { payments: [] };
   const paidGross = current.paidAmount;
@@ -106,6 +121,7 @@ export function calculateCanonicalPackageFinancialSummary({
     packageNumber,
     now: today,
     sessionConsumesPackageFn,
+    packageValueResolver,
   });
   const packageHasStarted = currentPackageSessions.length > 0;
   const pendingGross = packageHasStarted || paidGross > 0 || packageTolerance.record
@@ -130,6 +146,8 @@ export function calculateCanonicalPackageFinancialSummary({
     ? current.payments[current.payments.length - 1]
     : null;
   const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0 || Boolean(packageTolerance.record);
+  const packageContract = resolveContract(packageNumber);
+  const contractValue = current.packageValue;
 
   let status = 'SEM MOVIMENTAÇÃO';
   if (hasCurrentPackage) {
@@ -163,9 +181,12 @@ export function calculateCanonicalPackageFinancialSummary({
       CLINIC_SESSIONS_PER_PACKAGE - currentPackageSessions.length,
       0,
     ),
-    grossExpected: CLINIC_PACKAGE_VALUE,
-    partnerShareExpected: CLINIC_PACKAGE_VALUE * CLINIC_PARTNER_SHARE_RATE,
-    netExpected: CLINIC_PACKAGE_VALUE * (1 - CLINIC_PARTNER_SHARE_RATE),
+    contractValue,
+    contractSource: packageContract?.source || 'legacy_fallback',
+    packageContract,
+    grossExpected: contractValue,
+    partnerShareExpected: contractValue * CLINIC_PARTNER_SHARE_RATE,
+    netExpected: contractValue * (1 - CLINIC_PARTNER_SHARE_RATE),
     paidGross,
     pendingGross,
     paidNet: paidGross * (1 - CLINIC_PARTNER_SHARE_RATE),

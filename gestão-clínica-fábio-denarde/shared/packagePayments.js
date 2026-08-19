@@ -77,6 +77,12 @@ function buildPackageAllocations(rawPayments, options = {}) {
   const normalizedPackageValue = Number(options.packageValue) > 0
     ? Number(options.packageValue)
     : CLINIC_PACKAGE_VALUE;
+  const resolvePackageValue = typeof options.packageValueResolver === 'function'
+    ? packageNumber => {
+      const resolved = Number(options.packageValueResolver(packageNumber));
+      return Number.isFinite(resolved) && resolved > 0 ? resolved : normalizedPackageValue;
+    }
+    : () => normalizedPackageValue;
   const payments = getEligiblePayments(rawPayments, options);
   const allocations = new Map();
   const paymentIdsByPackage = new Map();
@@ -95,7 +101,7 @@ function buildPackageAllocations(rawPayments, options = {}) {
     if (!packageNumber) continue;
     highestExplicitPackage = Math.max(highestExplicitPackage, packageNumber);
     const alreadyAllocated = allocations.get(packageNumber) || 0;
-    const available = Math.max(normalizedPackageValue - alreadyAllocated, 0);
+    const available = Math.max(resolvePackageValue(packageNumber) - alreadyAllocated, 0);
     addAllocation(
       packageNumber,
       Math.min(normalizePositiveAmount(payment.amount), available),
@@ -110,7 +116,7 @@ function buildPackageAllocations(rawPayments, options = {}) {
 
     while (remaining > 0) {
       const alreadyAllocated = allocations.get(packageNumber) || 0;
-      const available = Math.max(normalizedPackageValue - alreadyAllocated, 0);
+      const available = Math.max(resolvePackageValue(packageNumber) - alreadyAllocated, 0);
       const allocated = Math.min(remaining, available);
       addAllocation(packageNumber, allocated, payment);
       remaining -= allocated;
@@ -123,6 +129,7 @@ function buildPackageAllocations(rawPayments, options = {}) {
     allocations,
     paymentIdsByPackage,
     packageValue: normalizedPackageValue,
+    resolvePackageValue,
     highestExplicitPackage,
   };
 }
@@ -130,33 +137,38 @@ function buildPackageAllocations(rawPayments, options = {}) {
 export function getPackagePaymentSummary(rawPayments, packageNumber, options = {}) {
   const normalizedPackageNumber = normalizePackageNumber(packageNumber);
   const allocation = buildPackageAllocations(rawPayments, options);
+  const packageValue = normalizedPackageNumber
+    ? allocation.resolvePackageValue(normalizedPackageNumber)
+    : allocation.packageValue;
   const paidAmount = normalizedPackageNumber
-    ? Math.min(allocation.allocations.get(normalizedPackageNumber) || 0, allocation.packageValue)
+    ? Math.min(allocation.allocations.get(normalizedPackageNumber) || 0, packageValue)
     : 0;
   const ids = allocation.paymentIdsByPackage.get(normalizedPackageNumber) || new Set();
   const payments = allocation.payments.filter(payment => ids.has(String(payment.id || '')));
 
   return {
     packageNumber: normalizedPackageNumber,
-    packageValue: allocation.packageValue,
+    packageValue,
     paidAmount,
-    pendingAmount: Math.max(allocation.packageValue - paidAmount, 0),
+    pendingAmount: Math.max(packageValue - paidAmount, 0),
     payments,
     installments: payments,
-    isPaid: paidAmount >= allocation.packageValue,
-    financialStatus: paidAmount >= allocation.packageValue ? 'quitado' : 'pendente',
+    isPaid: paidAmount >= packageValue,
+    financialStatus: paidAmount >= packageValue ? 'quitado' : 'pendente',
   };
 }
 
 export function getActivatedPackageNumber(rawPayments, {
   patientId = '',
   packageValue = CLINIC_PACKAGE_VALUE,
+  packageValueResolver,
   allowLegacyFirstPackage = true,
   throughDate = todayDateKey(),
 } = {}) {
   const allocation = buildPackageAllocations(rawPayments, {
     patientId,
     packageValue,
+    packageValueResolver,
     throughDate,
   });
   const highestAllocatedPackage = [...allocation.allocations.entries()]

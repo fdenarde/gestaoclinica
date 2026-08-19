@@ -1,8 +1,13 @@
-import { Payment, Patient, Session } from '../types';
+import { Payment, Patient, Session, type PackageContractSnapshot } from '../types';
 import type { PackageToleranceResolution } from '../types/packageTolerance';
 import { calculateCanonicalPackageFinancialSummary } from '../../shared/packageFinancialSummary.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import { sessionConsumesPackage } from '../../shared/sessionScheduling.js';
+import {
+  normalizePackageContractValue,
+  resolvePackageContract,
+  upsertPackageContractSnapshot,
+} from '../../shared/packageContract.js';
 
 export const PACKAGE_GROSS_VALUE = 1000;
 export const PARTNER_SHARE_RATE = 0.2;
@@ -30,6 +35,15 @@ export interface PackageFinancialSummary {
   sessionsInCurrentPackage: number;
   completedSessionsInCurrentPackage: number;
   remainingSessionsInCurrentPackage: number;
+  contractValue: number;
+  contractSource: 'explicit' | 'legacy_fallback';
+  packageContract: PackageContractSnapshot | {
+    packageNumber: number;
+    packageContractValue: number;
+    contractValue: number;
+    source: 'legacy_fallback';
+    snapshot: null;
+  };
   grossExpected: number;
   partnerShareExpected: number;
   netExpected: number;
@@ -52,6 +66,29 @@ export function getPaymentPackageNumber(payment: Payment, _packageStarts: { pack
   return packageNumber > 0 ? packageNumber : 1;
 }
 
+export function resolvePatientPackageContract(patient: Patient, packageNumber: number) {
+  return resolvePackageContract(patient, packageNumber) as PackageFinancialSummary['packageContract'];
+}
+
+export function normalizePatientPackageContractValue(value: unknown): number {
+  return normalizePackageContractValue(value);
+}
+
+export function setPatientPackageContract(
+  patient: Patient,
+  input: {
+    packageNumber: number;
+    packageContractValue: number;
+    createdAt?: string;
+    createdBy?: string;
+    updatedAt?: string;
+    updatedBy?: string;
+    receivedAmount?: number;
+  },
+): Patient {
+  return upsertPackageContractSnapshot(patient, input) as Patient;
+}
+
 export function calculatePackageFinancialSummary(
   patient: Patient,
   sessions: Session[],
@@ -59,7 +96,11 @@ export function calculatePackageFinancialSummary(
   today = new Date(),
 ): PackageFinancialSummary {
   const patientPayments = payments.filter(payment => payment.patientId === patient.id);
-  const activatedPackageNumberAtPresent = getActivatedPackageNumber(patientPayments, { patientId: patient.id });
+  const packageValueResolver = (packageNumber: number) => resolvePatientPackageContract(patient, packageNumber).contractValue;
+  const activatedPackageNumberAtPresent = getActivatedPackageNumber(patientPayments, {
+    patientId: patient.id,
+    packageValueResolver,
+  });
   const calculationDate = [
     today.getFullYear(),
     String(today.getMonth() + 1).padStart(2, '0'),
@@ -73,7 +114,11 @@ export function calculatePackageFinancialSummary(
   ].join('-');
   const activatedPackageNumber = calculationDate === presentDate
     ? activatedPackageNumberAtPresent
-    : getActivatedPackageNumber(patientPayments, { patientId: patient.id, throughDate: calculationDate });
+    : getActivatedPackageNumber(patientPayments, {
+      patientId: patient.id,
+      throughDate: calculationDate,
+      packageValueResolver,
+    });
   const completedPackageNumber = Math.ceil(
     sessions.filter(session => (
       session.patientId === patient.id

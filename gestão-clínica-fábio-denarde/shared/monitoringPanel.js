@@ -1,6 +1,9 @@
 import { hasPersistedScheduleOccurrence, isSessionRemovedFromAgenda } from './sessionRemoval.js';
 import { buildCurrentPackageSessionSummary } from './sessionPackageSummary.js';
 import { sessionConsumesPackage } from './sessionScheduling.js';
+import { CLINICAL_TIME_ZONE, getSaoPauloDateKey } from './clinicalDate.js';
+
+export { CLINICAL_TIME_ZONE, getSaoPauloDateKey } from './clinicalDate.js';
 
 const CLOSED_PATIENT_STATUS = new Set(['Concluído', 'Concluido', 'Encerrado']);
 const DEFAULT_PACKAGE_SESSION_TOTAL = 10;
@@ -50,7 +53,13 @@ export function getCurrentPackageSessionCount(sessions = [], plannedSessions = D
   return realized === 0 ? 0 : (realized % planned || planned);
 }
 
-export function buildMonitoringPatientSummary(patient, sessions = [], activityCount = 0, plannedSessions = DEFAULT_PACKAGE_SESSION_TOTAL) {
+export function buildMonitoringPatientSummary(
+  patient,
+  sessions = [],
+  activityCount = 0,
+  plannedSessions = DEFAULT_PACKAGE_SESSION_TOTAL,
+  now = new Date(),
+) {
   const patientSessions = sessions
     .filter(session => String(session?.patientId || '') === String(patient?.id || '') && !session?.isBlocked)
     .sort((left, right) => `${left.date || ''}T${left.time || ''}`.localeCompare(`${right.date || ''}T${right.time || ''}`));
@@ -74,7 +83,7 @@ export function buildMonitoringPatientSummary(patient, sessions = [], activityCo
     progressPercentage: progress.percentage,
     progressLabel: progress.label,
     lastSession: realizedSessions.at(-1) || null,
-    nextSession: futureSessions.find(session => session.date >= new Date().toISOString().slice(0, 10)) || futureSessions[0] || null,
+    nextSession: futureSessions.find(session => session.date >= getSaoPauloDateKey(now)) || futureSessions[0] || null,
     status: patient?.status || 'Não informado',
     activityCount: Math.max(0, Math.floor(Number(activityCount) || 0)),
   };
@@ -107,7 +116,7 @@ export function filterMonitoringSummaries(summaries = [], filters = {}) {
 
 export function getSaoPauloWeekRange(now = new Date()) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
+    timeZone: CLINICAL_TIME_ZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -127,15 +136,6 @@ export function isDateWithinMonitoringWeek(date, weekRange) {
   return SAFE_DATE_PATTERN.test(value)
     && value >= weekRange.start
     && value <= weekRange.end;
-}
-
-export function getSaoPauloDateKey(now = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
 }
 
 function isMonitoringUpcomingSession(session, today) {
