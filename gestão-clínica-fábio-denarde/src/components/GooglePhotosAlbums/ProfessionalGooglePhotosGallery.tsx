@@ -30,6 +30,10 @@ import type {
   GooglePhotosAlbumCapabilities,
   GooglePhotosAlbumInput,
 } from '../../types/googlePhotosAlbums';
+import type {
+  ActivityGalleryJustificationReasonCode,
+  ActivityGalleryStatusRecord,
+} from '../../types/activityGallery';
 import {
   createGooglePhotosAlbum,
   listGooglePhotosAlbumPatientOptions,
@@ -37,10 +41,22 @@ import {
   listGooglePhotosAlbums,
   saveGooglePhotosAlbumPackage,
 } from '../../lib/googlePhotosAlbumsApi';
+import {
+  getActivityRecordErrorMessage,
+  getProfessionalActivityGallery,
+  removeActivitySessionNoMediaJustification,
+  saveActivitySessionNoMediaJustification,
+} from '../../lib/activityRecordsApi';
 import { buildActivityMediaPackageModel } from '../../lib/activityMediaPackages';
 import { buildEffectiveSessionHistory } from '../../lib/sessionSequence';
 import { safeFormatDate } from '../../lib/utils';
 import PatientPhoto from '../Common/PatientPhoto';
+import Modal from '../Common/Modal';
+import {
+  ACTIVITY_NO_MEDIA_REASON_OPTIONS,
+  getActivityJustificationReasonLabel,
+  resolveActivityUploadState,
+} from '../../../shared/activityGalleryStatus.js';
 import {
   buildGooglePhotosAlbumGroupKey,
   buildGooglePhotosAlbumPackageKey,
@@ -207,6 +223,14 @@ export default function ProfessionalGooglePhotosGallery({
   const [quickCreateCardId, setQuickCreateCardId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [activityStatusBySession, setActivityStatusBySession] = useState<Record<string, ActivityGalleryStatusRecord>>({});
+  const [activityMonitoringStart, setActivityMonitoringStart] = useState<string | null>(null);
+  const [activityStatusLoading, setActivityStatusLoading] = useState(false);
+  const [noMediaTarget, setNoMediaTarget] = useState<{ card: GooglePhotosAlbum; sessionId: string; status: ActivityGalleryStatusRecord | null } | null>(null);
+  const [noMediaReason, setNoMediaReason] = useState<ActivityGalleryJustificationReasonCode>('responsible_accompanied');
+  const [noMediaNote, setNoMediaNote] = useState('');
+  const [noMediaBusy, setNoMediaBusy] = useState(false);
+  const noMediaBusyRef = useRef(false);
   const savingRef = useRef(false);
   const creatingCardIdsRef = useRef(new Set<string>());
   const lastConfirmedSignatureRef = useRef('[]');
@@ -281,6 +305,51 @@ export default function ProfessionalGooglePhotosGallery({
   ), [currentPackageNumber, packageModel.packages]);
 
   useEffect(() => {
+    if (!selectedPatientId || !currentPackageNumber) {
+      setActivityStatusBySession({});
+      setActivityMonitoringStart(null);
+      return undefined;
+    }
+    let active = true;
+    setActivityStatusLoading(true);
+    void getProfessionalActivityGallery({
+      patientId: selectedPatientId,
+      status: 'all',
+      archive: 'all',
+      page: 1,
+      pageSize: 50,
+    })
+      .then(result => {
+        if (!active) return;
+          const records = result.items.flatMap(item => item.sessions);
+          setActivityMonitoringStart(result.monitoringStart);
+          setActivityStatusBySession(Object.fromEntries(
+            records
+            .filter(record => record.id)
+            .map(record => [record.id, {
+              sessionId: record.id,
+              patientId: record.patientId,
+              hasMedia: record.mediaCount > 0 || record.state === 'sent',
+              mediaCount: record.mediaCount,
+              lastUploadAt: record.lastUploadAt,
+              lastUploadedByUserId: '',
+              lastUploadedByName: '',
+              lastRecordId: '',
+              justification: record.justification,
+              updatedAt: null,
+            } satisfies ActivityGalleryStatusRecord]),
+        ));
+      })
+      .catch(() => {
+        // A status read failure must not block the existing Google Photos flow.
+      })
+      .finally(() => {
+        if (active) setActivityStatusLoading(false);
+      });
+    return () => { active = false; };
+  }, [currentPackageNumber, selectedPatientId]);
+
+  useEffect(() => {
     if (!selectedPatientId || availablePackageNumbers.length === 0) return;
     const requested = Number(initialPackageNumber || 0);
     if (requested > 0 && availablePackageNumbers.includes(requested)) {
@@ -344,6 +413,88 @@ export default function ProfessionalGooglePhotosGallery({
     () => creatableCards.find(card => card.id === quickCreateCardId) || null,
     [creatableCards, quickCreateCardId],
   );
+
+  const getCardSessionActivityStatus = (card: GooglePhotosAlbum, sessionId: string) => {
+    const statusRecord = activityStatusBySession[sessionId] || null;
+    const session = sessionSource.find(item => item.id === sessionId) || {
+      id: sessionId,
+      patientId: card.patientId,
+      date: card.activityDate,
+      time: card.sessionTime || '00:00',
+      status: 'Realizada',
+    } as Session;
+    const resolved = resolveActivityUploadState({
+      session,
+      monitoringStart: activityMonitoringStart,
+      statusRecord,
+      now: new Date(),
+    });
+    return {
+      statusRecord,
+      state: statusRecord?.hasMedia || statusRecord?.mediaCount > 0
+        ? 'sent'
+        : statusRecord?.justification?.active
+          ? 'excused'
+          : resolved.state,
+    } as const;
+  };
+
+  const openNoMediaEditor = (card: GooglePhotosAlbum, sessionId: string) => {
+    const statusRecord = activityStatusBySession[sessionId] || null;
+    setNoMediaTarget({ card, sessionId, status: statusRecord });
+    setNoMediaReason((statusRecord?.justification?.reason as ActivityGalleryJustificationReasonCode) || 'responsible_accompanied');
+    setNoMediaNote(statusRecord?.justification?.note || '');
+  };
+
+  const saveNoMediaJustification = async () => {
+    if (!noMediaTarget || noMediaBusyRef.current) return;
+    if (noMediaReason === 'other' && !noMediaNote.trim()) {
+      setError('Descreva o motivo selecionado como Outro motivo.');
+      return;
+    }
+    if (!window.confirm('Registrar esta sessão como SEM MÍDIA? A sessão clínica, o pacote e os pagamentos serão preservados.')) return;
+    noMediaBusyRef.current = true;
+    setNoMediaBusy(true);
+    setError('');
+    try {
+      const status = await saveActivitySessionNoMediaJustification({
+        patientId: noMediaTarget.card.patientId,
+        sessionId: noMediaTarget.sessionId,
+        reason: noMediaReason,
+        note: noMediaNote.trim(),
+      });
+      setActivityStatusBySession(current => ({ ...current, [noMediaTarget.sessionId]: status }));
+      setMessage(`Sessão registrada como SEM MÍDIA: ${getActivityJustificationReasonLabel(noMediaReason)}.`);
+      setNoMediaTarget(null);
+    } catch (caughtError) {
+      setError(getActivityRecordErrorMessage(caughtError));
+    } finally {
+      noMediaBusyRef.current = false;
+      setNoMediaBusy(false);
+    }
+  };
+
+  const removeNoMediaJustification = async () => {
+    if (!noMediaTarget?.status?.justification?.active || noMediaBusyRef.current) return;
+    if (!window.confirm('Remover o registro SEM MÍDIA e recalcular a pendência desta sessão?')) return;
+    noMediaBusyRef.current = true;
+    setNoMediaBusy(true);
+    setError('');
+    try {
+      const status = await removeActivitySessionNoMediaJustification({
+        patientId: noMediaTarget.card.patientId,
+        sessionId: noMediaTarget.sessionId,
+      });
+      setActivityStatusBySession(current => ({ ...current, [noMediaTarget.sessionId]: status }));
+      setMessage('Registro SEM MÍDIA removido. A pendência foi recalculada.');
+      setNoMediaTarget(null);
+    } catch (caughtError) {
+      setError(getActivityRecordErrorMessage(caughtError));
+    } finally {
+      noMediaBusyRef.current = false;
+      setNoMediaBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (quickCreateCardId && !creatableCards.some(card => card.id === quickCreateCardId)) {
@@ -1232,6 +1383,35 @@ export default function ProfessionalGooglePhotosGallery({
                     {hasValidLink && permissions.canRemove && <button type="button" onClick={() => clearCardLink(card)} className="rounded-xl border border-status-red-text/20 bg-status-red-bg p-2.5 text-status-red-text" aria-label="Remover vínculo"><Trash2 size={16} /></button>}
                   </div>
 
+                  {card.sessionIds.length > 0 && (
+                    <div className="mt-3 space-y-2 rounded-xl border border-purple-200 bg-purple-50/60 p-2.5">
+                      <p className="text-[10px] font-black uppercase tracking-wide text-purple-900">Registro de mídia da sessão</p>
+                      {card.sessionIds.map(sessionId => {
+                        const activityStatus = getCardSessionActivityStatus(card, sessionId);
+                        const justification = activityStatus.statusRecord?.justification;
+                        if (activityStatus.state === 'sent') {
+                          return <p key={sessionId} className="text-xs font-bold text-status-green-text">Mídia registrada para esta sessão.</p>;
+                        }
+                        if (activityStatus.state === 'excused' && justification?.active) {
+                          return (
+                            <div key={sessionId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-black text-purple-900">SEM MÍDIA · {getActivityJustificationReasonLabel(justification.reason)}</span>
+                              <button type="button" onClick={() => openNoMediaEditor(card, sessionId)} disabled={noMediaBusy} className="rounded-lg border border-purple-300 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase text-purple-900 disabled:opacity-50">Alterar motivo</button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div key={sessionId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className={`font-bold ${activityStatus.state === 'overdue' ? 'text-status-red-text' : 'text-purple-900'}`}>
+                              {activityStatusLoading ? 'Consultando estado da mídia...' : activityStatus.state === 'overdue' ? 'Mídia pendente em atraso.' : activityStatus.state === 'waiting' ? 'Mídia pendente dentro do prazo.' : 'Sem registro de mídia.'}
+                            </span>
+                            <button type="button" onClick={() => openNoMediaEditor(card, sessionId)} disabled={noMediaBusy} className="rounded-lg border border-purple-300 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase text-purple-900 disabled:opacity-50">Registrar sessão sem mídia</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {editing && (
                     <div className="mt-3 space-y-2 rounded-xl border border-clinic-border bg-white p-2.5">
                       <div className="grid gap-2 md:grid-cols-2">
@@ -1340,6 +1520,42 @@ export default function ProfessionalGooglePhotosGallery({
           <div><p className="font-black">Economia e privacidade</p><p className="mt-1">Cards vazios ficam apenas na tela. O salvamento grava um único documento do pacote e não carrega fotos, vídeos, miniaturas ou metadados remotos.</p></div>
         </div>
       </section>}
+
+      <Modal
+        isOpen={Boolean(noMediaTarget)}
+        onClose={() => !noMediaBusy && setNoMediaTarget(null)}
+        title="Registrar sessão sem mídia"
+        width="max-w-lg"
+        closeDisabled={noMediaBusy}
+      >
+        {noMediaTarget && (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-purple-200 bg-purple-50 px-3 py-3 text-sm text-purple-950">
+              <p className="font-black">{selectedPatientName} · {safeFormatDate(noMediaTarget.card.activityDate, 'dd/MM/yyyy')}</p>
+              <p className="mt-1 text-xs">Apenas a dimensão de mídia será atualizada. Sessão clínica, pacote e pagamentos permanecem intactos.</p>
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Motivo definitivo</span>
+              <select value={noMediaReason} onChange={event => setNoMediaReason(event.target.value as ActivityGalleryJustificationReasonCode)} disabled={noMediaBusy} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm font-bold text-clinic-text disabled:opacity-60">
+                {ACTIVITY_NO_MEDIA_REASON_OPTIONS.map(option => <option key={option.code} value={option.code}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Observação {noMediaReason === 'other' ? 'obrigatória' : 'opcional'}</span>
+              <textarea value={noMediaNote} onChange={event => setNoMediaNote(event.target.value)} disabled={noMediaBusy} maxLength={1000} className="min-h-28 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm text-clinic-text disabled:opacity-60" placeholder="Detalhe o contexto, se necessário." />
+            </label>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                {noMediaTarget.status?.justification?.active && <button type="button" onClick={() => void removeNoMediaJustification()} disabled={noMediaBusy} className="rounded-xl bg-status-red-bg px-3 py-2.5 text-[10px] font-black uppercase text-status-red-text disabled:opacity-50">Remover registro sem mídia</button>}
+              </div>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row">
+                <button type="button" onClick={() => setNoMediaTarget(null)} disabled={noMediaBusy} className="rounded-xl border border-clinic-border bg-white px-4 py-2.5 text-xs font-black uppercase text-clinic-text-muted disabled:opacity-50">Cancelar</button>
+                <button type="button" onClick={() => void saveNoMediaJustification()} disabled={noMediaBusy} className="rounded-xl bg-purple-700 px-4 py-2.5 text-xs font-black uppercase text-white disabled:opacity-50">{noMediaBusy ? 'Salvando...' : noMediaTarget.status?.justification?.active ? 'Alterar motivo' : 'Registrar sessão sem mídia'}</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

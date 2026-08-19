@@ -6,8 +6,9 @@ import { formatCurrency, cn, safeFormatDate } from '../lib/utils';
 import { addDays, format, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, startOfDay, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
+import PackageContractEditor from './Common/PackageContractEditor';
 import { showToast } from './Common/Toast';
-import { calculatePackageFinancialSummary, FinancialStatus, PACKAGE_GROSS_VALUE, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE, type PackageFinancialSummary } from '../lib/financePackages';
+import { calculatePackageFinancialSummary, FinancialStatus, PARTNER_SHARE_RATE, SESSIONS_PER_PACKAGE, normalizePatientPackageContractValue, resolvePatientPackageContract, setPatientPackageContract, type PackageFinancialSummary } from '../lib/financePackages';
 import { createPaymentOperationKey, preparePaymentCreation, preparePaymentVoid } from '../../shared/paymentOperations.js';
 import { isExpenseActive, isExpenseRealized, isPaymentActive, isPaymentReceived } from '../../shared/packagePayments.js';
 import type { PackageToleranceReasonCode } from '../types/packageTolerance';
@@ -34,6 +35,9 @@ type PaymentContext = {
   patientId: string;
   packageNumber: number;
   pendingGross: number;
+  contractValue: number;
+  contractSource: 'explicit' | 'legacy_fallback';
+  requiresExplicitContract: boolean;
 } | null;
 
 const badgeToneClasses: Record<MetricBadgeTone, string> = {
@@ -174,6 +178,21 @@ function FinancialStatusBadge({ status }: { status: FinancialStatus }) {
   );
 }
 
+function targetPackageNeedsNewContract(summary: PackageFinancialSummary, targetPackageNumber: number): boolean {
+  if (targetPackageNumber > summary.packageNumber) return true;
+  return targetPackageNumber === summary.packageNumber
+    && summary.paidGross <= 0
+    && summary.currentPackageSessions.length === 0
+    && summary.currentPackagePayments.length === 0
+    && summary.contractSource === 'legacy_fallback';
+}
+
+function suggestedPaymentAmount(contractValue: number, paidGross: number, installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral') {
+  const pending = Math.max(contractValue - paidGross, 0);
+  if (installment === 'Pagamento integral') return pending;
+  return Math.min(contractValue / 2, pending);
+}
+
 export default function Finance({ state, onUpdate, currentUserName }: FinanceProps) {
   const [viewMode, setViewMode] = useState<'Receitas' | 'Despesas'>('Receitas');
   
@@ -196,6 +215,8 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
   const [toleranceExpiresAt, setToleranceExpiresAt] = useState(format(addDays(new Date(), 5), 'yyyy-MM-dd'));
   const [toleranceMaxSessions, setToleranceMaxSessions] = useState(DEFAULT_TOLERANCE_MAX_SESSIONS);
   const [isSavingTolerance, setIsSavingTolerance] = useState(false);
+  const [packageContractEditor, setPackageContractEditor] = useState<{ patientId: string; packageNumber: number } | null>(null);
+  const [isSavingPackageContract, setIsSavingPackageContract] = useState(false);
 
   // Period Filter State
   const [periodFilter, setPeriodFilter] = useState<'Semanal' | 'Mensal' | 'Anual' | 'Personalizado'>('Mensal');
@@ -205,6 +226,7 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
   // Payment Form State
   const [patientId, setPatientId] = useState('');
   const [amount, setAmount] = useState<number>(0);
+  const [packageContractValueInput, setPackageContractValueInput] = useState('');
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [installment, setInstallment] = useState<'1ª parcela' | '2ª parcela' | 'Pagamento integral'>('Pagamento integral');
   const [method, setMethod] = useState<'Pix' | 'Dinheiro' | 'Transferência' | 'Outro'>('Pix');
@@ -399,28 +421,35 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
         ? summary.packageNumber + 1
         : summary.packageNumber;
       const targetPaidGross = targetPackageNumber === summary.packageNumber ? summary.paidGross : 0;
-      const targetPendingGross = targetPackageNumber === summary.packageNumber ? summary.pendingGross : PACKAGE_GROSS_VALUE;
+      const targetContract = resolvePatientPackageContract(summary.patient, targetPackageNumber);
+      const requiresExplicitContract = targetPackageNeedsNewContract(summary, targetPackageNumber);
+      const targetPendingGross = targetPackageNumber === summary.packageNumber
+        ? summary.pendingGross
+        : targetContract.contractValue;
       const isInstallmentPlan = summary.patient.paymentModal === PaymentModal.PARCELADO;
-      const firstInstallmentTarget = PACKAGE_GROSS_VALUE / 2;
+      const firstInstallmentTarget = targetContract.contractValue / 2;
       const suggestedInstallment = isInstallmentPlan
         ? targetPaidGross < firstInstallmentTarget ? '1ª parcela' : '2ª parcela'
         : 'Pagamento integral';
-      const suggestedAmount = isInstallmentPlan
-        ? targetPaidGross < firstInstallmentTarget
-          ? Math.max(firstInstallmentTarget - targetPaidGross, 0)
-          : Math.max(PACKAGE_GROSS_VALUE - targetPaidGross, 0)
-        : targetPendingGross;
+      const suggestedAmount = requiresExplicitContract && targetContract.source === 'legacy_fallback'
+        ? 0
+        : suggestedPaymentAmount(targetContract.contractValue, targetPaidGross, suggestedInstallment);
 
       setPaymentContext({
         patientId: summary.patient.id,
         packageNumber: targetPackageNumber,
         pendingGross: targetPendingGross,
+        contractValue: targetContract.contractValue,
+        contractSource: targetContract.source,
+        requiresExplicitContract,
       });
       setPatientId(summary.patient.id);
+      setPackageContractValueInput(targetContract.source === 'explicit' ? String(targetContract.contractValue) : '');
       setAmount(suggestedAmount);
       setInstallment(suggestedInstallment);
     } else {
       setPaymentContext(null);
+      setPackageContractValueInput('');
     }
 
     setIsPaymentModalOpen(true);
@@ -443,6 +472,40 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
     setTolerancePromisedDate(existing?.promisedPaymentDate || defaultDate);
     setToleranceExpiresAt(existing?.expiresAt || defaultDate);
     setToleranceMaxSessions(existing?.maxSessions || DEFAULT_TOLERANCE_MAX_SESSIONS);
+  };
+
+  const openPackageContractEditor = (summary: PackageFinancialSummary) => {
+    setPackageContractEditor({ patientId: summary.patient.id, packageNumber: summary.packageNumber });
+  };
+
+  const handleSavePackageContract = async (packageContractValue: number) => {
+    if (!packageContractEditor || isSavingPackageContract) return;
+    const patient = state.patients.find(item => item.id === packageContractEditor.patientId);
+    const summary = patientFinancials.find(item => item.patient.id === packageContractEditor.patientId && item.packageNumber === packageContractEditor.packageNumber);
+    if (!patient || !summary) throw new Error('O pacote financeiro selecionado não está mais disponível.');
+
+    setIsSavingPackageContract(true);
+    try {
+      const now = new Date().toISOString();
+      const updatedPatient = setPatientPackageContract(patient, {
+        packageNumber: packageContractEditor.packageNumber,
+        packageContractValue,
+        receivedAmount: summary.paidGross,
+        updatedAt: now,
+        updatedBy: currentUserName || 'Profissional',
+        createdBy: currentUserName || 'Profissional',
+      });
+      const persisted = await onUpdate({
+        patients: state.patients.map(item => item.id === patient.id ? updatedPatient : item),
+      });
+      if (persisted !== true) {
+        throw new Error('O valor contratado não foi gravado. Nenhuma alteração foi confirmada no cadastro do atendente.');
+      }
+      showToast(`Valor contratado do Pacote ${packageContractEditor.packageNumber} salvo com sucesso.`);
+      setPackageContractEditor(null);
+    } finally {
+      setIsSavingPackageContract(false);
+    }
   };
 
   const closeToleranceModal = () => {
@@ -543,6 +606,28 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
       showToast('Atendente não encontrado.', 'error');
       return;
     }
+    const selectedContract = resolvePatientPackageContract(selectedPatient, targetPackageNumber);
+    const selectedSummaryForContract = selectedSummary || null;
+    const requiresExplicitContract = selectedSummaryForContract
+      ? targetPackageNeedsNewContract(selectedSummaryForContract, targetPackageNumber)
+      : selectedContract.source === 'legacy_fallback';
+    const enteredContractValue = normalizePatientPackageContractValue(packageContractValueInput);
+    if (requiresExplicitContract && !enteredContractValue) {
+      showToast('Informe um valor contratado positivo para este novo pacote.', 'error');
+      return;
+    }
+    if (packageContractValueInput.trim() && !enteredContractValue) {
+      showToast('O valor contratado deve ser finito e maior que zero.', 'error');
+      return;
+    }
+    const patientWithContract = enteredContractValue && selectedContract.source === 'legacy_fallback'
+      ? setPatientPackageContract(selectedPatient, {
+        packageNumber: targetPackageNumber,
+        packageContractValue: enteredContractValue,
+        createdBy: currentUserName || 'Profissional',
+        createdAt: new Date().toISOString(),
+      })
+      : selectedPatient;
     const patientName = selectedPatient.name || 'Atendente';
     if (paymentContext && !window.confirm(
       `Confirmar pagamento real de ${formatCurrency(amount)} para ${patientName}, Pacote ${targetPackageNumber}, em ${safeFormatDate(date, 'dd/MM/yyyy')} via ${method}?`
@@ -554,7 +639,7 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
     setIsSavingPayment(true);
     try {
       const prepared = preparePaymentCreation({
-        patient: selectedPatient,
+        patient: patientWithContract,
         sessions: state.sessions,
         payments: state.payments,
         expenses: state.expenses || [],
@@ -563,7 +648,7 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
         actor: currentUserName || 'Profissional',
         now: new Date().toISOString(),
       });
-      const patientAfterPayment = endPackageToleranceAfterPayment(selectedPatient, {
+      const patientAfterPayment = endPackageToleranceAfterPayment(patientWithContract, {
         packageNumber: targetPackageNumber,
         actor: currentUserName || 'Profissional',
         now: new Date(),
@@ -627,13 +712,35 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
   };
 
   const resetPaymentForm = () => {
-    setPatientId(''); setAmount(0); setDate(format(new Date(), 'yyyy-MM-dd'));
+    setPatientId(''); setAmount(0); setPackageContractValueInput(''); setDate(format(new Date(), 'yyyy-MM-dd'));
     setInstallment('Pagamento integral'); setMethod('Pix');
   };
 
   const resetExpenseForm = () => {
     setExpenseDesc(''); setExpenseAmount(0); setExpenseDate(format(new Date(), 'yyyy-MM-dd')); setExpenseCategory('Outro');
   };
+
+  const selectedPaymentSummary = patientFinancials.find(summary => summary.patient.id === patientId) || null;
+  const selectedPaymentTargetPackageNumber = paymentContext?.patientId === patientId
+    ? paymentContext.packageNumber
+    : selectedPaymentSummary?.hasNewPackageWithoutPayment && selectedPaymentSummary.pendingGross <= 0
+      ? selectedPaymentSummary.packageNumber + 1
+      : selectedPaymentSummary?.packageNumber || 1;
+  const selectedPaymentPatient = state.patients.find(item => item.id === patientId) || null;
+  const selectedPaymentContract = selectedPaymentPatient
+    ? resolvePatientPackageContract(selectedPaymentPatient, selectedPaymentTargetPackageNumber)
+    : null;
+  const selectedPaymentRequiresExplicitContract = paymentContext?.patientId === patientId
+    ? paymentContext.requiresExplicitContract
+    : selectedPaymentSummary
+      ? targetPackageNeedsNewContract(selectedPaymentSummary, selectedPaymentTargetPackageNumber)
+      : Boolean(selectedPaymentContract?.source === 'legacy_fallback');
+  const contractEditorPatient = packageContractEditor
+    ? state.patients.find(item => item.id === packageContractEditor.patientId) || null
+    : null;
+  const contractEditorSummary = packageContractEditor
+    ? patientFinancials.find(item => item.patient.id === packageContractEditor.patientId && item.packageNumber === packageContractEditor.packageNumber) || null
+    : null;
 
   return (
     <div className="flex flex-col gap-6 py-6">
@@ -889,7 +996,7 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
                   <h2 className="text-xl font-bold">Situação por Atendente ({periodFilter})</h2>
                 </div>
                 <p className="max-w-4xl rounded-xl border border-clinic-border bg-clinic-bg/60 px-3 py-2 text-[13px] leading-relaxed text-clinic-text-muted">
-                  A situação financeira considera pendências reais do pacote atual ou parcelas abertas. A ausência de pagamento no período não gera pendência automaticamente. Pacotes anteriores quitados permanecem apenas como histórico. O status usa o valor bruto do pacote ({formatCurrency(PACKAGE_GROSS_VALUE)}); métricas de saldo descontam o repasse de {Math.round(PARTNER_SHARE_RATE * 100)}% da sócia.
+                  A situação financeira considera pendências reais do pacote atual ou parcelas abertas. A ausência de pagamento no período não gera pendência automaticamente. Pacotes anteriores quitados permanecem apenas como histórico. O status usa o snapshot do valor contratado do pacote; quando não há snapshot, aplica apenas fallback operacional legado. Métricas de saldo descontam o repasse de {Math.round(PARTNER_SHARE_RATE * 100)}% da sócia.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2 lg:justify-end">
@@ -986,6 +1093,13 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
                               <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Valores do pacote</p>
                               <p className="mt-1 text-sm font-black text-clinic-text">{formatCurrency(item.grossExpected)} bruto</p>
                               <p className="text-xs text-clinic-text-muted">Repasse previsto: {formatCurrency(item.partnerShareExpected)} · Líquido: {formatCurrency(item.netExpected)}</p>
+                              <button
+                                type="button"
+                                onClick={() => openPackageContractEditor(item)}
+                                className="mt-3 w-full rounded-lg border border-clinic-primary/25 bg-clinic-primary/5 px-3 py-2 text-left text-[11px] font-black text-clinic-primary transition-colors hover:bg-clinic-primary/10"
+                              >
+                                {item.contractSource === 'legacy_fallback' ? 'Definir valor contratado' : 'Alterar valor contratado'}
+                              </button>
                             </div>
                             <div className="rounded-xl bg-white p-3 border border-clinic-border">
                               <p className="text-[10px] font-black uppercase tracking-wider text-clinic-text-faint">Pago no pacote atual</p>
@@ -1388,6 +1502,36 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
               </p>
             )}
           </div>
+          {patientId && selectedPaymentContract && (
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-bold text-clinic-text-faint">Valor contratado do pacote (R$)</label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={packageContractValueInput}
+                disabled={!selectedPaymentRequiresExplicitContract || selectedPaymentContract.source === 'explicit'}
+                placeholder={selectedPaymentContract.source === 'legacy_fallback' ? 'Obrigatório para pacote novo' : undefined}
+                onChange={event => {
+                  const value = event.target.value;
+                  setPackageContractValueInput(value);
+                  const normalized = normalizePatientPackageContractValue(value);
+                  if (normalized > 0 && selectedPaymentSummary) {
+                    const paid = selectedPaymentTargetPackageNumber === selectedPaymentSummary.packageNumber ? selectedPaymentSummary.paidGross : 0;
+                    setAmount(suggestedPaymentAmount(normalized, paid, installment));
+                  }
+                }}
+                className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all disabled:cursor-not-allowed disabled:opacity-70"
+              />
+              <p className="text-xs text-clinic-text-muted">
+                {selectedPaymentContract.source === 'legacy_fallback'
+                  ? selectedPaymentRequiresExplicitContract
+                    ? 'Defina o valor positivo deste novo pacote. O fallback legado não será gravado como histórico.'
+                    : `Sem snapshot explícito; fallback operacional de ${formatCurrency(selectedPaymentContract.contractValue)}.`
+                  : `Snapshot explícito do Pacote ${selectedPaymentContract.packageNumber}; o histórico não será reescrito.`}
+              </p>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
              <div className="flex flex-col gap-1">
               <label className="text-sm font-bold text-clinic-text-faint">Valor (R$)</label>
@@ -1401,7 +1545,13 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
           <div className="grid grid-cols-2 gap-4">
              <div className="flex flex-col gap-1">
               <label className="text-sm font-bold text-clinic-text-faint">Parcela</label>
-              <select value={installment} onChange={e => setInstallment(e.target.value as any)} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none">
+              <select value={installment} onChange={e => {
+                const nextInstallment = e.target.value as '1ª parcela' | '2ª parcela' | 'Pagamento integral';
+                setInstallment(nextInstallment);
+                const contractValue = normalizePatientPackageContractValue(packageContractValueInput) || selectedPaymentContract?.contractValue || 0;
+                const paid = selectedPaymentSummary && selectedPaymentTargetPackageNumber === selectedPaymentSummary.packageNumber ? selectedPaymentSummary.paidGross : 0;
+                if (contractValue > 0) setAmount(suggestedPaymentAmount(contractValue, paid, nextInstallment));
+              }} className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none">
                 <option value="Pagamento integral">Pagamento integral</option><option value="1ª parcela">1ª parcela</option><option value="2ª parcela">2ª parcela</option>
               </select>
             </div>
@@ -1414,12 +1564,25 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
           </div>
           {amount > 0 && (
             <div className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border text-sm text-clinic-text-muted">
-              Repasse automático para sócia: <span className="font-bold text-clinic-text">{formatCurrency(amount * 0.2)}</span>
+              Repasse automático para sócia: <span className="font-bold text-clinic-text">{formatCurrency(amount * PARTNER_SHARE_RATE)}</span>
             </div>
           )}
           <button onClick={handleSavePayment} disabled={!patientId || amount <= 0 || isSavingPayment} className="w-full py-4 bg-clinic-primary text-white font-bold rounded-xl shadow-xl hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm disabled:opacity-50">{isSavingPayment ? 'Registrando...' : 'Confirmar Recebimento'}</button>
         </div>
       </Modal>
+
+      {contractEditorPatient && contractEditorSummary && packageContractEditor && (
+        <PackageContractEditor
+          isOpen={true}
+          patientName={contractEditorPatient.name}
+          packageNumber={contractEditorSummary.packageNumber}
+          currentContract={resolvePatientPackageContract(contractEditorPatient, contractEditorSummary.packageNumber)}
+          receivedAmount={contractEditorSummary.paidGross}
+          isSaving={isSavingPackageContract}
+          onClose={() => setPackageContractEditor(null)}
+          onSave={handleSavePackageContract}
+        />
+      )}
 
       <Modal isOpen={!!expenseToDelete} onClose={() => setExpenseToDelete(null)} title="Confirmar Exclusão" width="max-w-md">
         <div className="space-y-6">

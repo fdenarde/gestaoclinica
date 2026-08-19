@@ -34,8 +34,12 @@ const activityGalleryCache = new Map<string, TimedCacheEntry<ProfessionalActivit
 const activityGalleryInFlight = new Map<string, Promise<ProfessionalActivityGalleryResponse>>();
 let activityGallerySummaryCache: (TimedCacheEntry<ProfessionalActivityGalleryResponse> & { scope: string }) | null = null;
 let activityGallerySummaryInFlight: { scope: string; request: Promise<ProfessionalActivityGalleryResponse> } | null = null;
-let activityMediaPresenceCache: (TimedCacheEntry<string[]> & { scope: string; signature: string }) | null = null;
-let activityMediaPresenceInFlight: { scope: string; signature: string; request: Promise<string[]> } | null = null;
+export interface ActivityMediaPresenceResult {
+  sessionIds: string[];
+  statusRecords: ActivityGalleryStatusRecord[];
+}
+let activityMediaPresenceCache: (TimedCacheEntry<ActivityMediaPresenceResult> & { scope: string; signature: string }) | null = null;
+let activityMediaPresenceInFlight: { scope: string; signature: string; request: Promise<ActivityMediaPresenceResult> } | null = null;
 
 export const ACTIVITY_RECORDS_CHANGED_EVENT = 'activity-records:changed';
 export const ACTIVITY_GALLERY_CHANGED_EVENT = 'activity-gallery:changed';
@@ -1023,14 +1027,14 @@ function activityMediaPresenceSignature(sessions: Array<{ sessionId?: string; id
 export async function listActivityMediaPresence(
   sessions: Array<{ sessionId?: string; id?: string; patientId: string }>,
   options: { force?: boolean } = {},
-): Promise<string[]> {
+): Promise<ActivityMediaPresenceResult> {
   const normalizedSessions = (Array.isArray(sessions) ? sessions : [])
     .map(item => ({
       sessionId: String(item.sessionId || item.id || '').trim(),
       patientId: String(item.patientId || '').trim(),
     }))
     .filter(item => item.sessionId && item.patientId);
-  if (normalizedSessions.length === 0) return [];
+  if (normalizedSessions.length === 0) return { sessionIds: [], statusRecords: [] };
 
   const scope = currentActivityUserScope();
   const signature = activityMediaPresenceSignature(normalizedSessions);
@@ -1051,18 +1055,20 @@ export async function listActivityMediaPresence(
     return activityMediaPresenceInFlight.request;
   }
 
-  const request = post<{ sessionIds: string[] }>({
+  const request = post<{ sessionIds: string[]; statusRecords?: ActivityGalleryStatusRecord[] }>({
     action: 'listActivityMediaPresence',
     sessions: normalizedSessions,
   }).then(result => {
     const sessionIds = [...new Set(Array.isArray(result.sessionIds) ? result.sessionIds.map(String) : [])].sort();
+    const statusRecords = Array.isArray(result.statusRecords) ? result.statusRecords : [];
+    const presence = { sessionIds, statusRecords };
     activityMediaPresenceCache = {
       scope,
       signature,
-      value: sessionIds,
+      value: presence,
       expiresAt: Date.now() + ACTIVITY_MEDIA_PRESENCE_CACHE_TTL_MS,
     };
-    return sessionIds;
+    return presence;
   });
 
   activityMediaPresenceInFlight = { scope, signature, request };

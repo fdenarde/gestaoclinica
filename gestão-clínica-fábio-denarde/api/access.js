@@ -10,12 +10,18 @@ import {
 } from './_lib/accessPermissions.js';
 import { notifyAccessApproval, notifyAccessRequest } from './_lib/accessRequestNotification.js';
 import { canShareActivityWithGuardian } from './_lib/activityRecordsValidation.js';
-import { buildResponsiblePackages, getPackageForMedia } from './_lib/responsiblePortalPackages.js';
+import {
+  applyResponsiblePackagePaymentSummary,
+  buildResponsiblePackages,
+  getPackageForMedia,
+} from './_lib/responsiblePortalPackages.js';
 import {
   buildMonitoringSessionDataset,
   getSaoPauloWeekRange,
 } from '../shared/monitoringPanel.js';
+import { getSaoPauloDateKey } from '../shared/clinicalDate.js';
 import { getPackagePaymentSummary } from '../shared/packagePayments.js';
+import { resolvePackageContract } from '../shared/packageContract.js';
 import { normalizePackageConsumptionDecision } from '../shared/sessionScheduling.js';
 import {
   assertAccessUsername,
@@ -3369,7 +3375,7 @@ async function getResponsiblePortalData(db, decodedToken, req) {
   };
   if (linkedPatientIds.length === 0) return baseResult;
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getSaoPauloDateKey();
   const patientResults = [];
 
   for (const patientId of linkedPatientIds) {
@@ -3388,9 +3394,20 @@ async function getResponsiblePortalData(db, decodedToken, req) {
       .map(serializeResponsibleSession)
       .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
     const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
-    const packageResult = buildResponsiblePackages(sessions, { today, payments, packageTolerances: patient?.packageTolerances || [] });
+    const packageValueResolver = packageNumber => resolvePackageContract(patient, packageNumber).contractValue;
+    const packageResult = buildResponsiblePackages(sessions, {
+      today,
+      payments,
+      patient,
+      packageTolerances: patient?.packageTolerances || [],
+    });
     for (const pkg of packageResult.packages) {
-      Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number, { patientId, throughDate: today }));
+      const paymentSummary = getPackagePaymentSummary(payments, pkg.number, {
+        patientId,
+        throughDate: today,
+        packageValueResolver,
+      });
+      applyResponsiblePackagePaymentSummary(pkg, paymentSummary);
     }
 
     const media = [];
@@ -3538,7 +3555,7 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
   const selectedResponsibleUid = selectedResponsible?.uid || '';
   const selectedProfile = selectedResponsible?.profile || null;
   const settings = serializePortalSettings(settingsSnapshot.exists ? settingsSnapshot.data() : {});
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getSaoPauloDateKey();
 
   const [sessionsSnapshot, paymentsSnapshot, documentsSnapshot] = await Promise.all([
     db.collection(`users/${ownerUserId}/sessions`).where('patientId', '==', patientId).limit(500).get(),
@@ -3550,9 +3567,20 @@ async function getAdminResponsiblePortalData(db, decodedToken, req) {
     .map(serializeResponsibleSession)
     .filter(session => session.patientId === patientId && /^\d{4}-\d{2}-\d{2}$/.test(session.date));
   const payments = paymentsSnapshot.docs.map(serializeResponsiblePayment);
-  const packageResult = buildResponsiblePackages(sessions, { today, payments, packageTolerances: patient?.packageTolerances || [] });
+  const packageValueResolver = packageNumber => resolvePackageContract(patient, packageNumber).contractValue;
+  const packageResult = buildResponsiblePackages(sessions, {
+    today,
+    payments,
+    patient,
+    packageTolerances: patient?.packageTolerances || [],
+  });
   for (const pkg of packageResult.packages) {
-    Object.assign(pkg, getPackagePaymentSummary(payments, pkg.number, { patientId, throughDate: today }));
+    const paymentSummary = getPackagePaymentSummary(payments, pkg.number, {
+      patientId,
+      throughDate: today,
+      packageValueResolver,
+    });
+    applyResponsiblePackagePaymentSummary(pkg, paymentSummary);
   }
 
   const media = [];

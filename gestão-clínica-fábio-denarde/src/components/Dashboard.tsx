@@ -6,7 +6,7 @@ import { addDays, format, isAfter, subDays, differenceInDays, parseISO } from 'd
 import { ptBR } from 'date-fns/locale';
 import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
-import { getSessionCycleLabel, getSessionCycleNumber, mergeSessionSequenceSource } from '../lib/sessionSequence';
+import { getSessionCycleLabel, getSessionCycleNumber, getSessionPresentationStatus, mergeSessionSequenceSource, sessionConsumesPackage } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import { calculatePackageFinancialSummary } from '../lib/financePackages';
 import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
@@ -20,7 +20,7 @@ import type { PackageToleranceAlert } from '../types/packageTolerance';
 
 interface DashboardProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => Promise<void>;
+  onUpdate: (newState: Partial<AppState>) => Promise<boolean>;
   onNavigateToPatient?: (patientId: string) => void;
   isPrimaryAdmin?: boolean;
   canViewWhatsappReport?: boolean;
@@ -52,6 +52,7 @@ export default function Dashboard({
   onOpenFinance,
 }: DashboardProps) {
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
+  const manualActionLocksRef = useRef<Set<string>>(new Set());
   const [whatsappReportOpen, setWhatsappReportOpen] = useState(false);
   const [renewalDetailsOpen, setRenewalDetailsOpen] = useState(false);
   const [absenceDecisionModal, setAbsenceDecisionModal] = useState<{
@@ -77,21 +78,31 @@ export default function Dashboard({
   }, [state.sessions]);
 
   const markAsRealized = async (session: Session) => {
+    const lockKey = `${session.id}|realized`;
+    if (manualActionLocksRef.current.has(lockKey)) return;
+    manualActionLocksRef.current.add(lockKey);
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.REALIZADA } : s
     );
     const updatedRepositions = state.repositions.filter(r => !(r.originalSessionId === session.id && r.status === 'Pendente'));
 
     try {
-      await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      const persisted = await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast('Presença registrada.');
     } catch (error) {
       console.error('Falha ao registrar presença pelo Dashboard:', error);
       showToast('Não foi possível registrar a presença.', 'error');
+    } finally {
+      manualActionLocksRef.current.delete(lockKey);
     }
   };
 
   const markAsMissed = async (session: Session, consumesPackage: boolean): Promise<boolean> => {
+    const lockKey = `${session.id}|missed`;
+    if (manualActionLocksRef.current.has(lockKey)) return false;
+    manualActionLocksRef.current.add(lockKey);
+    try {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return false;
@@ -115,21 +126,27 @@ export default function Dashboard({
       status: 'Pendente'
     };
 
-    try {
-      await onUpdate({
+      const persisted = await onUpdate({
         sessions: updatedSessions,
         repositions: [...state.repositions, newReposition]
       });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast('Falta registrada. Reposição pendente criada.');
       return true;
     } catch (error) {
       console.error('Falha ao registrar falta pelo Dashboard:', error);
       showToast('Não foi possível registrar a falta.', 'error');
       return false;
+    } finally {
+      manualActionLocksRef.current.delete(lockKey);
     }
   };
 
   const markAsMissedProf = async (session: Session) => {
+    const lockKey = `${session.id}|missed-prof`;
+    if (manualActionLocksRef.current.has(lockKey)) return;
+    manualActionLocksRef.current.add(lockKey);
+    try {
     if (state.repositions.some(r => r.originalSessionId === session.id && r.status === 'Pendente')) {
       showToast('Esta sessão já possui uma falta com reposição pendente.', 'error');
       return;
@@ -146,15 +163,17 @@ export default function Dashboard({
       status: 'Pendente'
     };
 
-    try {
-      await onUpdate({
+      const persisted = await onUpdate({
         sessions: updatedSessions,
         repositions: [...state.repositions, newReposition]
       });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast('Sua falta registrada. Reposição pendente criada.');
     } catch (error) {
       console.error('Falha ao registrar falta do profissional pelo Dashboard:', error);
       showToast('Não foi possível registrar a falta do profissional.', 'error');
+    } finally {
+      manualActionLocksRef.current.delete(lockKey);
     }
   };
 
@@ -231,12 +250,13 @@ export default function Dashboard({
 
     virtualActionLocksRef.current.add(actionKey);
     try {
-      await onUpdate({
+      const persisted = await onUpdate({
         sessions: [...state.sessions, result.session],
         ...(result.reposition
           ? { repositions: [...state.repositions, result.reposition] }
           : {}),
       });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast(successMessage);
       return true;
     } catch (error) {
@@ -359,7 +379,7 @@ export default function Dashboard({
       // O rótulo da parcela não é usado isoladamente, porque pagamentos antigos ou cadastrados com
       // outra descrição não podem gerar uma cobrança falsa no pacote atual.
       if (patient.paymentModal === PaymentModal.PARCELADO && financialSummary.pendingGross > 0) {
-        const firstInstallmentCovered = financialSummary.paidGross >= 500;
+        const firstInstallmentCovered = financialSummary.paidGross >= financialSummary.contractValue / 2;
 
         if (count >= 6) {
           const message = firstInstallmentCovered
@@ -492,15 +512,16 @@ export default function Dashboard({
   const operationalPanel = useMemo(() => {
     const todayPlanned = todaySessions.filter(s => s.status === SessionStatus.AGENDADA).length;
     const todayRealized = todaySessions.filter(s => s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO).length;
-    const todayAbsences = todaySessions.filter(s => s.status === SessionStatus.FALTA || s.status === SessionStatus.FALTA_PROF).length;
+    const todayAbsences = todaySessions.filter(s => (
+      s.status === SessionStatus.FALTA
+      || s.status === SessionStatus.FALTA_PROF
+      || s.status === SessionStatus.LATE_CANCELLATION_NO_REPLACEMENT
+    )).length;
     const pendingRepositions = state.repositions.filter(r => r.status === 'Pendente');
     const patientsNearRenewal = state.patients
       .filter(patient => patient.status === 'Ativo')
       .map(patient => {
-        const realized = state.sessions.filter(s =>
-          s.patientId === patient.id &&
-          (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)
-        ).length;
+        const realized = state.sessions.filter(s => s.patientId === patient.id && sessionConsumesPackage(s)).length;
         const packageCount = realized === 0 ? 0 : (realized % 10 === 0 ? 10 : realized % 10);
         return { patient, packageCount };
       })
@@ -950,7 +971,7 @@ export default function Dashboard({
                       "px-3 py-1 text-[10px] font-black rounded-full uppercase tracking-widest",
                       getStatusColor(session.status)
                     )}>
-                      {session.status}
+                      {getSessionPresentationStatus(session)}
                     </span>
                   )}
                 </div>
@@ -978,7 +999,7 @@ export default function Dashboard({
                       'rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-widest',
                       getStatusColor(session.status),
                     )}>
-                      {session.status}
+                      {getSessionPresentationStatus(session)}
                     </span>
                   </div>
                 ))
@@ -997,7 +1018,7 @@ export default function Dashboard({
           <h3 className="text-xl font-bold mb-4 border-b border-clinic-border pb-2">Progresso dos Atendentes</h3>
           <div className="flex flex-col gap-5 overflow-y-auto pr-2 custom-scrollbar">
             {state.patients.filter(p => p.status === 'Ativo').slice(0, 10).map(patient => {
-              const getRealizedCount = (patientId: string) => state.sessions.filter(s => s.patientId === patientId && (s.status === SessionStatus.REALIZADA || s.status === SessionStatus.REPOSICAO)).length;
+              const getRealizedCount = (patientId: string) => state.sessions.filter(s => s.patientId === patientId && sessionConsumesPackage(s)).length;
               const totalRealized = getRealizedCount(patient.id);
               const count = totalRealized % 10 || (totalRealized > 0 ? 10 : 0);
               const percentage = (count / 10) * 100;

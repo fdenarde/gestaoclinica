@@ -8,13 +8,6 @@ function normalizeTime(value) {
   return /^\d{2}:\d{2}$/.test(time) ? time : '00:00';
 }
 
-function localTodayIso(now = new Date()) {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 function sessionSortKey(session) {
   return `${normalizeDate(session?.date)}T${normalizeTime(session?.time)}|${String(session?.id || '')}`;
 }
@@ -33,9 +26,9 @@ function referenceEventForGroup(events) {
  */
 export function buildResponsiblePortalSessionProgress(
   sessions = [],
-  { today = localTodayIso(), consumedCount = 0, targetCount = 10 } = {},
+  { today = getSaoPauloDateKey(), consumedCount = 0, targetCount = 10 } = {},
 ) {
-  const normalizedToday = normalizeDate(today) || localTodayIso();
+  const normalizedToday = normalizeDate(today) || getSaoPauloDateKey();
   const safeTargetCount = Number.isInteger(targetCount) && targetCount > 0 ? targetCount : 10;
   const sessionGroups = new Map();
 
@@ -121,3 +114,4 @@ export function buildResponsiblePortalSessionProgress(
     scheduledDates,
   };
 }
+import { getSaoPauloDateKey } from './clinicalDate.js';

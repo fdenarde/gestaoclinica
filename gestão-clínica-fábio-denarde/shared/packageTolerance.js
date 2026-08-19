@@ -230,6 +230,7 @@ export function resolvePackageTolerance({
   packageNumber = 0,
   now = new Date(),
   sessionConsumesPackageFn = sessionConsumesPackage,
+  packageValueResolver,
 } = {}) {
   const patientId = normalizePatientId(patient?.id || payments.find(item => item?.patientId)?.patientId || sessions.find(item => item?.patientId)?.patientId);
   const normalizedPackageNumber = normalizePackageNumber(packageNumber);
@@ -238,10 +239,12 @@ export function resolvePackageTolerance({
   const paidActivatedPackageNumber = getActivatedPackageNumber(payments, {
     patientId,
     throughDate: today,
+    packageValueResolver,
   });
   const packagePaymentSummary = getPackagePaymentSummary(payments, normalizedPackageNumber, {
     patientId,
     throughDate: today,
+    packageValueResolver,
   });
   const sessionsUsed = countPackageConsumedSessions({
     sessions,
@@ -290,6 +293,7 @@ export function getTemporaryAuthorizedPackageNumber({
   sessions = [],
   payments = [],
   now = new Date(),
+  packageValueResolver,
 } = {}) {
   const tolerances = listPackageTolerances(packageTolerances || patient);
   return tolerances.reduce((highest, tolerance) => {
@@ -300,6 +304,7 @@ export function getTemporaryAuthorizedPackageNumber({
       payments,
       packageNumber: tolerance.packageNumber,
       now,
+      packageValueResolver,
     });
     return resolution.isActive ? Math.max(highest, tolerance.packageNumber) : highest;
   }, 0);
@@ -311,6 +316,7 @@ export function getToleranceDisplayPackageNumber({
   sessions = [],
   payments = [],
   now = new Date(),
+  packageValueResolver,
 } = {}) {
   const tolerances = listPackageTolerances(packageTolerances || patient);
   return tolerances.reduce((highest, tolerance) => {
@@ -321,6 +327,7 @@ export function getToleranceDisplayPackageNumber({
       payments,
       packageNumber: tolerance.packageNumber,
       now,
+      packageValueResolver,
     });
     if (resolution.status === 'closed') return highest;
     return Math.max(highest, tolerance.packageNumber);

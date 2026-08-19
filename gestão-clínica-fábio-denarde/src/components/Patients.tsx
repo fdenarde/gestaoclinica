@@ -7,6 +7,7 @@ import { getCompletedSessions, getSessionCycleLabel, getSessionPresentationStatu
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
 import { buildCurrentPackageSessionSummary } from '../../shared/sessionPackageSummary.js';
 import Modal from './Common/Modal';
+import PackageContractEditor from './Common/PackageContractEditor';
 import PatientPhoto from './Common/PatientPhoto';
 import { showToast } from './Common/Toast';
 import { AVAILABLE_DAYS, AVAILABLE_TIMES, CLINIC_INFO } from '../constants';
@@ -23,14 +24,14 @@ import PatientRegistrationFields, { PatientRegistrationSummary } from './Common/
 import { PATIENT_REGISTRATION_FIELD_LABELS, formatPatientRegistrationValue } from '../lib/patientRegistration';
 import ResponsiblePortal from './Auth/ResponsiblePortal';
 import { PackageConsumptionDecisionModal } from './Common/PackageConsumptionDecisionModal';
-import { calculatePackageFinancialSummary } from '../lib/financePackages';
+import { calculatePackageFinancialSummary, normalizePatientPackageContractValue, resolvePatientPackageContract, setPatientPackageContract } from '../lib/financePackages';
 import { createPaymentOperationKey, preparePaymentCreation, preparePaymentVoid } from '../../shared/paymentOperations.js';
 import { isPaymentActive } from '../../shared/packagePayments.js';
 import { endPackageToleranceAfterPayment } from '../lib/packageTolerance';
 
 interface PatientsProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void | Promise<void>;
+  onUpdate: (newState: Partial<AppState>) => Promise<boolean>;
   selectedPatientId?: string | null;
   setSelectedPatientId?: (id: string | null) => void;
   currentUserId?: string;
@@ -38,6 +39,31 @@ interface PatientsProps {
   initialPatientSubTab?: string | null;
   onPatientSubTabConsumed?: () => void;
   onNavigateToPatientGallery?: (id: string) => void;
+}
+
+function patientTargetPackageNeedsNewContract(summary: ReturnType<typeof calculatePackageFinancialSummary>, targetPackageNumber: number): boolean {
+  if (targetPackageNumber > summary.packageNumber) return true;
+  return targetPackageNumber === summary.packageNumber
+    && summary.paidGross <= 0
+    && summary.currentPackageSessions.length === 0
+    && summary.currentPackagePayments.length === 0
+    && summary.contractSource === 'legacy_fallback';
+}
+
+function patientSuggestedPaymentAmount(contractValue: number, paidGross: number, installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral') {
+  const pending = Math.max(contractValue - paidGross, 0);
+  return installment === 'Pagamento integral' ? pending : Math.min(contractValue / 2, pending);
+}
+
+function getPaymentModalLabel(paymentModal: PaymentModal | undefined, contractValue?: number): string {
+  const value = Number(contractValue);
+  const hasContractValue = Number.isFinite(value) && value > 0;
+  if (paymentModal === PaymentModal.PARCELADO) {
+    return hasContractValue
+      ? `Parcelado — ${formatCurrency(value / 2)} antes da 1ª / ${formatCurrency(value / 2)} na 5ª sessão`
+      : 'Parcelado — 1ª parcela / 2ª parcela';
+  }
+  return hasContractValue ? `Pagamento integral — ${formatCurrency(value)}` : 'Pagamento integral';
 }
 
 const PATIENT_FIELD_LABELS: Record<string, string> = {
@@ -211,10 +237,11 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         uploadedPhotoPath = uploadedPhoto.storagePath;
       }
 
-      await Promise.resolve(onUpdate({
+      const persisted = await onUpdate({
         patients: [...state.patients, patient],
         sessions: [...state.sessions, ...generatedSessions]
-      }));
+      });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
 
       showToast('Atendente e ciclo inicial cadastrados com sucesso!');
       setIsNewPatientModalOpen(false);
@@ -284,11 +311,12 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
         return;
       }
 
-      await Promise.resolve(onUpdate({
+      const persisted = await onUpdate({
         patients: updatedPatients,
         sessions: updatedSessions,
         repositions: updatedRepositions
-      }));
+      });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
 
       const photoReference = patientBeingDeleted?.photoDriveFileId || patientBeingDeleted?.photoStoragePath;
       if (photoReference) {
@@ -671,8 +699,8 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
                 <label className="block">
                   <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Modalidade de pagamento</span>
                   <select value={newPatient.paymentModal || PaymentModal.PIX_FULL} onChange={event => setNewPatient(current => ({ ...current, paymentModal: event.target.value as PaymentModal }))} disabled={isCreatingPatient} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary">
-                    <option value={PaymentModal.PIX_FULL}>{PaymentModal.PIX_FULL}</option>
-                    <option value={PaymentModal.PARCELADO}>{PaymentModal.PARCELADO}</option>
+                    <option value={PaymentModal.PIX_FULL}>{getPaymentModalLabel(PaymentModal.PIX_FULL)}</option>
+                    <option value={PaymentModal.PARCELADO}>{getPaymentModalLabel(PaymentModal.PARCELADO)}</option>
                   </select>
                 </label>
                 <label className="block">
@@ -760,7 +788,7 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   );
 }
 
-function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink, onNavigateToPatientGallery, initialSubTab, onInitialSubTabApplied }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => void | Promise<void>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void>, onNavigateToPatientGallery?: (id: string) => void, initialSubTab?: string | null, onInitialSubTabApplied?: () => void }) {
+function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink, onNavigateToPatientGallery, initialSubTab, onInitialSubTabApplied }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => Promise<boolean>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void>, onNavigateToPatientGallery?: (id: string) => void, initialSubTab?: string | null, onInitialSubTabApplied?: () => void }) {
   const [activeSubTab, setActiveSubTab] = useState(initialSubTab && initialSubTab !== 'atividades' ? initialSubTab : 'dados');
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
@@ -769,6 +797,9 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const [pendingPhotoPreviewUrl, setPendingPhotoPreviewUrl] = useState<string | null>(null);
   const [isSavingData, setIsSavingData] = useState(false);
   const [repositionModalSession, setRepositionModalSession] = useState<Session | null>(null);
+  const [isSavingReposition, setIsSavingReposition] = useState(false);
+  const repositionWriteLockRef = useRef(false);
+  const sessionStatusLocksRef = useRef<Set<string>>(new Set());
   const [repoDate, setRepoDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [repoTime, setRepoTime] = useState(patient?.fixedTime || '08:00');
   
@@ -776,6 +807,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const [paymentOperationKey, setPaymentOperationKey] = useState('');
   const [isSavingPayment, setIsSavingPayment] = useState(false);
   const paymentWriteLockRef = useRef(false);
+  const [packageContractEditorOpen, setPackageContractEditorOpen] = useState(false);
+  const [isSavingPackageContract, setIsSavingPackageContract] = useState(false);
   const [paymentData, setPaymentData] = useState<{
     id?: string;
     date: string;
@@ -783,16 +816,20 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     amount: number;
     method: 'Pix' | 'Dinheiro' | 'Transferência' | 'Outro';
     packageNumber: number;
+    contractValueInput: string;
   }>({
     date: format(new Date(), 'yyyy-MM-dd'),
     installment: patient?.paymentModal === PaymentModal.PIX_FULL ? 'Pagamento integral' : '1ª parcela',
-    amount: patient?.paymentModal === PaymentModal.PIX_FULL ? 1000 : 500,
+    amount: 0,
     method: 'Pix',
-    packageNumber: 1
+    packageNumber: 1,
+    contractValueInput: ''
   });
 
   const [confirmInactivate, setConfirmInactivate] = useState(false);
   const [confirmNewPackage, setConfirmNewPackage] = useState(false);
+  const [isGeneratingPackage, setIsGeneratingPackage] = useState(false);
+  const generatePackageLockRef = useRef(false);
   const [confirmScheduleChange, setConfirmScheduleChange] = useState<{
     oldDay: string;
     oldTime: string;
@@ -875,7 +912,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     return Math.floor(closestIndex / 10) + 1;
   };
 
-  const handleSaveEvolution = () => {
+  const handleSaveEvolution = async () => {
     if (!newEvoNotes.trim()) return;
     const newEvolution: Evolution = {
       id: Math.random().toString(36).substr(2, 9),
@@ -883,9 +920,15 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
       date: newEvoDate,
       notes: newEvoNotes.trim()
     };
-    onUpdate({ evolutions: [...(state.evolutions || []), newEvolution] });
-    setNewEvoNotes('');
-    showToast('Evolução salva com sucesso!');
+    try {
+      const persisted = await onUpdate({ evolutions: [...(state.evolutions || []), newEvolution] });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      setNewEvoNotes('');
+      showToast('Evolução salva com sucesso!');
+    } catch (error) {
+      console.error('Falha ao salvar evolução:', error);
+      showToast('Não foi possível salvar a evolução.', 'error');
+    }
   };
 
   const downloadResponsibleDocument = async (documentId: string, fileName: string) => {
@@ -1035,10 +1078,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         currentPatient.id === patient.id ? patientToSave : currentPatient
       );
 
-      await Promise.resolve(onUpdate({
+      const persisted = await onUpdate({
         ...additionalState,
         patients: updatedPatients,
-      }));
+      });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
 
       const previousPhotoReference = patient.photoDriveFileId || patient.photoStoragePath;
       if (
@@ -1313,7 +1357,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     setConfirmNewPackage(true);
   };
 
-  const executeGenerateNewPackage = () => {
+  const executeGenerateNewPackage = async () => {
+    if (generatePackageLockRef.current) return;
+    generatePackageLockRef.current = true;
+    setIsGeneratingPackage(true);
+    try {
     const DAYS_MAP: Record<string, number> = { 'domingo': 0, 'segunda': 1, 'terça': 2, 'quarta': 3, 'quinta': 4, 'sexta': 5, 'sábado': 6 };
     const targetDay = DAYS_MAP[patient.fixedDay?.toLowerCase() || ''] ?? 1;
 
@@ -1355,9 +1403,17 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
        }
     }
 
-    onUpdate({ sessions: [...state.sessions, ...generatedSessions] });
+    const persisted = await onUpdate({ sessions: [...state.sessions, ...generatedSessions] });
+    if (persisted !== true) throw new Error('A persistência retornou false.');
     showToast(`Novo pacote gerado com ${generatedSessions.length} sessões.`, 'success');
     setConfirmNewPackage(false);
+    } catch (error) {
+      console.error('Falha ao gerar novo pacote:', error);
+      showToast('Não foi possível gerar o novo pacote. Nenhuma confirmação foi gravada.', 'error');
+    } finally {
+      generatePackageLockRef.current = false;
+      setIsGeneratingPackage(false);
+    }
   };
 
   const applySessionStatus = async (
@@ -1365,6 +1421,10 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     newStatus: SessionStatus,
     absenceConsumesPackage?: boolean,
   ) => {
+    const lockKey = `${sessionId}|${newStatus}`;
+    if (sessionStatusLocksRef.current.has(lockKey)) return;
+    sessionStatusLocksRef.current.add(lockKey);
+    try {
     let finalStatus = newStatus;
     const session = state.sessions.find(s => s.id === sessionId);
     const consumesPackage = newStatus === SessionStatus.FALTA
@@ -1406,8 +1466,15 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         // Se mudou de FALTA para outro status, remover ou cancelar a reposição pendente
         updatedRepositions = updatedRepositions.filter(r => r.originalSessionId !== sessionId || r.status !== 'Pendente');
     }
-    await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+    const persisted = await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
+    if (persisted !== true) throw new Error('A persistência retornou false.');
     showToast(`Status atualizado para ${finalStatus}.`);
+    } catch (error) {
+      console.error('Falha ao atualizar status da sessão:', error);
+      showToast('Não foi possível atualizar o status da sessão.', 'error');
+    } finally {
+      sessionStatusLocksRef.current.delete(lockKey);
+    }
   };
 
   const updateSessionStatus = (sessionId: string, newStatus: SessionStatus) => {
@@ -1423,21 +1490,54 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     const { sessionId, isEditing } = absenceDecisionModal;
     if (isEditing) {
       const decidedAt = new Date().toISOString();
-      await onUpdate({
-        sessions: state.sessions.map(item => item.id === sessionId
-          ? {
-              ...item,
-              consumesPackage,
-              packageConsumptionDecidedAt: decidedAt,
-              packageConsumptionDecidedBy: currentUserName || 'Profissional',
-            }
-          : item),
-      });
-      showToast('Contabilização da falta atualizada.');
+      try {
+        const persisted = await onUpdate({
+          sessions: state.sessions.map(item => item.id === sessionId
+            ? {
+                ...item,
+                consumesPackage,
+                packageConsumptionDecidedAt: decidedAt,
+                packageConsumptionDecidedBy: currentUserName || 'Profissional',
+              }
+            : item),
+        });
+        if (persisted !== true) throw new Error('A persistência retornou false.');
+        showToast('Contabilização da falta atualizada.');
+      } catch (error) {
+        console.error('Falha ao atualizar contabilização da falta:', error);
+        showToast('Não foi possível atualizar a contabilização da falta.', 'error');
+        return;
+      }
     } else {
       await applySessionStatus(sessionId, SessionStatus.FALTA, consumesPackage);
     }
     setAbsenceDecisionModal(null);
+  };
+
+  const handleSavePackageContract = async (packageContractValue: number) => {
+    if (isSavingPackageContract) return;
+    setIsSavingPackageContract(true);
+    try {
+      const now = new Date().toISOString();
+      const updatedPatient = setPatientPackageContract(patient, {
+        packageNumber: packageFinancialSummary.packageNumber,
+        packageContractValue,
+        receivedAmount: packageFinancialSummary.paidGross,
+        updatedAt: now,
+        updatedBy: currentUserName || 'Profissional',
+        createdBy: currentUserName || 'Profissional',
+      });
+      const persisted = await onUpdate({
+        patients: state.patients.map(item => item.id === patient.id ? updatedPatient : item),
+      });
+      if (persisted !== true) {
+        throw new Error('O valor contratado não foi gravado. Nenhuma alteração foi confirmada no cadastro do atendente.');
+      }
+      showToast(`Valor contratado do Pacote ${packageFinancialSummary.packageNumber} salvo com sucesso.`);
+      setPackageContractEditorOpen(false);
+    } finally {
+      setIsSavingPackageContract(false);
+    }
   };
 
   const handleRegisterPaymentClick = () => {
@@ -1448,17 +1548,20 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     const currentPaid = currentPackageNumber === packageFinancialSummary.packageNumber
       ? packageFinancialSummary.paidGross
       : 0;
-      
+    const packageContract = resolvePatientPackageContract(patient, currentPackageNumber);
+    const requiresExplicitContract = patientTargetPackageNeedsNewContract(packageFinancialSummary, currentPackageNumber);
+    const installment = patient?.paymentModal === PaymentModal.PIX_FULL
+      ? 'Pagamento integral'
+      : currentPaid < packageContract.contractValue / 2 ? '1ª parcela' : '2ª parcela';
     setPaymentData({
       date: format(new Date(), 'yyyy-MM-dd'),
-      installment: patient?.paymentModal === PaymentModal.PIX_FULL
-        ? 'Pagamento integral'
-        : currentPaid >= 500 ? '2ª parcela' : '1ª parcela',
-      amount: patient?.paymentModal === PaymentModal.PIX_FULL
-        ? Math.max(1000 - currentPaid, 0)
-        : Math.min(500, Math.max(1000 - currentPaid, 0)),
+      installment,
+      amount: requiresExplicitContract && packageContract.source === 'legacy_fallback'
+        ? 0
+        : patientSuggestedPaymentAmount(packageContract.contractValue, currentPaid, installment),
       method: 'Pix',
-      packageNumber: currentPackageNumber
+      packageNumber: currentPackageNumber,
+      contractValueInput: packageContract.source === 'explicit' ? String(packageContract.contractValue) : '',
     });
     setPaymentOperationKey(createPaymentOperationKey());
     setPaymentModalOpen(true);
@@ -1496,7 +1599,10 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
       installment: payment.installment as any,
       amount: payment.amount,
       method: payment.method as any,
-      packageNumber: payment.packageNumber || 1
+      packageNumber: payment.packageNumber || 1,
+      contractValueInput: resolvePatientPackageContract(patient, payment.packageNumber || 1).source === 'explicit'
+        ? String(resolvePatientPackageContract(patient, payment.packageNumber || 1).contractValue)
+        : '',
     });
     setPaymentOperationKey(createPaymentOperationKey());
     setPaymentModalOpen(true);
@@ -1532,11 +1638,30 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
 
   const handleSavePayment = async () => {
     if (paymentWriteLockRef.current) return;
+    const selectedContract = resolvePatientPackageContract(patient, paymentData.packageNumber);
+    const requiresExplicitContract = patientTargetPackageNeedsNewContract(packageFinancialSummary, paymentData.packageNumber);
+    const enteredContractValue = normalizePatientPackageContractValue(paymentData.contractValueInput);
+    if (requiresExplicitContract && !enteredContractValue) {
+      showToast('Informe um valor contratado positivo para este novo pacote.', 'error');
+      return;
+    }
+    if (paymentData.contractValueInput.trim() && !enteredContractValue) {
+      showToast('O valor contratado deve ser finito e maior que zero.', 'error');
+      return;
+    }
+    const patientWithContract = enteredContractValue && selectedContract.source === 'legacy_fallback'
+      ? setPatientPackageContract(patient, {
+        packageNumber: paymentData.packageNumber,
+        packageContractValue: enteredContractValue,
+        createdBy: currentUserName || 'Profissional',
+        createdAt: new Date().toISOString(),
+      })
+      : patient;
     paymentWriteLockRef.current = true;
     setIsSavingPayment(true);
     try {
       const prepared = preparePaymentCreation({
-        patient,
+        patient: patientWithContract,
         sessions: state.sessions,
         payments: state.payments,
         expenses: state.expenses || [],
@@ -1552,7 +1677,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         actor: currentUserName || 'Profissional',
         now: new Date().toISOString(),
       });
-      const patientAfterPayment = endPackageToleranceAfterPayment(patient, {
+      const patientAfterPayment = endPackageToleranceAfterPayment(patientWithContract, {
         packageNumber: paymentData.packageNumber,
         actor: currentUserName || 'Profissional',
         now: new Date(),
@@ -1573,8 +1698,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
     }
   };
 
-  const handleScheduleReposition = () => {
-    if (!repositionModalSession) return;
+  const handleScheduleReposition = async () => {
+    if (!repositionModalSession || repositionWriteLockRef.current) return;
     
     const newSession: Session = {
       id: Math.random().toString(36).substr(2, 9),
@@ -1600,13 +1725,23 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         });
     }
 
-    onUpdate({
-      sessions: [...state.sessions, newSession],
-      repositions: updatedRepositions
-    });
-
-    showToast('Reposição agendada com sucesso!', 'success');
-    setRepositionModalSession(null);
+    repositionWriteLockRef.current = true;
+    setIsSavingReposition(true);
+    try {
+      const persisted = await onUpdate({
+        sessions: [...state.sessions, newSession],
+        repositions: updatedRepositions,
+      });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast('Reposição agendada com sucesso!', 'success');
+      setRepositionModalSession(null);
+    } catch (error) {
+      console.error('Falha ao agendar reposição:', error);
+      showToast('Não foi possível agendar a reposição. Nenhuma confirmação foi gravada.', 'error');
+    } finally {
+      repositionWriteLockRef.current = false;
+      setIsSavingReposition(false);
+    }
   };
 
   // Group realized sessions into packages of up to 10 sessions
@@ -1708,8 +1843,12 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
 
   const confirmSessionMessage = `Olá ${patient.guardianName}! Confirmando a sessão de ${patient.name} em ${format(new Date(), 'dd/MM')} às ${patient.fixedTime}. Qualquer dúvida estou à disposição. Fábio Denarde.`;
-  const paymentMessage = `Olá ${patient.guardianName}! Passando para lembrar que a 2ª parcela do pacote de ${patient.name} (R$500,00) será na próxima sessão. Qualquer dúvida estou à disposição. Fábio Denarde.`;
+  const paymentMessage = `Olá ${patient.guardianName}! Passando para lembrar que a 2ª parcela do pacote de ${patient.name} (${formatCurrency(packageFinancialSummary.contractValue / 2)}) será na próxima sessão. Qualquer dúvida estou à disposição. Fábio Denarde.`;
   const renovationMessage = `Olá ${patient.guardianName}! O pacote de sessões de ${patient.name} está chegando ao fim. Gostaria de conversar sobre a continuidade do atendimento? Fábio Denarde.`;
+  const paymentContract = resolvePatientPackageContract(patient, paymentData.packageNumber);
+  const paymentRequiresExplicitContract = patientTargetPackageNeedsNewContract(packageFinancialSummary, paymentData.packageNumber);
+  const paymentContractInputValue = normalizePatientPackageContractValue(paymentData.contractValueInput);
+  const paymentDisplayContractValue = paymentContractInputValue || paymentContract.contractValue;
 
   const tabs = [
     { id: 'dados', label: 'Cadastro', fullLabel: 'Dados Cadastrais', icon: Users },
@@ -2154,7 +2293,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                         {[
                           ['Dia e horário fixos', `${patient.fixedDay || 'Não informado'} — ${patient.fixedTime || 'Não informado'}`],
                           ['Início do acompanhamento', safeFormatDate(patient.startDate, 'dd/MM/yyyy')],
-                          ['Modalidade', patient.paymentModal],
+                          ['Modalidade', getPaymentModalLabel(patient.paymentModal, packageFinancialSummary.contractValue)],
                           ['Status', patient.status],
                         ].map(([label, value]) => (
                           <div key={label} className="rounded-xl border border-clinic-border bg-clinic-bg/60 p-3">
@@ -2341,8 +2480,8 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                           <label className="block">
                             <span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Modalidade de pagamento</span>
                             <select value={editForm.paymentModal || PaymentModal.PIX_FULL} onChange={event => setEditForm(current => ({ ...current, paymentModal: event.target.value as PaymentModal }))} disabled={isSavingData} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary">
-                              <option value={PaymentModal.PIX_FULL}>{PaymentModal.PIX_FULL}</option>
-                              <option value={PaymentModal.PARCELADO}>{PaymentModal.PARCELADO}</option>
+                              <option value={PaymentModal.PIX_FULL}>{getPaymentModalLabel(PaymentModal.PIX_FULL, packageFinancialSummary.contractValue)}</option>
+                              <option value={PaymentModal.PARCELADO}>{getPaymentModalLabel(PaymentModal.PARCELADO, packageFinancialSummary.contractValue)}</option>
                             </select>
                           </label>
                           <label className="block">
@@ -2535,6 +2674,9 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                 <div className="flex items-center justify-between">
                   <h5 className="text-lg font-bold text-clinic-text">Resumo Financeiro</h5>
                   <div className="flex gap-2">
+                    <button onClick={() => setPackageContractEditorOpen(true)} className="px-3 py-1.5 border border-clinic-primary/25 bg-clinic-primary/5 text-clinic-primary font-bold text-xs uppercase tracking-wide rounded-lg hover:bg-clinic-primary/10 transition-colors shadow-sm hover:shadow">
+                      {packageFinancialSummary.contractSource === 'legacy_fallback' ? 'Definir valor contratado' : 'Alterar valor contratado'}
+                    </button>
                     <button onClick={handleRegisterPaymentClick} className="px-3 py-1.5 bg-status-green-bg text-status-green-text font-bold text-xs uppercase tracking-wide rounded-lg hover:bg-green-100 transition-colors border border-green-200 shadow-sm hover:shadow">
                       + Registar Pagamento
                     </button>
@@ -2726,10 +2868,11 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                 Cancelar
               </button>
               <button
-                onClick={handleScheduleReposition}
+                onClick={() => void handleScheduleReposition()}
+                disabled={isSavingReposition}
                 className="px-4 py-2 bg-status-blue-bg text-status-blue-text font-bold rounded-lg hover:bg-blue-200 transition-all uppercase tracking-wide text-xs"
               >
-                Confirmar Agendamento
+                {isSavingReposition ? 'Gravando...' : 'Confirmar Agendamento'}
               </button>
             </div>
           </div>
@@ -2750,12 +2893,54 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                 <select 
                   className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm"
                   value={paymentData.packageNumber}
-                  onChange={e => setPaymentData(prev => ({ ...prev, packageNumber: parseInt(e.target.value) || 1 }))}
+                  onChange={e => {
+                    const packageNumber = parseInt(e.target.value) || 1;
+                    const contract = resolvePatientPackageContract(patient, packageNumber);
+                    const requiresExplicitContract = patientTargetPackageNeedsNewContract(packageFinancialSummary, packageNumber);
+                    const paid = packageNumber === packageFinancialSummary.packageNumber ? packageFinancialSummary.paidGross : 0;
+                    setPaymentData(prev => ({
+                      ...prev,
+                      packageNumber,
+                      contractValueInput: contract.source === 'explicit' ? String(contract.contractValue) : '',
+                      amount: requiresExplicitContract && contract.source === 'legacy_fallback'
+                        ? 0
+                        : patientSuggestedPaymentAmount(contract.contractValue, paid, prev.installment),
+                    }));
+                  }}
                 >
                   {Array.from({ length: Math.max(1, Math.ceil(patientSessions.length / 10), paymentData.packageNumber) }, (_, i) => i + 1).map(num => (
                     <option key={num} value={num}>Pacote {num}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Valor contratado do pacote (R$)</label>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-lg p-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                  value={paymentData.contractValueInput}
+                  disabled={!paymentRequiresExplicitContract || paymentContract.source === 'explicit'}
+                  placeholder={paymentContract.source === 'legacy_fallback' ? 'Obrigatório para pacote novo' : undefined}
+                  onChange={e => {
+                    const value = e.target.value;
+                    const normalized = normalizePatientPackageContractValue(value);
+                    const paid = paymentData.packageNumber === packageFinancialSummary.packageNumber ? packageFinancialSummary.paidGross : 0;
+                    setPaymentData(prev => ({
+                      ...prev,
+                      contractValueInput: value,
+                      amount: normalized > 0 ? patientSuggestedPaymentAmount(normalized, paid, prev.installment) : prev.amount,
+                    }));
+                  }}
+                />
+                <p className="mt-1 text-[11px] text-clinic-text-muted">
+                  {paymentContract.source === 'legacy_fallback'
+                    ? paymentRequiresExplicitContract
+                      ? 'Informe um valor positivo para o novo pacote. O fallback não será gravado como histórico.'
+                      : `Fallback operacional legado: ${formatCurrency(paymentContract.contractValue)}.`
+                    : 'Snapshot explícito preservado; este lançamento não altera o histórico.'}
+                </p>
               </div>
               <div>
                 <label className="block text-[10px] font-bold text-clinic-text-faint uppercase mb-1">Data do Pagamento</label>
@@ -2773,14 +2958,19 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                   value={paymentData.installment}
                   onChange={e => {
                     const inst = e.target.value as any;
-                    let amt = 500;
-                    if (inst === 'Pagamento integral') amt = 1000;
-                    setPaymentData(prev => ({ ...prev, installment: inst, amount: amt }));
+                    const paid = paymentData.packageNumber === packageFinancialSummary.packageNumber ? packageFinancialSummary.paidGross : 0;
+                    setPaymentData(prev => ({
+                      ...prev,
+                      installment: inst,
+                      amount: paymentDisplayContractValue > 0
+                        ? patientSuggestedPaymentAmount(paymentDisplayContractValue, paid, inst)
+                        : 0,
+                    }));
                   }}
                 >
-                  <option value="Pagamento integral">Pagamento integral — R$ 1.000,00</option>
-                  <option value="1ª parcela">1ª parcela — R$ 500,00</option>
-                  <option value="2ª parcela">2ª parcela — R$ 500,00</option>
+                  <option value="Pagamento integral">Pagamento integral — {formatCurrency(paymentDisplayContractValue)}</option>
+                  <option value="1ª parcela">1ª parcela — {formatCurrency(paymentDisplayContractValue / 2)}</option>
+                  <option value="2ª parcela">2ª parcela — {formatCurrency(paymentDisplayContractValue / 2)}</option>
                 </select>
               </div>
               <div>
@@ -2878,15 +3068,17 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
           <div className="flex justify-end gap-3">
             <button
               onClick={() => setConfirmNewPackage(false)}
+              disabled={isGeneratingPackage}
               className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
             >
               Cancelar
             </button>
             <button
-              onClick={executeGenerateNewPackage}
+              onClick={() => void executeGenerateNewPackage()}
+              disabled={isGeneratingPackage}
               className="px-4 py-2 bg-clinic-primary text-white font-bold rounded-lg shadow-md hover:bg-clinic-primary-hover transition-all uppercase tracking-wide text-xs"
             >
-              Gerar Sessões
+              {isGeneratingPackage ? 'Gravando...' : 'Gerar Sessões'}
             </button>
           </div>
         </div>
@@ -2977,6 +3169,18 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         </Modal>
       )}
       </Modal>
+      {packageContractEditorOpen && (
+        <PackageContractEditor
+          isOpen={true}
+          patientName={patient.name}
+          packageNumber={packageFinancialSummary.packageNumber}
+          currentContract={resolvePatientPackageContract(patient, packageFinancialSummary.packageNumber)}
+          receivedAmount={packageFinancialSummary.paidGross}
+          isSaving={isSavingPackageContract}
+          onClose={() => setPackageContractEditorOpen(false)}
+          onSave={handleSavePackageContract}
+        />
+      )}
     </>
   );
 }

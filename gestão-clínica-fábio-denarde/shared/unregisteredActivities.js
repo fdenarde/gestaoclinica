@@ -56,6 +56,14 @@ function albumMatchesGroup(album, group) {
   return normalizeDate(album?.activityDate) === group.date;
 }
 
+function statusMatchesGroup(statusRecord, group) {
+  if (!statusRecord || String(statusRecord.patientId || '') !== group.patientId) return false;
+  const statusSessionIds = normalizeGooglePhotosSessionIds(
+    statusRecord.sessionIds?.length ? statusRecord.sessionIds : [statusRecord.sessionId],
+  );
+  return statusSessionIds.some(sessionId => group.sessionIds.includes(sessionId));
+}
+
 function getGroupEndAt(sessions) {
   const grouped = Array.isArray(sessions) && sessions.length > 1;
   return sessions
@@ -71,6 +79,7 @@ export function buildUnregisteredActivityGroups({
   sessions = [],
   payments = [],
   activityRecords = [],
+  activityUploadStatus = [],
   googlePhotosAlbums = [],
   monitoringStart = '',
   now = new Date(),
@@ -81,6 +90,9 @@ export function buildUnregisteredActivityGroups({
 
   const patientMap = new Map((Array.isArray(patients) ? patients : []).map(patient => [String(patient?.id || ''), patient]));
   const records = Array.isArray(activityRecords) ? activityRecords : [];
+  const statusRecords = Array.isArray(activityUploadStatus)
+    ? activityUploadStatus
+    : Object.values(activityUploadStatus || {});
   const albums = Array.isArray(googlePhotosAlbums) ? googlePhotosAlbums : [];
   const result = [];
 
@@ -134,7 +146,10 @@ export function buildUnregisteredActivityGroups({
 
         const hasActivityRecord = records.some(record => recordMatchesGroup(record, group));
         const hasGooglePhotosLink = albums.some(album => albumMatchesGroup(album, group));
-        if (!hasActivityRecord && !hasGooglePhotosLink) result.push(group);
+        const hasActiveJustification = statusRecords.some(statusRecord => (
+          statusRecord?.justification?.active === true && statusMatchesGroup(statusRecord, group)
+        ));
+        if (!hasActivityRecord && !hasGooglePhotosLink && !hasActiveJustification) result.push(group);
       }
     }
   }

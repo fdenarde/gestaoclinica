@@ -35,6 +35,7 @@ import {
   formatCurrentPackageSessionSummaries,
   formatCurrentPackageSessionSummary,
 } from '../../../shared/sessionPackageSummary.js';
+import { getSessionPresentationStatus as getCanonicalSessionPresentationStatus } from '../../../shared/sessionScheduling.js';
 import BrandLogo from '../Common/BrandLogo';
 import PatientPhoto from '../Common/PatientPhoto';
 import { showToast } from '../Common/Toast';
@@ -71,6 +72,10 @@ function formatWeekRange(start: string, end: string): string {
 
 function formatSessionTime(session: MonitoringSession): string {
   return session.time || '--:--';
+}
+
+function getMonitoringSessionPresentationStatus(session: MonitoringSession): string {
+  return String(getCanonicalSessionPresentationStatus(session));
 }
 
 function formatDayHeading(date: string): string {
@@ -279,7 +284,7 @@ export default function MonitoringPanel({
           <p className="mt-0.5 text-xs text-clinic-text-muted">{getSessionReference(session, summary)}</p>
         </div>
         <span className={cn('w-fit rounded-full px-2.5 py-1 text-[10px] font-black uppercase', getStatusColor(session.status))}>
-          {session.status || 'Agendada'}
+          {getMonitoringSessionPresentationStatus(session)}
         </span>
       </article>
     );
@@ -608,7 +613,7 @@ export default function MonitoringPanel({
                               {formatSessionTime(session)}
                             </div>
                             <span className={cn('rounded-full px-2 py-0.5 text-[8px] font-black uppercase', getStatusColor(session.status))}>
-                              {session.status || 'Agendada'}
+                              {getMonitoringSessionPresentationStatus(session)}
                             </span>
                           </div>
                           <p className="mt-2 truncate text-sm font-black text-clinic-text">{session.patientName}</p>
@@ -757,7 +762,7 @@ export default function MonitoringPanel({
                       <div key={session.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-clinic-border bg-white px-3 py-2 text-sm">
                         <span>{safeFormatDate(session.date, 'dd/MM/yyyy')} às {session.time}</span>
                         <span>{session.type}</span>
-                        <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-black uppercase', getStatusColor(session.status))}>{session.status}</span>
+                        <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-black uppercase', getStatusColor(session.status))}>{getMonitoringSessionPresentationStatus(session)}</span>
                       </div>
                     ))}
                     {detailSummary.sessions.length === 0 && <p className="text-sm text-clinic-text-muted">Nenhuma sessão permitida para exibição.</p>}

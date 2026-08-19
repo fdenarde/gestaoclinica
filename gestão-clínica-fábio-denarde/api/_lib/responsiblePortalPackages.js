@@ -1,5 +1,7 @@
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import { getHighestRecordedTolerancePackageNumber } from '../../shared/packageTolerance.js';
+import { resolvePackageContract } from '../../shared/packageContract.js';
+import { getSaoPauloDateKey } from '../../shared/clinicalDate.js';
 import {
   dedupeSessionsByStableIdentity,
   getSessionPackagePosition,
@@ -30,6 +32,18 @@ function createPackage(number, status = 'future') {
   };
 }
 
+export function applyResponsiblePackagePaymentSummary(pkg, paymentSummary) {
+  return Object.assign(pkg, {
+    packageNumber: paymentSummary.packageNumber,
+    paidAmount: paymentSummary.paidAmount,
+    pendingAmount: paymentSummary.pendingAmount,
+    payments: paymentSummary.payments,
+    installments: paymentSummary.installments,
+    isPaid: paymentSummary.isPaid,
+    financialStatus: paymentSummary.financialStatus,
+  });
+}
+
 function packageStatus(number, currentPackageNumber) {
   if (number < currentPackageNumber) return 'previous';
   if (number === currentPackageNumber) return 'current';
@@ -37,9 +51,10 @@ function packageStatus(number, currentPackageNumber) {
 }
 
 export function buildResponsiblePackages(rawSessions, {
-  today = new Date().toISOString().slice(0, 10),
+  today = getSaoPauloDateKey(),
   payments = [],
   packageTolerances = [],
+  patient = null,
 } = {}) {
   const sessions = dedupeSessionsByStableIdentity(rawSessions)
     .filter(session => session && !session.isBlocked && !EXCLUDED_STATUSES.has(String(session.status || '')))
@@ -47,7 +62,12 @@ export function buildResponsiblePackages(rawSessions, {
     .sort((a, b) => normalizeSessionSortKey(a).localeCompare(normalizeSessionSortKey(b)));
 
   const patientId = String(sessions.find(session => session?.patientId)?.patientId || payments.find(payment => payment?.patientId)?.patientId || '');
-  const paidActivatedPackageNumber = getActivatedPackageNumber(payments, { patientId, throughDate: today });
+  const packageValueResolver = packageNumber => resolvePackageContract(patient, packageNumber).contractValue;
+  const paidActivatedPackageNumber = getActivatedPackageNumber(payments, {
+    patientId,
+    throughDate: today,
+    packageValueResolver,
+  });
   const tolerancePackageNumber = getHighestRecordedTolerancePackageNumber(packageTolerances);
   const activatedPackageNumber = Math.max(paidActivatedPackageNumber, tolerancePackageNumber);
   const consumedTotal = sessions.filter(session => sharedSessionConsumesPackage(session, { throughDate: today })).length;
@@ -112,7 +132,7 @@ export function buildResponsiblePackages(rawSessions, {
   };
 }
 
-export function getPackageForMedia(media, sessionPackageMap, packages, today = new Date().toISOString().slice(0, 10)) {
+export function getPackageForMedia(media, sessionPackageMap, packages, today = getSaoPauloDateKey()) {
   const sessionDate = String(media?.sessionDate || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || sessionDate > today) return null;
   const bySession = sessionPackageMap.get(String(media?.sessionId || ''));

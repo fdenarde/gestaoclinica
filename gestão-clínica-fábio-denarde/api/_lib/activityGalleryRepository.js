@@ -5,25 +5,17 @@ import { activityError, sanitizeText } from './activityRecordsValidation.js';
 import {
   getActivitySessionEndAt,
   normalizeActivitySessionIds,
+  normalizeActivityJustificationReason,
   resolveActivityUploadState,
 } from '../../shared/activityGalleryStatus.js';
 import { buildActivityMediaPackageModel } from '../../shared/activityMediaPackages.js';
+import { sessionAllowsActivity } from '../../shared/sessionScheduling.js';
 
 const PRIMARY_ADMIN_EMAIL = 'fdenarde@gmail.com';
 const MAX_PATIENTS = 500;
 const MAX_MONITORED_SESSIONS = 2000;
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
-const JUSTIFICATION_REASONS = new Set([
-  'atividade sem registro visual',
-  'responsável não autorizou',
-  'sessão administrativa',
-  'atendimento virtual',
-  'mídia não produzida',
-  'problema técnico',
-  'outro',
-]);
-
 function serializeDate(value) {
   if (value?.toDate instanceof Function) return value.toDate().toISOString();
   if (value instanceof Date) return value.toISOString();
@@ -54,6 +46,7 @@ function normalizeStatusRecord(snapshot) {
   const justification = data.justification && typeof data.justification === 'object'
     ? {
         ...data.justification,
+        reason: normalizeActivityJustificationReason(data.justification.reason),
         createdAt: serializeDate(data.justification.createdAt),
         updatedAt: serializeDate(data.justification.updatedAt),
         removedAt: serializeDate(data.justification.removedAt),
@@ -155,7 +148,7 @@ function selectCurrentPackageRealizedSessions(sessions, now = new Date()) {
   const selected = [];
   for (const [patientId, patientSessions] of byPatient.entries()) {
     const model = buildActivityMediaPackageModel(patientSessions, { patientId, now });
-    selected.push(...model.currentSessions.filter(session => session.status === 'Realizada'));
+    selected.push(...model.currentSessions.filter(session => sessionAllowsActivity(session)));
   }
   return selected;
 }
@@ -343,7 +336,7 @@ export async function listActivityMediaPresence(context, rawEntries = []) {
   }
 
   if (requestedBySessionId.size === 0) {
-    return { sessionIds: [], queryCount: 0, documentsRead: 0 };
+    return { sessionIds: [], statusRecords: [], queryCount: 0, documentsRead: 0 };
   }
 
   const allowedPatientIds = context.role === 'professional'
@@ -354,7 +347,7 @@ export async function listActivityMediaPresence(context, rawEntries = []) {
     requestedSessionIds.map(sessionId => activityUploadStatusRef(context, sessionId)),
   );
 
-  const sessionIds = snapshots
+  const statusRecords = snapshots
     .filter(item => item.exists)
     .filter(item => {
       const data = item.data() || {};
@@ -362,13 +355,17 @@ export async function listActivityMediaPresence(context, rawEntries = []) {
       const storedPatientId = sanitizeText(data.patientId, 128);
       if (!storedPatientId || storedPatientId !== requestedPatientId) return false;
       if (allowedPatientIds && !allowedPatientIds.has(storedPatientId)) return false;
-      return data.hasMedia === true || Number(data.mediaCount || 0) > 0;
+      return true;
     })
-    .map(item => item.id)
+    .map(item => normalizeStatusRecord(item));
+  const sessionIds = statusRecords
+    .filter(record => record.hasMedia || record.mediaCount > 0)
+    .map(record => record.sessionId)
     .sort();
 
   return {
     sessionIds,
+    statusRecords,
     queryCount: Math.ceil(requestedSessionIds.length / 400),
     documentsRead: snapshots.length,
   };
@@ -606,8 +603,8 @@ async function requireRealizedSession(context, patientId, sessionId) {
   if (!sessionSnapshot.exists) throw activityError('activity-records/session-not-found', 'A sessão selecionada não foi encontrada.', 404);
   const session = sessionSnapshot.data() || {};
   if (session.patientId !== patientId) throw activityError('activity-records/session-mismatch', 'A sessão selecionada não pertence a esta criança.', 409);
-  if (session.status !== 'Realizada' || session.isBlocked) {
-    throw activityError('activity-records/justification-not-allowed', 'A justificativa só pode ser registrada em uma sessão realizada.', 409);
+  if (!sessionAllowsActivity(session)) {
+    throw activityError('activity-records/justification-not-allowed', 'A justificativa só pode ser registrada em uma sessão Realizada ou Reposição.', 409);
   }
   return { patient: patientSnapshot.data(), session: { id: sessionId, ...session } };
 }
@@ -615,10 +612,10 @@ async function requireRealizedSession(context, patientId, sessionId) {
 export async function saveActivitySessionJustification(context, input) {
   const patientId = sanitizeText(input.patientId, 128);
   const sessionId = sanitizeText(input.sessionId, 128);
-  const reason = sanitizeText(input.reason, 80).toLocaleLowerCase('pt-BR');
+  const reason = normalizeActivityJustificationReason(input.reason);
   const note = sanitizeText(input.note, 1000);
-  if (!JUSTIFICATION_REASONS.has(reason)) throw activityError('activity-records/invalid-justification', 'Selecione uma justificativa válida.');
-  if (reason === 'outro' && !note) throw activityError('activity-records/justification-note-required', 'Descreva a justificativa selecionada como Outro.');
+  if (!reason) throw activityError('activity-records/invalid-justification', 'Selecione uma justificativa válida.');
+  if (reason === 'other' && !note) throw activityError('activity-records/justification-note-required', 'Descreva a justificativa selecionada como Outro motivo.');
   await requireRealizedSession(context, patientId, sessionId);
 
   const ref = activityUploadStatusRef(context, sessionId);

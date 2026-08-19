@@ -45,6 +45,7 @@ import Modal from '../Common/Modal';
 import PatientPhoto from '../Common/PatientPhoto';
 import ActivityRecordModal from './ActivityRecordModal';
 import ActivityRecordsTab from './ActivityRecordsTab';
+import { ACTIVITY_NO_MEDIA_REASON_OPTIONS, getActivityJustificationReasonLabel } from '../../../shared/activityGalleryStatus.js';
 
 interface Props {
   patients: Patient[];
@@ -57,16 +58,6 @@ interface Props {
 }
 
 const PAGE_SIZE = 20;
-
-const JUSTIFICATION_REASONS: ActivityGalleryJustificationReason[] = [
-  'atividade sem registro visual',
-  'responsável não autorizou',
-  'sessão administrativa',
-  'atendimento virtual',
-  'mídia não produzida',
-  'problema técnico',
-  'outro',
-];
 
 const EMPTY_RESPONSE: ProfessionalActivityGalleryResponse = {
   monitoringStart: null,
@@ -153,7 +144,7 @@ function getSessionMessage(session: ActivityGallerySessionSummary): string {
     return `${base} — prazo restante aproximado: ${formatElapsedHours(remaining)}.`;
   }
   if (session.state === 'sent') return `${base} — ${session.mediaCount} ${session.mediaCount === 1 ? 'mídia vinculada' : 'mídias vinculadas'}.`;
-  if (session.state === 'excused') return `${base} — ${session.justification?.reason || 'dispensada de mídia'}.`;
+  if (session.state === 'excused') return `${base} — ${getActivityJustificationReasonLabel(session.justification?.reason)}.`;
   return base;
 }
 
@@ -186,7 +177,7 @@ export default function ProfessionalActivityGallery({
   const [selectedGallerySessionId, setSelectedGallerySessionId] = useState('');
   const [registerTarget, setRegisterTarget] = useState<{ patient: Patient; sessions: Session[]; availableSessions: Session[] } | null>(null);
   const [justificationTarget, setJustificationTarget] = useState<{ patient: Patient; session: ActivityGallerySessionSummary } | null>(null);
-  const [justificationReason, setJustificationReason] = useState<ActivityGalleryJustificationReason>('atividade sem registro visual');
+  const [justificationReason, setJustificationReason] = useState<ActivityGalleryJustificationReason>('responsible_accompanied');
   const [justificationNote, setJustificationNote] = useState('');
   const [justificationBusy, setJustificationBusy] = useState(false);
   const [auditTarget, setAuditTarget] = useState<{ patient: Patient; session: ActivityGallerySessionSummary } | null>(null);
@@ -338,13 +329,13 @@ export default function ProfessionalActivityGallery({
 
   const openJustification = (patient: Patient, session: ActivityGallerySessionSummary) => {
     setJustificationTarget({ patient, session });
-    setJustificationReason(session.justification?.reason || 'atividade sem registro visual');
+    setJustificationReason(session.justification?.reason || 'responsible_accompanied');
     setJustificationNote(session.justification?.note || '');
   };
 
   const saveJustification = async () => {
     if (!justificationTarget) return;
-    if (justificationReason === 'outro' && !justificationNote.trim()) {
+    if (justificationReason === 'other' && !justificationNote.trim()) {
       showToast('Descreva a justificativa selecionada como Outro.', 'error');
       return;
     }
@@ -709,11 +700,11 @@ export default function ProfessionalActivityGallery({
             <div>
               <label className="mb-1 block text-[10px] font-black uppercase text-clinic-text-faint">Justificativa</label>
               <select value={justificationReason} onChange={event => setJustificationReason(event.target.value as ActivityGalleryJustificationReason)} className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm">
-                {JUSTIFICATION_REASONS.map(reason => <option key={reason} value={reason}>{reason.charAt(0).toUpperCase() + reason.slice(1)}</option>)}
+                {ACTIVITY_NO_MEDIA_REASON_OPTIONS.map(option => <option key={option.code} value={option.code}>{option.label}</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-[10px] font-black uppercase text-clinic-text-faint">Observação {justificationReason === 'outro' ? 'obrigatória' : 'opcional'}</label>
+              <label className="mb-1 block text-[10px] font-black uppercase text-clinic-text-faint">Observação {justificationReason === 'other' ? 'obrigatória' : 'opcional'}</label>
               <textarea value={justificationNote} onChange={event => setJustificationNote(event.target.value)} className="min-h-28 w-full rounded-xl border border-clinic-border bg-clinic-bg p-3 text-sm" maxLength={1000} />
             </div>
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
