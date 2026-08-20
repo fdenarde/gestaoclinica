@@ -51,6 +51,15 @@ interface AccessProfileResponse {
   profile: AccessProfile | null;
 }
 
+export interface CanonicalProfessionalCandidateResponse {
+  professionalId: string;
+  contexts: string[];
+}
+
+export interface CanonicalProfessionalCandidatesResponse {
+  candidates: CanonicalProfessionalCandidateResponse[];
+}
+
 interface AccessRequestResponse {
   request: AccessRequestRecord;
   profile: AccessProfile | null;
@@ -334,6 +343,10 @@ export async function getAccessProfile(user?: User, options: RequestOptions = {}
     });
   accessProfileRequests.set(requestKey, profileRequest);
   return profileRequest;
+}
+
+export async function getCanonicalProfessionalCandidates(user?: User): Promise<CanonicalProfessionalCandidatesResponse> {
+  return request<CanonicalProfessionalCandidatesResponse>('GET', undefined, user, '?mode=canonicalProfessional');
 }
 
 export async function submitAccessRequest(

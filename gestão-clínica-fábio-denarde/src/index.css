@@ -372,6 +372,97 @@
   }
 }
 
+@layer components {
+  .psychology-desktop-link {
+    display: none !important;
+  }
+
+  .psychology-mobile-content {
+    padding-bottom: calc(5.75rem + env(safe-area-inset-bottom));
+  }
+
+  .psychology-bottom-nav {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 140;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.25rem;
+    padding: 0.5rem 0.5rem max(0.5rem, env(safe-area-inset-bottom));
+    border-top: 1px solid color-mix(in srgb, var(--color-clinic-border) 82%, transparent);
+    background: color-mix(in srgb, var(--color-clinic-surface) 96%, transparent);
+    box-shadow: 0 -8px 24px rgba(45, 29, 80, 0.08);
+    backdrop-filter: blur(16px);
+  }
+
+  .psychology-bottom-nav-item {
+    display: flex;
+    min-height: 3.25rem;
+    min-width: 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+    border-radius: 0.9rem;
+    color: var(--color-clinic-text-muted);
+    font-size: 0.72rem;
+    font-weight: 900;
+    line-height: 1.1;
+    transition: background-color 160ms ease, color 160ms ease;
+  }
+
+  .psychology-bottom-nav-item.is-active {
+    color: #5b21b6;
+    background: #f3e8ff;
+  }
+
+  .psychology-bottom-nav-item:focus-visible {
+    outline: 2px solid #7c3aed;
+    outline-offset: -2px;
+  }
+
+  .psychology-more-sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 160;
+    display: flex;
+    align-items: flex-end;
+    padding: 0.75rem 0.75rem calc(5.75rem + env(safe-area-inset-bottom));
+    background: rgba(15, 23, 42, 0.34);
+  }
+
+  .psychology-more-sheet {
+    width: 100%;
+    max-height: min(34rem, calc(100vh - 7rem));
+    overflow-y: auto;
+    border: 1px solid var(--color-clinic-border);
+    border-radius: 1.5rem;
+    padding: 1rem;
+    background: var(--color-clinic-surface);
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+  }
+
+  @media (min-width: 768px) {
+    .psychology-mobile-content {
+      padding-bottom: 1.25rem;
+    }
+  }
+
+  @media (min-width: 640px) {
+    .psychology-desktop-link {
+      display: inline-flex !important;
+    }
+  }
+
+  @media (max-width: 767px) {
+    [data-testid="psychology-pilot"] button[aria-label^="Fechar"] {
+      min-height: 3rem;
+      min-width: 3rem;
+    }
+  }
+}
+
 /* MONITORING_GREEN_THEME_START */
 @layer utilities {
   .monitoring-theme-green {

@@ -276,6 +276,8 @@ export interface WhatsappAutomationControl {
 export interface Session {
   id: string;
   patientId: string;
+  /** Vínculo canônico opcional durante a transição; nunca inferir de nome, telefone ou e-mail. */
+  professionalId?: string;
   date: string; // ISO String
   time: string;
   type: SessionType;
@@ -375,6 +377,9 @@ export interface Evolution {
 }
 
 export type PersonalAppointmentType =
+  | 'Compromisso pessoal'
+  | 'Bloqueio de horário'
+  | 'Mentoria'
   | 'Médico'
   | 'Estudar'
   | 'Cortar cabelo'
@@ -402,6 +407,7 @@ export type AlarmSound = string;
 export interface PersonalAppointment {
   id: string;
   type: PersonalAppointmentType;
+  title?: string;
   date: string; // YYYY-MM-DD (primeira ocorrência)
   time: string; // HH:MM
   durationMinutes: number; // default 60

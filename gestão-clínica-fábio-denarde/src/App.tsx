@@ -23,6 +23,7 @@ import NotificationCenter from './components/Notifications/NotificationCenter';
 import {
   clearAccessApiCaches,
   getAccessProfile,
+  getCanonicalProfessionalCandidates,
   getProfessionalPortalNotifications,
   manageProfessionalPortalNotifications,
   clearMonitoringSessionId,
@@ -35,6 +36,12 @@ import type {
   ProfessionalNotificationBulkScope,
   ProfessionalPortalNotification,
 } from './types/access';
+import type { CanonicalProfessionalCandidatesResponse } from './lib/accessApi';
+import {
+  attachCanonicalProfessionalToNewSessions,
+  requiresCanonicalProfessional,
+  resolveCanonicalProfessionalForNewSession,
+} from './features/whatsapp-persistence/canonicalSessionProfessional';
 import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
 import { GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT } from './lib/googlePhotosAlbumsApi';
 import { loadUnregisteredActivities } from './lib/unregisteredActivities';
@@ -49,6 +56,8 @@ import {
   storeSidebarCollapsed,
   type NavigationMode,
 } from './lib/navigationPreferences';
+import PsychologyPilot from './features/psychology-pilot/PsychologyPilot';
+import { isPsychologyPilotRoute } from './features/psychology-pilot/psychologyDomain';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -204,6 +213,18 @@ function formatAuditDuration(value?: number): string {
 }
 
 export default function App() {
+  const psychologyPilotRoute = isPsychologyPilotRoute(
+    window.location.pathname,
+    window.location.search,
+    Boolean(import.meta.env.DEV),
+    window.location.hostname,
+  );
+
+  if (psychologyPilotRoute) return <PsychologyPilot />;
+  return <AuthenticatedApp />;
+}
+
+function AuthenticatedApp() {
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
   const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
     ? 'responsible'
@@ -248,6 +269,10 @@ export default function App() {
   const notificationLastLoadedAtRef = useRef(0);
   const notificationInFlightRef = useRef<Promise<boolean> | null>(null);
   const forceAccessTokenRefreshRef = useRef(false);
+  const canonicalProfessionalRequestRef = useRef<{
+    uid: string;
+    promise: Promise<CanonicalProfessionalCandidatesResponse>;
+  } | null>(null);
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
   const whatsappOperationalReportState = useDailyWhatsappOperationalReport(
@@ -321,6 +346,7 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
+        canonicalProfessionalRequestRef.current = null;
         setAccessProfile(null);
         setSelectedAccessRole(directAccessRole);
         setAccessLoading(false);
@@ -713,6 +739,35 @@ export default function App() {
     
     try {
       let stateToPersist = newState;
+      if (newState.sessions) {
+        const currentSessions = state.sessions;
+        const nextSessions = newState.sessions;
+        const currentIds = new Set(currentSessions.map(session => session.id));
+        const hasNewClinicalSession = nextSessions.some(
+          session => !currentIds.has(session.id) && requiresCanonicalProfessional(session),
+        );
+
+        if (hasNewClinicalSession) {
+          const cachedRequest = canonicalProfessionalRequestRef.current;
+          const candidateRequest = cachedRequest?.uid === user.uid
+            ? cachedRequest.promise
+            : getCanonicalProfessionalCandidates(user);
+          canonicalProfessionalRequestRef.current = { uid: user.uid, promise: candidateRequest };
+          const candidateResponse = await candidateRequest;
+          const professionalId = resolveCanonicalProfessionalForNewSession({
+            candidates: candidateResponse.candidates,
+          });
+          stateToPersist = {
+            ...newState,
+            sessions: attachCanonicalProfessionalToNewSessions({
+              currentSessions,
+              nextSessions,
+              professionalId,
+            }),
+          };
+        }
+      }
+
       let batch = writeBatch(db);
       let opCount = 0;
 
