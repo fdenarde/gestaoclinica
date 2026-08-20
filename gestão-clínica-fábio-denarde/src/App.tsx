@@ -23,7 +23,6 @@ import NotificationCenter from './components/Notifications/NotificationCenter';
 import {
   clearAccessApiCaches,
   getAccessProfile,
-  getCanonicalProfessionalCandidates,
   getProfessionalPortalNotifications,
   manageProfessionalPortalNotifications,
   clearMonitoringSessionId,
@@ -36,12 +35,6 @@ import type {
   ProfessionalNotificationBulkScope,
   ProfessionalPortalNotification,
 } from './types/access';
-import type { CanonicalProfessionalCandidatesResponse } from './lib/accessApi';
-import {
-  attachCanonicalProfessionalToNewSessions,
-  requiresCanonicalProfessional,
-  resolveCanonicalProfessionalForNewSession,
-} from './features/whatsapp-persistence/canonicalSessionProfessional';
 import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
 import { GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT } from './lib/googlePhotosAlbumsApi';
 import { loadUnregisteredActivities } from './lib/unregisteredActivities';
@@ -274,10 +267,6 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
   const notificationLastLoadedAtRef = useRef(0);
   const notificationInFlightRef = useRef<Promise<boolean> | null>(null);
   const forceAccessTokenRefreshRef = useRef(false);
-  const canonicalProfessionalRequestRef = useRef<{
-    uid: string;
-    promise: Promise<CanonicalProfessionalCandidatesResponse>;
-  } | null>(null);
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
   const whatsappOperationalReportState = useDailyWhatsappOperationalReport(
@@ -351,7 +340,6 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
-        canonicalProfessionalRequestRef.current = null;
         setAccessProfile(null);
         setSelectedAccessRole(directAccessRole);
         setAccessLoading(false);
@@ -743,35 +731,11 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     );
     
     try {
+      // AuthenticatedApp is the legacy Neuro clinical AppState store. Its session
+      // writes must not depend on the separate canonical-professional lookup. The
+      // canonical persistence boundaries remain fail-closed downstream, while
+      // Psychology uses its own explicit scoped persistence route.
       let stateToPersist = newState;
-      if (newState.sessions) {
-        const currentSessions = state.sessions;
-        const nextSessions = newState.sessions;
-        const currentIds = new Set(currentSessions.map(session => session.id));
-        const hasNewClinicalSession = nextSessions.some(
-          session => !currentIds.has(session.id) && requiresCanonicalProfessional(session),
-        );
-
-        if (hasNewClinicalSession) {
-          const cachedRequest = canonicalProfessionalRequestRef.current;
-          const candidateRequest = cachedRequest?.uid === user.uid
-            ? cachedRequest.promise
-            : getCanonicalProfessionalCandidates(user);
-          canonicalProfessionalRequestRef.current = { uid: user.uid, promise: candidateRequest };
-          const candidateResponse = await candidateRequest;
-          const professionalId = resolveCanonicalProfessionalForNewSession({
-            candidates: candidateResponse.candidates,
-          });
-          stateToPersist = {
-            ...newState,
-            sessions: attachCanonicalProfessionalToNewSessions({
-              currentSessions,
-              nextSessions,
-              professionalId,
-            }),
-          };
-        }
-      }
 
       let batch = writeBatch(db);
       let opCount = 0;

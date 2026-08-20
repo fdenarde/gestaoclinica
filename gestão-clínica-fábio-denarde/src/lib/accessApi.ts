@@ -35,13 +35,6 @@ const ACTIVITY_RECORDS_API_ENDPOINT =
     ? 'https://gestaoclinica-solucoes.vercel.app/api/activity-records'
     : '/api/activity-records';
 
-interface ApiErrorPayload {
-  error?: {
-    code?: string;
-    message?: string;
-  };
-}
-
 interface RequestOptions {
   forceRefreshToken?: boolean;
   activeRole?: AccessProfile['role'] | null;
@@ -58,6 +51,51 @@ export interface CanonicalProfessionalCandidateResponse {
 
 export interface CanonicalProfessionalCandidatesResponse {
   candidates: CanonicalProfessionalCandidateResponse[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function validateCanonicalProfessionalCandidatesResponse(
+  value: unknown,
+): CanonicalProfessionalCandidatesResponse {
+  if (!isRecord(value) || !Array.isArray(value.candidates)) {
+    throw createApiError(
+      'access/invalid-canonical-professional-response',
+      'O servidor retornou uma lista de profissionais canônicos inválida.',
+    );
+  }
+
+  const candidates = value.candidates.map((candidate, index) => {
+    if (!isRecord(candidate)) {
+      throw createApiError(
+        'access/invalid-canonical-professional-response',
+        `O candidato canônico na posição ${index} é inválido.`,
+      );
+    }
+
+    const professionalId = candidate.professionalId;
+    const contexts = candidate.contexts;
+    if (
+      typeof professionalId !== 'string'
+      || !professionalId.trim()
+      || !Array.isArray(contexts)
+      || contexts.some(context => typeof context !== 'string')
+    ) {
+      throw createApiError(
+        'access/invalid-canonical-professional-response',
+        `O candidato canônico na posição ${index} não respeita o contrato esperado.`,
+      );
+    }
+
+    return {
+      professionalId: professionalId.trim(),
+      contexts: [...new Set(contexts.map(context => context.trim()).filter(Boolean))],
+    };
+  });
+
+  return { candidates };
 }
 
 interface AccessRequestResponse {
@@ -260,7 +298,7 @@ async function getToken(user?: User, forceRefreshToken = false): Promise<string>
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
-  let payload: T & ApiErrorPayload;
+  let payload: unknown;
   try {
     payload = await response.json();
   } catch {
@@ -268,13 +306,14 @@ async function readResponse<T>(response: Response): Promise<T> {
   }
 
   if (!response.ok) {
+    const errorPayload = isRecord(payload) && isRecord(payload.error) ? payload.error : {};
     throw createApiError(
-      payload.error?.code || 'access/request-failed',
-      payload.error?.message || 'Não foi possível concluir a solicitação.',
+      typeof errorPayload.code === 'string' ? errorPayload.code : 'access/request-failed',
+      typeof errorPayload.message === 'string' ? errorPayload.message : 'Não foi possível concluir a solicitação.',
     );
   }
 
-  return payload;
+  return payload as T;
 }
 
 async function request<T>(
@@ -346,7 +385,8 @@ export async function getAccessProfile(user?: User, options: RequestOptions = {}
 }
 
 export async function getCanonicalProfessionalCandidates(user?: User): Promise<CanonicalProfessionalCandidatesResponse> {
-  return request<CanonicalProfessionalCandidatesResponse>('GET', undefined, user, '?mode=canonicalProfessional');
+  const response = await request<unknown>('GET', undefined, user, '?mode=canonicalProfessional');
+  return validateCanonicalProfessionalCandidatesResponse(response);
 }
 
 export async function submitAccessRequest(

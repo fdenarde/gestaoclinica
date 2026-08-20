@@ -11,16 +11,51 @@ function normalizeCandidateContexts(contexts: readonly string[] | undefined): st
   return [...new Set((contexts || []).map(context => String(context || '').trim()).filter(Boolean))];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function normalizeCanonicalProfessionalCandidates(
+  candidates: unknown,
+): CanonicalProfessionalCandidate[] {
+  if (!Array.isArray(candidates)) {
+    throw new Error('A lista de candidatos canônicos é inválida.');
+  }
+
+  return candidates.map((candidate, index) => {
+    if (!isRecord(candidate)) {
+      throw new Error(`O candidato canônico na posição ${index} é inválido.`);
+    }
+
+    const professionalId = candidate.professionalId;
+    const contexts = candidate.contexts;
+    if (
+      typeof professionalId !== 'string'
+      || !Array.isArray(contexts)
+      || contexts.some(context => typeof context !== 'string')
+      || ('active' in candidate && typeof candidate.active !== 'boolean')
+    ) {
+      throw new Error(`O candidato canônico na posição ${index} não respeita o contrato esperado.`);
+    }
+
+    return {
+      professionalId: professionalId.trim(),
+      contexts: normalizeCandidateContexts(contexts),
+      ...(typeof candidate.active === 'boolean' ? { active: candidate.active } : {}),
+    };
+  });
+}
+
 export function resolveCanonicalProfessionalForNewSession({
   candidates,
   context,
 }: {
-  candidates: readonly CanonicalProfessionalCandidate[];
+  candidates: unknown;
   context?: string | null;
 }): string {
   const byProfessionalId = new Map<string, Set<string>>();
 
-  for (const candidate of candidates) {
+  for (const candidate of normalizeCanonicalProfessionalCandidates(candidates)) {
     if (candidate.active === false) continue;
     const professionalId = String(candidate.professionalId || '').trim();
     if (!isCanonicalProfessionalId(professionalId)) continue;
