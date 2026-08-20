@@ -216,15 +216,12 @@ export default function App() {
   const psychologyPilotRoute = isPsychologyPilotRoute(
     window.location.pathname,
     window.location.search,
-    Boolean(import.meta.env.DEV),
-    window.location.hostname,
   );
 
-  if (psychologyPilotRoute) return <PsychologyPilot />;
-  return <AuthenticatedApp />;
+  return <AuthenticatedApp psychologyPilotRoute={psychologyPilotRoute} />;
 }
 
-function AuthenticatedApp() {
+function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: boolean }) {
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
   const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
     ? 'responsible'
@@ -1036,6 +1033,8 @@ function AuthenticatedApp() {
       />
     );
   }
+
+  if (psychologyPilotRoute) return <PsychologyPilot />;
 
   const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
     isPendingExternalRegistrationStatus(form.status)

@@ -814,7 +814,6 @@ export function parsePsychologyStore(raw: string | null, scope = createPsycholog
   }
 }
 
-export function isPsychologyPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
-  if (!isDev || !['localhost', '127.0.0.1'].includes(hostname)) return false;
+export function isPsychologyPilotRoute(pathname: string, search: string): boolean {
   return pathname.replace(/\/+$/, '') === '/psicologia' || new URLSearchParams(search).get('psicologia') === '1';
 }

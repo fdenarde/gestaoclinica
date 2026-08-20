@@ -11,9 +11,14 @@ const agendaScale = await readFile(resolve(root, 'src/features/psychology-pilot/
 const psychologyPersonalAgenda = await readFile(resolve(root, 'src/features/psychology-pilot/PsychologyPersonalAgenda.tsx'), 'utf8');
 const app = await readFile(resolve(root, 'src/App.tsx'), 'utf8');
 
-test('entrada local do piloto é limitada a desenvolvimento em localhost', () => {
-  assert.match(domain, /if \(!isDev \|\| !\['localhost', '127\.0\.0\.1'\]\.includes\(hostname\)\) return false/);
-  assert.match(app, /<PsychologyPilot \/>/);
+test('rota privada da Psicologia reconhece produção, mas mantém o guard autenticado', () => {
+  assert.doesNotMatch(domain, /!isDev|localhost.*127\.0\.0\.1/);
+  assert.ok(domain.includes("pathname.replace(/\\/+$/, '') === '/psicologia'"));
+  const guardIndex = app.indexOf('if (!user || !canAccessInternalSystem)');
+  const pilotIndex = app.indexOf('if (psychologyPilotRoute) return <PsychologyPilot />;');
+  assert.ok(guardIndex >= 0, 'o guard de acesso interno continua presente');
+  assert.ok(pilotIndex > guardIndex, 'PsychologyPilot somente renderiza depois do guard');
+  assert.doesNotMatch(app, /if \(psychologyPilotRoute\) return <PsychologyPilot \/>;\s*return <AuthenticatedApp/);
 });
 
 test('Psicologia oferece Meu Dia, Pacientes, Agenda e Agenda Pessoal', () => {
