@@ -1030,6 +1030,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         onRetryProfile={handleRetryAccessProfile}
         onChooseAnotherRole={directAccessRole ? undefined : switchAccessRole}
         onLogout={handleAccessPortalLogout}
+        visualContext={psychologyPilotRoute ? 'PSICOLOGIA' : 'DEFAULT'}
       />
     );
   }

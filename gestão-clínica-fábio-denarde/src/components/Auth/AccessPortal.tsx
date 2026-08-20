@@ -30,6 +30,7 @@ import type { AccessProfile, AccessRequestInput, AccessRequestRole } from '../..
 import BrandLogo from '../Common/BrandLogo';
 
 type PortalView = 'login' | 'request' | 'reset';
+export type AuthVisualContext = 'DEFAULT' | 'PSICOLOGIA';
 
 interface AccessPortalProps {
   user: User | null;
@@ -43,6 +44,7 @@ interface AccessPortalProps {
   onChooseAnotherRole?: () => void;
   onLogout?: () => Promise<void> | void;
   accessRouteRole?: AccessRequestRole | null;
+  visualContext?: AuthVisualContext;
 }
 
 const LOGIN_ROLE_OPTIONS: Array<{
@@ -162,6 +164,7 @@ export default function AccessPortal({
   onChooseAnotherRole,
   onLogout,
   accessRouteRole = null,
+  visualContext = 'DEFAULT',
 }: AccessPortalProps) {
   const [view, setView] = useState<PortalView>(user ? 'request' : 'login');
   const [email, setEmail] = useState(user?.email || '');
@@ -180,6 +183,7 @@ export default function AccessPortal({
   const [requestSubmitted, setRequestSubmitted] = useState(false);
   const [informationResponse, setInformationResponse] = useState('');
   const directRoute = Boolean(accessRouteRole);
+  const psychologyAuthTheme = visualContext === 'PSICOLOGIA';
   const effectiveLoginRole = accessRouteRole || selectedLoginRole;
   const directRouteCopy = accessRouteRole === 'responsible'
     ? { title: 'Acesso do Responsável', description: 'Entre para consultar os dados e materiais autorizados.' }
@@ -383,7 +387,7 @@ export default function AccessPortal({
                   onSelectedLoginRoleChange(option.role);
                 }}
                 className={`rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-clinic-primary/35 ${selected
-                  ? 'border-clinic-primary bg-status-green-bg shadow-sm'
+                  ? `border-clinic-primary ${psychologyAuthTheme ? 'bg-violet-50' : 'bg-status-green-bg'} shadow-sm`
                   : 'border-clinic-border bg-white hover:border-clinic-primary hover:bg-clinic-bg'}`}
               >
                 <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${selected
@@ -772,7 +776,10 @@ export default function AccessPortal({
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-clinic-bg px-4 py-6 sm:px-6 lg:flex lg:items-center lg:py-10">
+    <div
+      className={`auth-portal relative min-h-screen overflow-hidden bg-clinic-bg px-4 py-6 sm:px-6 lg:flex lg:items-center lg:py-10 ${psychologyAuthTheme ? 'auth-psychology-theme' : ''}`}
+      data-auth-visual-context={visualContext}
+    >
       <div className="pointer-events-none absolute -left-32 -top-40 h-96 w-96 rounded-full bg-clinic-primary/10 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-40 -right-24 h-[28rem] w-[28rem] rounded-full bg-clinic-header/10 blur-3xl" />
 
