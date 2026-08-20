@@ -8,7 +8,7 @@ import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
 import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
-import { applyTheme, resolveTheme, storeTheme, type AppTheme } from './lib/theme';
+import { applyTheme, resolveTheme, storeTheme, type AppTheme, type VisualContext } from './lib/theme';
 import packageJson from '../package.json';
 
 import { auth, db, logout, handleFirestoreError, OperationType } from './firebase';
@@ -126,18 +126,25 @@ function ProfileChoiceScreen({
   profile,
   onChoose,
   onLogout,
+  visualContext,
 }: {
   profile: AccessProfile;
   onChoose: (role: AccessRole) => void;
   onLogout: () => void;
+  visualContext: VisualContext;
 }) {
   const roles = getActiveProfileRoles(profile);
+  const psychologyContext = visualContext === 'PSICOLOGIA';
   return (
-    <div className="flex min-h-screen items-center justify-center bg-clinic-bg p-4">
+    <div
+      className={`flex min-h-screen items-center justify-center bg-clinic-bg p-4 ${psychologyContext ? 'auth-psychology-theme' : ''}`}
+      data-auth-visual-context={visualContext}
+    >
       <section className="w-full max-w-3xl rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-7">
         <BrandLogo
           variant="horizontal"
-          theme="health-balance"
+          theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined}
+          visualContext={visualContext}
           name="Fábio Denarde"
           subtitle="Gestão Clínica e Acompanhamento"
           className="mb-6"
@@ -155,7 +162,7 @@ function ProfileChoiceScreen({
               onClick={() => onChoose(role)}
               className="rounded-xl border border-clinic-border bg-white p-4 text-left shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg focus:outline-none focus:ring-2 focus:ring-clinic-primary/35"
             >
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-status-green-bg text-status-green-text">
+              <span className={`flex h-11 w-11 items-center justify-center rounded-xl ${psychologyContext ? 'bg-violet-100 text-violet-700' : 'bg-status-green-bg text-status-green-text'}`}>
                 {role === 'monitoring' ? <Monitor size={21} /> : <UserRound size={21} />}
               </span>
               <span className="mt-4 block text-lg font-black text-clinic-text">
@@ -222,6 +229,7 @@ export default function App() {
 }
 
 function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: boolean }) {
+  const visualContext: VisualContext = psychologyPilotRoute ? 'PSICOLOGIA' : 'DEFAULT';
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
   const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
     ? 'responsible'
@@ -933,7 +941,10 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-clinic-bg">
+      <div
+        className={`min-h-screen flex items-center justify-center bg-clinic-bg ${visualContext === 'PSICOLOGIA' ? 'auth-psychology-theme' : ''}`}
+        data-auth-visual-context={visualContext}
+      >
         <Loader2 className="w-12 h-12 text-clinic-primary animate-spin" />
       </div>
     );
@@ -955,6 +966,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         required
         onProfileUpdated={handlePasswordProfileUpdated}
         onLogout={handleAccessPortalLogout}
+        visualContext={visualContext}
       />
     );
   }
@@ -965,6 +977,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         profile={accessProfile}
         onChoose={chooseAccessRole}
         onLogout={() => void handleAccessPortalLogout()}
+        visualContext={visualContext}
       />
     );
   }
@@ -988,6 +1001,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
+            visualContext={visualContext}
           />
         )}
       </>
@@ -1006,6 +1020,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
+            visualContext={visualContext}
           />
         )}
       </>
@@ -1030,7 +1045,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         onRetryProfile={handleRetryAccessProfile}
         onChooseAnotherRole={directAccessRole ? undefined : switchAccessRole}
         onLogout={handleAccessPortalLogout}
-        visualContext={psychologyPilotRoute ? 'PSICOLOGIA' : 'DEFAULT'}
+        visualContext={visualContext}
       />
     );
   }

@@ -24,13 +24,13 @@ import {
   requestPasswordReset,
 } from '../../firebase';
 import { respondAdditionalAccessInformation, submitAccessRequest } from '../../lib/accessApi';
-import { applyTheme } from '../../lib/theme';
+import { applyTheme, type VisualContext } from '../../lib/theme';
 import { publicAccessIdentifier } from '../../../shared/accessCredentials.js';
 import type { AccessProfile, AccessRequestInput, AccessRequestRole } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
 
 type PortalView = 'login' | 'request' | 'reset';
-export type AuthVisualContext = 'DEFAULT' | 'PSICOLOGIA';
+export type AuthVisualContext = VisualContext;
 
 interface AccessPortalProps {
   user: User | null;
@@ -192,8 +192,12 @@ export default function AccessPortal({
       : { title: 'Acesso ao Monitoramento', description: 'Entre no painel de acompanhamento em modo somente leitura.' };
 
   useLayoutEffect(() => {
-    applyTheme('health-balance');
-  }, []);
+    if (psychologyAuthTheme) {
+      applyTheme('current');
+    } else {
+      applyTheme('health-balance');
+    }
+  }, [psychologyAuthTheme]);
 
   useEffect(() => {
     if (accessRouteRole && selectedLoginRole !== accessRouteRole) {
@@ -787,7 +791,7 @@ export default function AccessPortal({
         <aside className="relative hidden min-h-[680px] overflow-hidden bg-clinic-header p-10 text-white lg:flex lg:flex-col lg:justify-between">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.18),transparent_38%)]" />
           <div className="relative">
-            <BrandLogo name="Denarde Soluções" subtitle="Gestão Clínica e Acompanhamento" />
+            <BrandLogo name="Denarde Soluções" subtitle="Gestão Clínica e Acompanhamento" visualContext={visualContext} />
           </div>
           <div className="relative max-w-sm">
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-white/65">Gestão Clínica e Acompanhamento</p>
@@ -806,7 +810,7 @@ export default function AccessPortal({
 
         <main className="max-h-[calc(100vh-3rem)] overflow-y-auto p-6 sm:p-10 lg:max-h-[760px] lg:p-12">
           <div className="mb-8 rounded-2xl bg-clinic-header p-4 lg:hidden">
-            <BrandLogo variant="compact" name="Denarde Soluções" subtitle="Gestão Clínica e Acompanhamento" className="justify-center" />
+            <BrandLogo variant="compact" name="Denarde Soluções" subtitle="Gestão Clínica e Acompanhamento" visualContext={visualContext} className="justify-center" />
           </div>
           <div className="mx-auto w-full max-w-lg">{renderProfileState()}</div>
         </main>

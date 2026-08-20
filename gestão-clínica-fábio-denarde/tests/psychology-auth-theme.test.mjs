@@ -4,11 +4,16 @@ import test from 'node:test';
 
 const appSource = fs.readFileSync('src/App.tsx', 'utf8');
 const authSource = fs.readFileSync('src/components/Auth/AccessPortal.tsx', 'utf8');
+const passwordSource = fs.readFileSync('src/components/Auth/PasswordSecurityPanel.tsx', 'utf8');
+const brandSource = fs.readFileSync('src/components/Common/BrandLogo.tsx', 'utf8');
+const themeSource = fs.readFileSync('src/lib/theme.ts', 'utf8');
 const cssSource = fs.readFileSync('src/index.css', 'utf8');
+const psychologyBrainAsset = fs.statSync('public/brand/brain-psychology.webp');
+const generalBrainAsset = fs.statSync('public/brand/brain-health-balance.webp');
 
 test('rota Psicologia injeta contexto visual no Auth compartilhado', () => {
-  assert.match(appSource, /visualContext=\{psychologyPilotRoute \? 'PSICOLOGIA' : 'DEFAULT'\}/);
-  assert.match(authSource, /export type AuthVisualContext = 'DEFAULT' \| 'PSICOLOGIA'/);
+  assert.match(appSource, /const visualContext: VisualContext = psychologyPilotRoute \? 'PSICOLOGIA' : 'DEFAULT'/);
+  assert.match(authSource, /export type AuthVisualContext = VisualContext/);
   assert.match(authSource, /data-auth-visual-context=\{visualContext\}/);
   assert.doesNotMatch(appSource, /PsychologyLoginPage/);
 });
@@ -22,7 +27,31 @@ test('tema Psicologia reutiliza a paleta violeta existente sem alterar o tema gl
     '--color-clinic-border: #DDD6FE',
   ]) assert.match(cssSource, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(authSource, /psychologyAuthTheme \? 'bg-violet-50' : 'bg-status-green-bg'/);
-  assert.match(authSource, /applyTheme\('health-balance'\)/);
+  assert.match(authSource, /if \(psychologyAuthTheme\) \{\s*applyTheme\('current'\);\s*\} else \{\s*applyTheme\('health-balance'\);/);
+});
+
+test('todas as superfícies pré-entrada recebem o mesmo contexto visual', () => {
+  assert.match(themeSource, /export type VisualContext = 'DEFAULT' \| 'PSICOLOGIA'/);
+  assert.match(appSource, /const visualContext: VisualContext = psychologyPilotRoute \? 'PSICOLOGIA' : 'DEFAULT'/);
+  assert.match(appSource, /<ProfileChoiceScreen[\s\S]*visualContext=\{visualContext\}/);
+  assert.match(appSource, /<PasswordSecurityPanel[\s\S]*visualContext=\{visualContext\}/);
+  assert.match(appSource, /data-auth-visual-context=\{visualContext\}/);
+  for (const surface of ['renderLogin', 'renderReset', 'renderRequest', 'renderBlockedProfile', 'profileLoading', 'profileError']) {
+    assert.match(authSource, new RegExp(surface));
+  }
+  assert.match(passwordSource, /visualContext\?: VisualContext/);
+  assert.match(passwordSource, /auth-psychology-theme/);
+});
+
+test('BrandLogo resolve cérebro contextual sem alterar assets gerais', () => {
+  assert.match(brandSource, /visualContext\?: VisualContext/);
+  assert.match(brandSource, /PSICOLOGIA: 'brain-psychology\.webp'/);
+  for (const asset of ['brain-current.webp', 'brain-calm-tech.webp', 'brain-health-balance.webp', 'brain-soft-welcome.webp']) {
+    assert.match(brandSource, new RegExp(asset.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(brandSource, /data-brand-visual-context/);
+  assert.ok(psychologyBrainAsset.size > 0);
+  assert.notEqual(psychologyBrainAsset.size, generalBrainAsset.size);
 });
 
 test('Auth funcional permanece compartilhado e protegido', () => {

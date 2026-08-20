@@ -199,6 +199,9 @@
     --color-clinic-text: #2E1065;
     --color-clinic-text-muted: #6B5B95;
     --color-clinic-text-faint: #8B7BA8;
+    --logo-text: #FFFFFF;
+    --logo-subtitle: rgba(255, 255, 255, 0.9);
+    --logo-divider: rgba(255, 255, 255, 0.72);
     --shadow-clinic: 0 4px 6px -1px rgba(76, 29, 149, 0.08), 0 2px 4px -1px rgba(76, 29, 149, 0.05);
   }
 

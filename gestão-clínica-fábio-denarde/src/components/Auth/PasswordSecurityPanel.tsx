@@ -4,6 +4,7 @@ import { Eye, EyeOff, KeyRound, Loader2, LockKeyhole, LogOut, ShieldCheck } from
 import { changeCurrentUserPassword } from '../../firebase';
 import { completePasswordChange } from '../../lib/accessApi';
 import { publicAccessIdentifier } from '../../../shared/accessCredentials.js';
+import type { VisualContext } from '../../lib/theme';
 import type { AccessProfile } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
 import Modal from '../Common/Modal';
@@ -14,6 +15,7 @@ interface PasswordSecurityPanelProps {
   required?: boolean;
   onProfileUpdated: (profile: AccessProfile) => void;
   onLogout: () => Promise<void> | void;
+  visualContext?: VisualContext;
 }
 
 function accountLabel(profile: AccessProfile): string {
@@ -26,6 +28,7 @@ export default function PasswordSecurityPanel({
   required = false,
   onProfileUpdated,
   onLogout,
+  visualContext = 'DEFAULT',
 }: PasswordSecurityPanelProps) {
   const [open, setOpen] = useState(required);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -206,9 +209,12 @@ export default function PasswordSecurityPanel({
 
   if (required) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-clinic-bg p-4">
+      <div
+        className={`flex min-h-screen items-center justify-center bg-clinic-bg p-4 ${visualContext === 'PSICOLOGIA' ? 'auth-psychology-theme' : ''}`}
+        data-auth-visual-context={visualContext}
+      >
         <section className="w-full max-w-xl rounded-3xl border border-clinic-border bg-clinic-surface p-6 shadow-2xl sm:p-8">
-          <BrandLogo variant="horizontal" theme="health-balance" name="Denarde Soluções" subtitle="Segurança da conta" />
+          <BrandLogo variant="horizontal" visualContext={visualContext} theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined} name="Denarde Soluções" subtitle="Segurança da conta" />
           <div className="mt-7">
             <p className="text-xs font-black uppercase tracking-[0.16em] text-clinic-primary">Primeiro acesso</p>
             <h1 className="mt-2 text-3xl font-black text-clinic-text">Crie sua senha particular</h1>

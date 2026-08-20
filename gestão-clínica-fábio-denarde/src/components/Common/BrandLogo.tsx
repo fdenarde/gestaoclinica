@@ -1,11 +1,12 @@
 import React from 'react';
-import { DEFAULT_APP_THEME, isAppTheme, type AppTheme } from '../../lib/theme';
+import { DEFAULT_APP_THEME, isAppTheme, type AppTheme, type VisualContext } from '../../lib/theme';
 
 interface BrandLogoProps {
   variant?: 'horizontal' | 'compact' | 'sidebar' | 'mobile-header';
   className?: string;
   showSubtitle?: boolean;
   theme?: AppTheme;
+  visualContext?: VisualContext;
   name?: string;
   subtitle?: string;
 }
@@ -18,6 +19,9 @@ const BRAIN_ASSET_BY_THEME: Record<AppTheme, string> = {
   'calm-tech': 'brain-calm-tech.webp',
   'health-balance': 'brain-health-balance.webp',
   'soft-welcome': 'brain-soft-welcome.webp',
+};
+const BRAIN_ASSET_BY_CONTEXT: Partial<Record<VisualContext, string>> = {
+  PSICOLOGIA: 'brain-psychology.webp',
 };
 
 function getActiveTheme(theme?: AppTheme): AppTheme {
@@ -38,6 +42,7 @@ export default function BrandLogo({
   className = '',
   showSubtitle = true,
   theme,
+  visualContext,
   name,
   subtitle,
 }: BrandLogoProps) {
@@ -45,7 +50,8 @@ export default function BrandLogo({
   const isSidebar = variant === 'sidebar';
   const isMobileHeader = variant === 'mobile-header';
   const activeTheme = getActiveTheme(theme);
-  const brainSrc = `${import.meta.env.BASE_URL}brand/${BRAIN_ASSET_BY_THEME[activeTheme]}`;
+  const brainAsset = BRAIN_ASSET_BY_CONTEXT[visualContext || 'DEFAULT'] || BRAIN_ASSET_BY_THEME[activeTheme];
+  const brainSrc = `${import.meta.env.BASE_URL}brand/${brainAsset}`;
   const brandName = withFallback(name, DEFAULT_BRAND_NAME);
   const brandSubtitle = withFallback(subtitle, DEFAULT_BRAND_SUBTITLE);
   const accessibleLabel = showSubtitle ? `${brandName} – ${brandSubtitle}` : brandName;
@@ -55,6 +61,7 @@ export default function BrandLogo({
       className={`inline-flex max-w-full min-w-0 items-center text-left ${className}`}
       role="img"
       aria-label={accessibleLabel}
+      data-brand-visual-context={visualContext || 'DEFAULT'}
     >
       <img
         src={brainSrc}
