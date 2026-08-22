@@ -54,12 +54,28 @@ function withScope<T extends { id: string }>(value: T, scope: PsychologyPersiste
   return {
     ...value,
     workspaceId: scope.workspaceId,
+    ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
     professionalId: scope.professionalId,
     context: scope.context,
   } as T & PsychologyPersistenceScope;
 }
 
-async function readApiResponse<T>(response: Response): Promise<T> {
+function assertResponseScope(payload: unknown, scope: PsychologyPersistenceScope): void {
+  const responseScope = payload && typeof payload === 'object' && 'scope' in payload
+    ? (payload as { scope?: Partial<PsychologyPersistenceScope> }).scope
+    : undefined;
+  if (!responseScope) return;
+  if (
+    responseScope.workspaceId !== scope.workspaceId
+    || (scope.tenantId && responseScope.tenantId !== scope.tenantId)
+    || responseScope.professionalId !== scope.professionalId
+    || responseScope.context !== scope.context
+  ) {
+    throw new ApiPsychologyError('psychology/scope-conflict', 'A API retornou dados fora do escopo Psicologia selecionado.', 422);
+  }
+}
+
+async function readApiResponse<T>(response: Response, scope?: PsychologyPersistenceScope): Promise<T> {
   let payload: T & ApiErrorPayload;
   try {
     payload = await response.json() as T & ApiErrorPayload;
@@ -73,6 +89,7 @@ async function readApiResponse<T>(response: Response): Promise<T> {
       response.status,
     );
   }
+  if (scope) assertResponseScope(payload, scope);
   return payload;
 }
 
@@ -111,14 +128,19 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(method === 'GET' ? { cache: 'no-store' } : {}),
     });
-    return readApiResponse<T>(response);
+    return readApiResponse<T>(response, scope);
   }
 
   function createApiRepository<K extends PsychologyAggregate>(aggregate: K): PsychologyRepository<PsychologyAggregateRecordMap[K]> {
     type RecordType = PsychologyAggregateRecordMap[K];
     const apiResource = aggregate === 'sessionRecords' ? 'session-records' : aggregate;
     const assertRequestedScope = (requestedScope: PsychologyPersistenceScope): void => {
-      if (requestedScope.workspaceId !== scope.workspaceId || requestedScope.professionalId !== scope.professionalId || requestedScope.context !== scope.context) {
+      if (
+        requestedScope.workspaceId !== scope.workspaceId
+        || requestedScope.tenantId !== scope.tenantId
+        || requestedScope.professionalId !== scope.professionalId
+        || requestedScope.context !== scope.context
+      ) {
         throw new ApiPsychologyError('psychology/scope-conflict', 'O escopo da requisição não corresponde ao provider.', 422);
       }
     };
@@ -173,8 +195,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const charges = unsupported<PsychologyChargeRecord>('charges', scope);
   const payments = unsupported<PsychologyPaymentRecord>('payments', scope);
   const expenses = unsupported<PsychologyExpenseRecord>('expenses', scope);
-  const unsupportedService = unsupported<never>('services', scope);
-  const unsupportedLocation = unsupported<never>('locations', scope);
+  const services = createApiRepository('services');
+  const locations = createApiRepository('locations');
   const unsupportedPackage = unsupported<never>('packages', scope);
   const unsupportedPersonal = unsupported<never>('personalAppointments', scope);
 
@@ -207,8 +229,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
     sessionRecords,
     personalAppointments: unsupportedPersonal,
     financial,
-    services: unsupportedService,
-    locations: unsupportedLocation,
+    services,
+    locations,
     packages: unsupportedPackage,
     documents: documentQueries(documents),
     attachments: documentQueries(attachments),

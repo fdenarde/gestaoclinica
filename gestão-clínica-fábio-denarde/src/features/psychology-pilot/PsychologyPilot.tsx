@@ -3,7 +3,7 @@ import { addDays, addWeeks, endOfMonth, endOfWeek, format, startOfMonth, startOf
 import { ptBR } from 'date-fns/locale';
 import {
   AlertTriangle, ArrowLeft, Cake, CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, DollarSign, FileText, Menu, Pencil,
-  Plus, Search, Trash2, UserRound, UsersRound, WalletCards, X,
+  Plus, Search, Trash2, UserRound, UsersRound, WalletCards, X, Loader2,
 } from 'lucide-react';
 import { getPsychologyAgendaScale, psychologyAgendaTimeToMinutes } from './psychologyAgendaScale';
 import { getPsychologyAgendaRowProgress, getPsychologyAgendaTimeProgress, isPsychologyAgendaToday } from './psychologyAgendaTemporal';
@@ -78,7 +78,12 @@ import {
   type PsychologyDoctoraliaPreview,
 } from '../psychology-import-export/doctoraliaPreview';
 import { ALARM_ADVANCE_OPTIONS } from '../../lib/alarmSounds';
-import { createPsychologyPersistenceScope, resolvePsychologyRuntimeIdentity } from '../psychology-persistence';
+import {
+  createPsychologyPersistenceScope,
+  createRealPsychologyPersistenceScope,
+  readRealPsychologyStore,
+  resolvePsychologyRuntimeIdentity,
+} from '../psychology-persistence';
 import {
   createDefaultPsychologyProfessionalPresentation,
   PSYCHOLOGY_CATEGORY_LABELS,
@@ -107,6 +112,8 @@ import {
 } from './psychologyR2a';
 
 type PsychologyPage = 'day' | 'patients' | 'agenda' | 'personal' | 'finance' | 'reports' | 'settings';
+type PsychologyPersistenceMode = 'real' | 'local';
+const PSYCHOLOGY_PERSISTENCE_MODE: PsychologyPersistenceMode = import.meta.env.VITE_PSYCHOLOGY_PERSISTENCE_MODE === 'local' ? 'local' : 'real';
 
 const today = () => {
   const date = new Date();
@@ -305,14 +312,18 @@ function StatusPill({ status, previewStatus, compact = false, style, labelOverri
 }
 
 export default function PsychologyPilot() {
-  const [localStore, setLocalStore] = useState<PsychologyStore>(loadLocalStore);
-  const publicBookingRepository = useMemo(() => typeof window === 'undefined' ? null : createLocalPublicBookingRepository({ storage: window.localStorage }), []);
+  const isLocalPersistence = PSYCHOLOGY_PERSISTENCE_MODE === 'local';
+  const [localStore, setLocalStore] = useState<PsychologyStore>(() => isLocalPersistence ? loadLocalStore() : createEmptyPsychologyStore(createPsychologyScope(LOCAL_PSYCHOLOGY_PROFESSIONAL_ID)));
+  const [remoteStore, setRemoteStore] = useState<PsychologyStore | null>(null);
+  const [remoteLoadError, setRemoteLoadError] = useState('');
+  const [remoteLoading, setRemoteLoading] = useState(!isLocalPersistence);
+  const publicBookingRepository = useMemo(() => !isLocalPersistence || typeof window === 'undefined' ? null : createLocalPublicBookingRepository({ storage: window.localStorage }), [isLocalPersistence]);
   const [publicBookingSettings, setPublicBookingSettings] = useState<PublicBookingSettings | null>(null);
   const [doctoraliaPreview, setDoctoraliaPreview] = useState<PsychologyDoctoraliaPreview | null>(null);
-  const [hiddenDoctoraliaCancelledEventIds, setHiddenDoctoraliaCancelledEventIds] = useState<string[]>(loadHiddenDoctoraliaCancelledEventIds);
+  const [hiddenDoctoraliaCancelledEventIds, setHiddenDoctoraliaCancelledEventIds] = useState<string[]>(() => isLocalPersistence ? loadHiddenDoctoraliaCancelledEventIds() : []);
   const [previewLoading, setPreviewLoading] = useState(true);
   const [previewLoadError, setPreviewLoadError] = useState('');
-  const store = doctoraliaPreview?.store || localStore;
+  const store = isLocalPersistence ? doctoraliaPreview?.store || localStore : remoteStore || localStore;
   const isPreview = Boolean(doctoraliaPreview);
   const [page, setPage] = useState<PsychologyPage>('agenda');
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
@@ -332,11 +343,31 @@ export default function PsychologyPilot() {
   const [previewEndConfirmation, setPreviewEndConfirmation] = useState(false);
   const [sessionPatientId, setSessionPatientId] = useState<string | undefined>();
   const runtimeIdentity = useMemo(() => resolvePsychologyRuntimeIdentity({
-    scope: createPsychologyPersistenceScope(store.scope.professionalId),
+    scope: isLocalPersistence ? createPsychologyPersistenceScope(store.scope.professionalId) : createRealPsychologyPersistenceScope(),
     presentationProfile: store.settings.professionalProfile,
-  }), [store.scope.professionalId, store.settings.professionalProfile]);
+  }), [isLocalPersistence, store.scope.professionalId, store.settings.professionalProfile]);
 
   useEffect(() => {
+    if (isLocalPersistence) return;
+    let disposed = false;
+    setRemoteLoading(true);
+    void readRealPsychologyStore()
+      .then(result => {
+        if (disposed) return;
+        setRemoteStore(result.store);
+        setRemoteLoadError('');
+      })
+      .catch(cause => {
+        if (!disposed) setRemoteLoadError(cause instanceof Error ? cause.message : 'Não foi possível carregar a persistência real da Psicologia.');
+      })
+      .finally(() => {
+        if (!disposed) setRemoteLoading(false);
+      });
+    return () => { disposed = true; };
+  }, [isLocalPersistence]);
+
+  useEffect(() => {
+    if (!isLocalPersistence) return;
     let disposed = false;
     const loadPreview = async () => {
       try {
@@ -353,16 +384,16 @@ export default function PsychologyPilot() {
     };
     void loadPreview();
     return () => { disposed = true; };
-  }, []);
+  }, [isLocalPersistence]);
 
   useEffect(() => {
-    if (doctoraliaPreview) return;
+    if (!isLocalPersistence || doctoraliaPreview) return;
     try {
       window.localStorage.setItem(`${LOCAL_PSYCHOLOGY_STORAGE_KEY}:${LOCAL_PSYCHOLOGY_PROFESSIONAL_ID}`, serializePsychologyStore(localStore));
     } catch {
       setNotice('O navegador não permitiu salvar localmente. O fluxo continua disponível nesta tela.');
     }
-  }, [doctoraliaPreview, localStore]);
+  }, [doctoraliaPreview, isLocalPersistence, localStore]);
 
   useEffect(() => {
     if (!publicBookingRepository || page !== 'agenda') return;
@@ -396,6 +427,10 @@ export default function PsychologyPilot() {
   const recordsBySession = useMemo(() => new Set(store.sessionRecords.map(record => record.sessionId)), [store.sessionRecords]);
 
   const updateStore = (next: PsychologyStore): boolean => {
+    if (!isLocalPersistence) {
+      setNotice('Persistência real em modo somente leitura nesta validação. Nenhuma alteração foi enviada.');
+      return false;
+    }
     if (doctoraliaPreview) {
       setNotice('Prévia Doctoralia — edição desabilitada. Encerre a prévia para voltar ao piloto local.');
       return false;
@@ -425,7 +460,19 @@ export default function PsychologyPilot() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [mobileMoreOpen]);
 
+  if (!isLocalPersistence && remoteLoading) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50" data-testid="psychology-real-loading"><div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-black text-slate-700 shadow-sm"><Loader2 size={18} className="animate-spin text-violet-700" /> Carregando Psicologia do Firestore…</div></div>;
+  }
+
+  if (!isLocalPersistence && (remoteLoadError || !remoteStore)) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-50 p-5" data-testid="psychology-real-error"><section className="w-full max-w-xl rounded-2xl border border-rose-200 bg-white p-6 shadow-sm"><p className="text-xs font-black uppercase tracking-[0.14em] text-rose-700">Persistência real indisponível</p><h1 className="mt-2 text-xl font-black text-slate-900">Não foi possível carregar a Psicologia</h1><p className="mt-2 text-sm leading-relaxed text-slate-600">A tela não usará dados locais como fallback. Verifique a sessão autenticada e tente novamente.</p>{remoteLoadError && <pre className="mt-4 overflow-x-auto rounded-xl bg-rose-50 p-3 text-xs text-rose-800">{remoteLoadError}</pre>}<button type="button" onClick={() => window.location.reload()} className={`${primaryButton} mt-4`}>Tentar novamente</button></section></div>;
+  }
+
   const openNewEvent = (date = selectedDate, time = '09:00', kind: NewEventKind = 'session') => {
+    if (!isLocalPersistence) {
+      setNotice('Persistência real em modo somente leitura nesta validação.');
+      return;
+    }
     if (doctoraliaPreview) {
       setNotice('Prévia Doctoralia — novos pacientes e novas sessões estão desabilitados.');
       return;
@@ -436,6 +483,10 @@ export default function PsychologyPilot() {
   };
 
   const applyPublicBookingQuickAction = async (action: PublicBookingQuickAction) => {
+    if (!isLocalPersistence) {
+      setNotice('A configuração do Agendamento Online não é alterada nesta leitura da persistência real.');
+      return;
+    }
     if (doctoraliaPreview) {
       setNotice('Prévia Doctoralia — alterações de disponibilidade estão desabilitadas.');
       return;
@@ -554,7 +605,7 @@ export default function PsychologyPilot() {
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-700 text-white shadow-sm sm:h-11 sm:w-11 sm:rounded-2xl"><UserRound size={19} className="sm:h-[22px] sm:w-[22px]" /></div>
             <div className="min-w-0"><p className="text-[10px] font-black uppercase tracking-[0.15em] text-violet-700">Gestão Clínica</p><h1 className="text-base font-black leading-tight sm:text-xl" data-testid="psychology-professional-header" aria-label={`${runtimeIdentity.profile.displayName} — ${runtimeIdentity.profile.professionalTitle}`}><span className="sm:hidden">Psicologia</span><span className="hidden truncate sm:inline">{runtimeIdentity.profile.displayName} — {runtimeIdentity.profile.professionalTitle}</span></h1></div>
           </div>
-          <div className="flex min-w-0 items-center gap-1.5 sm:gap-3"><span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black tracking-wide text-violet-700 sm:px-3 sm:py-2 sm:text-xs" data-testid="psychology-environment-badge"><span className="sm:hidden">PILOTO</span><span className="hidden sm:inline">Piloto local</span></span><a href="/" className={`${secondaryButton} psychology-desktop-link`}><ArrowLeft size={15} /> Gestão Clínica</a>{page !== 'day' && <button type="button" onClick={() => openPage('day')} aria-label="Voltar para Meu Dia" className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 sm:hidden"><ArrowLeft size={19} /></button>}</div>
+          <div className="flex min-w-0 items-center gap-1.5 sm:gap-3"><span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black tracking-wide text-violet-700 sm:px-3 sm:py-2 sm:text-xs" data-testid="psychology-environment-badge"><span className="sm:hidden">{isLocalPersistence ? 'LOCAL' : 'FIRESTORE'}</span><span className="hidden sm:inline">{isLocalPersistence ? 'Piloto local' : 'Firestore real · somente leitura'}</span></span><a href="/" className={`${secondaryButton} psychology-desktop-link`}><ArrowLeft size={15} /> Gestão Clínica</a>{page !== 'day' && <button type="button" onClick={() => openPage('day')} aria-label="Voltar para Meu Dia" className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 sm:hidden"><ArrowLeft size={19} /></button>}</div>
         </div>
       </header>
 
@@ -562,7 +613,7 @@ export default function PsychologyPilot() {
 
       <div className="psychology-mobile-content flex w-full flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:px-8 lg:py-5">
         <aside className="hidden md:block lg:w-60 lg:shrink-0">
-          <div className="mb-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-xs text-violet-900"><p className="font-black">Contexto Psicologia</p><p className="mt-1 leading-relaxed text-violet-700">Dados locais deste piloto, separados por profissional.</p></div>
+          <div className="mb-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-xs text-violet-900"><p className="font-black">Contexto Psicologia</p><p className="mt-1 leading-relaxed text-violet-700">{isLocalPersistence ? 'Dados locais deste piloto, separados por profissional.' : 'Dados canônicos do Firestore, isolados por workspace, profissional e contexto.'}</p></div>
           <nav className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-1" aria-label="Navegação da Psicologia">
             {([['day', 'Meu Dia', CalendarDays], ['patients', 'Pacientes', UsersRound], ['agenda', 'Agenda', CalendarDays], ['personal', 'Agenda Pessoal', Menu], ['finance', 'Financeiro', WalletCards], ['reports', 'Relatórios', FileText], ['settings', 'Ajustes', Pencil]] as const).map(([id, label, Icon]) => (
               <button key={id} type="button" onClick={() => openPage(id)} className={`flex items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-black transition ${page === id ? 'bg-violet-700 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100'}`}><Icon size={17} />{label}</button>
@@ -574,7 +625,7 @@ export default function PsychologyPilot() {
           <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
              <div><p className="text-xs font-bold capitalize text-slate-500">{formatDate(selectedDate)}</p><h2 className="mt-0.5 text-xl font-black tracking-tight">{page === 'day' ? 'Meu Dia' : page === 'patients' ? 'Pacientes' : page === 'agenda' ? 'Agenda' : page === 'personal' ? 'Agenda Pessoal' : page === 'finance' ? 'Financeiro' : page === 'reports' ? 'Relatórios' : 'Ajustes'}</h2>{page !== 'agenda' && <p className="mt-1 max-w-2xl text-xs text-slate-500">{page === 'day' ? 'Veja o que tem hoje e o que precisa da sua atenção.' : page === 'finance' ? 'Acompanhe recebimentos, pendências e despesas.' : page === 'reports' ? 'Analise seus atendimentos, agenda, pacientes e movimentação financeira.' : page === 'settings' ? 'Configure seu atendimento, serviços, locais e cores.' : 'Um espaço simples para organizar sua rotina.'}</p>}</div>
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-              <button type="button" onClick={() => setPatientDialog('new')} disabled={isPreview} title={isPreview ? 'Edição desabilitada nesta prévia' : undefined} className={`${compactPrimaryButton} min-h-11 px-3 text-[11px] sm:min-h-0 sm:px-3 sm:text-xs`}><Plus size={14} /> Novo paciente</button>
+              <button type="button" onClick={() => setPatientDialog('new')} disabled={isPreview || !isLocalPersistence} title={!isLocalPersistence ? 'Leitura da persistência real' : isPreview ? 'Edição desabilitada nesta prévia' : undefined} className={`${compactPrimaryButton} min-h-11 px-3 text-[11px] sm:min-h-0 sm:px-3 sm:text-xs`}><Plus size={14} /> Novo paciente</button>
               {page !== 'agenda' && <button type="button" onClick={() => openNewEvent()} disabled={isPreview} title={isPreview ? 'Edição desabilitada nesta prévia' : undefined} className={`${compactSecondaryButton} min-h-11 px-3 text-[11px] sm:min-h-0 sm:px-3 sm:text-xs`}><CalendarDays size={14} /> Agendar sessão</button>}
               <button type="button" onClick={() => openNewEvent(selectedDate, '09:00', 'personal')} className={`${compactSecondaryButton} col-span-2 min-h-11 px-3 text-[11px] sm:col-span-auto sm:min-h-0 sm:px-3 sm:text-xs`}><Plus size={14} /> Novo compromisso pessoal</button>
             </div>
@@ -583,7 +634,7 @@ export default function PsychologyPilot() {
           {notice && <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800" role="status">{notice}</div>}
 
            {page === 'day' && <DayView date={selectedDate} setDate={setSelectedDate} store={store} sessions={daySessions} settings={store.settings} onSchedule={() => openNewEvent()} onPersonal={() => openNewEvent(selectedDate, '09:00', 'personal')} onOpenSession={setSessionActions} />}
-          {page === 'patients' && <PatientsView rows={visiblePatients} search={search} setSearch={setSearch} onNew={() => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog(patient); }} onOpen={setPatientChart} onDelete={requestPatientDelete} onToggle={(patient) => updateStore(upsertPsychologyPatient(store, { name: patient.name, dateOfBirth: getPsychologyPatientDateOfBirth(patient), phone: patient.phone, email: patient.email || '', administrativeResponsible: patient.administrativeResponsible, preferredModality: patient.preferredModality, administrativeNote: patient.administrativeNote || '', active: !patient.active, externalReferences: patient.externalReferences }, patient.id))} preview={doctoraliaPreview} />}
+           {page === 'patients' && <PatientsView rows={visiblePatients} search={search} setSearch={setSearch} onNew={() => { if (isPreview || !isLocalPersistence) { setNotice('Leitura da persistência real: edição desabilitada.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview || !isLocalPersistence) { setNotice('Leitura da persistência real: edição desabilitada.'); return; } setPatientDialog(patient); }} onOpen={setPatientChart} onDelete={requestPatientDelete} onToggle={(patient) => updateStore(upsertPsychologyPatient(store, { name: patient.name, dateOfBirth: getPsychologyPatientDateOfBirth(patient), phone: patient.phone, email: patient.email || '', administrativeResponsible: patient.administrativeResponsible, preferredModality: patient.preferredModality, administrativeNote: patient.administrativeNote || '', active: !patient.active, externalReferences: patient.externalReferences }, patient.id))} preview={doctoraliaPreview} />}
             {page === 'agenda' && <AgendaView sessions={visibleAgendaSessions} personalCommitments={agendaPersonalOccurrences} patientMap={patientMap} settings={store.settings} publicBookingSettings={publicBookingSettings || undefined} weekStart={agendaWeekStart} onPreviousWeek={() => setAgendaWeekStart(current => subWeeks(current, 1))} onNextWeek={() => setAgendaWeekStart(current => addWeeks(current, 1))} onToday={() => { setAgendaWeekStart(startOfWeek(new Date(), { weekStartsOn: 0 })); }} onNew={openNewEvent} onPublicBookingAction={action => { void applyPublicBookingQuickAction(action); }} onOpenSession={setSessionActions} onRemoveCancelled={doctoraliaPreview ? requestHideCancelledPreviewSession : undefined} onOpenPersonal={(item) => { setSelectedDate(item.date); setPage('personal'); }} />}
            {page === 'personal' && <PsychologyPersonalAgenda commitments={store.personalCommitments} scope={store.scope} onPersist={(commitments) => updateStore({ ...store, personalCommitments: commitments })} />}
            {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onNotice={setNotice} />}
@@ -627,7 +678,7 @@ export default function PsychologyPilot() {
       {sessionDialog && <SessionDialog value={sessionDialog === 'new' ? null : sessionDialog} store={store} settings={store.settings} defaultPatientId={sessionDialog === 'new' ? sessionPatientId : undefined} defaultDate={sessionDialog === 'new' ? sessionDefaults.date : selectedDate} defaultTime={sessionDialog === 'new' ? sessionDefaults.time : undefined} onClose={() => { setSessionDialog(null); setSessionPatientId(undefined); }} onSave={(input) => { updateStore(upsertPsychologySession(store, input, sessionDialog === 'new' ? undefined : sessionDialog.id)); setSelectedDate(input.date); setSessionDialog(null); setSessionPatientId(undefined); setPage('agenda'); setNotice(sessionDialog === 'new' ? 'Sessão agendada neste ambiente local.' : 'Sessão atualizada.'); }} />}
       {newEventDialog && <EventCreationDialog defaults={newEventDialog} store={store} settings={store.settings} onClose={() => setNewEventDialog(null)} onNewPatient={() => setPatientDialog('new')} onSaveSession={(input) => { updateStore(upsertPsychologySession(store, input)); setSelectedDate(input.date); setNewEventDialog(null); setPage('agenda'); setNotice('Sessão agendada neste ambiente local.'); }} onSavePersonal={(input) => { updateStore(upsertPsychologyPersonalCommitment(store, input)); setSelectedDate(input.date); setNewEventDialog(null); setPage('agenda'); setNotice('Compromisso salvo neste ambiente local.'); }} />}
       {recordDialog && <RecordDialog session={recordDialog} patient={patientMap.get(recordDialog.patientId)} existingText={store.sessionRecords.find(record => record.sessionId === recordDialog.id)?.text || ''} onClose={() => setRecordDialog(null)} onSave={(text) => { updateStore(savePsychologySessionRecord(store, recordDialog.id, text)); setRecordDialog(null); setNotice('Registro da sessão salvo com proteção local.'); }} />}
-      {sessionActions && <SessionActionsDialog session={sessionActions} patient={patientMap.get(sessionActions.patientId)} hasRecord={recordsBySession.has(sessionActions.id)} onClose={() => setSessionActions(null)} onEdit={() => { setSessionDialog(sessionActions); setSessionActions(null); }} onStatus={(status) => { updateStore(updatePsychologySessionStatus(store, sessionActions.id, status)); setSessionActions(null); }} onRecord={() => { setRecordDialog(sessionActions); setSessionActions(null); }} readOnly={isPreview} />}
+      {sessionActions && <SessionActionsDialog session={sessionActions} patient={patientMap.get(sessionActions.patientId)} hasRecord={recordsBySession.has(sessionActions.id)} onClose={() => setSessionActions(null)} onEdit={() => { setSessionDialog(sessionActions); setSessionActions(null); }} onStatus={(status) => { updateStore(updatePsychologySessionStatus(store, sessionActions.id, status)); setSessionActions(null); }} onRecord={() => { setRecordDialog(sessionActions); setSessionActions(null); }} readOnly={isPreview || !isLocalPersistence} />}
     </div>
   );
 }

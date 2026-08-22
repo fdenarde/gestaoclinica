@@ -16,6 +16,7 @@ export const LOCAL_PSYCHOLOGY_WORKSPACE_ID = 'psychology-local-workspace';
 
 export interface PsychologyPersistenceScope {
   workspaceId: string;
+  tenantId?: string;
   professionalId: string;
   context: typeof PSYCHOLOGY_CONTEXT;
 }
@@ -23,8 +24,10 @@ export interface PsychologyPersistenceScope {
 export const createPsychologyPersistenceScope = (
   professionalId = LOCAL_PSYCHOLOGY_PROFESSIONAL_ID,
   workspaceId = LOCAL_PSYCHOLOGY_WORKSPACE_ID,
+  tenantId?: string,
 ): PsychologyPersistenceScope => ({
   workspaceId,
+  ...(tenantId ? { tenantId } : {}),
   professionalId,
   context: PSYCHOLOGY_CONTEXT,
 });
@@ -49,6 +52,7 @@ export function assertPsychologyPersistenceScope(scope: PsychologyPersistenceSco
     throw new Error('Escopo Psicologia inválido: context deve ser PSICOLOGIA.');
   }
   assertScopePart(scope.workspaceId, 'workspaceId');
+  if (scope.tenantId !== undefined) assertScopePart(scope.tenantId, 'tenantId');
   assertScopePart(scope.professionalId, 'professionalId');
 }
 
@@ -60,6 +64,7 @@ export function assertSamePsychologyPersistenceScope(
   assertPsychologyPersistenceScope(actual);
   if (
     expected.workspaceId !== actual.workspaceId
+    || expected.tenantId !== actual.tenantId
     || expected.professionalId !== actual.professionalId
     || expected.context !== actual.context
   ) {

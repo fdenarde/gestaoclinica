@@ -11,4 +11,5 @@ export * from './repositories/memory';
 export * from './repositories/local';
 export * from './repositories/firestore';
 export * from './repositories/api';
+export * from './realRead';
 export * from './doctoraliaShadowImport';

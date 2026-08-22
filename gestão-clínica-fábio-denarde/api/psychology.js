@@ -77,12 +77,17 @@ function administrativePatientDto(value) {
   return {
     id: value.id,
     workspaceId: value.workspaceId,
+    tenantId: value.tenantId,
     professionalId: value.professionalId,
     context: value.context,
     name: value.name,
+    dateOfBirth: value.dateOfBirth || value.birthDate || '',
     birthDate: value.birthDate,
     phone: value.phone,
     email: value.email || '',
+    address: value.address || undefined,
+    demographics: value.demographics || undefined,
+    migrationReview: value.migrationReview || undefined,
     preferredModality: value.preferredModality,
     administrativeNote: value.administrativeNote || value.administrativeNotes || '',
     externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
@@ -96,6 +101,7 @@ function sessionDto(value) {
   return {
     id: value.id,
     workspaceId: value.workspaceId,
+    tenantId: value.tenantId,
     professionalId: value.professionalId,
     context: value.context,
     patientId: value.patientId,
@@ -109,6 +115,56 @@ function sessionDto(value) {
     chargeId: value.chargeId || undefined,
     administrativeNote: value.administrativeNote || '',
     status: value.status,
+    canonicalStatus: value.canonicalStatus,
+    sourceStatus: value.sourceStatus,
+    externalSource: value.externalSource,
+    externalEventId: value.externalEventId,
+    externalScheduleId: value.externalScheduleId,
+    bookingOrigin: value.bookingOrigin,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function serviceDto(value) {
+  return {
+    id: value.id,
+    workspaceId: value.workspaceId,
+    tenantId: value.tenantId,
+    professionalId: value.professionalId,
+    context: value.context,
+    name: value.name,
+    defaultDurationMinutes: value.defaultDurationMinutes,
+    defaultPrice: value.defaultPrice,
+    modality: value.modality,
+    active: value.active !== false,
+    publicBooking: value.publicBooking || undefined,
+    externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function locationDto(value) {
+  return {
+    id: value.id,
+    workspaceId: value.workspaceId,
+    tenantId: value.tenantId,
+    professionalId: value.professionalId,
+    context: value.context,
+    type: value.type,
+    displayName: value.displayName,
+    address: value.address || '',
+    fullAddress: value.fullAddress || value.address || '',
+    city: value.city || '',
+    state: value.state || '',
+    googleMapsUrl: value.googleMapsUrl || '',
+    sortOrder: value.sortOrder,
+    active: value.active !== false,
+    isPrimary: value.isPrimary === true,
+    color: value.color || '',
+    colorKey: value.colorKey,
+    externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
@@ -348,7 +404,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'settings' && req.method === 'GET' && !id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.manage'] });
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.view'] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
         const current = await repository.settings.get('settings');
         auditHeaders(res, runtimeScope, 'read', 'settings');
@@ -364,6 +420,16 @@ export function createPsychologyApiHandler(dependencies = {}) {
         auditHeaders(res, runtimeScope, 'update', 'settings');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(200).json({ scope: scopeFields(runtimeScope), settings: settingsDto(settings, runtimeScope) });
+      }
+
+      if ((resource === 'services' || resource === 'locations') && req.method === 'GET' && !id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.view'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const items = await repository[resource].list();
+        auditHeaders(res, runtimeScope, 'read', resource);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        const dto = resource === 'services' ? serviceDto : locationDto;
+        return res.status(200).json({ scope: scopeFields(runtimeScope), items: items.map(dto) });
       }
 
       if (resource === 'sessions' && req.method === 'GET' && !id) {
