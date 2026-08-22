@@ -1,5 +1,6 @@
 import { getAdminDb } from './firebaseAdmin.js';
 import { resolveAccessContext } from './accessContext.js';
+import { logSanitizedAccessAudit } from './sanitizedAccessAudit.js';
 
 const PSYCHOLOGY_CONTEXT = 'PSICOLOGIA';
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -110,14 +111,41 @@ function assertLinkedProfessional(profile, professionalId) {
  * production default remains the existing accessContext implementation.
  */
 export async function resolvePsychologyAccessContext(req, options = {}) {
-  const db = options.db || getAdminDb();
   const resolveBaseAccessContext = options.resolveBaseAccessContext || resolveAccessContext;
-  const baseContext = await resolveBaseAccessContext(req, {
-    allowedRoles: ['admin', 'professional'],
-  });
+  let db;
+  let baseContext;
+  try {
+    db = options.db || getAdminDb();
+    baseContext = await resolveBaseAccessContext(req, {
+      allowedRoles: ['admin', 'professional'],
+    });
+  } catch (error) {
+    logSanitizedAccessAudit(req, {
+      endpoint: '/api/psychology',
+      auditPrefix: '[PSYCHOLOGY ACCESS AUDIT]',
+      statusHttp: Number(error?.statusCode) || 500,
+      technicalCode: error?.code || 'psychology/access-resolution-failed',
+      tokenVerificationResult: error?.tokenVerificationResult,
+      professionalResolved: false,
+      psychologyRouteAllowed: false,
+      requestAccessScreenCause: 'PSYCHOLOGY_ACCESS_BLOCKED',
+    });
+    throw error;
+  }
   const authUid = normalize(baseContext?.userId, 160);
   const workspaceId = normalize(baseContext?.workspaceId, 160);
   if (!authUid || !workspaceId) {
+    logSanitizedAccessAudit(req, {
+      endpoint: '/api/psychology',
+      auditPrefix: '[PSYCHOLOGY ACCESS AUDIT]',
+      authUid,
+      accessRole: baseContext?.role,
+      statusHttp: 503,
+      technicalCode: 'psychology/access-context-unavailable',
+      professionalResolved: false,
+      psychologyRouteAllowed: false,
+      requestAccessScreenCause: 'PSYCHOLOGY_ACCESS_CONTEXT_UNAVAILABLE',
+    });
     throw psychologyError(
       'psychology/access-context-unavailable',
       'O contexto de acesso da Psicologia não está disponível.',
@@ -127,6 +155,15 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
 
   const profileSnapshot = await db.collection('accessProfiles').doc(authUid).get();
   const profile = snapshotData(profileSnapshot);
+  const auditBase = {
+    endpoint: '/api/psychology',
+    auditPrefix: '[PSYCHOLOGY ACCESS AUDIT]',
+    authUid,
+    accessProfileFound: profileSnapshot.exists,
+    accessProfileApproved: baseContext.status === 'approved',
+    accessRole: baseContext.role,
+    requestAccessScreenCause: 'NOT_OBSERVED',
+  };
   const requestedProfessionalId = normalize(options.professionalId || req?.query?.professionalId, 128);
   const candidates = (await findByAuthUid(db, authUid))
     .filter(professional => professional.active === true)
@@ -134,6 +171,14 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     .filter(professional => !requestedProfessionalId || professional.professionalId === requestedProfessionalId);
 
   if (candidates.length === 0) {
+    logSanitizedAccessAudit(req, {
+      ...auditBase,
+      statusHttp: 403,
+      technicalCode: 'psychology/professional-not-found',
+      professionalResolved: false,
+      psychologyRouteAllowed: false,
+      requestAccessScreenCause: 'PSYCHOLOGY_PROFESSIONAL_NOT_FOUND',
+    });
     throw psychologyError(
       'psychology/professional-not-found',
       'Não foi possível resolver o profissional autorizado.',
@@ -141,6 +186,14 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     );
   }
   if (candidates.length > 1) {
+    logSanitizedAccessAudit(req, {
+      ...auditBase,
+      statusHttp: 409,
+      technicalCode: 'psychology/professional-ambiguous',
+      professionalResolved: false,
+      psychologyRouteAllowed: false,
+      requestAccessScreenCause: 'PSYCHOLOGY_PROFESSIONAL_AMBIGUOUS',
+    });
     throw psychologyError(
       'psychology/professional-ambiguous',
       'A conta possui mais de um profissional ativo compatível; selecione explicitamente o profissional.',
@@ -156,6 +209,14 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     .filter(link => normalize(link.tenantId) === binding.tenantId);
 
   if (contextLinks.length === 0) {
+    logSanitizedAccessAudit(req, {
+      ...auditBase,
+      statusHttp: 403,
+      technicalCode: 'psychology/context-not-found',
+      professionalResolved: true,
+      psychologyRouteAllowed: false,
+      requestAccessScreenCause: 'PSYCHOLOGY_CONTEXT_NOT_FOUND',
+    });
     throw psychologyError(
       'psychology/context-not-found',
       'O contexto Psicologia não está ativo para este profissional.',
@@ -163,6 +224,14 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     );
   }
   if (contextLinks.length > 1) {
+    logSanitizedAccessAudit(req, {
+      ...auditBase,
+      statusHttp: 409,
+      technicalCode: 'psychology/context-ambiguous',
+      professionalResolved: true,
+      psychologyRouteAllowed: false,
+      requestAccessScreenCause: 'PSYCHOLOGY_CONTEXT_AMBIGUOUS',
+    });
     throw psychologyError(
       'psychology/context-ambiguous',
       'O contexto Psicologia possui vínculos duplicados e foi bloqueado.',
@@ -175,9 +244,25 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     .map(([permission]) => permission);
   for (const permission of options.requiredPermissions || []) {
     if (!baseContext.permissions?.[permission]) {
+      logSanitizedAccessAudit(req, {
+        ...auditBase,
+        statusHttp: 403,
+        technicalCode: 'access/permission-denied',
+        professionalResolved: true,
+        psychologyRouteAllowed: false,
+        requestAccessScreenCause: 'PSYCHOLOGY_PERMISSION_DENIED',
+      });
       throw psychologyError('access/permission-denied', 'Você não possui permissão para esta operação.', 403);
     }
   }
+
+  logSanitizedAccessAudit(req, {
+    ...auditBase,
+    statusHttp: 200,
+    technicalCode: 'OK',
+    professionalResolved: true,
+    psychologyRouteAllowed: true,
+  });
 
   return Object.freeze({
     authUid,

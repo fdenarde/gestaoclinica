@@ -10,7 +10,7 @@ const reportsSource = fs.readFileSync(new URL('../src/features/psychology-pilot/
 test('R2F3-C1 mantém navegação de Ajustes proporcional por breakpoint', () => {
   assert.match(source, /max-w-\[96rem\]/);
   assert.match(source, /overflow-x-auto[\s\S]*data-testid="psychology-settings-tabs"/);
-  assert.match(source, /flex min-w-max gap-1\.5 sm:grid sm:min-w-0 sm:grid-cols-3 xl:grid-cols-6/);
+  assert.match(source, /flex min-w-max gap-1\.5 sm:grid sm:min-w-0 sm:grid-cols-3/);
   assert.match(source, /min-h-\[4\.5rem\] min-w-\[10rem\]/);
   assert.match(source, /sm:min-h-\[5rem\] sm:min-w-0/);
   assert.match(source, /text-xs font-black leading-tight sm:text-sm/);
@@ -25,7 +25,8 @@ test('R2F3-C1 harmoniza headers e conteúdo interno das abas de Ajustes', () => 
   assert.match(source, /activeTab === 'profile' && <div className="w-full space-y-4"/);
   assert.match(source, /SettingsSummaryCard/);
   assert.match(source, /function AgendaView\(/);
-  assert.match(source, /data-testid="psychology-settings-panel-online"/);
+  assert.doesNotMatch(source, /data-testid="psychology-settings-panel-online"/);
+  assert.doesNotMatch(source, /data-testid="psychology-settings-panel-messages"/);
 });
 
 test('R2F3-C1 usa o eixo amplo de Relatórios em Mensagens e Agendamento Online', () => {

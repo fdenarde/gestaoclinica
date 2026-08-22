@@ -12,7 +12,7 @@ import {
 interface PsychologyPersonalAgendaProps {
   commitments: PsychologyPersonalCommitment[];
   scope: PsychologyScope;
-  onPersist: (commitments: PsychologyPersonalCommitment[]) => boolean;
+  onPersist: (commitments: PsychologyPersonalCommitment[]) => boolean | Promise<boolean>;
 }
 
 /** Reusa o motor maduro da Agenda Pessoal sem importar o domínio clínico da Neuro. */

@@ -2,12 +2,15 @@ import crypto from 'node:crypto';
 import { getAdminDb } from './_lib/firebaseAdmin.js';
 import { createMetaTemplatesBffHandler } from './_lib/metaTemplatesBff.js';
 import { resolvePsychologyAccessContext } from './_lib/psychologyAccess.js';
+import { logSanitizedAccessAudit } from './_lib/sanitizedAccessAudit.js';
 import { buildPsychologyAuditEvent, createPsychologyRequestId, logPsychologyAuditEvent } from './_lib/psychologyObservability.js';
 import { createPsychologyServerRepository } from './_lib/psychologyRepository.js';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
   'http://localhost:3001',
+  'http://localhost:5177',
+  'http://127.0.0.1:5177',
   'https://gestaoclinica-solucoes.vercel.app',
 ]);
 
@@ -170,6 +173,31 @@ function locationDto(value) {
   };
 }
 
+function personalAppointmentDto(value) {
+  return {
+    id: value.id,
+    workspaceId: value.workspaceId,
+    tenantId: value.tenantId,
+    professionalId: value.professionalId,
+    context: value.context,
+    date: value.date,
+    time: value.time,
+    durationMinutes: value.durationMinutes,
+    type: value.type,
+    title: value.title || undefined,
+    note: value.note || undefined,
+    recurrence: value.recurrence,
+    alarmEnabled: value.alarmEnabled === true,
+    alarmAdvance: value.alarmAdvance,
+    alarmSound: value.alarmSound,
+    alarmVolume: value.alarmVolume,
+    alarmFadeIn: value.alarmFadeIn,
+    isDone: value.isDone === true,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
 function clinicalSessionRecordDto(value) {
   return {
     id: value.id,
@@ -244,45 +272,69 @@ function sendError(res, error) {
   return res.status(statusCode).json({ error: { code: error?.code || 'psychology/internal-error', message } });
 }
 
-function preparePatient(body, runtimeScope, now) {
+function preparePatient(body, runtimeScope, now, current) {
   assertScopePayloadDoesNotConflict(body, runtimeScope);
   const source = body.patient && typeof body.patient === 'object' ? body.patient : body;
-  const name = normalize(source.name, 160);
-  const birthDate = normalize(source.birthDate, 32);
-  const phone = normalize(source.phone, 32);
-  const preferredModality = normalize(source.preferredModality, 32);
+  assertScopePayloadDoesNotConflict(source, runtimeScope);
+  const merged = { ...(current || {}), ...source };
+  const name = normalize(merged.name, 160);
+  const birthDate = normalize(merged.dateOfBirth || merged.birthDate, 32);
+  const phone = normalize(merged.phone, 32);
+  const preferredModality = normalize(merged.preferredModality, 32);
   if (!name || !birthDate || !phone || !['presencial', 'online'].includes(preferredModality)) {
     throw apiError('psychology/patient-invalid', 'Informe nome, nascimento, telefone e modalidade do paciente.', 422);
   }
-  const id = normalize(source.id, 128) || `patient-${crypto.randomUUID()}`;
+  const responsible = merged.administrativeResponsible && typeof merged.administrativeResponsible === 'object'
+    ? {
+      fullName: normalize(merged.administrativeResponsible.fullName, 160),
+      relationship: normalize(merged.administrativeResponsible.relationship, 80),
+      phone: normalize(merged.administrativeResponsible.phone, 32),
+      email: normalize(merged.administrativeResponsible.email, 160).toLowerCase(),
+    }
+    : undefined;
+  const id = normalize(merged.id, 128) || `patient-${crypto.randomUUID()}`;
   const patient = {
     id,
     ...scopeFields(runtimeScope),
     name,
+    dateOfBirth: birthDate,
     birthDate,
     phone,
-    email: normalize(source.email, 160),
+    additionalPhone: normalize(merged.additionalPhone, 32) || undefined,
+    email: normalize(merged.email, 160),
+    address: merged.address && typeof merged.address === 'object' ? merged.address : undefined,
+    demographics: merged.demographics && typeof merged.demographics === 'object' ? merged.demographics : undefined,
+    migrationReview: merged.migrationReview && typeof merged.migrationReview === 'object' ? merged.migrationReview : undefined,
     preferredModality,
-    administrativeNote: normalize(source.administrativeNote || source.administrativeNotes, 1000),
-    externalReferences: Array.isArray(source.externalReferences) ? source.externalReferences.slice(0, 20) : [],
-    active: source.active !== false,
-    createdAt: normalize(source.createdAt, 64) || now,
+    administrativeNote: normalize(merged.administrativeNote || merged.administrativeNotes, 1000),
+    administrativeNotes: normalize(merged.administrativeNotes || merged.administrativeNote, 1000),
+    administrativeResponsible: responsible,
+    externalReferences: Array.isArray(merged.externalReferences) ? merged.externalReferences.slice(0, 20) : [],
+    active: merged.active !== false,
+    createdAt: current?.createdAt || normalize(merged.createdAt, 64) || now,
     updatedAt: now,
   };
   return patient;
 }
 
-function prepareSession(body, runtimeScope, now) {
+function assertOperationalSettingsWrite(runtimeScope) {
+  if (!runtimeScope.permissions?.includes('settings.clinic.edit') && !runtimeScope.permissions?.includes('settings.clinic.manage')) {
+    throw apiError('access/permission-denied', 'Você não possui permissão para editar a operação da clínica.', 403);
+  }
+}
+
+function prepareSession(body, runtimeScope, now, current) {
   assertScopePayloadDoesNotConflict(body, runtimeScope);
   const source = body.session && typeof body.session === 'object' ? body.session : body;
   assertScopePayloadDoesNotConflict(source, runtimeScope);
-  const patientId = normalize(source.patientId, 128);
-  const date = normalize(source.date, 32);
-  const time = normalize(source.time, 16);
-  const durationMinutes = Number(source.durationMinutes);
-  const modality = normalize(source.modality, 32);
-  const status = normalize(source.status, 32) || 'agendada';
-  const locationType = normalize(source.locationType, 40);
+  const merged = { ...(current || {}), ...source };
+  const patientId = normalize(merged.patientId, 128);
+  const date = normalize(merged.date, 32);
+  const time = normalize(merged.time, 16);
+  const durationMinutes = Number(merged.durationMinutes);
+  const modality = normalize(merged.modality, 32);
+  const status = normalize(merged.status, 32) || 'agendada';
+  const locationType = normalize(merged.locationType, 40);
   if (!patientId || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
     throw apiError('psychology/session-invalid', 'Informe paciente, data e horário válidos para a sessão.', 422);
   }
@@ -296,20 +348,26 @@ function prepareSession(body, runtimeScope, now) {
     throw apiError('psychology/session-invalid', 'O tipo de local da sessão é inválido.', 422);
   }
   return {
-    id: normalize(source.id, 128) || `session-${crypto.randomUUID()}`,
+    id: normalize(merged.id, 128) || `session-${crypto.randomUUID()}`,
     ...scopeFields(runtimeScope),
     patientId,
     date,
     time,
     durationMinutes,
     modality,
-    serviceId: normalize(source.serviceId, 128) || undefined,
-    locationId: normalize(source.locationId, 128) || undefined,
+    serviceId: normalize(merged.serviceId, 128) || undefined,
+    locationId: normalize(merged.locationId, 128) || undefined,
     locationType: locationType || undefined,
-    chargeId: normalize(source.chargeId, 128) || undefined,
-    administrativeNote: normalize(source.administrativeNote, 1000),
+    chargeId: normalize(merged.chargeId, 128) || undefined,
+    administrativeNote: normalize(merged.administrativeNote, 1000),
     status,
-    createdAt: now,
+    canonicalStatus: merged.canonicalStatus,
+    sourceStatus: merged.sourceStatus,
+    externalSource: merged.externalSource,
+    externalEventId: merged.externalEventId,
+    externalScheduleId: merged.externalScheduleId,
+    bookingOrigin: merged.bookingOrigin,
+    createdAt: current?.createdAt || normalize(merged.createdAt, 64) || now,
     updatedAt: now,
   };
 }
@@ -327,13 +385,112 @@ function prepareSettings(body, runtimeScope, current, now) {
     ...(previous.professionalProfile || {}),
     ...cleanProfessionalProfile(requestedProfile),
   };
+  const settings = {
+    ...previous,
+    scope: { professionalId: runtimeScope.professionalId, context: runtimeScope.context },
+    professionalProfile,
+  };
+  if (source.agenda && typeof source.agenda === 'object') settings.agenda = { ...(previous.agenda || {}), ...source.agenda };
+  if (source.colors && typeof source.colors === 'object') settings.colors = { ...(previous.colors || {}), ...source.colors };
+  if (source.reminders && typeof source.reminders === 'object') settings.reminders = { ...(previous.reminders || {}), ...source.reminders };
   return {
     ...(current || defaultSettings(runtimeScope, now)),
     ...scopeFields(runtimeScope),
     id: 'settings',
-    settings: { ...previous, professionalProfile },
+    settings,
     updatedAt: now,
     createdAt: current?.createdAt || now,
+  };
+}
+
+function prepareService(body, runtimeScope, now, current) {
+  assertScopePayloadDoesNotConflict(body, runtimeScope);
+  const source = body.service && typeof body.service === 'object' ? body.service : body;
+  assertScopePayloadDoesNotConflict(source, runtimeScope);
+  const merged = { ...(current || {}), ...source };
+  const name = normalize(merged.name, 160);
+  const defaultDurationMinutes = Number(merged.defaultDurationMinutes);
+  const defaultPrice = Number(merged.defaultPrice || 0);
+  const modality = normalize(merged.modality, 32);
+  if (!name || !Number.isInteger(defaultDurationMinutes) || defaultDurationMinutes < 1 || defaultDurationMinutes > 480 || !Number.isFinite(defaultPrice) || defaultPrice < 0 || !['ONLINE', 'PRESENTIAL', 'BOTH'].includes(modality)) {
+    throw apiError('psychology/service-invalid', 'Informe nome, duração, preço e modalidade válidos para o serviço.', 422);
+  }
+  return {
+    id: normalize(merged.id, 128) || `service-${crypto.randomUUID()}`,
+    ...scopeFields(runtimeScope),
+    name,
+    defaultDurationMinutes,
+    defaultPrice,
+    modality,
+    active: merged.active !== false,
+    publicBooking: merged.publicBooking && typeof merged.publicBooking === 'object' ? merged.publicBooking : undefined,
+    externalReferences: Array.isArray(merged.externalReferences) ? merged.externalReferences.slice(0, 20) : [],
+    createdAt: current?.createdAt || normalize(merged.createdAt, 64) || now,
+    updatedAt: now,
+  };
+}
+
+function prepareLocation(body, runtimeScope, now, current) {
+  assertScopePayloadDoesNotConflict(body, runtimeScope);
+  const source = body.location && typeof body.location === 'object' ? body.location : body;
+  assertScopePayloadDoesNotConflict(source, runtimeScope);
+  const merged = { ...(current || {}), ...source };
+  const displayName = normalize(merged.displayName, 160);
+  const type = normalize(merged.type, 40) || 'OTHER';
+  if (!displayName || !['PRIMARY_OFFICE', 'EXTERNAL_OFFICE', 'OTHER'].includes(type)) {
+    throw apiError('psychology/location-invalid', 'Informe nome e tipo válidos para o local.', 422);
+  }
+  return {
+    id: normalize(merged.id, 128) || `location-${crypto.randomUUID()}`,
+    ...scopeFields(runtimeScope),
+    type,
+    displayName,
+    address: normalize(merged.address || merged.fullAddress, 240),
+    fullAddress: normalize(merged.fullAddress || merged.address, 240),
+    city: normalize(merged.city, 120),
+    state: normalize(merged.state, 8).toUpperCase(),
+    googleMapsUrl: normalize(merged.googleMapsUrl, 500),
+    sortOrder: Number.isInteger(Number(merged.sortOrder)) ? Number(merged.sortOrder) : undefined,
+    active: merged.active !== false,
+    isPrimary: merged.isPrimary === true,
+    color: normalize(merged.color, 32),
+    colorKey: merged.colorKey,
+    externalReferences: Array.isArray(merged.externalReferences) ? merged.externalReferences.slice(0, 20) : [],
+    createdAt: current?.createdAt || normalize(merged.createdAt, 64) || now,
+    updatedAt: now,
+  };
+}
+
+function preparePersonalAppointment(body, runtimeScope, now, current) {
+  assertScopePayloadDoesNotConflict(body, runtimeScope);
+  const source = body.personalAppointment && typeof body.personalAppointment === 'object' ? body.personalAppointment : body;
+  assertScopePayloadDoesNotConflict(source, runtimeScope);
+  const merged = { ...(current || {}), ...source };
+  const date = normalize(merged.date, 32);
+  const time = normalize(merged.time, 16);
+  const durationMinutes = Number(merged.durationMinutes);
+  const type = normalize(merged.type, 64);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time) || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 1440 || !type) {
+    throw apiError('psychology/personal-appointment-invalid', 'Informe data, horário, duração e tipo válidos para o compromisso.', 422);
+  }
+  return {
+    id: normalize(merged.id, 128) || `personal-${crypto.randomUUID()}`,
+    ...scopeFields(runtimeScope),
+    date,
+    time,
+    durationMinutes,
+    type,
+    title: normalize(merged.title, 160) || undefined,
+    note: normalize(merged.note, 1000) || undefined,
+    recurrence: normalize(merged.recurrence, 64) || 'Não repetir',
+    alarmEnabled: merged.alarmEnabled === true,
+    alarmAdvance: normalize(merged.alarmAdvance, 32) || undefined,
+    alarmSound: normalize(merged.alarmSound, 64) || undefined,
+    alarmVolume: merged.alarmVolume === undefined ? undefined : Number(merged.alarmVolume),
+    alarmFadeIn: merged.alarmFadeIn === true,
+    isDone: merged.isDone === true,
+    createdAt: current?.createdAt || normalize(merged.createdAt, 64) || now,
+    updatedAt: now,
   };
 }
 
@@ -393,9 +550,45 @@ export function createPsychologyApiHandler(dependencies = {}) {
         return res.status(201).json({ scope: scopeFields(runtimeScope), patient: administrativePatientDto(patient) });
       }
 
+      if (resource === 'patients' && req.method === 'PATCH' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const current = await repository.patients.get(id);
+        if (!current) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
+        const patient = await repository.patients.update(id, preparePatient(body, runtimeScope, now(), current));
+        if (!patient) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
+        auditHeaders(res, runtimeScope, 'update', 'patients');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), patient: administrativePatientDto(patient) });
+      }
+
       if (resource === 'patients' && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.delete'] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const current = await repository.patients.get(id);
+        if (!current) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
+        const [relatedSessions, clinicalRecords, packages, documents, attachments, charges, payments] = await Promise.all([
+          repository.sessions.list(),
+          repository.sessionRecords.list(),
+          repository.packages.list(),
+          repository.documents.list(),
+          repository.attachments.list(),
+          repository.financial.listCharges(),
+          repository.financial.listPayments(),
+        ]);
+        const hasRelatedData = relatedSessions.some(session => session.patientId === id)
+          || clinicalRecords.some(record => record.patientId === id)
+          || packages.some(item => item.patientId === id)
+          || documents.some(item => item.patientId === id)
+          || attachments.some(item => item.patientId === id)
+          || charges.some(item => item.patientId === id)
+          || payments.some(item => item.patientId === id);
+        if (hasRelatedData) {
+          const inactivated = await repository.patients.update(id, { active: false, updatedAt: now() });
+          auditHeaders(res, runtimeScope, 'inactivate', 'patients');
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+          return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: false, inactivated: true, patient: administrativePatientDto(inactivated), id });
+        }
         const deleted = await repository.patients.delete(id);
         if (!deleted) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
         auditHeaders(res, runtimeScope, 'delete', 'patients');
@@ -413,7 +606,8 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'settings' && req.method === 'PUT' && !id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.manage'] });
+        const runtimeScope = await resolveAccess(req, { db });
+        assertOperationalSettingsWrite(runtimeScope);
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
         const current = await repository.settings.get('settings');
         const settings = await repository.settings.upsert(prepareSettings(body, runtimeScope, current, now()));
@@ -430,6 +624,55 @@ export function createPsychologyApiHandler(dependencies = {}) {
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         const dto = resource === 'services' ? serviceDto : locationDto;
         return res.status(200).json({ scope: scopeFields(runtimeScope), items: items.map(dto) });
+      }
+
+      if ((resource === 'services' || resource === 'locations') && req.method === 'GET' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.view'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const item = await repository[resource].get(id);
+        auditHeaders(res, runtimeScope, 'read', resource);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        const dto = resource === 'services' ? serviceDto : locationDto;
+        return res.status(200).json({ scope: scopeFields(runtimeScope), items: item ? [dto(item)] : [] });
+      }
+
+      if ((resource === 'services' || resource === 'locations') && req.method === 'POST' && !id) {
+        const runtimeScope = await resolveAccess(req, { db });
+        assertOperationalSettingsWrite(runtimeScope);
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const item = resource === 'services'
+          ? await repository.services.upsert(prepareService(body, runtimeScope, now()))
+          : await repository.locations.upsert(prepareLocation(body, runtimeScope, now()));
+        auditHeaders(res, runtimeScope, 'create', resource);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        const dto = resource === 'services' ? serviceDto : locationDto;
+        return res.status(201).json({ scope: scopeFields(runtimeScope), [resource === 'services' ? 'service' : 'location']: dto(item) });
+      }
+
+      if ((resource === 'services' || resource === 'locations') && req.method === 'PATCH' && id) {
+        const runtimeScope = await resolveAccess(req, { db });
+        assertOperationalSettingsWrite(runtimeScope);
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const current = await repository[resource].get(id);
+        if (!current) throw apiError(`psychology/${resource.slice(0, -1)}-not-found`, 'Registro não encontrado neste escopo.', 404);
+        const item = resource === 'services'
+          ? await repository.services.update(id, prepareService(body, runtimeScope, now(), current))
+          : await repository.locations.update(id, prepareLocation(body, runtimeScope, now(), current));
+        auditHeaders(res, runtimeScope, 'update', resource);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        const dto = resource === 'services' ? serviceDto : locationDto;
+        return res.status(200).json({ scope: scopeFields(runtimeScope), [resource === 'services' ? 'service' : 'location']: item ? dto(item) : null });
+      }
+
+      if ((resource === 'services' || resource === 'locations') && req.method === 'DELETE' && id) {
+        const runtimeScope = await resolveAccess(req, { db });
+        assertOperationalSettingsWrite(runtimeScope);
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const deleted = await repository[resource].delete(id);
+        if (!deleted) throw apiError(`psychology/${resource.slice(0, -1)}-not-found`, 'Registro não encontrado neste escopo.', 404);
+        auditHeaders(res, runtimeScope, 'delete', resource);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: true, id: deleted.id });
       }
 
       if (resource === 'sessions' && req.method === 'GET' && !id) {
@@ -454,12 +697,82 @@ export function createPsychologyApiHandler(dependencies = {}) {
         return res.status(201).json({ scope: scopeFields(runtimeScope), session: sessionDto(saved) });
       }
 
+      if (resource === 'sessions' && req.method === 'PATCH' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const current = await repository.sessions.get(id);
+        if (!current) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
+        const session = prepareSession(body, runtimeScope, now(), current);
+        if (!await repository.patients.get(session.patientId)) throw apiError('psychology/session-patient-not-found', 'O paciente não pertence a este escopo Psicologia.', 422);
+        const saved = await repository.sessions.update(id, session);
+        if (!saved) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
+        auditHeaders(res, runtimeScope, 'update', 'sessions');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), session: sessionDto(saved) });
+      }
+
       if (resource === 'sessions' && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const current = await repository.sessions.get(id);
+        if (!current) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
+        const [clinicalRecords, charges, payments] = await Promise.all([
+          repository.sessionRecords.list(),
+          repository.financial.listCharges(),
+          repository.financial.listPayments(),
+        ]);
+        const hasRelatedData = clinicalRecords.some(record => record.sessionId === id)
+          || charges.some(charge => charge.sessionId === id)
+          || payments.some(payment => payment.sessionId === id);
+        if (hasRelatedData) {
+          const cancelled = await repository.sessions.update(id, { status: 'cancelada', updatedAt: now() });
+          auditHeaders(res, runtimeScope, 'cancel', 'sessions');
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+          return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: false, cancelled: true, session: sessionDto(cancelled), id });
+        }
         const deleted = await repository.sessions.delete(id);
         if (!deleted) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
         auditHeaders(res, runtimeScope, 'delete', 'sessions');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: true, id: deleted.id });
+      }
+
+      if (resource === 'personal-appointments' && req.method === 'GET' && !id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.own.view'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const items = await repository.personalAppointments.list();
+        auditHeaders(res, runtimeScope, 'read', 'personalAppointments');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), items: items.map(personalAppointmentDto) });
+      }
+
+      if (resource === 'personal-appointments' && req.method === 'POST' && !id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const item = await repository.personalAppointments.upsert(preparePersonalAppointment(body, runtimeScope, now()));
+        auditHeaders(res, runtimeScope, 'create', 'personalAppointments');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(201).json({ scope: scopeFields(runtimeScope), personalAppointment: personalAppointmentDto(item) });
+      }
+
+      if (resource === 'personal-appointments' && req.method === 'PATCH' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const current = await repository.personalAppointments.get(id);
+        if (!current) throw apiError('psychology/personal-appointment-not-found', 'Compromisso não encontrado neste escopo.', 404);
+        const item = await repository.personalAppointments.update(id, preparePersonalAppointment(body, runtimeScope, now(), current));
+        if (!item) throw apiError('psychology/personal-appointment-not-found', 'Compromisso não encontrado neste escopo.', 404);
+        auditHeaders(res, runtimeScope, 'update', 'personalAppointments');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), personalAppointment: personalAppointmentDto(item) });
+      }
+
+      if (resource === 'personal-appointments' && req.method === 'DELETE' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const deleted = await repository.personalAppointments.delete(id);
+        if (!deleted) throw apiError('psychology/personal-appointment-not-found', 'Compromisso não encontrado neste escopo.', 404);
+        auditHeaders(res, runtimeScope, 'delete', 'personalAppointments');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: true, id: deleted.id });
       }
@@ -476,6 +789,21 @@ export function createPsychologyApiHandler(dependencies = {}) {
       throw apiError('psychology/route-not-found', 'Rota Psicologia não encontrada.', 404);
     } catch (error) {
       auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'denied', timestamp: now(), code: error?.code || 'psychology/internal-error' }));
+      logSanitizedAccessAudit(req, {
+        endpoint: '/api/psychology',
+        auditPrefix: '[PSYCHOLOGY ACCESS AUDIT]',
+        authUid: runtimeScope?.authUid,
+        accessProfileApproved: runtimeScope ? true : undefined,
+        accessRole: runtimeScope?.role,
+        statusHttp: Number(error?.statusCode) || 500,
+        technicalCode: error?.code || 'psychology/internal-error',
+        tokenVerificationResult: error?.tokenVerificationResult,
+        professionalResolved: runtimeScope?.professionalId ? true : undefined,
+        psychologyRouteAllowed: false,
+        requestAccessScreenCause: Number(error?.statusCode) >= 500
+          ? 'PSYCHOLOGY_TECHNICAL_FAILURE'
+          : 'PSYCHOLOGY_ACCESS_BLOCKED',
+      });
       return sendError(res, error);
     }
   };

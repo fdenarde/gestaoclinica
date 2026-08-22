@@ -344,6 +344,10 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         setSelectedAccessRole(directAccessRole);
         setAccessLoading(false);
         setAccessError('');
+      } else {
+        setAccessProfile(null);
+        setAccessLoading(true);
+        setAccessError('');
       }
       setAuthLoading(false);
     });
@@ -359,7 +363,18 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
     setAccessLoading(true);
     setAccessError('');
-    void getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole })
+    const loadAccessProfile = async () => {
+      try {
+        return await getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole });
+      } catch (error) {
+        const code = (error as { code?: string } | null)?.code;
+        const canRefreshToken = !forceRefreshToken
+          && ['drive-api/expired-auth-token', 'drive-api/invalid-auth-token'].includes(String(code));
+        if (!canRefreshToken) throw error;
+        return getAccessProfile(user, { forceRefreshToken: true, activeRole: selectedAccessRole });
+      }
+    };
+    void loadAccessProfile()
       .then(profile => {
         if (!cancelled) setAccessProfile(profile);
       })

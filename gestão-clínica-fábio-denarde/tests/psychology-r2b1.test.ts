@@ -74,5 +74,5 @@ test('R2B1 UI 45 — fonte Doctoralia existe', () => assert.match(importTypes, /
 test('R2B1 UI 46 — fonte CSV existe', () => assert.match(importTypes, /Planilha CSV\/XLS\/XLSX/));
 test('R2B1 UI 47 — simulação existe', () => assert.match(importUi, /Simular importação/));
 test('R2B1 UI 48 — importação real fica desabilitada', () => { assert.match(importUi, /REAL_IMPORT_DISABLED_MESSAGE/); assert.match(importTypes, new RegExp(REAL_IMPORT_DISABLED_MESSAGE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))); });
-test('R2B1 UI 49 — central está dentro de Ajustes', () => assert.match(pilotUi, /<PsychologyImportExport store=\{store\}/));
+test('R2B1 UI 49 — importação/exportação local não aparece na interface normal', () => assert.doesNotMatch(pilotUi.slice(pilotUi.indexOf('function PsychologySettingsView')), /<PsychologyImportExport store=\{store\}/));
 test('R2B1 UI 50 — escopo local é informado', () => assert.match(importUi, /sem Firebase\/Firestore/));

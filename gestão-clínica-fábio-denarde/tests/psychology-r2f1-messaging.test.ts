@@ -98,11 +98,11 @@ test('provider Meta é fake/no-op, não chama Graph API e não carrega segredo n
   assert.doesNotMatch(source, /fetch\(|graph\.facebook|Authorization|client_secret/i);
 });
 
-test('Ajustes expõe a central, três subáreas e botão Meta inativo', async () => {
+test('A central de mensagens permanece coberta, mas fora da UI normal até o contrato externo estar pronto', async () => {
   const settingsSource = await readFile(new URL('../src/features/psychology-pilot/PsychologyPilot.tsx', import.meta.url), 'utf8');
   const centerSource = await readFile(new URL('../src/features/psychology-messaging/PsychologyMessagingCenter.tsx', import.meta.url), 'utf8');
-  assert.match(settingsSource, /id: 'messages', label: 'Mensagens e Lembretes'/);
-  assert.match(settingsSource, /activeTab === 'messages'/);
+  assert.doesNotMatch(settingsSource, /id: 'messages', label: 'Mensagens e Lembretes'/);
+  assert.doesNotMatch(settingsSource, /activeTab === 'messages'/);
   for (const label of ['Mensagens', 'Regras de Envio', 'Integração Meta']) assert.match(centerSource, new RegExp(label));
   assert.match(centerSource, /Enviar para análise da Meta/);
   assert.match(centerSource, /disabled/);

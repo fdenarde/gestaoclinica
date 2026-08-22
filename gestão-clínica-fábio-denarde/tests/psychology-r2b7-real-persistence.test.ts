@@ -92,7 +92,7 @@ test('R2B7 mantém a rota pública e o fallback local fora do caminho real', () 
 
   assert.match(pilot, /VITE_PSYCHOLOGY_PERSISTENCE_MODE/);
   assert.match(pilot, /readRealPsychologyStore/);
-  assert.match(pilot, /A tela não usará dados locais como fallback/);
+  assert.match(pilot, /Nenhum dado local foi usado como substituto/);
   assert.match(pilot, /!isLocalPersistence \|\| typeof window === 'undefined'/);
   assert.match(api, /resource === 'services' \|\| resource === 'locations'/);
   assert.match(api, /requiredPermissions: \['settings\.clinic\.manage'\]/);

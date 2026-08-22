@@ -25,7 +25,7 @@ test('contrato da API separa leituras clínicas de configurações das mutaçõe
   assert.match(source, /resource === 'sessions'[\s\S]*?req\.method === 'GET'[\s\S]*?requiredPermissions: \['agenda\.own\.view'\]/);
   assert.match(source, /resource === 'settings'[\s\S]*?req\.method === 'GET'[\s\S]*?requiredPermissions: \['settings\.clinic\.view'\]/);
   assert.match(source, /\(resource === 'services' \|\| resource === 'locations'\)[\s\S]*?req\.method === 'GET'[\s\S]*?requiredPermissions: \['settings\.clinic\.view'\]/);
-  assert.match(source, /resource === 'settings'[\s\S]*?req\.method === 'PUT'[\s\S]*?requiredPermissions: \['settings\.clinic\.manage'\]/);
+  assert.match(source, /resource === 'settings'[\s\S]*?req\.method === 'PUT'[\s\S]*?assertOperationalSettingsWrite\(runtimeScope\)/);
 });
 
 test('permissões efetivas preservam leitura profissional, gestão administrativa e isolamento dos demais contextos', () => {
@@ -37,13 +37,17 @@ test('permissões efetivas preservam leitura profissional, gestão administrativ
   assert.equal(professional.permissions['patients.list'], true);
   assert.equal(professional.permissions['agenda.own.view'], true);
   assert.equal(professional.permissions['settings.clinic.view'], true);
+  assert.equal(professional.permissions['settings.clinic.edit'], true);
   assert.equal(professional.permissions['settings.clinic.manage'], false);
 
   assert.equal(admin.permissions['settings.clinic.view'], true);
+  assert.equal(admin.permissions['settings.clinic.edit'], true);
   assert.equal(admin.permissions['settings.clinic.manage'], true);
 
   assert.equal(responsible.permissions['settings.clinic.view'], false);
+  assert.equal(responsible.permissions['settings.clinic.edit'], false);
   assert.equal(responsible.permissions['settings.clinic.manage'], false);
   assert.equal(monitoring.permissions['settings.clinic.view'], false);
+  assert.equal(monitoring.permissions['settings.clinic.edit'], false);
   assert.equal(monitoring.permissions['settings.clinic.manage'], false);
 });

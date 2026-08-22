@@ -23,6 +23,7 @@ export interface PsychologyRepository<T extends { id: string }> {
   get(scope: PsychologyPersistenceScope, id: string): Promise<T | null>;
   upsert(scope: PsychologyPersistenceScope, entity: T): Promise<T>;
   update(scope: PsychologyPersistenceScope, id: string, patch: Partial<T>): Promise<T | null>;
+  delete(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
 }
 
 export interface PsychologyPatientRepository extends PsychologyRepository<PsychologyPatientRecord> {}

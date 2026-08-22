@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
+import { logSanitizedAccessAudit } from './_lib/sanitizedAccessAudit.js';
 import {
   ACCESS_CONTEXTS,
   ACCESS_ROLES as ACCESS_PROFILE_ROLES,
@@ -50,6 +51,8 @@ const ALLOWED_ORIGINS = new Set([
   'https://fdenarde.github.io',
   'http://localhost:3000',
   'http://localhost:3001',
+  'http://localhost:5177',
+  'http://127.0.0.1:5177',
 ]);
 const PROFESSIONAL_NOTIFICATION_INITIAL_LIMIT = 20;
 const PROFESSIONAL_NOTIFICATION_INCREMENTAL_LIMIT = 50;
@@ -4911,10 +4914,16 @@ function isQuotaExceededError(error) {
     || message.includes('QUOTA EXCEEDED');
 }
 
-function sendError(res, error) {
+function sendError(req, res, error, audit = {}) {
   if (isQuotaExceededError(error)) {
     res.setHeader('Retry-After', '60');
-    console.error('[ACCESS API] access/quota-temporarily-unavailable', error?.message || error);
+    logSanitizedAccessAudit(req, {
+      ...audit,
+      statusHttp: 503,
+      technicalCode: 'access/quota-temporarily-unavailable',
+      tokenVerificationResult: error?.tokenVerificationResult || audit.tokenVerificationResult,
+      requestAccessScreenCause: 'ACCESS_API_TECHNICAL_FAILURE',
+    });
     return res.status(503).json({
       error: {
         code: 'access/quota-temporarily-unavailable',
@@ -4926,13 +4935,20 @@ function sendError(res, error) {
   const statusCode = Number(error?.statusCode) || 500;
   const code = error?.code || 'access/internal-error';
   const message = error?.message || 'Não foi possível processar o controle de acesso.';
-  if (statusCode >= 500) console.error('[ACCESS API]', code, message);
+  logSanitizedAccessAudit(req, {
+    ...audit,
+    statusHttp: statusCode,
+    technicalCode: code,
+    tokenVerificationResult: error?.tokenVerificationResult || audit.tokenVerificationResult,
+    requestAccessScreenCause: statusCode >= 500 ? 'ACCESS_API_TECHNICAL_FAILURE' : audit.requestAccessScreenCause,
+  });
   return res.status(statusCode).json({ error: { code, message } });
 }
 
 export default async function handler(req, res) {
   setSecurityHeaders(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
+  let audit = {};
 
   try {
     if (!['GET', 'POST'].includes(req.method)) {
@@ -4944,6 +4960,7 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       const decodedToken = await verifyFirebaseRequest(req);
+      audit = { authUid: decodedToken.uid, tokenVerificationResult: 'PASS' };
       if (req.query?.mode === 'requests') {
         requirePrimaryAdmin(decodedToken);
         return res.status(200).json({ requests: await listAccessRequests(db) });
@@ -4968,11 +4985,31 @@ export default async function handler(req, res) {
       let profileData = null;
       if (snapshot.exists) {
         const sourceProfile = snapshot.data();
+        const selectedEntry = activeRole ? getProfileEntry(sourceProfile, activeRole) : sourceProfile;
+        audit = {
+          ...audit,
+          accessProfileFound: true,
+          accessProfileApproved: selectedEntry?.status === 'approved',
+          accessRole: selectedEntry?.role || sourceProfile?.role || activeRole || 'NOT_OBSERVED',
+          requestAccessScreenCause: selectedEntry?.status === 'approved' ? 'NOT_OBSERVED' : 'NO_APPROVED_PROFILE',
+        };
         const isPrimaryAdmin = normalizeEmail(decodedToken?.email) === PRIMARY_ADMIN_EMAIL;
         profileData = activeRole && !isPrimaryAdmin
           ? assertSelectedProfileIsActive(sourceProfile, activeRole)
           : sourceProfile;
+      } else {
+        audit = {
+          ...audit,
+          accessProfileFound: false,
+          accessProfileApproved: false,
+          requestAccessScreenCause: 'NO_APPROVED_PROFILE',
+        };
       }
+      logSanitizedAccessAudit(req, {
+        ...audit,
+        statusHttp: 200,
+        technicalCode: 'OK',
+      });
       return res.status(200).json({ profile: profileData ? serializeProfile(profileData) : null });
     }
 
@@ -5143,6 +5180,6 @@ export default async function handler(req, res) {
       profile: result.profile?.exists ? serializeProfile(result.profile.data()) : null,
     });
   } catch (error) {
-    return sendError(res, error);
+    return sendError(req, res, error, audit);
   }
 }

@@ -9,7 +9,8 @@ import {
   type PsychologyPersistenceScope,
 } from './scope';
 import { createApiPsychologyRepositories } from './repositories/api';
-import type { PsychologyLocationRecord, PsychologyPatientRecord, PsychologyServiceRecord, PsychologySessionRecordEntity } from './types';
+import type { PsychologyLocationRecord, PsychologyPatientRecord, PsychologyPersonalAppointmentRecord, PsychologyServiceRecord, PsychologySessionRecordEntity, PsychologySettingsRecord } from './types';
+import type { PsychologyRepositoryBundle } from './repositoryTypes';
 
 export const REAL_PSYCHOLOGY_TARGET = Object.freeze({
   projectId: 'ai-studio-applet-webapp-e3283',
@@ -31,6 +32,7 @@ export function createRealPsychologyPersistenceScope(): PsychologyPersistenceSco
 export interface RealPsychologyReadResult {
   store: PsychologyStore;
   persistenceScope: PsychologyPersistenceScope;
+  repositories: PsychologyRepositoryBundle;
   counts: {
     patients: number;
     sessions: number;
@@ -42,41 +44,53 @@ export interface RealPsychologyReadResult {
 export interface RealPsychologyReadOptions {
   fetchImpl?: typeof fetch;
   getToken?: () => Promise<string>;
+  includeOperationalSettings?: boolean;
 }
 
 export async function readRealPsychologyStore(options: RealPsychologyReadOptions = {}): Promise<RealPsychologyReadResult> {
   const persistenceScope = createRealPsychologyPersistenceScope();
   const repositories = createApiPsychologyRepositories({ scope: persistenceScope, fetchImpl: options.fetchImpl, getToken: options.getToken });
-  const [patients, sessions, services, locations] = await Promise.all([
+  const operationalReads = options.includeOperationalSettings
+    ? Promise.all([
+      repositories.settings.get(persistenceScope, 'settings'),
+      repositories.personalAppointments.list(persistenceScope),
+    ])
+    : Promise.resolve([null, []] as const);
+  const [patients, sessions, services, locations, [settingsRecord, personalAppointments]] = await Promise.all([
     repositories.patients.list(persistenceScope),
     repositories.sessions.list(persistenceScope),
     repositories.services.list(persistenceScope),
     repositories.locations.list(persistenceScope),
+    operationalReads,
   ]);
 
   const legacyScope = createPsychologyScope(REAL_PSYCHOLOGY_TARGET.professionalId);
   const base = createEmptyPsychologyStore(legacyScope);
+  const remoteSettings = (settingsRecord as PsychologySettingsRecord | null)?.settings || {};
   const normalized = normalizePsychologyStore({
     ...base,
     scope: legacyScope,
     settings: {
       ...base.settings,
+      ...(remoteSettings as Partial<PsychologyStore['settings']>),
       professionalProfile: {
         ...base.settings.professionalProfile,
-        displayName: 'Leila Chaves',
-        name: 'Leila Chaves',
-        professionalTitle: 'Psicologia',
-        specialty: 'Psicologia',
+        ...(remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile,
+        displayName: (remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile?.displayName || 'Leila Chaves',
+        name: (remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile?.name || 'Leila Chaves',
+        professionalTitle: (remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile?.professionalTitle || 'Psicologia',
+        specialty: (remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile?.specialty || 'Psicologia',
       },
       services,
       locations,
+      scope: legacyScope,
     },
     patients,
     sessions,
     services,
     locations,
-    // R2B7 is read-only. These aggregates are intentionally not sourced from local storage.
-    personalCommitments: [],
+    // Clinical records and financial aggregates remain separate from this operational write surface.
+    personalCommitments: personalAppointments,
     sessionRecords: [],
     charges: [],
     payments: [],
@@ -104,6 +118,7 @@ export async function readRealPsychologyStore(options: RealPsychologyReadOptions
   return {
     store,
     persistenceScope,
+    repositories,
     counts: {
       patients: (patients as PsychologyPatientRecord[]).length,
       sessions: (sessions as PsychologySessionRecordEntity[]).length,

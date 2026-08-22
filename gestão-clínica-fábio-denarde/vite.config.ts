@@ -54,6 +54,10 @@ export default defineConfig(({mode}) => {
           target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
           changeOrigin: true,
         },
+        '/api/psychology': {
+          target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
+          changeOrigin: true,
+        },
         '/api/google-photos-albums': {
           target: `http://127.0.0.1:${env.DRIVE_API_PORT || '3002'}`,
           changeOrigin: true,

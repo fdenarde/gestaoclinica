@@ -140,7 +140,15 @@ function createGenericRepository<K extends PsychologyAggregate>(
     onChange?.(state);
     return read(value);
   };
-  return { aggregate, scope, list, get, upsert, update };
+  const remove = async (requestedScope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null> => {
+    assertRepositoryScope(scope, requestedScope);
+    const current = map.get(id);
+    if (!current || current.workspaceId !== scope.workspaceId || current.professionalId !== scope.professionalId || current.context !== scope.context) return null;
+    map.delete(id);
+    onChange?.(state);
+    return { id };
+  };
+  return { aggregate, scope, list, get, upsert, update, delete: remove };
 }
 
 function createFinancialRepository(

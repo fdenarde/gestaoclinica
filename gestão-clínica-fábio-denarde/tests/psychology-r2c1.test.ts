@@ -110,7 +110,7 @@ test('R2C1 documentos 54 — documentos clínicos não entram no resumo', () => 
 const chartUi = readFileSync('src/features/psychology-pilot/PsychologyPatientChart.tsx', 'utf8');
 const pilotUi = readFileSync('src/features/psychology-pilot/PsychologyPilot.tsx', 'utf8');
 const domainUi = readFileSync('src/features/psychology-pilot/psychologyDomain.ts', 'utf8');
-test('R2C1 UI 55 — seis abas existem', () => { for (const label of ['Resumo', 'Sessões', 'Registros', 'Financeiro', 'Pacotes', 'Documentos e anexos']) assert.match(chartUi, new RegExp(label)); });
+test('R2C1 UI 55 — ficha normal expõe somente abas operacionais prontas', () => { for (const label of ['Resumo', 'Sessões']) assert.match(chartUi, new RegExp(label)); const start = chartUi.indexOf('return <div className="fixed inset-0 z-[220]'); const visibleChart = chartUi.slice(start, chartUi.indexOf('</main>', start)); for (const label of ['Registros', 'Financeiro', 'Pacotes', 'Documentos e anexos']) assert.doesNotMatch(visibleChart, new RegExp(label)); });
 test('R2C1 UI 56 — cabeçalho é compacto', () => assert.match(chartUi, /Editar paciente/));
 test('R2C1 UI 57 — ação Agendar sessão existe', () => assert.match(chartUi, /Agendar sessão/));
 test('R2C1 UI 58 — ficha usa Patient, não Atendente', () => { assert.match(chartUi, /patientId/); assert.doesNotMatch(chartUi, /Atendente/); });

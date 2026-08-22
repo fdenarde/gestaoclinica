@@ -63,10 +63,12 @@ test('pacote encerrado não aparece no acompanhamento ativo', () => {
   assert.equal(getActivePsychologySessionPackages(store).length, 0);
 });
 
-test('Meu Dia usa cards compactos, agenda pessoal resumida e não usa vocabulário Neuro', async () => {
+test('Meu Dia usa cards compactos e mantém somente indicadores operacionais prontos', async () => {
   const pilot = await readFile(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
   assert.match(pilot, /psychology-my-day-dashboard/);
-  for (const label of ['Pacientes ativos', 'Sessões na semana', 'Assiduidade', 'Recebido no mês', 'Aniversariantes do mês', 'Hoje', 'Pendências', 'Agenda Pessoal', 'Próximas Sessões — Hoje', 'Próximas Sessões — Amanhã', 'Acompanhamento']) assert.match(pilot, new RegExp(label));
+  for (const label of ['Pacientes ativos', 'Sessões na semana', 'Assiduidade', 'Aniversariantes do mês', 'Hoje', 'Pendências', 'Agenda Pessoal', 'Próximas Sessões — Hoje', 'Próximas Sessões — Amanhã']) assert.match(pilot, new RegExp(label));
+  const dayView = pilot.slice(pilot.indexOf('function DayView'), pilot.indexOf('function DateToolbar'));
+  assert.doesNotMatch(dayView, /Recebido no mês|pagamentos locais|Acompanhamento|psychology-package-panel/);
   assert.match(pilot, /psychology-session-compact-card/);
   assert.doesNotMatch(pilot, /width: 100vw|w-screen/);
   assert.doesNotMatch(pilot, /Atendente|Responsável|Progresso dos Atendentes/);

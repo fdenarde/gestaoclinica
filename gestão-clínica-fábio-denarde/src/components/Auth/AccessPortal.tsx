@@ -737,7 +737,6 @@ export default function AccessPortal({
       if (directRoute) return renderLogin();
       return view === 'request' ? renderRequest() : view === 'reset' ? renderReset() : renderLogin();
     }
-    if (view === 'request' && !directRoute) return renderRequest();
     if (profileLoading) {
       return (
         <div className="flex min-h-72 flex-col items-center justify-center gap-4 text-center">
@@ -775,6 +774,7 @@ export default function AccessPortal({
         </div>
       );
     }
+    if (view === 'request' && !directRoute) return renderRequest();
     if (profile) return renderBlockedProfile();
     return renderRequest();
   };

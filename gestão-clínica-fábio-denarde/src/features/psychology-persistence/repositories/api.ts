@@ -108,6 +108,7 @@ function unsupported<T extends { id: string }>(aggregate: PsychologyAggregate, s
     get: fail,
     upsert: fail,
     update: fail,
+    delete: fail,
   };
 }
 
@@ -117,7 +118,7 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
 
-  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH', body?: unknown): Promise<T> {
+  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
     const token = await getToken();
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
@@ -126,14 +127,31 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      ...(method === 'GET' ? { cache: 'no-store' } : {}),
+      ...(method === 'GET' || method === 'DELETE' ? { cache: 'no-store' } : {}),
     });
     return readApiResponse<T>(response, scope);
   }
 
   function createApiRepository<K extends PsychologyAggregate>(aggregate: K): PsychologyRepository<PsychologyAggregateRecordMap[K]> {
     type RecordType = PsychologyAggregateRecordMap[K];
-    const apiResource = aggregate === 'sessionRecords' ? 'session-records' : aggregate;
+    const apiResource = aggregate === 'sessionRecords'
+      ? 'session-records'
+      : aggregate === 'personalAppointments'
+        ? 'personal-appointments'
+        : aggregate;
+    const responseKey = aggregate === 'settings'
+      ? 'settings'
+      : aggregate === 'patients'
+        ? 'patient'
+        : aggregate === 'sessions'
+          ? 'session'
+          : aggregate === 'services'
+            ? 'service'
+            : aggregate === 'locations'
+              ? 'location'
+              : aggregate === 'personalAppointments'
+                ? 'personalAppointment'
+                : undefined;
     const assertRequestedScope = (requestedScope: PsychologyPersistenceScope): void => {
       if (
         requestedScope.workspaceId !== scope.workspaceId
@@ -169,8 +187,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         assertRequestedScope(requestedScope);
         const method = aggregate === 'settings' ? 'PUT' : 'POST';
         const requestBody = aggregate === 'settings' ? { settings: (entity as unknown as { settings?: unknown }).settings || {} } : entity;
-        const result = await request<{ patient?: RecordType; settings?: RecordType }>(`/${apiResource}`, method, requestBody);
-        const value = result.patient || result.settings;
+        const result = await request<Record<string, RecordType | undefined>>(`/${apiResource}`, method, requestBody);
+        const value = responseKey ? result[responseKey] : undefined;
         if (!value) throw new ApiPsychologyError('psychology/invalid-response', 'A API não retornou o registro salvo.', 500);
         return withScope(clone(value), scope) as RecordType;
       },
@@ -180,8 +198,14 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
           const result = await request<{ settings?: RecordType }>('/settings', 'PUT', patch);
           return result.settings ? withScope(clone(result.settings), scope) as RecordType : null;
         }
-        const result = await request<{ patient?: RecordType }>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
-        return result.patient ? withScope(clone(result.patient), scope) as RecordType : null;
+        const result = await request<Record<string, RecordType | undefined>>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
+        const value = responseKey ? result[responseKey] : undefined;
+        return value ? withScope(clone(value), scope) as RecordType : null;
+      },
+      async delete(requestedScope, id) {
+        assertRequestedScope(requestedScope);
+        const result = await request<{ id?: string; deleted?: boolean }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE');
+        return result.deleted === false ? null : { id: result.id || id };
       },
     };
   }
@@ -198,7 +222,7 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const services = createApiRepository('services');
   const locations = createApiRepository('locations');
   const unsupportedPackage = unsupported<never>('packages', scope);
-  const unsupportedPersonal = unsupported<never>('personalAppointments', scope);
+  const personalAppointments = createApiRepository('personalAppointments');
 
   const documentQueries = <T extends PsychologyDocumentRecord | PsychologyAttachmentRecord>(repository: PsychologyRepository<T>) => ({
     ...repository,
@@ -227,7 +251,7 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
     patients,
     sessions,
     sessionRecords,
-    personalAppointments: unsupportedPersonal,
+    personalAppointments,
     financial,
     services,
     locations,

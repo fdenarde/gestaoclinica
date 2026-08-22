@@ -22,6 +22,7 @@ export interface FirestorePsychologyEmulatorClient {
   get<T>(documentPath: string): Promise<T | null>;
   upsert<T>(documentPath: string, value: T): Promise<T>;
   update<T>(documentPath: string, patch: Partial<T>): Promise<T | null>;
+  delete?(documentPath: string): Promise<void>;
 }
 
 export interface FirestorePsychologyRepositoryOptions {
@@ -79,6 +80,14 @@ function createRemoteRepository<K extends PsychologyAggregate>(
       const next = { ...current, ...patch, id: current.id, workspaceId: current.workspaceId, professionalId: current.professionalId, context: current.context, createdAt: current.createdAt } as RecordType;
       validateEntity(scope, next, aggregate);
       return client.update<RecordType>(buildPsychologyDocumentPath(scope, aggregate, id), next);
+    },
+    delete: async (requestedScope, id) => {
+      assertSamePsychologyPersistenceScope(scope, requestedScope);
+      const current = await client.get<RecordType>(buildPsychologyDocumentPath(scope, aggregate, id));
+      if (!current || current.workspaceId !== scope.workspaceId || current.professionalId !== scope.professionalId || current.context !== scope.context) return null;
+      if (!client.delete) throw new Error('O client Firestore injetado não implementa delete.');
+      await client.delete(buildPsychologyDocumentPath(scope, aggregate, id));
+      return { id };
     },
   };
 }

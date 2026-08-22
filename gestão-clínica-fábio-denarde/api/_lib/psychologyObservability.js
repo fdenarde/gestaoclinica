@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { shortAuthUidHash } from './sanitizedAccessAudit.js';
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 
@@ -14,9 +15,7 @@ export function createPsychologyRequestId(req) {
 export function buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status, timestamp, code }) {
   const event = {
     requestId: normalize(requestId, 80) || 'unknown-request',
-    actorUid: normalize(runtimeScope?.authUid, 160) || undefined,
-    workspaceId: normalize(runtimeScope?.workspaceId, 160) || undefined,
-    professionalId: normalize(runtimeScope?.professionalId, 160) || undefined,
+    actorUidHash: shortAuthUidHash(runtimeScope?.authUid),
     context: normalize(runtimeScope?.context, 40) || 'PSICOLOGIA',
     operation: normalize(operation, 160) || 'unknown',
     status: normalize(status, 40) || 'unknown',
