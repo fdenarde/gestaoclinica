@@ -69,9 +69,13 @@ import {
   type PsychologyDoctoraliaPreview,
 } from '../psychology-import-export/doctoraliaPreview';
 import { ALARM_ADVANCE_OPTIONS } from '../../lib/alarmSounds';
+import { auth } from '../../firebase';
 import {
+  createPsychologyDeleteDiagnosticCorrelationId,
   createPsychologyPersistenceScope,
   createRealPsychologyPersistenceScope,
+  deleteDiagnosticErrorFields,
+  logPsychologyDeleteDiagnostic,
   readRealPsychologyStore,
   resolvePsychologyRuntimeIdentity,
   type PsychologyRepository,
@@ -132,6 +136,9 @@ type NewEventKind = 'session' | 'personal' | 'mentoring';
 type NewEventDefaults = { date: string; time: string; kind: NewEventKind };
 type PsychologyStoreChangeHandler = (next: PsychologyStore) => boolean | Promise<boolean>;
 type PsychologyAsyncMutation = () => boolean | Promise<boolean>;
+type PsychologyDiagnosticPatientRepository = PsychologyRepository<PsychologyPatient> & {
+  deleteWithDiagnostic?: (scope: PsychologyRepositoryBundle['scope'], id: string, diagnostic?: { correlationId: string }) => Promise<{ id: string } | null>;
+};
 
 async function synchronizePsychologyAggregate<T extends { id: string }>(
   repository: Pick<PsychologyRepository<T>, 'upsert' | 'update' | 'delete'>,
@@ -709,16 +716,68 @@ export default function PsychologyPilot() {
   };
 
   const confirmPatientDelete = async (): Promise<boolean> => {
-    if (!patientDelete) return false;
-    return runParentMutation(`delete:patient:${patientDelete.id}`, async () => {
+    const diagnosticCorrelationId = createPsychologyDeleteDiagnosticCorrelationId();
+    const diagnosticEnabled = !isLocalPersistence;
+    const mutationKey = `delete:patient:${patientDelete?.id || 'unknown'}`;
+    if (diagnosticEnabled) {
+      logPsychologyDeleteDiagnostic({
+        DELETE_PATIENT_STAGE: 'confirm_start',
+        correlationId: diagnosticCorrelationId,
+        method: 'DELETE',
+        routeTemplate: '/api/psychology/patients/:id',
+        authUserPresent: auth.currentUser ? 'YES' : 'NO',
+        mutationLockPresent: parentMutationLocks.current.has(mutationKey) ? 'YES' : 'NO',
+        repositoryPresent: remoteRepositories ? 'YES' : 'NO',
+        patientSelectionPresent: patientDelete ? 'YES' : 'NO',
+      });
+    }
+    if (!patientDelete) {
+      if (diagnosticEnabled) {
+        logPsychologyDeleteDiagnostic({
+          DELETE_PATIENT_STAGE: 'catch',
+          correlationId: diagnosticCorrelationId,
+          method: 'DELETE',
+          routeTemplate: '/api/psychology/patients/:id',
+          ...deleteDiagnosticErrorFields({ name: 'PatientSelectionMissing', code: 'psychology/patient-selection-missing' }),
+        });
+      }
+      return false;
+    }
+    return runParentMutation(mutationKey, async () => {
+      if (diagnosticEnabled) {
+        logPsychologyDeleteDiagnostic({
+          DELETE_PATIENT_STAGE: 'before_repository',
+          correlationId: diagnosticCorrelationId,
+          method: 'DELETE',
+          routeTemplate: '/api/psychology/patients/:id',
+          authUserPresent: auth.currentUser ? 'YES' : 'NO',
+          mutationLockPresent: 'NO',
+          repositoryPresent: remoteRepositories ? 'YES' : 'NO',
+          patientSelectionPresent: 'YES',
+        });
+      }
       if (!isLocalPersistence) {
         if (!remoteRepositories) {
+          if (diagnosticEnabled) {
+            logPsychologyDeleteDiagnostic({
+              DELETE_PATIENT_STAGE: 'catch',
+              correlationId: diagnosticCorrelationId,
+              method: 'DELETE',
+              routeTemplate: '/api/psychology/patients/:id',
+              ...deleteDiagnosticErrorFields({ name: 'RepositoryUnavailable', code: 'psychology/repository-not-ready' }),
+            });
+          }
           setNotice('A Psicologia ainda está carregando. Tente novamente em instantes.');
           return false;
         }
         try {
           remoteLoadVersion.current += 1;
-          await remoteRepositories.patients.delete(remoteRepositories.scope, patientDelete.id);
+          const patientRepository = remoteRepositories.patients as PsychologyDiagnosticPatientRepository;
+          if (patientRepository.deleteWithDiagnostic) {
+            await patientRepository.deleteWithDiagnostic(remoteRepositories.scope, patientDelete.id, { correlationId: diagnosticCorrelationId });
+          } else {
+            await patientRepository.delete(remoteRepositories.scope, patientDelete.id);
+          }
           const patients = await remoteRepositories.patients.list(remoteRepositories.scope);
           setRemoteStore(current => current ? { ...current, patients: patients as typeof current.patients } : current);
           const remaining = patients.find(patient => patient.id === patientDelete.id);
@@ -726,7 +785,16 @@ export default function PsychologyPilot() {
           setPatientChart(null);
           setNotice(remaining ? 'Paciente inativado porque possui histórico relacionado.' : 'Paciente excluído com segurança.');
           return true;
-        } catch {
+        } catch (error) {
+          if (diagnosticEnabled) {
+            logPsychologyDeleteDiagnostic({
+              DELETE_PATIENT_STAGE: 'catch',
+              correlationId: diagnosticCorrelationId,
+              method: 'DELETE',
+              routeTemplate: '/api/psychology/patients/:id',
+              ...deleteDiagnosticErrorFields(error),
+            });
+          }
           setNotice('Não foi possível concluir a exclusão do paciente. Tente novamente.');
           return false;
         }

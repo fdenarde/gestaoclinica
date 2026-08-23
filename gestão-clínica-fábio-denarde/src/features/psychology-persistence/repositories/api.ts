@@ -36,6 +36,74 @@ export class ApiPsychologyError extends Error {
   }
 }
 
+type ApiPsychologyRepository<T extends { id: string }> = PsychologyRepository<T> & {
+  deleteWithDiagnostic(
+    scope: PsychologyPersistenceScope,
+    id: string,
+    diagnostic?: PsychologyDeleteDiagnosticContext,
+  ): Promise<{ id: string } | null>;
+};
+
+export interface PsychologyDeleteDiagnosticContext {
+  correlationId: string;
+}
+
+export type PsychologyDeleteDiagnosticStage =
+  | 'confirm_start'
+  | 'before_repository'
+  | 'before_token'
+  | 'token_ok'
+  | 'token_error'
+  | 'before_fetch'
+  | 'fetch_response'
+  | 'catch';
+
+export interface PsychologyDeleteDiagnosticEvent {
+  DELETE_PATIENT_STAGE: PsychologyDeleteDiagnosticStage;
+  correlationId: string;
+  method: 'DELETE';
+  routeTemplate: '/api/psychology/patients/:id';
+  authUserPresent?: 'YES' | 'NO';
+  authorizationPresent?: 'YES' | 'NO';
+  errorName?: string;
+  errorCode?: string;
+  httpStatus?: number;
+  mutationLockPresent?: 'YES' | 'NO';
+  repositoryPresent?: 'YES' | 'NO';
+  patientSelectionPresent?: 'YES' | 'NO';
+}
+
+const DELETE_DIAGNOSTIC_ROUTE: PsychologyDeleteDiagnosticEvent['routeTemplate'] = '/api/psychology/patients/:id';
+
+function sanitizeDeleteDiagnosticValue(value: unknown, fallback = 'unknown'): string {
+  const sanitized = String(value || '').replace(/[^A-Za-z0-9._:/-]/g, '').slice(0, 80);
+  return sanitized || fallback;
+}
+
+export function deleteDiagnosticErrorFields(error: unknown): Pick<PsychologyDeleteDiagnosticEvent, 'errorName' | 'errorCode' | 'httpStatus'> {
+  const candidate = error as { name?: unknown; code?: unknown; status?: unknown; statusCode?: unknown } | null;
+  const status = Number(candidate?.status ?? candidate?.statusCode);
+  return {
+    errorName: sanitizeDeleteDiagnosticValue(candidate?.name),
+    ...(candidate?.code ? { errorCode: sanitizeDeleteDiagnosticValue(candidate.code) } : {}),
+    ...(Number.isFinite(status) && status > 0 ? { httpStatus: status } : {}),
+  };
+}
+
+export function createPsychologyDeleteDiagnosticCorrelationId(): string {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  } catch {
+    // The fallback remains opaque and contains no application identifier.
+  }
+  return `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export function logPsychologyDeleteDiagnostic(event: PsychologyDeleteDiagnosticEvent): void {
+  if (typeof console === 'undefined' || typeof console.info !== 'function') return;
+  console.info('[PSYCHOLOGY DELETE DIAGNOSTIC]', event);
+}
+
 interface ApiErrorPayload {
   error?: { code?: string; message?: string };
 }
@@ -118,8 +186,49 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
 
-  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string): Promise<T> {
-    const token = await getToken();
+  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<T> {
+    const isDiagnosticDelete = method === 'DELETE' && Boolean(diagnostic);
+    if (isDiagnosticDelete && diagnostic) {
+      logPsychologyDeleteDiagnostic({
+        DELETE_PATIENT_STAGE: 'before_token',
+        correlationId: diagnostic.correlationId,
+        method: 'DELETE',
+        routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
+        authUserPresent: auth.currentUser ? 'YES' : 'NO',
+      });
+    }
+    let token: string;
+    try {
+      token = await getToken();
+      if (isDiagnosticDelete && diagnostic) {
+        logPsychologyDeleteDiagnostic({
+          DELETE_PATIENT_STAGE: 'token_ok',
+          correlationId: diagnostic.correlationId,
+          method: 'DELETE',
+          routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
+        });
+      }
+    } catch (error) {
+      if (isDiagnosticDelete && diagnostic) {
+        logPsychologyDeleteDiagnostic({
+          DELETE_PATIENT_STAGE: 'token_error',
+          correlationId: diagnostic.correlationId,
+          method: 'DELETE',
+          routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
+          ...deleteDiagnosticErrorFields(error),
+        });
+      }
+      throw error;
+    }
+    if (isDiagnosticDelete && diagnostic) {
+      logPsychologyDeleteDiagnostic({
+        DELETE_PATIENT_STAGE: 'before_fetch',
+        correlationId: diagnostic.correlationId,
+        method: 'DELETE',
+        routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
+        authorizationPresent: token ? 'YES' : 'NO',
+      });
+    }
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
       headers: {
@@ -130,10 +239,19 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(method === 'GET' || method === 'DELETE' ? { cache: 'no-store' } : {}),
     });
+    if (isDiagnosticDelete && diagnostic) {
+      logPsychologyDeleteDiagnostic({
+        DELETE_PATIENT_STAGE: 'fetch_response',
+        correlationId: diagnostic.correlationId,
+        method: 'DELETE',
+        routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
+        httpStatus: response.status,
+      });
+    }
     return readApiResponse<T>(response, scope);
   }
 
-  function createApiRepository<K extends PsychologyAggregate>(aggregate: K): PsychologyRepository<PsychologyAggregateRecordMap[K]> {
+  function createApiRepository<K extends PsychologyAggregate>(aggregate: K): ApiPsychologyRepository<PsychologyAggregateRecordMap[K]> {
     type RecordType = PsychologyAggregateRecordMap[K];
     const apiResource = aggregate === 'sessionRecords'
       ? 'session-records'
@@ -158,10 +276,15 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         requestedScope.workspaceId !== scope.workspaceId
         || requestedScope.tenantId !== scope.tenantId
         || requestedScope.professionalId !== scope.professionalId
-        || requestedScope.context !== scope.context
+                || requestedScope.context !== scope.context
       ) {
         throw new ApiPsychologyError('psychology/scope-conflict', 'O escopo da requisição não corresponde ao provider.', 422);
       }
+    };
+    const deleteRecord = async (requestedScope: PsychologyPersistenceScope, id: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<{ id: string } | null> => {
+      assertRequestedScope(requestedScope);
+      const result = await request<{ id?: string; deleted?: boolean }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE', undefined, undefined, diagnostic);
+      return result.deleted === false ? null : { id: result.id || id };
     };
     return {
       aggregate,
@@ -205,9 +328,10 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         return value ? withScope(clone(value), scope) as RecordType : null;
       },
       async delete(requestedScope, id) {
-        assertRequestedScope(requestedScope);
-        const result = await request<{ id?: string; deleted?: boolean }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE');
-        return result.deleted === false ? null : { id: result.id || id };
+        return deleteRecord(requestedScope, id);
+      },
+      async deleteWithDiagnostic(requestedScope, id, diagnostic) {
+        return deleteRecord(requestedScope, id, diagnostic);
       },
     };
   }
