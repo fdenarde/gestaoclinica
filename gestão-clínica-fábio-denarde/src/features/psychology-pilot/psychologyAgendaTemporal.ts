@@ -18,6 +18,12 @@ function civilDate(value: Date | string) {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
 }
 
+export function isPsychologySessionBeforeNow(session: { date: string; time: string }, now: Date): boolean {
+  const today = civilDate(now);
+  const currentTime = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  return session.date < today || (session.date === today && session.time < currentTime);
+}
+
 export function getPsychologyAgendaTimeProgress(now: Date): PsychologyAgendaTimeProgress {
   const minutes = now.getHours() * 60 + now.getMinutes();
   const visible = minutes >= PSYCHOLOGY_AGENDA_START_MINUTES && minutes < PSYCHOLOGY_AGENDA_END_MINUTES;

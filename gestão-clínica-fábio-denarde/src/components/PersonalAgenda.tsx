@@ -89,6 +89,7 @@ function PsychologyPersonalWeeklyGrid({
   openEdit,
   toggleDone,
   handleDelete,
+  pendingMutationKey,
 }: {
   weekDays: Date[];
   occurrences: PersonalAppointmentOccurrence[];
@@ -96,6 +97,7 @@ function PsychologyPersonalWeeklyGrid({
   openEdit: (appointment: PersonalAppointment) => void;
   toggleDone: (id: string) => Promise<void>;
   handleDelete: (id: string) => Promise<void>;
+  pendingMutationKey: string | null;
 }) {
   const [agendaNow, setAgendaNow] = useState(() => new Date());
   useEffect(() => {
@@ -193,9 +195,9 @@ function PsychologyPersonalWeeklyGrid({
                               {app.title && app.type !== app.title && <p className={cn('mt-1 truncate text-[9px] font-bold opacity-75', config.text)}>{app.type}</p>}
                               {app.recurrence && app.recurrence !== 'Não repetir' && <span className="mt-1 inline-flex max-w-full truncate rounded bg-white/60 px-1 py-0.5 text-[8px] font-bold text-gray-600">🔄 {app.recurrence}</span>}
                               <div className="absolute right-1 top-1 z-10 flex items-center gap-0.5 rounded border border-black/10 bg-white/90 p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                                <button type="button" onClick={event => { event.stopPropagation(); void toggleDone(app.id); }} className="rounded p-1.5 text-green-600 hover:bg-green-50" title={app.isDone ? 'Reativar' : 'Marcar como concluído'} aria-label={app.isDone ? 'Reativar' : 'Marcar como concluído'}><CheckCircle2 size={13} /></button>
-                                <button type="button" onClick={event => { event.stopPropagation(); openEdit(app); }} className="rounded p-1.5 text-blue-600 hover:bg-blue-50" title="Editar" aria-label="Editar"><Edit2 size={13} /></button>
-                                <button type="button" onClick={event => { event.stopPropagation(); void handleDelete(app.id); }} className="rounded p-1.5 text-red-600 hover:bg-red-50" title="Excluir" aria-label="Excluir"><Trash2 size={13} /></button>
+                                <button type="button" disabled={Boolean(pendingMutationKey)} onClick={async event => { event.stopPropagation(); await toggleDone(app.id); }} className="rounded p-1.5 text-green-600 hover:bg-green-50 disabled:cursor-wait disabled:opacity-50" title={app.isDone ? 'Reativar' : 'Marcar como concluído'} aria-label={app.isDone ? 'Reativar' : 'Marcar como concluído'}><CheckCircle2 size={13} /></button>
+                                <button type="button" disabled={Boolean(pendingMutationKey)} onClick={event => { event.stopPropagation(); openEdit(app); }} className="rounded p-1.5 text-blue-600 hover:bg-blue-50 disabled:cursor-wait disabled:opacity-50" title="Editar" aria-label="Editar"><Edit2 size={13} /></button>
+                                <button type="button" disabled={Boolean(pendingMutationKey)} onClick={async event => { event.stopPropagation(); await handleDelete(app.id); }} className="rounded p-1.5 text-red-600 hover:bg-red-50 disabled:cursor-wait disabled:opacity-50" title="Excluir" aria-label="Excluir"><Trash2 size={13} /></button>
                               </div>
                             </article>
                           );
@@ -268,6 +270,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>(() => getDefaultSounds());
   const [isSaving, setIsSaving] = useState(false);
+  const [pendingMutationKey, setPendingMutationKey] = useState<string | null>(null);
   const mutationLocks = useRef(new Set<string>());
 
   useEffect(() => {
@@ -365,6 +368,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     const mutationKey = `delete:${id}`;
     if (mutationLocks.current.has(mutationKey)) return;
     mutationLocks.current.add(mutationKey);
+    setPendingMutationKey(mutationKey);
 
     try {
       const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
@@ -379,6 +383,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       showToast('Erro ao excluir compromisso. Tente novamente.', 'error');
     } finally {
       mutationLocks.current.delete(mutationKey);
+      setPendingMutationKey(null);
     }
   };
 
@@ -388,6 +393,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     const mutationKey = `toggle:${id}:${currentAppointment.isDone ? 'done' : 'open'}`;
     if (mutationLocks.current.has(mutationKey)) return;
     mutationLocks.current.add(mutationKey);
+    setPendingMutationKey(mutationKey);
 
     const updatedList = (state.personalAppointments || []).map(a =>
       a.id === id ? { ...a, isDone: !a.isDone } : a
@@ -405,6 +411,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       showToast('Erro ao atualizar compromisso. Tente novamente.', 'error');
     } finally {
       mutationLocks.current.delete(mutationKey);
+      setPendingMutationKey(null);
     }
   };
 
@@ -584,6 +591,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
           openEdit={openEdit}
           toggleDone={toggleDone}
           handleDelete={handleDelete}
+          pendingMutationKey={pendingMutationKey}
         />
       )}
       {viewMode === 'semanal' && !isPsychology && (
@@ -657,13 +665,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                               )}
                               {/* Ações no Hover */}
                               <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5 z-10">
-                                <button onClick={(e) => { e.stopPropagation(); void toggleDone(app.id); }} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
+                                <button onClick={async (e) => { e.stopPropagation(); await toggleDone(app.id); }} disabled={Boolean(pendingMutationKey)} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
                                   <CheckCircle2 size={13} />
                                 </button>
                                 <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-1.5 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
                                   <Edit2 size={13} />
                                 </button>
-                                <button className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); void handleDelete(app.id); }}>
+                                <button disabled={Boolean(pendingMutationKey)} className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={async e => { e.stopPropagation(); await handleDelete(app.id); }}>
                                   <Trash2 size={13} />
                                 </button>
                               </div>
@@ -806,13 +814,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                         </div>
                       </div>
                       <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
-                        <button onClick={(e) => { e.stopPropagation(); void toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                        <button onClick={async (e) => { e.stopPropagation(); await toggleDone(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
                           <CheckCircle2 size={14} />
                         </button>
                         <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
                           <Edit2 size={14} />
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); void handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                        <button onClick={async (e) => { e.stopPropagation(); await handleDelete(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -861,13 +869,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                       </div>
                     </div>
                     <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
-                      <button onClick={(e) => { e.stopPropagation(); void toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                      <button onClick={async (e) => { e.stopPropagation(); await toggleDone(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
                         <CheckCircle2 size={14} />
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
                         <Edit2 size={14} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); void handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                      <button onClick={async (e) => { e.stopPropagation(); await handleDelete(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -879,7 +887,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       )}
 
       {/* Modal Nova/Editar Sessão Pessoal */}
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={selectedApptId ? 'Editar Compromisso' : 'Novo Compromisso'}>
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} closeDisabled={isSaving} title={selectedApptId ? 'Editar Compromisso' : 'Novo Compromisso'}>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -1062,7 +1070,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
              </div>
           )}
           <div className="pt-2">
-            <button onClick={() => void handleSave()} disabled={isSaving} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98] disabled:cursor-wait disabled:opacity-60">
+            <button onClick={handleSave} disabled={isSaving} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98] disabled:cursor-wait disabled:opacity-60">
               {isSaving ? 'Salvando...' : selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
             </button>
           </div>
