@@ -82,6 +82,7 @@ function createFetchHarness({ deleteStatus = 200 } = {}) {
     const parsed = new URL(String(url), 'http://localhost');
     const method = init.method || 'GET';
     requests.push({ method, path: parsed.pathname });
+    if (method === 'POST' && parsed.pathname === '/api/psychology-delete-diagnostic') return new Response(null, { status: 204 });
     if (method === 'DELETE' && parsed.pathname === `/api/psychology/patients/${patient.id}`) {
       return deleteStatus >= 200 && deleteStatus < 300
         ? response({ scope, deleted: true, id: patient.id }, deleteStatus)

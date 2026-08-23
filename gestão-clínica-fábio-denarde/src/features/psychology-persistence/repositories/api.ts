@@ -74,6 +74,7 @@ export interface PsychologyDeleteDiagnosticEvent {
 }
 
 const DELETE_DIAGNOSTIC_ROUTE: PsychologyDeleteDiagnosticEvent['routeTemplate'] = '/api/psychology/patients/:id';
+const DELETE_DIAGNOSTIC_ENDPOINT = '/api/psychology-delete-diagnostic';
 
 function sanitizeDeleteDiagnosticValue(value: unknown, fallback = 'unknown'): string {
   const sanitized = String(value || '').replace(/[^A-Za-z0-9._:/-]/g, '').slice(0, 80);
@@ -100,8 +101,47 @@ export function createPsychologyDeleteDiagnosticCorrelationId(): string {
 }
 
 export function logPsychologyDeleteDiagnostic(event: PsychologyDeleteDiagnosticEvent): void {
-  if (typeof console === 'undefined' || typeof console.info !== 'function') return;
-  console.info('[PSYCHOLOGY DELETE DIAGNOSTIC]', event);
+  if (typeof console !== 'undefined' && typeof console.info === 'function') {
+    console.info('[PSYCHOLOGY DELETE DIAGNOSTIC]', event);
+  }
+
+  const payload: Record<string, string | number> = {
+    DELETE_PATIENT_STAGE: event.DELETE_PATIENT_STAGE,
+    correlationId: event.correlationId,
+    method: event.method,
+    routeTemplate: event.routeTemplate,
+  };
+  for (const key of [
+    'authUserPresent',
+    'authorizationPresent',
+    'errorName',
+    'errorCode',
+    'httpStatus',
+    'mutationLockPresent',
+    'repositoryPresent',
+    'patientSelectionPresent',
+  ] as const) {
+    const value = event[key];
+    if (value !== undefined) payload[key] = value;
+  }
+
+  try {
+    const diagnosticFetch = globalThis.fetch;
+    if (typeof diagnosticFetch !== 'function') return;
+    const request = diagnosticFetch(DELETE_DIAGNOSTIC_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      credentials: 'omit',
+      keepalive: true,
+    });
+    void Promise.resolve(request).catch(() => undefined);
+  } catch {
+    // Diagnostic transport failures must never change the delete result.
+  }
 }
 
 interface ApiErrorPayload {
