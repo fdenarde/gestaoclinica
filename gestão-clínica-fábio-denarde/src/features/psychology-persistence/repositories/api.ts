@@ -118,12 +118,13 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
 
-  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
+  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string): Promise<T> {
     const token = await getToken();
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
+        ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -187,7 +188,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         assertRequestedScope(requestedScope);
         const method = aggregate === 'settings' ? 'PUT' : 'POST';
         const requestBody = aggregate === 'settings' ? { settings: (entity as unknown as { settings?: unknown }).settings || {} } : entity;
-        const result = await request<Record<string, RecordType | undefined>>(`/${apiResource}`, method, requestBody);
+        const idempotencyKey = `${aggregate}:${entity.id}:${entity.updatedAt}`;
+        const result = await request<Record<string, RecordType | undefined>>(`/${apiResource}`, method, requestBody, idempotencyKey);
         const value = responseKey ? result[responseKey] : undefined;
         if (!value) throw new ApiPsychologyError('psychology/invalid-response', 'A API não retornou o registro salvo.', 500);
         return withScope(clone(value), scope) as RecordType;

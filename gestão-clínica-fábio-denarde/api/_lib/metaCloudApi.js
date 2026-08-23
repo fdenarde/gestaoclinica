@@ -1,3 +1,5 @@
+import { normalizeMetaPhoneRecipient } from '../../shared/phoneNormalization.js';
+
 const META_SEND_ENABLED_DEFAULT = 'NO';
 const META_SEND_ENABLED_FUTURE_VALUE = 'YES';
 const META_GRAPH_API_VERSION_ENV = 'META_GRAPH_API_VERSION';
@@ -82,11 +84,11 @@ export function validateMetaWhatsAppConfig(config, { requireCredentials = false 
 }
 
 function validateSyntheticRecipient(recipient) {
-  const normalized = text(recipient);
-  if (!/^\+?[1-9]\d{7,14}$/.test(normalized)) {
-    throw new MetaConfigurationError('Destinatário sintético inválido.');
+  try {
+    return normalizeMetaPhoneRecipient(recipient).metaRecipientId;
+  } catch {
+    throw new MetaConfigurationError('Destinatário Meta inválido ou sem country code.');
   }
-  return normalized;
 }
 
 function validatePayload(payload) {

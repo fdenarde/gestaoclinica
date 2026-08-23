@@ -5,6 +5,7 @@ import { resolvePsychologyAccessContext } from './_lib/psychologyAccess.js';
 import { logSanitizedAccessAudit } from './_lib/sanitizedAccessAudit.js';
 import { buildPsychologyAuditEvent, createPsychologyRequestId, logPsychologyAuditEvent } from './_lib/psychologyObservability.js';
 import { createPsychologyServerRepository } from './_lib/psychologyRepository.js';
+import { normalizePhone } from '../shared/phoneNormalization.js';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
@@ -20,6 +21,22 @@ function apiError(code, message, statusCode = 422) {
 
 function normalize(value, maxLength = 240) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function normalizePhoneForWrite(value) {
+  const input = normalize(value, 32);
+  if (!input) return '';
+  try {
+    return normalizePhone(input).displayPhone;
+  } catch {
+    throw apiError('psychology/phone-invalid', 'Informe um telefone válido.', 422);
+  }
+}
+
+function requestIdempotencyKey(req) {
+  const value = req.headers?.['x-idempotency-key'] || req.headers?.['X-Idempotency-Key'];
+  const normalized = normalize(value, 200);
+  return normalized && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(normalized) ? normalized : undefined;
 }
 
 function setSecurityHeaders(req, res) {
@@ -220,7 +237,7 @@ function cleanProfessionalProfile(input = {}) {
   const allowed = ['displayName', 'professionalTitle', 'professionalRegistration', 'clinicDisplayName', 'email', 'phone'];
   return Object.fromEntries(allowed
     .filter(key => input[key] !== undefined)
-    .map(key => [key, normalize(input[key], key === 'phone' ? 32 : 160)]));
+    .map(key => [key, key === 'phone' ? normalizePhoneForWrite(input[key]) : normalize(input[key], 160)]));
 }
 
 function settingsDto(record, runtimeScope) {
@@ -279,7 +296,7 @@ function preparePatient(body, runtimeScope, now, current) {
   const merged = { ...(current || {}), ...source };
   const name = normalize(merged.name, 160);
   const birthDate = normalize(merged.dateOfBirth || merged.birthDate, 32);
-  const phone = normalize(merged.phone, 32);
+  const phone = normalizePhoneForWrite(merged.phone);
   const preferredModality = normalize(merged.preferredModality, 32);
   if (!name || !birthDate || !phone || !['presencial', 'online'].includes(preferredModality)) {
     throw apiError('psychology/patient-invalid', 'Informe nome, nascimento, telefone e modalidade do paciente.', 422);
@@ -288,7 +305,7 @@ function preparePatient(body, runtimeScope, now, current) {
     ? {
       fullName: normalize(merged.administrativeResponsible.fullName, 160),
       relationship: normalize(merged.administrativeResponsible.relationship, 80),
-      phone: normalize(merged.administrativeResponsible.phone, 32),
+      phone: normalizePhoneForWrite(merged.administrativeResponsible.phone),
       email: normalize(merged.administrativeResponsible.email, 160).toLowerCase(),
     }
     : undefined;
@@ -300,7 +317,7 @@ function preparePatient(body, runtimeScope, now, current) {
     dateOfBirth: birthDate,
     birthDate,
     phone,
-    additionalPhone: normalize(merged.additionalPhone, 32) || undefined,
+    additionalPhone: normalizePhoneForWrite(merged.additionalPhone) || undefined,
     email: normalize(merged.email, 160),
     address: merged.address && typeof merged.address === 'object' ? merged.address : undefined,
     demographics: merged.demographics && typeof merged.demographics === 'object' ? merged.demographics : undefined,
@@ -503,6 +520,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
   return async function psychologyHandler(req, res) {
     const requestId = createPsychologyRequestId(req);
+    const idempotencyKey = requestIdempotencyKey(req);
     let runtimeScope;
     let operation = `${req.method || 'UNKNOWN'}:unknown`;
     setSecurityHeaders(req, res);
@@ -534,7 +552,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'patients' && req.method === 'GET') {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.list'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
         const items = id ? [await repository.patients.get(id)].filter(Boolean) : await repository.patients.list();
         auditHeaders(res, runtimeScope, 'read', 'patients');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -543,7 +561,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'patients' && req.method === 'POST' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.create'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
         const patient = await repository.patients.upsert(preparePatient(body, runtimeScope, now()));
         auditHeaders(res, runtimeScope, 'create', 'patients');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));

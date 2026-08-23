@@ -81,7 +81,7 @@ function assertEntityScope(entity, scope) {
   }
 }
 
-function auditMetadata(runtimeScope, action, aggregate, id, now, requestId, operation) {
+function auditMetadata(runtimeScope, action, aggregate, id, now, requestId, operation, idempotencyKey) {
   return {
     requestId: normalize(requestId, 128) || 'local-request',
     actorUid: runtimeScope.authUid,
@@ -94,11 +94,12 @@ function auditMetadata(runtimeScope, action, aggregate, id, now, requestId, oper
     aggregate,
     action,
     documentId: id,
+    ...(idempotencyKey ? { idempotencyKey: normalize(idempotencyKey, 200) } : {}),
     timestamp: now,
   };
 }
 
-export function buildPsychologyServerEntity({ runtimeScope, aggregate, entity, existing, now, requestId, operation }) {
+export function buildPsychologyServerEntity({ runtimeScope, aggregate, entity, existing, now, requestId, operation, idempotencyKey }) {
   assertScope(runtimeScope);
   assertAggregate(aggregate);
   const documentId = assertId(entity?.id);
@@ -112,7 +113,7 @@ export function buildPsychologyServerEntity({ runtimeScope, aggregate, entity, e
     context: PSYCHOLOGY_CONTEXT,
     createdAt: existing ? existing.createdAt : entity.createdAt || now(),
     updatedAt: entity.updatedAt || now(),
-    audit: auditMetadata(runtimeScope, existing ? 'update' : 'create', aggregate, documentId, now(), requestId, operation),
+    audit: auditMetadata(runtimeScope, existing ? 'update' : 'create', aggregate, documentId, now(), requestId, operation, idempotencyKey),
   };
   if (aggregate === 'sessions' && ('content' in value || 'clinicalContent' in value)) {
     throw repositoryError('psychology/session-clinical-content', 'Session é administrativa; conteúdo clínico usa session-records.', 422);
@@ -123,7 +124,7 @@ export function buildPsychologyServerEntity({ runtimeScope, aggregate, entity, e
   return value;
 }
 
-function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, operation }) {
+function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, operation, idempotencyKey }) {
   const collection = db.collection(collectionPath(runtimeScope, aggregate));
   return {
     aggregate,
@@ -144,7 +145,10 @@ function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, 
       const documentId = assertId(entity?.id);
       assertEntityScope(entity, runtimeScope);
       const existing = await collection.doc(documentId).get();
-      const value = buildPsychologyServerEntity({ runtimeScope, aggregate, entity, existing: existing.exists ? existing.data() : undefined, now, requestId, operation });
+      if (idempotencyKey && existing.exists && existing.data()?.audit?.idempotencyKey === normalize(idempotencyKey, 200)) {
+        return { id: documentId, ...clone(existing.data() || {}) };
+      }
+      const value = buildPsychologyServerEntity({ runtimeScope, aggregate, entity, existing: existing.exists ? existing.data() : undefined, now, requestId, operation, idempotencyKey });
       await collection.doc(documentId).set(value, { merge: false });
       return clone(value);
     },
@@ -169,9 +173,9 @@ function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, 
   };
 }
 
-export function createPsychologyServerRepository({ db, runtimeScope, now = () => new Date().toISOString(), requestId, operation }) {
+export function createPsychologyServerRepository({ db, runtimeScope, now = () => new Date().toISOString(), requestId, operation, idempotencyKey }) {
   assertScope(runtimeScope);
-  const repositories = Object.fromEntries([...AGGREGATES].map(aggregate => [aggregate, createGenericRepository({ db, runtimeScope, aggregate, now, requestId, operation })]));
+  const repositories = Object.fromEntries([...AGGREGATES].map(aggregate => [aggregate, createGenericRepository({ db, runtimeScope, aggregate, now, requestId, operation, idempotencyKey })]));
   const documents = repositories.documents;
   const attachments = repositories.attachments;
   return {

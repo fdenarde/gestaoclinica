@@ -26,6 +26,17 @@ import {
   type PsychologyAdministrativeResponsible,
   validatePsychologyPatientAdministrativeInput,
 } from '../../lib/psychologyPatientAdministrative';
+import { normalizePhone } from '../../../shared/phoneNormalization.js';
+
+function sanitizeStoredPhone(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  try {
+    return normalizePhone(raw).displayPhone;
+  } catch {
+    return raw;
+  }
+}
 
 export type PsychologyModality = 'presencial' | 'online';
 export type PsychologySessionStatus = 'agendada' | 'realizada' | 'falta' | 'cancelada';
@@ -580,7 +591,7 @@ export function upsertPsychologyPatient(store: PsychologyStore, input: Psycholog
     ? {
       fullName: input.administrativeResponsible.fullName.trim(),
       relationship: input.administrativeResponsible.relationship.trim(),
-      phone: input.administrativeResponsible.phone.trim(),
+      phone: sanitizeStoredPhone(input.administrativeResponsible.phone),
       email: input.administrativeResponsible.email.trim().toLocaleLowerCase(),
     }
     : undefined;
@@ -591,7 +602,7 @@ export function upsertPsychologyPatient(store: PsychologyStore, input: Psycholog
     name: input.name.trim(),
     dateOfBirth,
     birthDate: dateOfBirth || undefined,
-    phone: input.phone.trim(),
+    phone: sanitizeStoredPhone(input.phone),
     email: input.email.trim() || undefined,
     preferredModality: input.preferredModality,
     administrativeNote: input.administrativeNote.trim() || undefined,

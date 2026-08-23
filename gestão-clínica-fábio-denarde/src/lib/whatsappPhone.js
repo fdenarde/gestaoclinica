@@ -1,41 +1,35 @@
+import {
+  buildWhatsappClickToChatUrl,
+  formatPhoneDisplay,
+  normalizePhone,
+  normalizePhoneForIntegration,
+} from '../../shared/phoneNormalization.js';
+
+export { buildWhatsappClickToChatUrl, formatPhoneDisplay, normalizePhone, normalizePhoneForIntegration };
+
 export function extractPhoneDigits(value) {
-  return String(value || '').replace(/\D/g, '');
+  return String(value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u0000-\u001F\u007F\u00A0\u00AD\u061C\u1680\u180E\u2000-\u200D\u2028\u2029\u202F\u205F\u2060\u2066-\u2069\u3000\uFEFF]/gu, '')
+    .replace(/['’]/gu, '')
+    .replace(/\D/g, '');
 }
 
 export function normalizeBrazilianWhatsappPhone(value, { requiredAreaCode = '27' } = {}) {
-  let digits = extractPhoneDigits(value);
-  if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
-
-  if (digits.startsWith('55')) {
-    const national = digits.slice(2);
-    if (!/^\d{10,11}$/.test(national)) {
-      throw new Error('Telefone brasileiro inválido.');
-    }
-    if (requiredAreaCode && !national.startsWith(requiredAreaCode)) {
-      throw new Error(`DDD autorizado inválido. Esperado: ${requiredAreaCode}.`);
-    }
-    return {
-      digits: `55${national}`,
-      nationalDigits: national,
-      chatId: `55${national}@c.us`,
-      maskedShort: maskPhoneShort(national),
-      maskedDisplay: maskBrazilianPhone(national),
-    };
-  }
-
-  if (!/^\d{10,11}$/.test(digits)) {
+  const normalized = normalizePhoneForIntegration(value, { defaultCountryCode: '55' });
+  if (normalized.countryCode !== '55' || !/^\d{10,11}$/.test(normalized.nationalNumber)) {
     throw new Error('Telefone brasileiro inválido.');
   }
-  if (requiredAreaCode && !digits.startsWith(requiredAreaCode)) {
+  if (requiredAreaCode && !normalized.nationalNumber.startsWith(requiredAreaCode)) {
     throw new Error(`DDD autorizado inválido. Esperado: ${requiredAreaCode}.`);
   }
-
   return {
-    digits: `55${digits}`,
-    nationalDigits: digits,
-    chatId: `55${digits}@c.us`,
-    maskedShort: maskPhoneShort(digits),
-    maskedDisplay: maskBrazilianPhone(digits),
+    ...normalized,
+    digits: normalized.canonicalPhone,
+    nationalDigits: normalized.nationalNumber,
+    chatId: `${normalized.canonicalPhone}@c.us`,
+    maskedShort: maskPhoneShort(normalized.nationalNumber),
+    maskedDisplay: maskBrazilianPhone(normalized.nationalNumber),
   };
 }
 

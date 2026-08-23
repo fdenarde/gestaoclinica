@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance } from '../types';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Bell, CheckCircle2, Edit2, Trash2, BookOpen } from 'lucide-react';
 import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, addMonths, subMonths } from 'date-fns';
@@ -268,6 +268,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>(() => getDefaultSounds());
   const [isSaving, setIsSaving] = useState(false);
+  const mutationLocks = useRef(new Set<string>());
 
   useEffect(() => {
     loadAlarmSounds().then(setAlarmSoundsList).catch(() => {});
@@ -312,6 +313,9 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const handleSave = async () => {
     if (!formDate || !formTime || !type) return;
     if (isSaving) return;
+    const mutationKey = `save:${selectedApptId || 'new'}:${formDate}:${formTime}:${type}`;
+    if (mutationLocks.current.has(mutationKey)) return;
+    mutationLocks.current.add(mutationKey);
 
     const newApp: PersonalAppointment = {
       id: selectedApptId || Math.random().toString(36).substr(2, 9),
@@ -352,11 +356,15 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       showToast('Não foi possível salvar o compromisso. Verifique a conexão e tente novamente.', 'error');
     } finally {
       setIsSaving(false);
+      mutationLocks.current.delete(mutationKey);
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Tem certeza que deseja excluir este compromisso?')) return;
+    const mutationKey = `delete:${id}`;
+    if (mutationLocks.current.has(mutationKey)) return;
+    mutationLocks.current.add(mutationKey);
 
     try {
       const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
@@ -369,12 +377,17 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     } catch (error) {
       console.error('Erro ao excluir compromisso:', error);
       showToast('Erro ao excluir compromisso. Tente novamente.', 'error');
+    } finally {
+      mutationLocks.current.delete(mutationKey);
     }
   };
 
   const toggleDone = async (id: string) => {
     const currentAppointment = (state.personalAppointments || []).find(a => a.id === id);
     if (!currentAppointment) return;
+    const mutationKey = `toggle:${id}:${currentAppointment.isDone ? 'done' : 'open'}`;
+    if (mutationLocks.current.has(mutationKey)) return;
+    mutationLocks.current.add(mutationKey);
 
     const updatedList = (state.personalAppointments || []).map(a =>
       a.id === id ? { ...a, isDone: !a.isDone } : a
@@ -390,6 +403,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     } catch (error) {
       console.error('Erro ao atualizar compromisso:', error);
       showToast('Erro ao atualizar compromisso. Tente novamente.', 'error');
+    } finally {
+      mutationLocks.current.delete(mutationKey);
     }
   };
 

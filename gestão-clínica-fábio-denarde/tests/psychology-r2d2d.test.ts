@@ -343,7 +343,7 @@ test('R2D2D canary local — create/read próprio, cross-access e clinical isola
 
 test('R2D2E observability — evento mínimo não contém dado clínico ou do paciente', () => {
   const event = buildPsychologyAuditEvent({ requestId: 'r2d2e-synthetic', runtimeScope: scopeA, operation: 'POST:patients', status: 'success', timestamp: NOW });
-  assert.deepEqual(Object.keys(event).sort(), ['actorUid', 'context', 'operation', 'professionalId', 'requestId', 'status', 'timestamp', 'workspaceId'].sort());
+  assert.deepEqual(Object.keys(event).sort(), ['actorUidHash', 'context', 'operation', 'requestId', 'status', 'timestamp'].sort());
   assert.equal(JSON.stringify(event).includes('Paciente Sintético'), false);
   assert.equal(JSON.stringify(event).includes('phone'), false);
   assert.equal(JSON.stringify(event).includes('content'), false);
