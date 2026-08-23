@@ -81,14 +81,15 @@ test('administrador pode redefinir senha temporária sem reativar bloqueios admi
   assert.doesNotMatch(admin, /window\.confirm/);
 });
 
-test('Vercel reescreve somente as três rotas diretas para a SPA', () => {
+test('Vercel preserva as três rotas diretas da SPA e roteia IDs da Psicologia para a API', () => {
   const sources = vercel.rewrites.map(entry => entry.source);
   for (const route of ['/responsavel', '/profissional', '/monitoramento']) {
     assert.ok(sources.includes(route));
     assert.ok(sources.includes(`${route}/`));
   }
-  assert.ok(vercel.rewrites.every(entry => entry.destination === '/index.html'));
-  assert.ok(vercel.rewrites.every(entry => !entry.source.startsWith('/api')));
+  const spaRewrites = vercel.rewrites.filter(entry => !entry.source.startsWith('/api'));
+  assert.ok(spaRewrites.every(entry => entry.destination === '/index.html'));
+  assert.ok(vercel.rewrites.some(entry => entry.source === '/api/psychology/:resource/:id'));
 });
 
 test('escopo não introduz integração com WhatsApp ou PM2', () => {

@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/api/psychology/:resource/:id", "destination": "/api/psychology?path=:resource/:id" },
     { "source": "/responsavel", "destination": "/index.html" },
     { "source": "/responsavel/", "destination": "/index.html" },
     { "source": "/profissional", "destination": "/index.html" },
