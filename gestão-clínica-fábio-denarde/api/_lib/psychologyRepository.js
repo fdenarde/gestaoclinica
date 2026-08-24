@@ -149,6 +149,15 @@ function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, 
         return scopeMatches(value, runtimeScope);
       });
     },
+    async hasSessionReference(sessionId) {
+      const normalizedSessionId = assertId(sessionId);
+      const query = collection.where('sessionId', '==', normalizedSessionId);
+      const snapshot = await (typeof query.limit === 'function' ? query.limit(1) : query).get();
+      return snapshot.docs.some(documentSnapshot => {
+        const value = { id: documentSnapshot.id, ...clone(documentSnapshot.data() || {}) };
+        return scopeMatches(value, runtimeScope);
+      });
+    },
     async upsert(entity) {
       const documentId = assertId(entity?.id);
       assertEntityScope(entity, runtimeScope);
@@ -218,6 +227,8 @@ export function createPsychologyServerRepository({ db, runtimeScope, now = () =>
       scope: runtimeScope,
       hasChargeReference: repositories.charges.hasPatientReference,
       hasPaymentReference: repositories.payments.hasPatientReference,
+      hasChargeSessionReference: repositories.charges.hasSessionReference,
+      hasPaymentSessionReference: repositories.payments.hasSessionReference,
       listCharges: repositories.charges.list,
       getCharge: repositories.charges.get,
       upsertCharge: repositories.charges.upsert,

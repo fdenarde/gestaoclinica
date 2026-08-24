@@ -734,14 +734,12 @@ export function createPsychologyApiHandler(dependencies = {}) {
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
         const current = await repository.sessions.get(id);
         if (!current) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
-        const [clinicalRecords, charges, payments] = await Promise.all([
-          repository.sessionRecords.list(),
-          repository.financial.listCharges(),
-          repository.financial.listPayments(),
+        const [hasClinicalRecord, hasCharge, hasPayment] = await Promise.all([
+          repository.sessionRecords.hasSessionReference(id),
+          repository.financial.hasChargeSessionReference(id),
+          repository.financial.hasPaymentSessionReference(id),
         ]);
-        const hasRelatedData = clinicalRecords.some(record => record.sessionId === id)
-          || charges.some(charge => charge.sessionId === id)
-          || payments.some(payment => payment.sessionId === id);
+        const hasRelatedData = hasClinicalRecord || hasCharge || hasPayment;
         if (hasRelatedData) {
           const cancelled = await repository.sessions.update(id, { status: 'cancelada', updatedAt: now() });
           auditHeaders(res, runtimeScope, 'cancel', 'sessions');

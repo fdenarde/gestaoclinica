@@ -344,6 +344,17 @@ function StatusPill({ status, previewStatus, compact = false, style, labelOverri
   return <span title={fullLabel} aria-label={fullLabel} className={`rounded-full whitespace-nowrap ${compact ? 'px-1.5 py-0.5 text-[9px] leading-none' : 'px-2.5 py-1 text-[11px]'} font-black ${style ? 'border' : ''} ${className}`} style={style}>{label}</span>;
 }
 
+type PsychologySessionDeleteResult = {
+  id: string;
+  deleted: boolean;
+  cancelled: boolean;
+  session?: PsychologySession;
+};
+
+type PsychologySessionDeleteRepository = {
+  deleteWithResult: (scope: PsychologyRepositoryBundle['scope'], id: string) => Promise<PsychologySessionDeleteResult>;
+};
+
 export default function PsychologyPilot() {
   const isLocalPersistence = PSYCHOLOGY_PERSISTENCE_MODE === 'local';
   const [localStore, setLocalStore] = useState<PsychologyStore>(() => isLocalPersistence ? loadLocalStore() : createEmptyPsychologyStore(createPsychologyScope(LOCAL_PSYCHOLOGY_PROFESSIONAL_ID)));
@@ -370,6 +381,7 @@ export default function PsychologyPilot() {
   const [sessionDialog, setSessionDialog] = useState<PsychologySession | 'new' | null>(null);
   const [recordDialog, setRecordDialog] = useState<PsychologySession | null>(null);
   const [sessionActions, setSessionActions] = useState<PsychologySession | null>(null);
+  const [sessionDelete, setSessionDelete] = useState<PsychologySession | null>(null);
   const [newEventDialog, setNewEventDialog] = useState<NewEventDefaults | null>(null);
   const [patientChart, setPatientChart] = useState<PsychologyPatient | null>(null);
   const [patientDelete, setPatientDelete] = useState<PsychologyPatient | null>(null);
@@ -820,6 +832,67 @@ export default function PsychologyPilot() {
     });
   };
 
+  const requestSessionDelete = (session: PsychologySession) => {
+    if (isPreview) {
+      setNotice('Dados da prévia Doctoralia são somente leitura.');
+      return;
+    }
+    setSessionActions(null);
+    setSessionDelete(session);
+  };
+
+  const confirmSessionDelete = async (): Promise<boolean> => {
+    const selectedSession = sessionDelete;
+    if (!selectedSession) return false;
+    return runParentMutation(`delete:session:${selectedSession.id}`, async () => {
+      if (!isLocalPersistence) {
+        if (!remoteRepositories) {
+          setNotice('A Psicologia ainda está carregando. Tente novamente em instantes.');
+          return false;
+        }
+        try {
+          remoteLoadVersion.current += 1;
+          const repository = remoteRepositories.sessions as unknown as PsychologySessionDeleteRepository;
+          const result = await repository.deleteWithResult(remoteRepositories.scope, selectedSession.id);
+          if (result.deleted) {
+            setRemoteStore(current => current
+              ? { ...current, sessions: current.sessions.filter(session => session.id !== selectedSession.id) }
+              : current);
+            setSessionDelete(null);
+            setSessionActions(null);
+            setNotice('Sessão excluída.');
+            return true;
+          }
+          if (!result.cancelled || !result.session) throw new Error('psychology/session-delete-invalid-result');
+          setRemoteStore(current => current
+            ? { ...current, sessions: current.sessions.map(session => session.id === selectedSession.id ? result.session as PsychologySession : session) }
+            : current);
+          setSessionDelete(null);
+          setSessionActions(null);
+          setNotice('A sessão possui histórico relacionado e foi cancelada para preservar os registros.');
+          return true;
+        } catch {
+          setNotice('Não foi possível excluir a sessão. Tente novamente.');
+          return false;
+        }
+      }
+
+      const hasRelatedData = store.sessionRecords.some(record => record.sessionId === selectedSession.id)
+        || store.charges.some(charge => charge.sessionId === selectedSession.id)
+        || store.payments.some(payment => payment.sessionId === selectedSession.id);
+      const nextStore = hasRelatedData
+        ? updatePsychologySessionStatus(store, selectedSession.id, 'cancelada')
+        : { ...store, sessions: store.sessions.filter(session => session.id !== selectedSession.id) };
+      if (!await updateStore(nextStore)) return false;
+      setSessionDelete(null);
+      setSessionActions(null);
+      setNotice(hasRelatedData
+        ? 'A sessão possui histórico relacionado e foi cancelada para preservar os registros.'
+        : 'Sessão excluída.');
+      return true;
+    });
+  };
+
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900" data-testid="psychology-pilot">
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-2.5 backdrop-blur sm:px-6 sm:py-3">
@@ -894,10 +967,11 @@ export default function PsychologyPilot() {
       {cancelledPreviewRemoval && <Dialog title="Remover consulta cancelada da Agenda?" onClose={() => setCancelledPreviewRemoval(null)}><p className="text-sm leading-relaxed text-slate-600">Ela será apenas ocultada desta prévia. O backup da Doctoralia não será alterado.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setCancelledPreviewRemoval(null)} className={secondaryButton}>Cancelar</button><button type="button" onClick={confirmHideCancelledPreviewSession} className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-4 py-3 text-sm font-black text-white hover:bg-slate-900">Remover da Agenda</button></div></Dialog>}
       {patientDialog && <PatientDialogR2F3E value={currentPatientDialog === 'new' ? null : currentPatientDialog} onClose={() => setPatientDialog(null)} onSave={input => runParentMutation(`patient:${patientDialog === 'new' ? 'new' : patientDialog.id}:${input.name}:${input.dateOfBirth || input.birthDate || ''}`, async () => { const isNew = patientDialog === 'new'; const nextStore = upsertPsychologyPatient(store, input, isNew ? undefined : patientDialog.id); if (!await updateStore(nextStore)) return false; const savedPatient = isNew ? nextStore.patients[nextStore.patients.length - 1] : undefined; setPatientDialog(null); if (savedPatient) setPatientChart(savedPatient); setNotice(isNew ? 'Paciente criado. A ficha está pronta para agendar a primeira sessão.' : 'Paciente atualizado.'); return true; })} />}
       {patientDelete && <DeletePatientDialog assessment={getPsychologyPatientDeletionAssessment(store, patientDelete.id)} onClose={() => setPatientDelete(null)} onConfirm={confirmPatientDelete} />}
+      {sessionDelete && <SessionDeleteDialog session={sessionDelete} onClose={() => setSessionDelete(null)} onConfirm={confirmSessionDelete} />}
       {sessionDialog && <SessionDialog value={currentSessionDialog === 'new' ? null : currentSessionDialog} store={store} settings={store.settings} defaultPatientId={sessionDialog === 'new' ? sessionPatientId : undefined} defaultDate={sessionDialog === 'new' ? sessionDefaults.date : selectedDate} defaultTime={sessionDialog === 'new' ? sessionDefaults.time : undefined} onClose={() => { setSessionDialog(null); setSessionPatientId(undefined); }} onSave={input => runParentMutation(`session:${sessionDialog === 'new' ? 'new' : sessionDialog.id}:${input.patientId}:${input.date}:${input.time}`, async () => { const isNew = sessionDialog === 'new'; if (!await updateStore(upsertPsychologySession(store, input, isNew ? undefined : sessionDialog.id))) return false; setSelectedDate(input.date); setSessionDialog(null); setSessionPatientId(undefined); setPage('agenda'); setNotice(isNew ? 'Sessão agendada.' : 'Sessão atualizada.'); return true; })} />}
       {newEventDialog && <EventCreationDialog defaults={newEventDialog} store={store} settings={store.settings} onClose={() => setNewEventDialog(null)} onNewPatient={() => setPatientDialog('new')} onSaveSession={input => runParentMutation(`new-session:${input.patientId}:${input.date}:${input.time}`, async () => { if (!await updateStore(upsertPsychologySession(store, input))) return false; setSelectedDate(input.date); setNewEventDialog(null); setPage('agenda'); setNotice('Sessão agendada.'); return true; })} onSavePersonal={input => runParentMutation(`personal:${input.date}:${input.time}:${input.title}:${input.type}`, async () => { if (!await updateStore(upsertPsychologyPersonalCommitment(store, input))) return false; setSelectedDate(input.date); setNewEventDialog(null); setPage('agenda'); setNotice('Compromisso salvo.'); return true; })} />}
       {recordDialog && <RecordDialog session={currentRecordDialog || recordDialog} patient={patientMap.get((currentRecordDialog || recordDialog).patientId)} existingText={store.sessionRecords.find(record => record.sessionId === (currentRecordDialog || recordDialog).id)?.text || ''} onClose={() => setRecordDialog(null)} onSave={text => runParentMutation(`record:${recordDialog.id}:${text}`, async () => { if (!await updateStore(savePsychologySessionRecord(store, recordDialog.id, text))) return false; setRecordDialog(null); setNotice('Registro da sessão salvo.'); return true; })} />}
-      {currentSessionActions && <SessionActionsDialog session={currentSessionActions} patient={patientMap.get(currentSessionActions.patientId)} hasRecord={recordsBySession.has(currentSessionActions.id)} onClose={() => setSessionActions(null)} onEdit={() => { setSessionDialog(currentSessionActions); setSessionActions(null); }} onStatus={status => runParentMutation(`status:session-actions:${currentSessionActions.id}:${status}`, async () => { const saved = await updateStore(updatePsychologySessionStatus(store, currentSessionActions.id, status)); if (saved) { setSessionActions(null); setNotice('Status da sessão atualizado.'); } return saved; })} onRecord={() => { setRecordDialog(currentSessionActions); setSessionActions(null); }} readOnly={isPreview} />}
+      {currentSessionActions && <SessionActionsDialog session={currentSessionActions} patient={patientMap.get(currentSessionActions.patientId)} hasRecord={recordsBySession.has(currentSessionActions.id)} onClose={() => setSessionActions(null)} onEdit={() => { setSessionDialog(currentSessionActions); setSessionActions(null); }} onStatus={status => runParentMutation(`status:session-actions:${currentSessionActions.id}:${status}`, async () => { const saved = await updateStore(updatePsychologySessionStatus(store, currentSessionActions.id, status)); if (saved) { setSessionActions(null); setNotice('Status da sessão atualizado.'); } return saved; })} onRecord={() => { setRecordDialog(currentSessionActions); setSessionActions(null); }} onDelete={() => requestSessionDelete(currentSessionActions)} readOnly={isPreview} />}
     </div>
   );
 }
@@ -1340,7 +1414,7 @@ function WeeklyPersonalTile({ commitment, settings, onOpen, scale, simultaneous 
   return <div role="button" tabIndex={0} onClick={onOpen} onKeyDown={event => agendaTileKeyDown(event, onOpen)} aria-label={`Abrir compromisso pessoal ${title}`} title={`${commitment.time} · ${title} · ${details}`} data-testid="psychology-weekly-personal" data-agenda-category={category} data-agenda-source="PERSONAL_AGENDA" data-agenda-bucket={bucket} className={`${simultaneous ? 'min-w-0 flex-1 basis-0' : 'w-full'} relative z-20 block shrink-0 cursor-pointer overflow-hidden rounded-lg border px-1.5 py-1 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500`} style={{ height: `${height}px`, minHeight: `${height}px`, maxHeight: `${height}px`, boxSizing: 'border-box', flexShrink: 0, backgroundColor: style.backgroundColor, borderColor: style.borderColor, color: style.textColor }}>{bucket === 'minimal' ? <div className="flex min-w-0 items-center gap-1 whitespace-nowrap text-[11px] font-black leading-[14px]"><span className="shrink-0">{commitment.time}</span><span className="shrink-0 opacity-80">·</span><span className="min-w-0 truncate">{title}</span></div> : <><div className="flex min-w-0 items-center justify-between gap-1 whitespace-nowrap text-[11px] font-black leading-[15px]"><span className="shrink-0">{commitment.time}</span><span className="min-w-0 shrink truncate rounded-full border px-1.5 py-0.5 text-[9px] font-black" style={style.chipStyle}>{commitment.type}</span></div><p className="mt-0.5 truncate text-[11px] font-black leading-[15px]">{title}</p>{bucket === 'full' && <div className="mt-0.5 truncate text-[10px] font-medium leading-[13px]">{details}</div>}</>}</div>;
 }
 
-export function SessionActionsDialog({ session, patient, hasRecord, onClose, onEdit, onStatus, onRecord, readOnly }: { session: PsychologySession; patient?: PsychologyPatient; hasRecord: boolean; onClose: () => void; onEdit: () => void; onStatus: (status: PsychologySessionStatus) => boolean | Promise<boolean>; onRecord: () => void; readOnly?: boolean }) {
+export function SessionActionsDialog({ session, patient, hasRecord, onClose, onEdit, onStatus, onRecord, onDelete, readOnly }: { session: PsychologySession; patient?: PsychologyPatient; hasRecord: boolean; onClose: () => void; onEdit: () => void; onStatus: (status: PsychologySessionStatus) => boolean | Promise<boolean>; onRecord: () => void; onDelete: () => void; readOnly?: boolean }) {
   const [pendingStatus, setPendingStatus] = useState<PsychologySessionStatus | null>(null);
   const pendingStatusRef = useRef<PsychologySessionStatus | null>(null);
   const [mutationError, setMutationError] = useState('');
@@ -1358,7 +1432,25 @@ export function SessionActionsDialog({ session, patient, hasRecord, onClose, onE
       setPendingStatus(null);
     }
   };
-  return <Dialog title="Detalhes da sessão" onClose={pendingStatus ? () => undefined : onClose}><div className="space-y-5"><div className={`rounded-2xl border p-4 ${sessionTone[session.modality]}`}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-2xl font-black">{session.time}</p><p className="mt-1 text-lg font-black">{patient?.name || 'Paciente não encontrado'}</p></div><StatusPill status={session.status} previewStatus={session.previewStatus} /></div><div className="mt-3 flex flex-wrap gap-2 text-sm font-bold"><span>{formatShortDate(session.date)}</span><span>· {session.durationMinutes} min</span><span>· {modalityLabel[session.modality]}</span></div></div><div className="grid gap-2 sm:grid-cols-2"><button type="button" onClick={onEdit} disabled={Boolean(pendingStatus)} className={primaryButton}><Pencil size={16} /> Editar / reagendar</button>{session.status !== 'realizada' && session.status !== 'cancelada' && <button type="button" onClick={() => submitStatus('realizada')} disabled={Boolean(pendingStatus)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white hover:bg-emerald-700 disabled:opacity-50"><Check size={16} /> {pendingStatus === 'realizada' ? 'Salvando…' : 'Marcar realizada'}</button>}{session.status !== 'cancelada' && session.status !== 'realizada' && <button type="button" onClick={() => submitStatus('falta')} disabled={Boolean(pendingStatus)} className={`${secondaryButton} disabled:opacity-50`}>{pendingStatus === 'falta' ? 'Salvando…' : 'Marcar falta'}</button>}{session.status !== 'cancelada' && <button type="button" onClick={() => submitStatus('cancelada')} disabled={Boolean(pendingStatus)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700 hover:bg-rose-100 disabled:opacity-50">{pendingStatus === 'cancelada' ? 'Cancelando…' : 'Cancelar sessão'}</button>}</div>{mutationError && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{mutationError}</p>}<button type="button" onClick={onClose} disabled={Boolean(pendingStatus)} className="w-full rounded-xl px-4 py-3 text-sm font-black text-slate-500 hover:bg-slate-100 disabled:opacity-50">Fechar</button></div></Dialog>;
+  return <Dialog title="Detalhes da sessão" onClose={pendingStatus ? () => undefined : onClose}><div className="space-y-5"><div className={`rounded-2xl border p-4 ${sessionTone[session.modality]}`}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-2xl font-black">{session.time}</p><p className="mt-1 text-lg font-black">{patient?.name || 'Paciente não encontrado'}</p></div><StatusPill status={session.status} previewStatus={session.previewStatus} /></div><div className="mt-3 flex flex-wrap gap-2 text-sm font-bold"><span>{formatShortDate(session.date)}</span><span>· {session.durationMinutes} min</span><span>· {modalityLabel[session.modality]}</span></div></div><div className="grid gap-2 sm:grid-cols-2"><button type="button" onClick={onEdit} disabled={Boolean(pendingStatus)} className={primaryButton}><Pencil size={16} /> Editar / reagendar</button>{session.status !== 'realizada' && session.status !== 'cancelada' && <button type="button" onClick={() => submitStatus('realizada')} disabled={Boolean(pendingStatus)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white hover:bg-emerald-700 disabled:opacity-50"><Check size={16} /> {pendingStatus === 'realizada' ? 'Salvando…' : 'Marcar realizada'}</button>}{session.status !== 'cancelada' && session.status !== 'realizada' && <button type="button" onClick={() => submitStatus('falta')} disabled={Boolean(pendingStatus)} className={`${secondaryButton} disabled:opacity-50`}>{pendingStatus === 'falta' ? 'Salvando…' : 'Marcar falta'}</button>}{session.status !== 'cancelada' && <button type="button" onClick={() => submitStatus('cancelada')} disabled={Boolean(pendingStatus)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-black text-rose-700 hover:bg-rose-100 disabled:opacity-50">{pendingStatus === 'cancelada' ? 'Cancelando…' : 'Cancelar sessão'}</button>}{!readOnly && <button type="button" onClick={onDelete} disabled={Boolean(pendingStatus)} className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-300 bg-rose-600 px-4 py-3 text-sm font-black text-white hover:bg-rose-700 disabled:opacity-50"><Trash2 size={16} /> Excluir sessão</button>}</div>{mutationError && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{mutationError}</p>}<button type="button" onClick={onClose} disabled={Boolean(pendingStatus)} className="w-full rounded-xl px-4 py-3 text-sm font-black text-slate-500 hover:bg-slate-100 disabled:opacity-50">Fechar</button></div></Dialog>;
+}
+
+export function SessionDeleteDialog({ session, onClose, onConfirm }: { session: PsychologySession; onClose: () => void; onConfirm: () => boolean | Promise<boolean> }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      if (!await onConfirm()) setError('Não foi possível excluir a sessão. Tente novamente.');
+    } catch {
+      setError('Não foi possível excluir a sessão. Tente novamente.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <Dialog title="Excluir sessão?" onClose={saving ? () => undefined : onClose}><div className="space-y-5"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-sm font-black text-slate-900">{session.time} · {formatShortDate(session.date)}</p><p className="mt-1 text-sm font-bold text-slate-600">Use esta opção para remover um agendamento criado por engano. Se já houver registro clínico, cobrança ou pagamento vinculado, a sessão será preservada e apenas cancelada.</p></div>{error && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</p>}<div className="flex flex-wrap justify-end gap-2"><button type="button" onClick={onClose} disabled={saving} className={secondaryButton}>Cancelar</button><button type="button" onClick={submit} disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-3 text-sm font-black text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"><Trash2 size={16} /> {saving ? 'Excluindo…' : 'Excluir sessão'}</button></div></div></Dialog>;
 }
 
 function EmptyState({ title, text, action }: { title: string; text: string; action?: React.ReactNode }) {

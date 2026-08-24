@@ -14,6 +14,7 @@ import type {
   PsychologyDocumentRecord,
   PsychologyExpenseRecord,
   PsychologyPaymentRecord,
+  PsychologySessionRecordEntity,
 } from '../types';
 import type { PsychologyAggregate } from '../namespace';
 
@@ -42,7 +43,18 @@ type ApiPsychologyRepository<T extends { id: string }> = PsychologyRepository<T>
     id: string,
     diagnostic?: PsychologyDeleteDiagnosticContext,
   ): Promise<{ id: string } | null>;
+  deleteWithResult(
+    scope: PsychologyPersistenceScope,
+    id: string,
+  ): Promise<ApiPsychologyDeleteResult>;
 };
+
+export interface ApiPsychologyDeleteResult {
+  id: string;
+  deleted: boolean;
+  cancelled: boolean;
+  session?: PsychologySessionRecordEntity;
+}
 
 export interface PsychologyDeleteDiagnosticContext {
   correlationId: string;
@@ -321,10 +333,19 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         throw new ApiPsychologyError('psychology/scope-conflict', 'O escopo da requisição não corresponde ao provider.', 422);
       }
     };
-    const deleteRecord = async (requestedScope: PsychologyPersistenceScope, id: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<{ id: string } | null> => {
+    const deleteRecordWithResult = async (requestedScope: PsychologyPersistenceScope, id: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<ApiPsychologyDeleteResult> => {
       assertRequestedScope(requestedScope);
-      const result = await request<{ id?: string; deleted?: boolean }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE', undefined, undefined, diagnostic);
-      return result.deleted === false ? null : { id: result.id || id };
+      const result = await request<{ id?: string; deleted?: boolean; cancelled?: boolean; session?: PsychologySessionRecordEntity }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE', undefined, undefined, diagnostic);
+      return {
+        id: result.id || id,
+        deleted: result.deleted !== false,
+        cancelled: result.cancelled === true,
+        ...(result.session ? { session: withScope(clone(result.session), scope) as PsychologySessionRecordEntity } : {}),
+      };
+    };
+    const deleteRecord = async (requestedScope: PsychologyPersistenceScope, id: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<{ id: string } | null> => {
+      const result = await deleteRecordWithResult(requestedScope, id, diagnostic);
+      return result.deleted ? { id: result.id } : null;
     };
     return {
       aggregate,
@@ -369,6 +390,9 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
       },
       async delete(requestedScope, id) {
         return deleteRecord(requestedScope, id);
+      },
+      async deleteWithResult(requestedScope, id) {
+        return deleteRecordWithResult(requestedScope, id);
       },
       async deleteWithDiagnostic(requestedScope, id, diagnostic) {
         return deleteRecord(requestedScope, id, diagnostic);
