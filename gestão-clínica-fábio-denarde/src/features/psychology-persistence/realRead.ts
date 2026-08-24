@@ -66,7 +66,13 @@ export async function readRealPsychologyStore(options: RealPsychologyReadOptions
 
   const legacyScope = createPsychologyScope(REAL_PSYCHOLOGY_TARGET.professionalId);
   const base = createEmptyPsychologyStore(legacyScope);
-  const remoteSettings = (settingsRecord as PsychologySettingsRecord | null)?.settings || {};
+  const remoteSettings = ((settingsRecord as PsychologySettingsRecord | null)?.settings || {}) as Partial<PsychologyStore['settings']>;
+  const configuredSettingsServices = Array.isArray(remoteSettings.services) ? remoteSettings.services : [];
+  const effectiveServices = configuredSettingsServices.length > 0
+    ? configuredSettingsServices
+    : services.length > 0
+      ? services
+      : undefined;
   const normalized = normalizePsychologyStore({
     ...base,
     scope: legacyScope,
@@ -81,13 +87,13 @@ export async function readRealPsychologyStore(options: RealPsychologyReadOptions
         professionalTitle: (remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile?.professionalTitle || 'Psicologia',
         specialty: (remoteSettings as Partial<PsychologyStore['settings']>).professionalProfile?.specialty || 'Psicologia',
       },
-      services,
+      services: effectiveServices,
       locations,
       scope: legacyScope,
     },
     patients,
     sessions,
-    services,
+    services: effectiveServices,
     locations,
     // Clinical records and financial aggregates remain separate from this operational write surface.
     personalCommitments: personalAppointments,
@@ -106,11 +112,11 @@ export async function readRealPsychologyStore(options: RealPsychologyReadOptions
     ...normalized,
     patients: normalized.patients,
     sessions: normalized.sessions,
-    services: services as PsychologyServiceRecord[],
+    services: normalized.services as PsychologyServiceRecord[],
     locations: locations as PsychologyLocationRecord[],
     settings: {
       ...normalized.settings,
-      services: services as PsychologyServiceRecord[],
+      services: normalized.services as PsychologyServiceRecord[],
       locations: locations as PsychologyLocationRecord[],
     },
   };
@@ -122,7 +128,7 @@ export async function readRealPsychologyStore(options: RealPsychologyReadOptions
     counts: {
       patients: (patients as PsychologyPatientRecord[]).length,
       sessions: (sessions as PsychologySessionRecordEntity[]).length,
-      services: (services as PsychologyServiceRecord[]).length,
+      services: normalized.services.length,
       locations: (locations as PsychologyLocationRecord[]).length,
     },
   };
