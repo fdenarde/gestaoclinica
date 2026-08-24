@@ -1416,6 +1416,22 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     return details.join('\n');
   };
 
+  const handleRepositionContactResult = async (repositionId: string, result: 'aceitou' | 'recusou') => {
+    const updatedRepositions = state.repositions.map(reposition =>
+      reposition.id === repositionId
+        ? { ...reposition, status: 'Concluída' as const, contactDate: getSaoPauloDateKey(), result }
+        : reposition,
+    );
+    try {
+      const persisted = await onUpdate({ repositions: updatedRepositions });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast(result === 'aceitou' ? 'Reposição marcada como aceita.' : 'Reposição marcada como recusada.');
+    } catch (error) {
+      console.error('Falha ao registrar retorno da reposição:', error);
+      showToast('Não foi possível registrar o retorno da reposição.', 'error');
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6 py-6 pb-24">
       {/* ── Header ── */}

@@ -49,6 +49,8 @@ import {
   storeSidebarCollapsed,
   type NavigationMode,
 } from './lib/navigationPreferences';
+import PsychologyPilot from './features/psychology-pilot/PsychologyPilot';
+import { isPsychologyPilotRoute } from './features/psychology-pilot/psychologyDomain';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -205,6 +207,18 @@ function formatAuditDuration(value?: number): string {
 }
 
 export default function App() {
+  const psychologyPilotRoute = isPsychologyPilotRoute(
+    window.location.pathname,
+    window.location.search,
+    Boolean(import.meta.env.DEV),
+    window.location.hostname,
+  );
+
+  if (psychologyPilotRoute) return <PsychologyPilot />;
+  return <AuthenticatedApp />;
+}
+
+function AuthenticatedApp() {
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
   const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
     ? 'responsible'

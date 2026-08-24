@@ -1,0 +1,179 @@
+// PSICOLOGIA R2D2E — composição local integral para revisão e Emulator.
+// NÃO PUBLICAR. O arquivo firestore.rules permanece inalterado nesta etapa.
+// A composição preserva todos os matches legados abaixo e acrescenta deny
+// explícito ao namespace canônico Psicologia e aos documentos de identidade.
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // R2D2E: o browser não acessa o namespace canônico; apenas a API/Admin.
+    match /workspaces/{workspaceId}/professionals/{professionalId}/contexts/PSICOLOGIA/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Identidade e vínculo são resolvidos no backend, nunca pelo client.
+    match /accessProfiles/{uid} {
+      allow read, write: if false;
+    }
+    match /professionals/{professionalId} {
+      allow read, write: if false;
+    }
+    match /professionalContexts/{linkId} {
+      allow read, write: if false;
+    }
+    match /workspaceTenantBindings/{workspaceId} {
+      allow read, write: if false;
+    }
+
+    // Primitives legadas preservadas integralmente.
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isApprovedAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/accessProfiles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/accessProfiles/$(request.auth.uid)).data.status == 'approved'
+        && get(/databases/$(database)/documents/accessProfiles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function externalRegistrationOpenStatuses() {
+      return ['Pendente de preenchimento', 'Pré-cadastro recebido', 'Atualização recebida'];
+    }
+
+    function isOpenExternalRegistration() {
+      return resource.data.status in externalRegistrationOpenStatuses()
+        && resource.data.expiresAtTimestamp > request.time;
+    }
+
+    function isExpectedExternalRegistrationData(data) {
+      return data.keys().hasAll([
+          'name',
+          'birthDate',
+          'guardianName',
+          'whatsapp',
+          'hasMedicalFollowUp',
+          'usesMedication',
+          'authorizationAccepted'
+        ])
+        && data.keys().hasOnly([
+          'name',
+          'birthDate',
+          'guardianName',
+          'whatsapp',
+          'school',
+          'grade',
+          'shift',
+          'hasMedicalFollowUp',
+          'doctorName',
+          'usesMedication',
+          'medication',
+          'authorizationAccepted'
+        ])
+        && data.name is string
+        && data.birthDate is string
+        && data.guardianName is string
+        && data.whatsapp is string
+        && (!data.keys().hasAny(['school']) || data.school is string)
+        && (!data.keys().hasAny(['grade']) || data.grade is string)
+        && (!data.keys().hasAny(['shift']) || data.shift is string)
+        && data.hasMedicalFollowUp in ['Sim', 'Não', '']
+        && (!data.keys().hasAny(['doctorName']) || data.doctorName is string)
+        && data.usesMedication in ['Sim', 'Não', '']
+        && (!data.keys().hasAny(['medication']) || data.medication is string)
+        && data.authorizationAccepted == true;
+    }
+
+    function isPublicExternalRegistrationSubmit() {
+      return request.auth == null
+        && isOpenExternalRegistration()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['submittedData', 'submittedAt', 'status'])
+        && request.resource.data.status in ['Pré-cadastro recebido', 'Atualização recebida']
+        && (
+          (resource.data.type == 'new' && request.resource.data.status == 'Pré-cadastro recebido')
+          || (resource.data.type == 'update' && request.resource.data.status == 'Atualização recebida')
+        )
+        && request.resource.data.submittedAt is string
+        && isExpectedExternalRegistrationData(request.resource.data.submittedData);
+    }
+
+    // Relatório operacional sanitizado do WhatsApp.
+    match /whatsappOperationalReports/{reportDate} {
+      allow get: if isApprovedAdmin();
+      allow list, create, update, delete: if false;
+    }
+
+    // Users Subcollections (Isolated Data Architecture).
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      match /settings/{settingId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /patients/{patientId} {
+        allow read, write: if isOwner(userId);
+
+        match /activityRecords/{recordId} {
+          allow read: if isOwner(userId);
+          allow write: if false;
+        }
+      }
+      match /sessions/{sessionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /payments/{paymentId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /repositions/{repositionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /expenses/{expenseId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /evolutions/{evolutionId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /agenda_pessoal/{agendaId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /packages/{packageId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /portalNotifications/{notificationId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /portalAudit/{auditId} {
+        allow read, write: if isOwner(userId);
+      }
+      match /portalMediaInteractions/{interactionId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    match /externalRegistrationForms/{formId} {
+      allow get: if isOwner(resource.data.ownerUserId)
+        || (request.auth == null && isOpenExternalRegistration());
+      allow list: if isOwner(resource.data.ownerUserId);
+      allow create: if isOwner(request.resource.data.ownerUserId);
+      allow delete: if isOwner(resource.data.ownerUserId);
+      allow update: if isOwner(resource.data.ownerUserId)
+        || isPublicExternalRegistrationSubmit();
+    }
+  }
+}
+
+// Critérios locais R2D2E:
+// - composição integral, sem substituir firestore.rules;
+// - namespace Psicologia e documentos de identidade bloqueados para client;
+// - Admin SDK/API continua sendo a única rota de leitura/escrita canônica;
+// - validar compilação, deny client e regressões legadas no Emulator.

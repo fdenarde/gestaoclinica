@@ -5,6 +5,12 @@
     { "source": "/profissional", "destination": "/index.html" },
     { "source": "/profissional/", "destination": "/index.html" },
     { "source": "/monitoramento", "destination": "/index.html" },
-    { "source": "/monitoramento/", "destination": "/index.html" }
+    { "source": "/monitoramento/", "destination": "/index.html" },
+    { "source": "/agendar/:slug", "destination": "/index.html" },
+    { "source": "/agendar/:slug/", "destination": "/index.html" },
+    { "source": "/consulta/:token", "destination": "/index.html" },
+    { "source": "/consulta/:token/", "destination": "/index.html" },
+    { "source": "/psicologia", "destination": "/index.html" },
+    { "source": "/psicologia/", "destination": "/index.html" }
   ]
 }

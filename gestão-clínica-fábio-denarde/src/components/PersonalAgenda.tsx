@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance } from '../types';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Bell, CheckCircle2, Edit2, Trash2, BookOpen } from 'lucide-react';
 import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
@@ -8,10 +8,16 @@ import { showToast } from './Common/Toast';
 import { cn } from '../lib/utils';
 import { previewSound, prepareAlarmAudio } from '../lib/useAlarms';
 import { ALARM_ADVANCE_OPTIONS, loadAlarmSounds, AlarmSoundMeta, getDefaultSounds, DEFAULT_ALARM_SOUND_ID, getFallbackAlarmSoundId } from '../lib/alarmSounds';
+import { getNextPersonalAppointmentOccurrence, getPendingPersonalAppointmentOccurrences, getPersonalAppointmentOccurrences, PersonalAppointmentOccurrence } from '../lib/personalAgendaTemporal';
+import { getPsychologyAgendaRowProgress, getPsychologyAgendaTimeProgress, isPsychologyAgendaToday } from '../features/psychology-pilot/psychologyAgendaTemporal';
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
   'Médico': { icon: '🏥', bg: 'bg-blue-100', text: 'text-blue-800' },
+  'Compromisso pessoal': { icon: '🗓️', bg: 'bg-violet-100', text: 'text-violet-800' },
+  'Intervalo': { icon: '⏸️', bg: 'bg-slate-200', text: 'text-slate-800' },
+  'Bloqueio de horário': { icon: '🔒', bg: 'bg-amber-100', text: 'text-amber-800' },
+  'Mentoria': { icon: '🧭', bg: 'bg-purple-100', text: 'text-purple-800' },
   'Estudar': { icon: '📚', bg: 'bg-indigo-100', text: 'text-indigo-800' },
   'Cortar cabelo': { icon: '✂️', bg: 'bg-stone-200', text: 'text-stone-800' },
   'Visitar família': { icon: '👨‍👩‍👧', bg: 'bg-rose-100', text: 'text-rose-800' },
@@ -40,6 +46,7 @@ function buildTooltip(app: PersonalAppointment): string {
     `${config.icon} ${app.type}`,
     `⏰ Horário: ${app.time}`,
   ];
+  if (app.title) lines.splice(1, 0, `📝 ${app.title}`);
   if (app.alarmEnabled && app.alarmAdvance) {
     lines.push(`🔔 Alarme: ${app.alarmAdvance === 'Na hora' ? 'No horário' : app.alarmAdvance + ' antes'}`);
   }
@@ -59,6 +66,10 @@ function getHourSlot(time: string): string {
   return `${h}:00`;
 }
 
+function occurrenceKey(app: PersonalAppointmentOccurrence): string {
+  return `${app.id}-${format(app.occDate, 'yyyy-MM-dd')}-${app.time}`;
+}
+
 const TIMES = Array.from({ length: 13 }, (_, i) => `${String(i + 7).padStart(2, '0')}:00`);
 
 const TIME_OPTIONS = (() => {
@@ -71,17 +82,176 @@ const TIME_OPTIONS = (() => {
   return opts;
 })();
 
+const PSYCHOLOGY_PERSONAL_TIMES = Array.from({ length: 14 }, (_, i) => String(i + 7).padStart(2, '0') + ':00');
+
+function PsychologyPersonalWeeklyGrid({
+  weekDays,
+  occurrences,
+  openNew,
+  openEdit,
+  toggleDone,
+  handleDelete,
+}: {
+  weekDays: Date[];
+  occurrences: PersonalAppointmentOccurrence[];
+  openNew: (date: Date, time: string) => void;
+  openEdit: (appointment: PersonalAppointment) => void;
+  toggleDone: (id: string) => Promise<void>;
+  handleDelete: (id: string) => Promise<void>;
+}) {
+  const [agendaNow, setAgendaNow] = useState(() => new Date());
+  useEffect(() => {
+    const updateAgendaNow = () => setAgendaNow(new Date());
+    const timer = window.setInterval(updateAgendaNow, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const currentTime = getPsychologyAgendaTimeProgress(agendaNow);
+  const todayInWeek = weekDays.find(day => isPsychologyAgendaToday(day, agendaNow)) || weekDays[0];
+  const getPsychologyDayNameLabel = (day: number) => ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB'][day];
+
+  const renderGrid = (days: Date[], mode: 'desktop' | 'mobile') => (
+    <div
+      className="overflow-x-auto overflow-y-hidden rounded-2xl border border-clinic-border bg-white shadow-sm"
+      data-testid={'psychology-personal-weekly-grid-' + mode}
+    >
+      <div className={days.length === 1 ? 'min-w-[340px]' : 'min-w-[1040px]'}>
+        <div className={'grid ' + (days.length === 1 ? 'grid-cols-[64px_minmax(0,1fr)]' : 'grid-cols-[64px_repeat(7,minmax(132px,1fr))]') + ' border-b border-clinic-border bg-clinic-bg'}>
+          <div className="border-r border-clinic-border px-2 py-3 text-center text-[10px] font-black uppercase tracking-[0.16em] text-clinic-text-muted">Hora</div>
+          {days.map(day => {
+            const isToday = isSameDay(day, agendaNow);
+            return (
+              <div key={day.toISOString()} className={cn('min-h-[68px] border-r border-clinic-border px-2 py-3 text-center last:border-r-0', isToday && 'bg-clinic-primary text-white')}>
+                <span className={cn('block text-[10px] font-black uppercase tracking-[0.16em]', isToday ? 'text-white/80' : 'text-clinic-text-muted')}>{getPsychologyDayNameLabel(day.getDay())}</span>
+                <span className="mt-1 block text-xl font-black">{format(day, 'dd')}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {PSYCHOLOGY_PERSONAL_TIMES.map((time, index) => {
+          const rowStartMinutes = Number(time.slice(0, 2)) * 60;
+          const nextTime = PSYCHOLOGY_PERSONAL_TIMES[index + 1];
+          const rowEndMinutes = nextTime ? Number(nextTime.slice(0, 2)) * 60 : 21 * 60;
+          return (
+            <div key={time} className={'grid min-h-[86px] ' + (days.length === 1 ? 'grid-cols-[64px_minmax(0,1fr)]' : 'grid-cols-[64px_repeat(7,minmax(132px,1fr))]') + ' border-b border-clinic-border last:border-b-0'}>
+              <div className="border-r border-clinic-border bg-clinic-bg px-1 pt-3 text-center text-xs font-black text-clinic-text-muted">{time}</div>
+              {days.map(day => {
+                const dayOccurrences = occurrences.filter(occurrence => isSameDay(occurrence.occDate, day) && getHourSlot(occurrence.time) === time);
+                const currentRowProgress = currentTime.visible && isPsychologyAgendaToday(day, agendaNow)
+                  ? getPsychologyAgendaRowProgress(currentTime.minutes, rowStartMinutes, rowEndMinutes)
+                  : null;
+                return (
+                  <div key={day.toISOString() + '-' + time} className="relative border-r border-clinic-border last:border-r-0">
+                    {dayOccurrences.length === 0 ? (
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-label={'Novo compromisso em ' + format(day, 'dd/MM') + ' às ' + time}
+                        data-testid="psychology-personal-empty-slot"
+                        data-date={format(day, 'yyyy-MM-dd')}
+                        data-time={time}
+                        onClick={() => openNew(day, time)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            openNew(day, time);
+                          }
+                        }}
+                        className="min-h-[86px] cursor-pointer bg-white transition-colors hover:bg-violet-50/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-400"
+                      />
+                    ) : (
+                      <div className="space-y-1 p-1.5">
+                        {dayOccurrences.map(app => {
+                          const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG.Outro;
+                          const title = app.title?.trim() || app.type;
+                          return (
+                            <article
+                              key={occurrenceKey(app)}
+                              role="button"
+                              tabIndex={0}
+                              title={buildTooltip(app)}
+                              onClick={() => openEdit(app)}
+                              onKeyDown={event => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  openEdit(app);
+                                }
+                              }}
+                              data-testid="psychology-personal-occupied-card"
+                              className={cn('group relative min-h-[72px] cursor-pointer rounded-xl border border-black/5 p-2 transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500', config.bg, app.isDone && 'opacity-50 grayscale')}
+                            >
+                              <div className="flex items-start justify-between gap-1">
+                                <span className={cn('text-[11px] font-black tracking-wide', config.text)}>{app.time}</span>
+                                <div className="flex items-center gap-1">
+                                  {app.alarmEnabled && <span className="text-[11px]" title={'Alarme: ' + (app.alarmAdvance || 'Na hora')}>🔔</span>}
+                                  {app.isDone && <span className="text-[11px]" title="Concluído">✅</span>}
+                                </div>
+                              </div>
+                              <div className="mt-1 flex min-w-0 items-center gap-1">
+                                <span className="text-sm leading-none">{config.icon}</span>
+                                <span className={cn('truncate text-[11px] font-black leading-tight', config.text)}>{title}</span>
+                              </div>
+                              {app.title && app.type !== app.title && <p className={cn('mt-1 truncate text-[9px] font-bold opacity-75', config.text)}>{app.type}</p>}
+                              {app.recurrence && app.recurrence !== 'Não repetir' && <span className="mt-1 inline-flex max-w-full truncate rounded bg-white/60 px-1 py-0.5 text-[8px] font-bold text-gray-600">🔄 {app.recurrence}</span>}
+                              <div className="absolute right-1 top-1 z-10 flex items-center gap-0.5 rounded border border-black/10 bg-white/90 p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                                <button type="button" onClick={event => { event.stopPropagation(); void toggleDone(app.id); }} className="rounded p-1.5 text-green-600 hover:bg-green-50" title={app.isDone ? 'Reativar' : 'Marcar como concluído'} aria-label={app.isDone ? 'Reativar' : 'Marcar como concluído'}><CheckCircle2 size={13} /></button>
+                                <button type="button" onClick={event => { event.stopPropagation(); openEdit(app); }} className="rounded p-1.5 text-blue-600 hover:bg-blue-50" title="Editar" aria-label="Editar"><Edit2 size={13} /></button>
+                                <button type="button" onClick={event => { event.stopPropagation(); void handleDelete(app.id); }} className="rounded p-1.5 text-red-600 hover:bg-red-50" title="Excluir" aria-label="Excluir"><Trash2 size={13} /></button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {currentRowProgress !== null && (
+                      <div data-testid="psychology-personal-current-time-indicator" aria-label={'Horário atual ' + currentTime.label} className="pointer-events-none absolute inset-x-0 z-20" style={{ top: String(currentRowProgress * 100) + '%' }}>
+                        <span className="absolute -top-3 left-1 rounded bg-red-600 px-1.5 py-0.5 text-[9px] font-black leading-none text-white">{currentTime.label}</span>
+                        <div className="h-0.5 w-full bg-red-600 shadow-sm" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <div className="hidden md:block">{renderGrid(weekDays, 'desktop')}</div>
+      <div className="md:hidden">{renderGrid([todayInWeek], 'mobile')}</div>
+    </>
+  );
+}
+
 type ViewMode = 'semanal' | 'mensal' | 'lista' | 'proximos';
 
 interface PersonalAgendaProps {
   state: AppState;
-  onUpdate: (newState: Partial<AppState>) => void;
+  onUpdate: (newState: Partial<AppState>) => Promise<boolean>;
   activeAlarmId: string | null;
   activeAlarmLabel: string;
   stopAlarm: () => void;
+  variant?: 'neuro' | 'psychology';
 }
 
-export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeAlarmLabel, stopAlarm }: PersonalAgendaProps) {
+export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeAlarmLabel, stopAlarm, variant = 'neuro' }: PersonalAgendaProps) {
+  const isPsychology = variant === 'psychology';
+  const themeStyle = isPsychology ? {
+    '--color-clinic-bg': '#F5F3FF',
+    '--color-clinic-primary': '#6D28D9',
+    '--color-clinic-primary-hover': '#5B21B6',
+    '--color-clinic-surface': '#FFFFFF',
+    '--color-clinic-border': '#DDD6FE',
+    '--color-clinic-border-dark': '#C4B5FD',
+    '--color-clinic-nav-bg': '#EDE9FE',
+  } as React.CSSProperties : undefined;
+  const headingClass = isPsychology ? 'text-xl' : 'text-2xl';
+  const sectionHeadingClass = isPsychology ? 'text-lg' : 'text-xl';
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>('semanal');
@@ -90,6 +260,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
   const [formDate, setFormDate] = useState('');
   const [formTime, setFormTime] = useState('');
+  const [formTitle, setFormTitle] = useState('');
   const [type, setType] = useState<PersonalAppointmentType>('Outro');
   const [recurrence, setRecurrence] = useState<string>('Não repetir');
   const [notes, setNotes] = useState('');
@@ -99,6 +270,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [alarmVolume, setAlarmVolume] = useState(80);
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>(() => getDefaultSounds());
+  const [isSaving, setIsSaving] = useState(false);
+  const mutationLocks = useRef(new Set<string>());
 
   useEffect(() => {
     loadAlarmSounds().then(setAlarmSoundsList).catch(() => {});
@@ -107,6 +280,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const resetForm = () => {
     setFormDate('');
     setFormTime('');
+    setFormTitle('');
     setType('Outro');
     setRecurrence('Não repetir');
     setNotes('');
@@ -129,6 +303,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     setSelectedApptId(app.id);
     setFormDate(app.date);
     setFormTime(app.time);
+    setFormTitle(app.title || '');
     setType(app.type);
     setRecurrence(app.recurrence);
     setNotes(app.notes);
@@ -140,12 +315,18 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     setIsModalOpen(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formDate || !formTime || !type) return;
+    if (isSaving) return;
 
+    const mutationKey = `save:${selectedApptId || 'new'}:${formDate}:${formTime}:${formTitle.trim()}:${type}`;
+    if (mutationLocks.current.has(mutationKey)) return;
+    mutationLocks.current.add(mutationKey);
+    const currentList = state.personalAppointments || [];
     const newApp: PersonalAppointment = {
       id: selectedApptId || Math.random().toString(36).substr(2, 9),
       type,
+      title: formTitle.trim() || undefined,
       date: formDate,
       time: formTime,
       durationMinutes: 60,
@@ -156,10 +337,9 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       alarmSound: alarmEnabled ? getFallbackAlarmSoundId(alarmSound) : undefined,
       alarmVolume: alarmEnabled ? alarmVolume : undefined,
       alarmFadeIn: alarmEnabled ? alarmFadeIn : undefined,
-      isDone: false,
+      isDone: selectedApptId ? currentList.find(app => app.id === selectedApptId)?.isDone ?? false : false,
     };
 
-    const currentList = state.personalAppointments || [];
     let updatedList;
 
     if (selectedApptId) {
@@ -168,70 +348,74 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       updatedList = [...currentList, newApp];
     }
 
-    onUpdate({ personalAppointments: updatedList });
-    showToast('Compromisso salvo com sucesso!');
-    setIsModalOpen(false);
-  };
-
-  const handleDelete = (id: string) => {
-    console.log('handleDelete called with id:', id, 'state.personalAppointments:', state.personalAppointments?.length);
-    if (window.confirm('Tem certeza que deseja excluir este compromisso?')) {
-      try {
-        const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
-        console.log('Antes do onUpdate, tamanho da lista filtrada:', updatedList.length);
-        onUpdate({ personalAppointments: updatedList });
-        showToast('Compromisso excluído com sucesso!');
-      } catch (error) {
-        console.error('Erro ao excluir compromisso:', error);
-        showToast('Erro ao excluir compromisso. Tente novamente.');
+    setIsSaving(true);
+    try {
+      const persisted = await onUpdate({ personalAppointments: updatedList });
+      if (!persisted) {
+        showToast('Não foi possível salvar o compromisso. Nenhuma alteração foi confirmada.', 'error');
+        return;
       }
+      showToast('Compromisso salvo com sucesso!');
+      setIsModalOpen(false);
+    } catch (error) {
+      console.error('Erro ao salvar compromisso:', error);
+      showToast('Não foi possível salvar o compromisso. Verifique a conexão e tente novamente.', 'error');
+    } finally {
+      setIsSaving(false);
+      mutationLocks.current.delete(mutationKey);
     }
   };
 
-  const toggleDone = (id: string) => {
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Tem certeza que deseja excluir este compromisso?')) return;
+    const mutationKey = `delete:${id}`;
+    if (mutationLocks.current.has(mutationKey)) return;
+    mutationLocks.current.add(mutationKey);
+
+    try {
+      const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
+      const persisted = await onUpdate({ personalAppointments: updatedList });
+      if (!persisted) {
+        showToast('Não foi possível excluir o compromisso. Nenhuma alteração foi confirmada.', 'error');
+        return;
+      }
+      showToast('Compromisso excluído com sucesso!');
+    } catch (error) {
+      console.error('Erro ao excluir compromisso:', error);
+      showToast('Erro ao excluir compromisso. Tente novamente.', 'error');
+    } finally {
+      mutationLocks.current.delete(mutationKey);
+    }
+  };
+
+  const toggleDone = async (id: string) => {
+    const currentAppointment = (state.personalAppointments || []).find(a => a.id === id);
+    if (!currentAppointment) return;
+    const mutationKey = `toggle:${id}:${currentAppointment.isDone ? 'done' : 'open'}`;
+    if (mutationLocks.current.has(mutationKey)) return;
+    mutationLocks.current.add(mutationKey);
+
     const updatedList = (state.personalAppointments || []).map(a =>
       a.id === id ? { ...a, isDone: !a.isDone } : a
     );
-    onUpdate({ personalAppointments: updatedList });
-  };
 
-  const getOccurrences = (start: Date, end: Date) => {
-    const list = state.personalAppointments || [];
-    const occurrences: (PersonalAppointment & { occDate: Date })[] = [];
-
-    list.forEach(app => {
-      const [year, month, day] = app.date.split('-').map(Number);
-      const firstDate = new Date(year, month - 1, day);
-
-      if (app.recurrence === 'Não repetir') {
-        if (firstDate >= start && firstDate <= end) {
-          occurrences.push({ ...app, occDate: firstDate });
-        }
-      } else if (app.recurrence === 'Toda semana') {
-        let curr = new Date(start);
-        while (curr.getDay() !== firstDate.getDay()) {
-          curr = addDays(curr, 1);
-        }
-        while (curr <= end) {
-          if (curr >= firstDate) {
-            occurrences.push({ ...app, occDate: new Date(curr) });
-          }
-          curr = addDays(curr, 7);
-        }
-      } else if (app.recurrence === 'Todo mês') {
-        let curr = new Date(start);
-        if (curr < start) curr = addMonths(curr, 1);
-        while (curr <= end) {
-          if (curr >= firstDate) {
-            occurrences.push({ ...app, occDate: new Date(curr) });
-          }
-          curr = addMonths(curr, 1);
-        }
+    try {
+      const persisted = await onUpdate({ personalAppointments: updatedList });
+      if (!persisted) {
+        showToast('Não foi possível atualizar o compromisso. Nenhuma alteração foi confirmada.', 'error');
+        return;
       }
-    });
-
-    return occurrences;
+      showToast(currentAppointment.isDone ? 'Compromisso reativado!' : 'Compromisso concluído!');
+    } catch (error) {
+      console.error('Erro ao atualizar compromisso:', error);
+      showToast('Erro ao atualizar compromisso. Tente novamente.', 'error');
+    } finally {
+      mutationLocks.current.delete(mutationKey);
+    }
   };
+
+  const getOccurrences = (start: Date, end: Date): PersonalAppointmentOccurrence[] =>
+    getPersonalAppointmentOccurrences(state.personalAppointments || [], start, end);
 
   const weekDays = useMemo(() => {
     const start = startOfWeek(currentDate, { weekStartsOn: 1 });
@@ -297,16 +481,50 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
   const currentWeekOccurrences = getOccurrences(weekDays[0], weekDays[6]);
 
+  const pendingCount = useMemo(() => {
+    const appointments = state.personalAppointments || [];
+
+    if (viewMode === 'mensal') {
+      return getPendingPersonalAppointmentOccurrences(
+        appointments,
+        startOfMonth(currentDate),
+        endOfMonth(currentDate),
+      ).length;
+    }
+
+    if (viewMode === 'lista') {
+      return getPendingPersonalAppointmentOccurrences(
+        appointments,
+        listDateRange.start,
+        listDateRange.end,
+      ).length;
+    }
+
+    if (viewMode === 'proximos') {
+      return getPendingPersonalAppointmentOccurrences(
+        appointments,
+        startOfDay(new Date()),
+        endOfDay(addDays(new Date(), 21)),
+      ).length;
+    }
+
+    return getPendingPersonalAppointmentOccurrences(
+      appointments,
+      weekDays[0],
+      weekDays[6],
+    ).length;
+  }, [state.personalAppointments, viewMode, currentDate, listDateRange, weekDays]);
+
   return (
-    <div className="flex flex-col gap-6 py-6 pb-24">
+    <div className="flex flex-col gap-5 py-4 pb-16" style={themeStyle} data-testid={isPsychology ? 'psychology-personal-agenda' : 'personal-agenda'}>
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-center bg-clinic-surface p-6 rounded-2xl border border-clinic-border shadow-sm gap-4">
         <div className="flex items-center gap-3">
-          <h2 className="text-2xl font-bold text-clinic-primary tracking-tight flex items-center gap-2">
+          <h2 className={`${headingClass} font-bold text-clinic-primary tracking-tight flex items-center gap-2`}>
             <BookOpen className="text-clinic-primary" /> Agenda Pessoal
           </h2>
           <span className="bg-clinic-primary text-white text-[10px] font-bold px-2 py-1 rounded-full">
-            {currentWeekOccurrences.filter(o => !o.isDone).length} pendentes
+            {pendingCount} pendentes
           </span>
         </div>
 
@@ -353,7 +571,17 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       </div>
 
       {/* View: Semanal */}
-      {viewMode === 'semanal' && (
+      {viewMode === 'semanal' && isPsychology && (
+        <PsychologyPersonalWeeklyGrid
+          weekDays={weekDays}
+          occurrences={currentWeekOccurrences}
+          openNew={openNew}
+          openEdit={openEdit}
+          toggleDone={toggleDone}
+          handleDelete={handleDelete}
+        />
+      )}
+      {viewMode === 'semanal' && !isPsychology && (
         <div className="grid grid-cols-1 md:grid-cols-7 gap-2">
           {weekDays.map(day => {
             const isToday = isSameDay(day, new Date());
@@ -486,7 +714,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       {/* View: Lista */}
       {viewMode === 'lista' && (
         <div className="bg-white rounded-2xl border border-clinic-border shadow-sm p-6 min-h-[400px]">
-          <h3 className="text-xl font-bold text-clinic-primary mb-4 flex items-center gap-2">
+          <h3 className={`${sectionHeadingClass} font-bold text-clinic-primary mb-4 flex items-center gap-2`}>
             <List size={20} /> {listTitle}
           </h3>
 
@@ -642,6 +870,18 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               <option value="Todo mês">Todo mês</option>
             </select>
           </div>
+          {selectedApptId && (() => {
+            const selectedAppointment = (state.personalAppointments || []).find(app => app.id === selectedApptId);
+            const nextReminder = selectedAppointment
+              ? getNextPersonalAppointmentOccurrence(selectedAppointment, new Date())
+              : null;
+            return nextReminder ? (
+              <div className="rounded-lg border border-clinic-border bg-clinic-bg p-3 text-xs text-clinic-text">
+                <span className="font-bold uppercase text-clinic-text-muted">Próximo lembrete</span>
+                <div className="mt-1 font-bold">{format(nextReminder.occurrenceDateTime, "dd/MM/yyyy 'às' HH:mm")}</div>
+              </div>
+            ) : null;
+          })()}
           <div>
             <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Observações</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} className="w-full p-2 border rounded-lg h-20" placeholder="Detalhes opcionais..." />
@@ -785,8 +1025,8 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
              </div>
           )}
           <div className="pt-2">
-            <button onClick={handleSave} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98]">
-              {selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
+            <button onClick={() => void handleSave()} disabled={isSaving} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98] disabled:cursor-wait disabled:opacity-60">
+              {isSaving ? 'Salvando...' : selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
             </button>
           </div>
         </div>

@@ -51,6 +51,60 @@ interface AccessProfileResponse {
   profile: AccessProfile | null;
 }
 
+export interface CanonicalProfessionalCandidateResponse {
+  professionalId: string;
+  contexts: string[];
+}
+
+export interface CanonicalProfessionalCandidatesResponse {
+  candidates: CanonicalProfessionalCandidateResponse[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function validateCanonicalProfessionalCandidatesResponse(
+  value: unknown,
+): CanonicalProfessionalCandidatesResponse {
+  if (!isRecord(value) || !Array.isArray(value.candidates)) {
+    throw createApiError(
+      'access/invalid-canonical-professional-response',
+      'O servidor retornou uma lista de profissionais canônicos inválida.',
+    );
+  }
+
+  const candidates = value.candidates.map((candidate, index) => {
+    if (!isRecord(candidate)) {
+      throw createApiError(
+        'access/invalid-canonical-professional-response',
+        `O candidato canônico na posição ${index} é inválido.`,
+      );
+    }
+
+    const professionalId = candidate.professionalId;
+    const contexts = candidate.contexts;
+    if (
+      typeof professionalId !== 'string'
+      || !professionalId.trim()
+      || !Array.isArray(contexts)
+      || contexts.some(context => typeof context !== 'string')
+    ) {
+      throw createApiError(
+        'access/invalid-canonical-professional-response',
+        `O candidato canônico na posição ${index} não respeita o contrato esperado.`,
+      );
+    }
+
+    return {
+      professionalId: professionalId.trim(),
+      contexts: [...new Set(contexts.map(context => context.trim()).filter(Boolean))],
+    };
+  });
+
+  return { candidates };
+}
+
 interface AccessRequestResponse {
   request: AccessRequestRecord;
   profile: AccessProfile | null;
@@ -334,6 +388,11 @@ export async function getAccessProfile(user?: User, options: RequestOptions = {}
     });
   accessProfileRequests.set(requestKey, profileRequest);
   return profileRequest;
+}
+
+export async function getCanonicalProfessionalCandidates(user?: User): Promise<CanonicalProfessionalCandidatesResponse> {
+  const response = await request<unknown>('GET', undefined, user, '?mode=canonicalProfessional');
+  return validateCanonicalProfessionalCandidatesResponse(response);
 }
 
 export async function submitAccessRequest(

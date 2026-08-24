@@ -1,0 +1,123 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function accessProfile() {
+      return get(/databases/$(database)/documents/accessProfiles/$(request.auth.uid)).data;
+    }
+
+    function authProfessionalLink() {
+      return get(/databases/$(database)/documents/authProfessionalLinks/$(request.auth.uid)).data;
+    }
+
+    function contextLink(workspaceId, professionalId) {
+      return get(/databases/$(database)/documents/professionalContextLinks/$(workspaceId + '__' + professionalId + '__PSICOLOGIA')).data;
+    }
+
+    function hasPermission(permission) {
+      return accessProfile().keys().hasAny(['permissions'])
+        && accessProfile().permissions.hasAny([permission]);
+    }
+
+    function hasRuntimeScope(workspaceId, professionalId) {
+      return signedIn()
+        && accessProfile().status == 'approved'
+        && accessProfile().workspaceId == workspaceId
+        && accessProfile().linkedProfessionalIds.hasAny([professionalId])
+        && authProfessionalLink().active == true
+        && authProfessionalLink().authUid == request.auth.uid
+        && authProfessionalLink().workspaceId == workspaceId
+        && authProfessionalLink().professionalId == professionalId
+        && authProfessionalLink().context == 'PSICOLOGIA'
+        && contextLink(workspaceId, professionalId).active == true
+        && contextLink(workspaceId, professionalId).workspaceId == workspaceId
+        && contextLink(workspaceId, professionalId).professionalId == professionalId
+        && contextLink(workspaceId, professionalId).context == 'PSICOLOGIA';
+    }
+
+    function sameScope(data, workspaceId, professionalId) {
+      return data.workspaceId == workspaceId
+        && data.professionalId == professionalId
+        && data.context == 'PSICOLOGIA';
+    }
+
+    function clinicalDocument(data) {
+      return data.classification == 'CLINICAL';
+    }
+
+    function canRead(aggregate, data) {
+      return (aggregate == 'patients' && (hasPermission('patients.list') || hasPermission('reports.view')))
+        || (aggregate == 'sessions' && (hasPermission('agenda.own.view') || hasPermission('agenda.general.view') || hasPermission('sessions.history.view') || hasPermission('reports.view')))
+        || (aggregate == 'sessionRecords' && hasPermission('patients.clinical_notes.view'))
+        || (aggregate == 'personalAppointments' && hasPermission('agenda.own.view'))
+        || (aggregate == 'services' && (hasPermission('settings.clinic.manage') || hasPermission('agenda.own.view')))
+        || (aggregate == 'locations' && (hasPermission('settings.clinic.manage') || hasPermission('agenda.own.view')))
+        || (aggregate == 'packages' && (hasPermission('consumption.view') || hasPermission('settings.clinic.manage')))
+        || (aggregate == 'settings' && hasPermission('settings.clinic.manage'))
+        || (aggregate == 'charges' && (hasPermission('finance.patient.view') || hasPermission('finance.global.view') || hasPermission('finance.manage') || hasPermission('reports.view')))
+        || (aggregate == 'payments' && (hasPermission('finance.patient.view') || hasPermission('finance.global.view') || hasPermission('finance.manage') || hasPermission('reports.view')))
+        || (aggregate == 'expenses' && (hasPermission('finance.global.view') || hasPermission('finance.manage') || hasPermission('reports.view')))
+        || (aggregate == 'documents' && (clinicalDocument(data) ? hasPermission('patients.clinical_notes.view') : (hasPermission('documents.view') || hasPermission('reports.view'))))
+        || (aggregate == 'attachments' && (clinicalDocument(data) ? hasPermission('patients.clinical_notes.view') : (hasPermission('documents.view') || hasPermission('reports.view'))));
+    }
+
+    function canWrite(aggregate, data) {
+      return (aggregate == 'patients' && (hasPermission('patients.create') || hasPermission('patients.edit') || hasPermission('patients.delete')))
+        || (aggregate == 'sessions' && (hasPermission('agenda.edit') || hasPermission('sessions.status.manage')))
+        || (aggregate == 'sessionRecords' && hasPermission('patients.clinical_notes.view'))
+        || (aggregate == 'personalAppointments' && hasPermission('agenda.edit'))
+        || (aggregate == 'services' && hasPermission('settings.clinic.manage'))
+        || (aggregate == 'locations' && hasPermission('settings.clinic.manage'))
+        || (aggregate == 'packages' && hasPermission('consumption.manage'))
+        || (aggregate == 'settings' && hasPermission('settings.clinic.manage'))
+        || (aggregate == 'charges' && hasPermission('finance.manage'))
+        || (aggregate == 'payments' && hasPermission('finance.manage'))
+        || (aggregate == 'expenses' && hasPermission('finance.manage'))
+        || (aggregate == 'documents' && hasPermission('documents.upload') && (clinicalDocument(data) ? hasPermission('patients.clinical_notes.view') : true))
+        || (aggregate == 'attachments' && hasPermission('documents.upload') && (clinicalDocument(data) ? hasPermission('patients.clinical_notes.view') : true));
+    }
+
+    function immutableIdentityOnUpdate() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['id', 'workspaceId', 'professionalId', 'context', 'createdAt', 'classification']);
+    }
+
+    match /workspaces/{workspaceId}/professionals/{professionalId}/contexts/PSICOLOGIA/{aggregate}/{documentId} {
+      allow read: if hasRuntimeScope(workspaceId, professionalId) && canRead(aggregate, resource.data);
+      allow create: if hasRuntimeScope(workspaceId, professionalId)
+        && sameScope(request.resource.data, workspaceId, professionalId)
+        && canWrite(aggregate, request.resource.data);
+      allow update: if hasRuntimeScope(workspaceId, professionalId)
+        && sameScope(resource.data, workspaceId, professionalId)
+        && sameScope(request.resource.data, workspaceId, professionalId)
+        && immutableIdentityOnUpdate()
+        && canWrite(aggregate, request.resource.data);
+      allow delete: if hasRuntimeScope(workspaceId, professionalId)
+        && sameScope(resource.data, workspaceId, professionalId)
+        && canWrite(aggregate, resource.data);
+    }
+
+    match /accessProfiles/{uid} {
+      allow read, write: if false;
+    }
+
+    match /authProfessionalLinks/{uid} {
+      allow read, write: if false;
+    }
+
+    match /professionalContextLinks/{linkId} {
+      allow read, write: if false;
+    }
+
+    match /professionals/{professionalId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

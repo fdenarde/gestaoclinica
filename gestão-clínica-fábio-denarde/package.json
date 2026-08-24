@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev-with-drive.cjs",
     "dev-windows": "nodemon --watch . --exec \"npm run dev\"",
-    "build": "vite build && node -e \"require('fs').writeFileSync('dist/.nojekyll', '')\" && node -e \"require('fs').copyFileSync('dist/index.html', 'dist/404.html')\"",
+    "build": "node scripts/build-public-booking-server.mjs && vite build && node -e \"require('fs').writeFileSync('dist/.nojekyll', '')\" && node -e \"require('fs').copyFileSync('dist/index.html', 'dist/404.html')\"",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",

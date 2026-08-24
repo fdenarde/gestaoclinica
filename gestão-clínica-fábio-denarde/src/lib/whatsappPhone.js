@@ -1,3 +1,17 @@
+import {
+  buildWhatsappClickToChatUrl,
+  formatPhoneDisplay,
+  normalizePhone,
+  normalizePhoneForIntegration,
+} from '../../shared/phoneNormalization.js';
+
+export {
+  buildWhatsappClickToChatUrl,
+  formatPhoneDisplay,
+  normalizePhone,
+  normalizePhoneForIntegration,
+};
+
 export function extractPhoneDigits(value) {
   return String(value || '').replace(/\D/g, '');
 }

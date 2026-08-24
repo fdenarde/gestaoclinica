@@ -874,6 +874,56 @@ async function getPrimaryAdminUid() {
   return primaryAdminUidCache.inFlight;
 }
 
+function isSafeCanonicalProfessionalId(value) {
+  const normalized = normalizeText(value, 128);
+  return Boolean(
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)
+      && !/^\+?[1-9]\d{7,14}$/.test(normalized)
+      && !normalized.includes('@')
+      && !/^(?:PROFESSIONAL-)?(?:UNMAPPED|UNKNOWN|PENDING|TEMPORARY)$/i.test(normalized),
+  );
+}
+
+async function listCanonicalProfessionalCandidates(db, decodedToken) {
+  const profileSnapshot = await db.collection('accessProfiles').doc(decodedToken.uid).get();
+  const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
+  const isPrimaryAdmin = normalizeEmail(decodedToken?.email) === PRIMARY_ADMIN_EMAIL;
+  const primaryAdminWorkspaceId = isPrimaryAdmin ? decodedToken.uid : await getPrimaryAdminUid();
+  const accessContext = buildEffectiveAccessContext({
+    decodedToken,
+    profile,
+    primaryAdminEmail: PRIMARY_ADMIN_EMAIL,
+    primaryAdminWorkspaceId,
+  });
+
+  const professionalsSnapshot = await db.collection('professionals')
+    .where('authUid', '==', decodedToken.uid)
+    .limit(25)
+    .get();
+  const candidates = new Map();
+
+  for (const professionalSnapshot of professionalsSnapshot.docs) {
+    const professional = professionalSnapshot.data() || {};
+    const professionalId = normalizeText(professional.professionalId || professionalSnapshot.id, 128);
+    if (!professional.active || professional.tenantId !== accessContext.workspaceId || !isSafeCanonicalProfessionalId(professionalId)) continue;
+
+    const contextsSnapshot = await db.collection('professionalContexts')
+      .where('professionalId', '==', professionalId)
+      .limit(25)
+      .get();
+    const contexts = [...new Set(
+      contextsSnapshot.docs
+        .map(snapshot => snapshot.data() || {})
+        .filter(contextLink => contextLink.active && contextLink.tenantId === accessContext.workspaceId)
+        .map(contextLink => normalizeText(contextLink.context, 40))
+        .filter(Boolean),
+    )];
+    candidates.set(professionalId, { professionalId, contexts });
+  }
+
+  return { candidates: [...candidates.values()] };
+}
+
 async function migrateLegacyReviewedRequest(db, requestSnapshot) {
   if (!requestSnapshot?.exists) return null;
   const request = requestSnapshot.data();
@@ -4959,6 +5009,9 @@ export default async function handler(req, res) {
       }
       if (req.query?.mode === 'professionalNotifications') {
         return res.status(200).json(await listProfessionalNotifications(db, decodedToken, req));
+      }
+      if (req.query?.mode === 'canonicalProfessional') {
+        return res.status(200).json(await listCanonicalProfessionalCandidates(db, decodedToken));
       }
       if (req.query?.action === 'listPatientProfileChangeRequests') {
         return res.status(200).json(await listPatientProfileChangeRequests(db, decodedToken, req));
