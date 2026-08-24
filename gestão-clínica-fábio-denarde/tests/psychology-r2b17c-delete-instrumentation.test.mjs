@@ -88,6 +88,7 @@ function createFetchHarness({ deleteStatus = 200 } = {}) {
         ? response({ scope, deleted: true, id: patient.id }, deleteStatus)
         : response({ error: { code: 'psychology/synthetic-delete-failure', message: 'Falha sintética.' } }, deleteStatus);
     }
+    if (method === 'GET' && parsed.pathname === `/api/psychology/patients/${patient.id}`) return response({ scope, items: [] });
     if (method === 'GET' && parsed.pathname === '/api/psychology/patients') return response({ scope, items: [patient] });
     if (method === 'GET' && parsed.pathname === '/api/psychology/settings') return response({ scope, settings: {} });
     if (method === 'GET' && ['/api/psychology/sessions', '/api/psychology/services', '/api/psychology/locations', '/api/psychology/personal-appointments'].includes(parsed.pathname)) return response({ scope, items: [] });

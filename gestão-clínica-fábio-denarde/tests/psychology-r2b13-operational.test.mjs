@@ -10,9 +10,24 @@ class FakeDocument {
   async delete() { this.store.delete(`${this.path}/${this.id}`); }
 }
 
+class FakeQuery {
+  constructor(store, path, field, value) { this.store = store; this.path = path; this.field = field; this.value = value; this.maxResults = Infinity; }
+  limit(value) { this.maxResults = value; return this; }
+  async get() {
+    const prefix = `${this.path}/`;
+    const docs = [...this.store.entries()]
+      .filter(([key]) => key.startsWith(prefix) && key.slice(prefix.length).indexOf('/') < 0)
+      .map(([key, value]) => ({ id: key.slice(prefix.length), data: () => structuredClone(value) }))
+      .filter(documentSnapshot => documentSnapshot.data()?.[this.field] === this.value)
+      .slice(0, this.maxResults);
+    return { docs };
+  }
+}
+
 class FakeCollection {
   constructor(store, path) { this.store = store; this.path = path; }
   doc(id) { return new FakeDocument(this.store, this.path, id); }
+  where(field, _operator, value) { return new FakeQuery(this.store, this.path, field, value); }
   async get() {
     const prefix = `${this.path}/`;
     return { docs: [...this.store.entries()]

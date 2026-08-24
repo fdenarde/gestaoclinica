@@ -141,6 +141,14 @@ function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, 
       const value = snapshot.exists ? { id: snapshot.id, ...clone(snapshot.data() || {}) } : null;
       return value && scopeMatches(value, runtimeScope) ? value : null;
     },
+    async hasPatientReference(patientId) {
+      const normalizedPatientId = assertId(patientId);
+      const snapshot = await collection.where('patientId', '==', normalizedPatientId).limit(1).get();
+      return snapshot.docs.some(documentSnapshot => {
+        const value = { id: documentSnapshot.id, ...clone(documentSnapshot.data() || {}) };
+        return scopeMatches(value, runtimeScope);
+      });
+    },
     async upsert(entity) {
       const documentId = assertId(entity?.id);
       assertEntityScope(entity, runtimeScope);
@@ -208,6 +216,8 @@ export function createPsychologyServerRepository({ db, runtimeScope, now = () =>
     },
     financial: {
       scope: runtimeScope,
+      hasChargeReference: repositories.charges.hasPatientReference,
+      hasPaymentReference: repositories.payments.hasPatientReference,
       listCharges: repositories.charges.list,
       getCharge: repositories.charges.get,
       upsertCharge: repositories.charges.upsert,

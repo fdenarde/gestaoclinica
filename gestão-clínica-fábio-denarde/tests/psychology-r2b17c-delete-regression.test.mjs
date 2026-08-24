@@ -80,6 +80,7 @@ test('R2B17 delete parity remains one DELETE through the real PsychologyPilot', 
     requests.push({ method, path: parsed.pathname });
     if (method === 'POST' && parsed.pathname === '/api/psychology-delete-diagnostic') return new Response(null, { status: 204 });
     if (method === 'DELETE') { patientExists = false; return response({ scope, deleted: true, id: patient.id }); }
+    if (parsed.pathname === `/api/psychology/patients/${patient.id}`) return response({ scope, items: patientExists ? [patient] : [] });
     if (parsed.pathname === '/api/psychology/patients') return response({ scope, items: patientExists ? [patient] : [] });
     if (parsed.pathname === '/api/psychology/settings') return response({ scope, settings: {} });
     if (['/api/psychology/sessions', '/api/psychology/services', '/api/psychology/locations', '/api/psychology/personal-appointments'].includes(parsed.pathname)) return response({ scope, items: [] });

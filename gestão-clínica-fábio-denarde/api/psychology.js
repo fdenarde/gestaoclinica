@@ -585,22 +585,22 @@ export function createPsychologyApiHandler(dependencies = {}) {
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
         const current = await repository.patients.get(id);
         if (!current) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
-        const [relatedSessions, clinicalRecords, packages, documents, attachments, charges, payments] = await Promise.all([
-          repository.sessions.list(),
-          repository.sessionRecords.list(),
-          repository.packages.list(),
-          repository.documents.list(),
-          repository.attachments.list(),
-          repository.financial.listCharges(),
-          repository.financial.listPayments(),
+        const [hasRelatedSession, hasClinicalRecord, hasPackage, hasDocument, hasAttachment, hasCharge, hasPayment] = await Promise.all([
+          repository.sessions.hasPatientReference(id),
+          repository.sessionRecords.hasPatientReference(id),
+          repository.packages.hasPatientReference(id),
+          repository.documents.hasPatientReference(id),
+          repository.attachments.hasPatientReference(id),
+          repository.financial.hasChargeReference(id),
+          repository.financial.hasPaymentReference(id),
         ]);
-        const hasRelatedData = relatedSessions.some(session => session.patientId === id)
-          || clinicalRecords.some(record => record.patientId === id)
-          || packages.some(item => item.patientId === id)
-          || documents.some(item => item.patientId === id)
-          || attachments.some(item => item.patientId === id)
-          || charges.some(item => item.patientId === id)
-          || payments.some(item => item.patientId === id);
+        const hasRelatedData = hasRelatedSession
+          || hasClinicalRecord
+          || hasPackage
+          || hasDocument
+          || hasAttachment
+          || hasCharge
+          || hasPayment;
         if (hasRelatedData) {
           const inactivated = await repository.patients.update(id, { active: false, updatedAt: now() });
           auditHeaders(res, runtimeScope, 'inactivate', 'patients');

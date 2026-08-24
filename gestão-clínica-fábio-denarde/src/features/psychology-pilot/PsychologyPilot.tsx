@@ -778,9 +778,14 @@ export default function PsychologyPilot() {
           } else {
             await patientRepository.delete(remoteRepositories.scope, patientDelete.id);
           }
-          const patients = await remoteRepositories.patients.list(remoteRepositories.scope);
-          setRemoteStore(current => current ? { ...current, patients: patients as typeof current.patients } : current);
-          const remaining = patients.find(patient => patient.id === patientDelete.id);
+          const remaining = await patientRepository.get(remoteRepositories.scope, patientDelete.id);
+          setRemoteStore(current => {
+            if (!current) return current;
+            const patients = remaining
+              ? current.patients.map(patient => patient.id === patientDelete.id ? remaining : patient)
+              : current.patients.filter(patient => patient.id !== patientDelete.id);
+            return { ...current, patients };
+          });
           setPatientDelete(null);
           setPatientChart(null);
           setNotice(remaining ? 'Paciente inativado porque possui histórico relacionado.' : 'Paciente excluído com segurança.');
