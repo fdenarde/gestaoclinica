@@ -581,7 +581,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'patients' && req.method === 'DELETE' && id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.delete'] });
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.edit'] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation });
         const current = await repository.patients.get(id);
         if (!current) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
