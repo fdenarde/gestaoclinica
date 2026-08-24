@@ -9,6 +9,7 @@ import { formatDoctoraliaAddress, type DoctoraliaPreviewPatientDetails } from '.
 import type { DoctoraliaClinicalBackground } from '../psychology-import-export/types';
 import { calculateAgeOnDate, civilDateFromDate } from '../../lib/psychologyPatientAdministrative';
 import { isPsychologySessionBeforeNow } from './psychologyAgendaTemporal';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 type ChartTab = 'summary' | 'sessions';
 const tabs: Array<{ id: ChartTab; label: string }> = [
@@ -81,7 +82,14 @@ export default function PsychologyPatientChart({ store, patientId, previewDetail
   const [chargeForm, setChargeForm] = useState({ description: '', amount: '', dueDate: psychologyCivilDate() });
   const [paymentForm, setPaymentForm] = useState({ chargeId: '', amount: '', date: psychologyCivilDate(), method: 'PIX' as 'PIX' | 'CASH' | 'CARD' | 'TRANSFER' | 'OTHER' });
   if (!data || !summary) return null;
-  const { patient, sessions, records, charges, payments, packages, documents, attachments } = data;
+  const { patient: sourcePatient, sessions, records, charges, payments, packages, documents, attachments } = data;
+  const patient = {
+    ...sourcePatient,
+    phone: formatPsychologyPhoneDisplay(sourcePatient.phone),
+    administrativeResponsible: sourcePatient.administrativeResponsible
+      ? { ...sourcePatient.administrativeResponsible, phone: formatPsychologyPhoneDisplay(sourcePatient.administrativeResponsible.phone) }
+      : undefined,
+  };
   const now = new Date();
   const previousSessions = sessions.filter(session => isPsychologySessionBeforeNow(session, now)).reverse();
   const nextSessions = sessions.filter(session => session.status === 'agendada' && !previousSessions.includes(session));

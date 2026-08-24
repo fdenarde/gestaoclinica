@@ -17,6 +17,7 @@ import {
   type PsychologySessionsReport,
 } from './psychologyReports';
 import { isPsychologyPaymentActive } from './psychologyFinancialLedger';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 export type PsychologyFinanceExportView = 'summary' | 'charges' | 'payments' | 'expenses';
 
@@ -191,7 +192,8 @@ function buildAgendaPdf(doc: jsPDF, startY: number, report: PsychologyAgendaRepo
   table(doc, summaryY + 4, ['Dimensão', 'Item', 'Sessões', 'Duração'], distributionRows);
 }
 
-function buildPatientsPdf(doc: jsPDF, startY: number, report: PsychologyPatientsReport): void {
+function buildPatientsPdf(doc: jsPDF, startY: number, sourceReport: PsychologyPatientsReport): void {
+  const report = { ...sourceReport, rows: sourceReport.rows.map(row => ({ ...row, patient: { ...row.patient, phone: formatPsychologyPhoneDisplay(row.patient.phone) } })) };
   const summaryY = addSummary(doc, startY, [
     ['Ativos', String(report.active)],
     ['Inativos', String(report.inactive)],
@@ -237,7 +239,8 @@ export function buildPsychologyReportCsv(payload: PsychologyReportExportPayload)
     const data = [...report.byDay.map(item => ({ Dimensão: 'Dia', Item: item.label, Sessões: String(item.count), Duração: `${(item.minutes / 60).toFixed(2).replace('.', ',')} h` })), ...report.byModality.map(item => ({ Dimensão: 'Modalidade', Item: item.label, Sessões: String(item.count), Duração: `${(item.minutes / 60).toFixed(2).replace('.', ',')} h` })), ...report.byLocation.map(item => ({ Dimensão: 'Local', Item: item.label, Sessões: String(item.count), Duração: `${(item.minutes / 60).toFixed(2).replace('.', ',')} h` }))];
     return csvContent(fields, data);
   }
-  const report = payload.report as PsychologyPatientsReport;
+  const sourceReport = payload.report as PsychologyPatientsReport;
+  const report = { ...sourceReport, rows: sourceReport.rows.map(row => ({ ...row, patient: { ...row.patient, phone: formatPsychologyPhoneDisplay(row.patient.phone) } })) };
   const fields = ['Paciente', 'Telefone', 'E-mail', 'Status', 'Última sessão', 'Próxima sessão', 'Modalidade', 'Pacote ativo'];
   return csvContent(fields, report.rows.map(row => ({ Paciente: row.patient.name, Telefone: row.patient.phone || '—', 'E-mail': row.patient.email || '—', Status: row.patient.active ? 'Ativo' : 'Inativo', 'Última sessão': formatPsychologyReportDate(row.lastSessionDate), 'Próxima sessão': formatPsychologyReportDateTime(row.nextSession?.date, row.nextSession?.time), Modalidade: row.preferredModalityLabel, 'Pacote ativo': row.activePackageName || '—' })));
 }

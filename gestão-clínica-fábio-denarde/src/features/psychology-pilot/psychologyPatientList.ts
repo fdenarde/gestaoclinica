@@ -1,7 +1,7 @@
 import { getPsychologyPatientSummary } from './psychologyPatientProfile';
 import { locationForSession, type PsychologyLocation } from './psychologyR2a';
 import type { PsychologyPatient, PsychologyStore } from './psychologyDomain';
-import { formatPhoneDisplay } from '../../../shared/phoneNormalization.js';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 export interface PsychologyPatientListItem {
   patient: PsychologyPatient;
@@ -22,7 +22,7 @@ export function formatPsychologyPatientPhone(value?: string | null): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '—';
   try {
-    return formatPhoneDisplay(raw);
+    return formatPsychologyPhoneDisplay(raw);
   } catch {
     return raw;
   }

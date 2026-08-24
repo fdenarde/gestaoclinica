@@ -1,6 +1,6 @@
 import type { PsychologyScope } from './psychologyDomain';
 import { PSYCHOLOGY_SERVICE_CATALOG, psychologyCatalogEntry, canonicalPsychologyServiceId } from './psychologyServiceCatalog';
-import { normalizePhone } from '../../../shared/phoneNormalization.js';
+import { normalizePsychologyPhoneForWrite } from './psychologyPhone';
 
 const PSYCHOLOGY_CONTEXT = 'PSICOLOGIA' as const;
 
@@ -636,7 +636,7 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
     phone: (() => {
       const raw = String(rawProfile.phone || '').trim();
       if (!raw) return '';
-      try { return normalizePhone(raw).displayPhone; } catch { return raw; }
+      try { return normalizePsychologyPhoneForWrite(raw); } catch { return raw; }
     })(),
     name: displayName,
     crp: professionalRegistration,

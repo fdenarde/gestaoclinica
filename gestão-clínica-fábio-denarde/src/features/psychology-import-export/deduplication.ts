@@ -1,8 +1,10 @@
 import type { PsychologyStore } from '../psychology-pilot/psychologyDomain';
 import type { DeduplicationResult, DeduplicationSignal, ImportConflict, ImportWarning, PsychologyImportBundle } from './types';
+import { normalizePhoneForComparison } from '../../../shared/phoneNormalization.js';
 
 function comparable(value: string | undefined): string {
-  return (value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().replace(/\D/g, '').trim();
+  const raw = (value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().replace(/\D/g, '').trim();
+  try { return normalizePhoneForComparison(value || '', { defaultCountryCode: '55' }); } catch { return raw; }
 }
 
 function textComparable(value: string | undefined): string {

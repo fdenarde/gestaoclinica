@@ -141,7 +141,7 @@ test('paciente sem próxima sessão mostra Sem agendamento', () => {
 
 test('a busca continua contemplando nome, telefone, e-mail e status', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
-  assert.match(pilot, /patient\.name, patient\.phone, patient\.email/);
+  assert.match(pilot, /normalizePsychologyPhoneForSearch/);
   assert.match(pilot, /Buscar paciente por nome, telefone, e-mail ou status/);
 });
 

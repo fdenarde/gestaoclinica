@@ -154,14 +154,14 @@ export function buildWhatsappClickToChatUrl(value, { defaultCountryCode = '55', 
   }
 }
 
-export function formatPhoneDisplay(value, { defaultCountryCode = '55' } = {}) {
+export function formatPhoneDisplay(value, { defaultCountryCode = '55', includeCountryCode = true } = {}) {
   const normalized = normalizePhone(value, { defaultCountryCode });
   if (normalized.countryCode === '55' && /^\d{10,11}$/.test(normalized.nationalNumber)) {
     const national = normalized.nationalNumber;
     const local = national.length === 11
       ? `${national.slice(2, 7)}-${national.slice(7)}`
       : `${national.slice(2, 6)}-${national.slice(6)}`;
-    return `+55 (${national.slice(0, 2)}) ${local}`;
+    return includeCountryCode ? `+55 (${national.slice(0, 2)}) ${local}` : `(${national.slice(0, 2)}) ${local}`;
   }
   return normalized.countryCode ? `+${normalized.countryCode} ${normalized.nationalNumber}` : normalized.displayPhone;
 }

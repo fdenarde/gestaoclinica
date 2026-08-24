@@ -26,13 +26,13 @@ import {
   type PsychologyAdministrativeResponsible,
   validatePsychologyPatientAdministrativeInput,
 } from '../../lib/psychologyPatientAdministrative';
-import { normalizePhone } from '../../../shared/phoneNormalization.js';
+import { normalizePsychologyPhoneForWrite } from './psychologyPhone';
 
 function sanitizeStoredPhone(value: unknown): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
   try {
-    return normalizePhone(raw).displayPhone;
+    return normalizePsychologyPhoneForWrite(raw);
   } catch {
     return raw;
   }

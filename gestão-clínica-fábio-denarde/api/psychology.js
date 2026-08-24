@@ -27,7 +27,7 @@ function normalizePhoneForWrite(value) {
   const input = normalize(value, 32);
   if (!input) return '';
   try {
-    return normalizePhone(input).displayPhone;
+    return normalizePhone(input, { defaultCountryCode: '55' }).canonicalPhone;
   } catch {
     throw apiError('psychology/phone-invalid', 'Informe um telefone válido.', 422);
   }

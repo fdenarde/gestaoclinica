@@ -32,7 +32,8 @@ const approvedSyntheticFingerprints = [
 ];
 
 export function normalizePsychologyPhone(value: string): string {
-  return value.replace(/\D/g, '');
+  const digits = value.replace(/\D/g, '');
+  return /^55\d{10,11}$/u.test(digits) ? digits.slice(2) : digits;
 }
 
 function normalizedName(value: string): string {
