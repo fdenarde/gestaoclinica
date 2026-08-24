@@ -12,6 +12,15 @@ import {
   isPsychologyRemoteCanaryEnabled,
 } from '../src/features/psychology-persistence/index';
 import { createApiPsychologyRepositories } from '../src/features/psychology-persistence/repositories/api';
+import {
+  createEmptyPsychologyStore,
+  createPsychologyScope,
+  normalizePsychologyStore,
+  parsePsychologyStore,
+  serializePsychologyStore,
+  upsertPsychologyPatient,
+  validatePsychologyPatient,
+} from '../src/features/psychology-pilot/psychologyDomain';
 
 class FakeDocument {
   constructor(store, path, id) {
@@ -78,11 +87,11 @@ class FakeDb {
 
 const NOW = '2026-08-14T18:00:00.000Z';
 const WORKSPACE = 'tenant-synthetic-a';
-const scopeA = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-a', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.delete', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-a' };
-const scopeB = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-b', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.delete', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-b' };
+const scopeA = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-a', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.edit', 'patients.delete', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-a' };
+const scopeB = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-b', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.edit', 'patients.delete', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-b' };
 const baseByToken = {
-  a: { userId: 'auth-a', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional A', permissions: { 'patients.list': true, 'patients.create': true, 'patients.delete': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
-  b: { userId: 'auth-b', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional B', permissions: { 'patients.list': true, 'patients.create': true, 'patients.delete': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
+  a: { userId: 'auth-a', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional A', permissions: { 'patients.list': true, 'patients.create': true, 'patients.edit': true, 'patients.delete': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
+  b: { userId: 'auth-b', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional B', permissions: { 'patients.list': true, 'patients.create': true, 'patients.edit': true, 'patients.delete': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
   finance: { userId: 'auth-finance', workspaceId: WORKSPACE, role: 'admin', actorName: 'Financeiro', permissions: { 'finance.manage': true } },
   clinical: { userId: 'auth-clinical', workspaceId: WORKSPACE, role: 'professional', actorName: 'Clínico', permissions: { 'patients.clinical_notes.view': true, 'patients.list': true } },
   limited: { userId: 'auth-limited', workspaceId: WORKSPACE, role: 'professional', actorName: 'Limitado', permissions: { 'agenda.own.view': true } },
@@ -347,4 +356,61 @@ test('R2D2E observability — evento mínimo não contém dado clínico ou do pa
   assert.equal(JSON.stringify(event).includes('Paciente Sintético'), false);
   assert.equal(JSON.stringify(event).includes('phone'), false);
   assert.equal(JSON.stringify(event).includes('content'), false);
+});
+
+test('R1 responsável — API, reload e edição parcial preservam os quatro campos sem misturar escopos', async () => {
+  const db = createDb();
+  const handler = createHandler(db);
+  const responsibleInput = {
+    fullName: 'Marina Sintética',
+    relationship: 'Mãe',
+    phone: '27988881111',
+    email: 'responsavel@synthetic.test',
+  };
+  const responsible = { ...responsibleInput, phone: '5527988881111' };
+  const patientId = 'patient-responsible-r1';
+  const created = await call(handler, 'POST', '/api/psychology/patients', 'a', {
+    id: patientId,
+    name: 'Paciente Menor Sintético',
+    birthDate: '2012-08-10',
+    phone: '27999990010',
+    email: 'menor@synthetic.test',
+    preferredModality: 'online',
+    administrativeResponsible: responsibleInput,
+  });
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(created.body.patient.administrativeResponsible, responsible);
+  assert.deepEqual(db.value(`workspaces/${WORKSPACE}/professionals/professional-a/contexts/PSICOLOGIA/patients/${patientId}`).administrativeResponsible, responsible);
+
+  const read = await call(handler, 'GET', `/api/psychology/patients/${patientId}`, 'a');
+  assert.deepEqual(read.body.items[0].administrativeResponsible, responsible);
+  const reloaded = parsePsychologyStore(
+    serializePsychologyStore(normalizePsychologyStore({ patients: read.body.items }, createPsychologyScope('professional-a'))),
+    createPsychologyScope('professional-a'),
+  );
+  assert.deepEqual(reloaded.patients[0].administrativeResponsible, responsible);
+
+  const partialUpdate = await call(handler, 'PATCH', `/api/psychology/patients/${patientId}`, 'a', { administrativeNote: 'Nota administrativa atualizada' });
+  assert.equal(partialUpdate.statusCode, 200);
+  assert.deepEqual(partialUpdate.body.patient.administrativeResponsible, responsible);
+
+  const changedResponsible = { ...responsible, relationship: 'Pai', email: 'pai@synthetic.test' };
+  const responsibleUpdate = await call(handler, 'PATCH', `/api/psychology/patients/${patientId}`, 'a', { administrativeResponsible: changedResponsible });
+  assert.deepEqual(responsibleUpdate.body.patient.administrativeResponsible, changedResponsible);
+
+  const adult = await call(handler, 'POST', '/api/psychology/patients', 'a', {
+    id: 'patient-adult-r1', name: 'Paciente Adulto Sintético', birthDate: '1990-01-01', phone: '27999990011', email: 'adulto@synthetic.test', preferredModality: 'online',
+  });
+  assert.equal(adult.statusCode, 201);
+  assert.equal(adult.body.patient.administrativeResponsible, undefined);
+
+  const incomplete = validatePsychologyPatient({ name: 'Paciente Menor Incompleto', birthDate: '2012-08-10', phone: '27999990012', email: 'incompleto@synthetic.test', preferredModality: 'online', administrativeNote: '', active: true, administrativeResponsible: { fullName: '', relationship: '', phone: '', email: '' } });
+  assert.deepEqual(Object.keys(incomplete).sort(), ['administrativeResponsible.email', 'administrativeResponsible.fullName', 'administrativeResponsible.phone', 'administrativeResponsible.relationship']);
+
+  const localAdult = upsertPsychologyPatient(createEmptyPsychologyStore(createPsychologyScope('professional-a')), { name: 'Adulto Local Sintético', birthDate: '1990-01-01', phone: '27999990013', email: 'adulto.local@synthetic.test', preferredModality: 'online', administrativeNote: '', active: true, administrativeResponsible: { fullName: '', relationship: '', phone: '', email: '' } }, 'patient-local-adult');
+  assert.equal(localAdult.patients[0].administrativeResponsible, undefined);
+
+  const foreignRead = await call(handler, 'GET', `/api/psychology/patients/${patientId}`, 'b');
+  assert.deepEqual(foreignRead.body.items, []);
+  assert.deepEqual(Object.keys(responsible).sort(), ['email', 'fullName', 'phone', 'relationship']);
 });

@@ -587,14 +587,16 @@ export function createPsychologyPayment(store: PsychologyStore, input: Psycholog
 export function upsertPsychologyPatient(store: PsychologyStore, input: PsychologyPatientInput, id?: string, now = new Date().toISOString()): PsychologyStore {
   const existing = id ? store.patients.find(patient => patient.id === id) : undefined;
   const dateOfBirth = String(input.dateOfBirth || input.birthDate || '').trim();
-  const responsible = input.administrativeResponsible
+  const responsibleInput = input.administrativeResponsible;
+  const hasResponsibleData = Boolean(responsibleInput && [responsibleInput.fullName, responsibleInput.relationship, responsibleInput.phone, responsibleInput.email].some(value => String(value || '').trim()));
+  const responsible = hasResponsibleData && responsibleInput
     ? {
-      fullName: input.administrativeResponsible.fullName.trim(),
-      relationship: input.administrativeResponsible.relationship.trim(),
-      phone: sanitizeStoredPhone(input.administrativeResponsible.phone),
-      email: input.administrativeResponsible.email.trim().toLocaleLowerCase(),
+      fullName: responsibleInput.fullName.trim(),
+      relationship: responsibleInput.relationship.trim(),
+      phone: sanitizeStoredPhone(responsibleInput.phone),
+      email: responsibleInput.email.trim().toLocaleLowerCase(),
     }
-    : undefined;
+    : existing?.administrativeResponsible;
   const patient: PsychologyPatient = {
     id: id || createId('patient'),
     professionalId: store.scope.professionalId,

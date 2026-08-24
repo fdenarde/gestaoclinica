@@ -33,6 +33,18 @@ function normalizePhoneForWrite(value) {
   }
 }
 
+function normalizeAdministrativeResponsible(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value;
+  const normalized = {
+    fullName: normalize(source.fullName, 160),
+    relationship: normalize(source.relationship, 120),
+    phone: normalize(source.phone, 64),
+    email: normalize(source.email, 160).toLocaleLowerCase(),
+  };
+  return Object.values(normalized).some(Boolean) ? normalized : undefined;
+}
+
 function requestIdempotencyKey(req) {
   const value = req.headers?.['x-idempotency-key'] || req.headers?.['X-Idempotency-Key'];
   const normalized = normalize(value, 200);
@@ -110,6 +122,7 @@ function administrativePatientDto(value) {
     migrationReview: value.migrationReview || undefined,
     preferredModality: value.preferredModality,
     administrativeNote: value.administrativeNote || value.administrativeNotes || '',
+    administrativeResponsible: normalizeAdministrativeResponsible(value.administrativeResponsible),
     externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
     active: value.active !== false,
     createdAt: value.createdAt,
@@ -301,7 +314,7 @@ function preparePatient(body, runtimeScope, now, current) {
   if (!name || !birthDate || !phone || !['presencial', 'online'].includes(preferredModality)) {
     throw apiError('psychology/patient-invalid', 'Informe nome, nascimento, telefone e modalidade do paciente.', 422);
   }
-  const responsible = merged.administrativeResponsible && typeof merged.administrativeResponsible === 'object'
+  const responsible = merged.administrativeResponsible && typeof merged.administrativeResponsible === 'object' && ['fullName', 'relationship', 'phone', 'email'].some(field => String(merged.administrativeResponsible[field] || '').trim())
     ? {
       fullName: normalize(merged.administrativeResponsible.fullName, 160),
       relationship: normalize(merged.administrativeResponsible.relationship, 80),

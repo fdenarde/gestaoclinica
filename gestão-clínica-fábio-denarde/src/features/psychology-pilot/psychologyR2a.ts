@@ -614,7 +614,9 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
   const primaryIndex = Math.max(0, locations.findIndex(location => location.isPrimary && location.active));
   const stableLocations = locations.map((location, index) => ({ ...location, isPrimary: index === primaryIndex }));
   const rawServices = Array.isArray(input.services)
-    ? input.services.filter(item => item && item.context === scope.context && item.professionalId === scope.professionalId)
+    ? input.services.filter(item => item
+      && (item.context === undefined || item.context === scope.context)
+      && (item.professionalId === undefined || item.professionalId === scope.professionalId))
     : input.services;
   const services = normalizePsychologyServices(rawServices, scope, defaults.services, stableLocations.map(location => location.id), now);
   const rawProfile = (input.professionalProfile || {}) as Partial<PsychologyProfessionalPresentation>;
