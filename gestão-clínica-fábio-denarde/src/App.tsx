@@ -8,7 +8,7 @@ import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
 import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
-import { applyTheme, resolveTheme, storeTheme, type AppTheme } from './lib/theme';
+import { applyTheme, resolveTheme, storeTheme, type AppTheme, type VisualContext } from './lib/theme';
 import packageJson from '../package.json';
 
 import { auth, db, logout, handleFirestoreError, OperationType } from './firebase';
@@ -53,7 +53,10 @@ import {
   type NavigationMode,
 } from './lib/navigationPreferences';
 import PsychologyPilot from './features/psychology-pilot/PsychologyPilot';
-import { isPsychologyPilotRoute } from './features/psychology-pilot/psychologyDomain';
+import {
+  resolvePsychologyRouteMode,
+  type PsychologyDevelopmentMode,
+} from './features/psychology-pilot/psychologyDomain';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -123,18 +126,25 @@ function ProfileChoiceScreen({
   profile,
   onChoose,
   onLogout,
+  visualContext,
 }: {
   profile: AccessProfile;
   onChoose: (role: AccessRole) => void;
   onLogout: () => void;
+  visualContext: VisualContext;
 }) {
   const roles = getActiveProfileRoles(profile);
+  const psychologyContext = visualContext === 'PSICOLOGIA';
   return (
-    <div className="flex min-h-screen items-center justify-center bg-clinic-bg p-4">
+    <div
+      className={`flex min-h-screen items-center justify-center bg-clinic-bg p-4 ${psychologyContext ? 'auth-psychology-theme' : ''}`}
+      data-auth-visual-context={visualContext}
+    >
       <section className="w-full max-w-3xl rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-7">
         <BrandLogo
           variant="horizontal"
-          theme="health-balance"
+          theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined}
+          visualContext={visualContext}
           name="Fábio Denarde"
           subtitle="Gestão Clínica e Acompanhamento"
           className="mb-6"
@@ -209,36 +219,39 @@ function formatAuditDuration(value?: number): string {
   return `${seconds}s`;
 }
 
-type PsychologyDevelopmentMode = 'pilot-local' | 'authenticated-remote';
-
 function getPsychologyDevelopmentMode(): PsychologyDevelopmentMode {
   const configured = String(import.meta.env.VITE_PSYCHOLOGY_DEV_MODE || '').trim().toLowerCase();
   return configured === 'authenticated-remote' ? 'authenticated-remote' : 'pilot-local';
 }
 
 export default function App() {
-  const psychologyPilotRoute = isPsychologyPilotRoute(
+  const psychologyRouteMode = resolvePsychologyRouteMode(
     window.location.pathname,
     window.location.search,
     Boolean(import.meta.env.DEV),
     window.location.hostname,
+    getPsychologyDevelopmentMode(),
   );
-  const psychologyAuthenticatedRoute = psychologyPilotRoute
-    && getPsychologyDevelopmentMode() === 'authenticated-remote';
+  const psychologyPilotRoute = psychologyRouteMode === 'pilot-local';
+  const psychologyAuthenticatedRoute = psychologyRouteMode === 'authenticated-remote';
 
-  if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot />;
+
+  if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="pilot-local" />;
   return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyAuthenticatedRoute} />;
 }
 
 function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychologyAuthenticatedRoute?: boolean }) {
+  const visualContext: VisualContext = psychologyAuthenticatedRoute ? 'PSICOLOGIA' : 'DEFAULT';
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
-  const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
-    ? 'responsible'
-    : normalizedPath === '/profissional'
-      ? 'professional'
-      : normalizedPath === '/monitoramento'
-        ? 'monitoring'
-        : null;
+  const directAccessRole: AccessRequestRole | null = psychologyAuthenticatedRoute
+    ? 'professional'
+    : normalizedPath === '/responsavel'
+      ? 'responsible'
+      : normalizedPath === '/profissional'
+        ? 'professional'
+        : normalizedPath === '/monitoramento'
+          ? 'monitoring'
+          : null;
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -1005,7 +1018,10 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-clinic-bg">
+      <div
+        className={`min-h-screen flex items-center justify-center bg-clinic-bg ${visualContext === 'PSICOLOGIA' ? 'auth-psychology-theme' : ''}`}
+        data-auth-visual-context={visualContext}
+      >
         <Loader2 className="w-12 h-12 text-clinic-primary animate-spin" />
       </div>
     );
@@ -1027,6 +1043,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
         required
         onProfileUpdated={handlePasswordProfileUpdated}
         onLogout={handleAccessPortalLogout}
+        visualContext={visualContext}
       />
     );
   }
@@ -1037,6 +1054,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
         profile={accessProfile}
         onChoose={chooseAccessRole}
         onLogout={() => void handleAccessPortalLogout()}
+        visualContext={visualContext}
       />
     );
   }
@@ -1060,6 +1078,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
+            visualContext={visualContext}
           />
         )}
       </>
@@ -1078,6 +1097,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
+            visualContext={visualContext}
           />
         )}
       </>
@@ -1102,11 +1122,12 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
         onRetryProfile={handleRetryAccessProfile}
         onChooseAnotherRole={directAccessRole ? undefined : switchAccessRole}
         onLogout={handleAccessPortalLogout}
+        visualContext={visualContext}
       />
     );
   }
 
-  if (psychologyAuthenticatedRoute) return <PsychologyPilot />;
+  if (psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="authenticated-remote" />;
 
   const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
     isPendingExternalRegistrationStatus(form.status)
@@ -1297,6 +1318,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
           profile={accessProfile}
           onProfileUpdated={handlePasswordProfileUpdated}
           onLogout={handleAccessPortalLogout}
+          visualContext={visualContext}
         />
       )}
       {navigationMode === 'sidebar' && (

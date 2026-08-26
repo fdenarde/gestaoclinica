@@ -26,10 +26,11 @@ test('aplicação reconhece as três rotas específicas sem remover a rota princ
   assert.match(portal, /Voltar ao acesso geral/);
 });
 
-test('rotas específicas ocultam escolha de perfil, cadastro público, Google e recuperação por e-mail', () => {
+test('rotas específicas ocultam escolha de perfil, cadastro público e recuperação por e-mail', () => {
   assert.match(portal, /\{!directRoute && <fieldset/);
   assert.match(portal, /\{!directRoute && \(\s*<div className="flex items-center justify-between/);
-  assert.match(portal, /\{!directRoute && \(\s*<>[\s\S]*Entrar com Google/);
+  assert.match(portal, /const psychologyGoogleOnly = psychologyAuthTheme && effectiveLoginRole === 'professional'/);
+  assert.match(portal, /\{\(psychologyGoogleOnly \|\| !directRoute\) && \(/);
   assert.match(portal, /if \(directRoute\) return renderLogin\(\)/);
 });
 

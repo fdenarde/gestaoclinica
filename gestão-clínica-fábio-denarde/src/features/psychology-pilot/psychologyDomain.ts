@@ -852,7 +852,34 @@ export function parsePsychologyStore(raw: string | null, scope = createPsycholog
   }
 }
 
-export function isPsychologyPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
+export type PsychologyDevelopmentMode = 'pilot-local' | 'authenticated-remote';
+
+export type PsychologyRouteMode = 'normal' | 'pilot-local' | 'authenticated-remote';
+
+export function isPsychologyRoute(pathname: string): boolean {
+  return pathname.replace(/\/+$/, '') === '/psicologia';
+}
+
+export function isPsychologyLocalPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
   if (!isDev || !['localhost', '127.0.0.1'].includes(hostname)) return false;
-  return pathname.replace(/\/+$/, '') === '/psicologia' || new URLSearchParams(search).get('psicologia') === '1';
+  return isPsychologyRoute(pathname) || new URLSearchParams(search).get('psicologia') === '1';
+}
+
+export function resolvePsychologyRouteMode(
+  pathname: string,
+  search: string,
+  isDev: boolean,
+  hostname: string,
+  developmentMode: PsychologyDevelopmentMode,
+): PsychologyRouteMode {
+  const psychologyRoute = isPsychologyRoute(pathname);
+  const psychologyLocalPilotRoute = isPsychologyLocalPilotRoute(pathname, search, isDev, hostname);
+  if (psychologyLocalPilotRoute && developmentMode === 'pilot-local') return 'pilot-local';
+  if (psychologyRoute || psychologyLocalPilotRoute) return 'authenticated-remote';
+  return 'normal';
+}
+
+/** Backwards-compatible helper for callers that only need the local pilot gate. */
+export function isPsychologyPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
+  return isPsychologyLocalPilotRoute(pathname, search, isDev, hostname);
 }

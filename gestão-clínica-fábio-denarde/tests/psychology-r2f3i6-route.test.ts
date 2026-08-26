@@ -15,7 +15,7 @@ test('Pilot local /psicologia is recognized only in DEV on localhost', () => {
 });
 
 test('Pilot local is separated from authenticated remote and production remains gated', () => {
-  const pilotIndex = app.indexOf('if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot />;');
+  const pilotIndex = app.indexOf('if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="pilot-local" />;');
   const authenticatedIndex = app.indexOf('return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyAuthenticatedRoute} />;');
   assert.ok(pilotIndex >= 0);
   assert.ok(authenticatedIndex > pilotIndex);

@@ -704,7 +704,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'settings' && req.method === 'GET' && !id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.manage'] });
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.view'] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
         const current = await repository.settings.get('settings');
         auditHeaders(res, runtimeScope, 'read', 'settings');

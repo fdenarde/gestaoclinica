@@ -10,7 +10,7 @@ test('R2B22 — wrapper da Psicologia apresenta Brasil sem +55 e mantém estrang
   assert.equal(normalizePsychologyPhoneForComparison('(27) 99991-3553'), '5527999913553');
 });
 
-test('R2B22 — nova persistência local da Psicologia usa canonical interno', () => {
+test('R2B22 — nova persistência local da Psicologia preserva display e semântica', () => {
   const store = upsertPsychologyPatient(createEmptyPsychologyStore(), {
     name: 'Paciente Sintético R2B22',
     dateOfBirth: '1990-01-01',
@@ -20,5 +20,7 @@ test('R2B22 — nova persistência local da Psicologia usa canonical interno', (
     administrativeNote: '',
     active: true,
   });
-  assert.equal(store.patients[0]?.phone, '5527999913553');
+  assert.equal(store.patients[0]?.phone, '+55 27 99991-3553');
+  assert.equal(normalizePsychologyPhoneForComparison(store.patients[0]?.phone), '5527999913553');
+  assert.equal(formatPsychologyPhoneDisplay(store.patients[0]?.phone), '(27) 99991-3553');
 });

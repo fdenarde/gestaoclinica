@@ -185,6 +185,7 @@ export default function AccessPortal({
   const directRoute = Boolean(accessRouteRole);
   const psychologyAuthTheme = visualContext === 'PSICOLOGIA';
   const effectiveLoginRole = accessRouteRole || selectedLoginRole;
+  const psychologyGoogleOnly = psychologyAuthTheme && effectiveLoginRole === 'professional';
   const directRouteCopy = accessRouteRole === 'responsible'
     ? { title: 'Acesso do Responsável', description: 'Entre para consultar os dados e materiais autorizados.' }
     : accessRouteRole === 'professional'
@@ -411,43 +412,47 @@ export default function AccessPortal({
         )}
       </fieldset>}
 
-      <label className="block">
-        <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">E-mail ou nome de usuário</span>
-        <div className="relative">
-          <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinic-text-faint" />
-          <input
-            className="clinic-input pl-11"
-            type="text"
-            autoComplete="username"
-            value={loginIdentifier}
-            onChange={event => setLoginIdentifier(event.target.value)}
-            required
-          />
-        </div>
-      </label>
+      {!psychologyGoogleOnly && (
+        <>
+          <label className="block">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">E-mail ou nome de usuário</span>
+            <div className="relative">
+              <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinic-text-faint" />
+              <input
+                className="clinic-input pl-11"
+                type="text"
+                autoComplete="username"
+                value={loginIdentifier}
+                onChange={event => setLoginIdentifier(event.target.value)}
+                required
+              />
+            </div>
+          </label>
 
-      <label className="block">
-        <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">Senha</span>
-        <div className="relative">
-          <KeyRound className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinic-text-faint" />
-          <input
-            className="clinic-input px-11"
-            type={showPassword ? 'text' : 'password'}
-            autoComplete="current-password"
-            value={password}
-            onChange={event => setPassword(event.target.value)}
-            required
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword(current => !current)}
-            className="absolute right-4 top-1/2 -translate-y-1/2 text-clinic-text-faint hover:text-clinic-primary"
-            aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-          >
-            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-          </button>
-        </div>
-      </label>
+          <label className="block">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">Senha</span>
+            <div className="relative">
+              <KeyRound className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinic-text-faint" />
+              <input
+                className="clinic-input px-11"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(current => !current)}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-clinic-text-faint hover:text-clinic-primary"
+                aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+          </label>
+        </>
+      )}
 
       {!directRoute && (
         <div className="flex items-center justify-between gap-4 text-sm">
@@ -460,34 +465,43 @@ export default function AccessPortal({
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={busy || !effectiveLoginRole}
-        className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60"
-      >
-        {busy ? <Loader2 size={19} className="animate-spin" /> : <LockKeyhole size={19} />}
-        Entrar
-      </button>
+      {!psychologyGoogleOnly && (
+        <button
+          type="submit"
+          disabled={busy || !effectiveLoginRole}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60"
+        >
+          {busy ? <Loader2 size={19} className="animate-spin" /> : <LockKeyhole size={19} />}
+          Entrar
+        </button>
+      )}
 
-      {!directRoute && (
+      {(psychologyGoogleOnly || !directRoute) && (
         <>
-          <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-clinic-text-faint">
-            <span className="h-px flex-1 bg-clinic-border" />
-            ou
-            <span className="h-px flex-1 bg-clinic-border" />
-          </div>
+          {!psychologyGoogleOnly && (
+            <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-clinic-text-faint">
+              <span className="h-px flex-1 bg-clinic-border" />
+              ou
+              <span className="h-px flex-1 bg-clinic-border" />
+            </div>
+          )}
           <button
             type="button"
             onClick={handleGoogleLogin}
             disabled={busy || !effectiveLoginRole}
-            className="flex w-full items-center justify-center gap-3 rounded-xl border border-clinic-border bg-white px-4 py-3.5 font-bold text-clinic-text shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg disabled:cursor-wait disabled:opacity-60"
+            data-testid={psychologyGoogleOnly ? 'psychology-google-login' : undefined}
+            className={psychologyGoogleOnly
+              ? 'flex w-full items-center justify-center gap-3 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60'
+              : 'flex w-full items-center justify-center gap-3 rounded-xl border border-clinic-border bg-white px-4 py-3.5 font-bold text-clinic-text shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg disabled:cursor-wait disabled:opacity-60'}
           >
-            <Mail size={19} className="text-clinic-primary" />
+            {psychologyGoogleOnly
+              ? <span aria-hidden="true" className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-sm font-black text-clinic-primary">G</span>
+              : <Mail size={19} className="text-clinic-primary" />}
             Entrar com Google
           </button>
         </>
       )}
-      {directRoute && (
+      {directRoute && !psychologyGoogleOnly && (
         <a href="/" className="block text-center text-sm font-semibold text-clinic-primary hover:underline">
           Voltar ao acesso geral
         </a>

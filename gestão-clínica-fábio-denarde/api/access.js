@@ -4968,6 +4968,21 @@ function isQuotaExceededError(error) {
     || message.includes('QUOTA EXCEEDED');
 }
 
+function annotateAccessError(error, stage) {
+  if (error && typeof error === 'object' && !error.accessStage) error.accessStage = stage;
+  return error;
+}
+
+export function sanitizeAccessErrorMessage(error, statusCode = Number(error?.statusCode) || 500) {
+  const code = String(error?.code ?? '').toUpperCase();
+  const rawMessage = String(error?.message || '').toUpperCase();
+  if (statusCode >= 500 && (code === '5' || code.includes('NOT_FOUND') || rawMessage.includes('NOT_FOUND'))) {
+    return 'Não foi possível validar seu acesso à Psicologia. Tente novamente em alguns instantes.';
+  }
+  if (statusCode >= 500) return 'Não foi possível processar o controle de acesso. Tente novamente em alguns instantes.';
+  return error?.message || 'Não foi possível processar o controle de acesso.';
+}
+
 function sendError(res, error) {
   if (isQuotaExceededError(error)) {
     res.setHeader('Retry-After', '60');
@@ -4982,8 +4997,12 @@ function sendError(res, error) {
 
   const statusCode = Number(error?.statusCode) || 500;
   const code = error?.code || 'access/internal-error';
-  const message = error?.message || 'Não foi possível processar o controle de acesso.';
-  if (statusCode >= 500) console.error('[ACCESS API]', code, message);
+  const technicalMessage = error?.message || 'Não foi possível processar o controle de acesso.';
+  const message = sanitizeAccessErrorMessage(error, statusCode);
+  if (statusCode >= 500) {
+    const stackTop = String(error?.stack || '').split('\n').find(line => line.trim().startsWith('at '))?.trim() || 'stack indisponível';
+    console.error('[ACCESS API]', code, technicalMessage, `stage=${error?.accessStage || 'unknown'}`, `stack=${stackTop}`);
+  }
   return res.status(statusCode).json({ error: { code, message } });
 }
 
@@ -5014,10 +5033,20 @@ export default async function handler(req, res) {
       throw accessError('access/method-not-allowed', 'Método não permitido.', 405);
     }
 
-    const db = getAdminDb();
+    let db;
+    try {
+      db = getAdminDb();
+    } catch (error) {
+      throw annotateAccessError(error, 'getAdminDb');
+    }
 
     if (req.method === 'GET') {
-      const decodedToken = await verifyFirebaseRequest(req);
+      let decodedToken;
+      try {
+        decodedToken = await verifyFirebaseRequest(req);
+      } catch (error) {
+        throw annotateAccessError(error, 'verifyFirebaseRequest');
+      }
       if (req.query?.mode === 'requests') {
         requirePrimaryAdmin(decodedToken);
         return res.status(200).json({ requests: await listAccessRequests(db) });
@@ -5040,7 +5069,12 @@ export default async function handler(req, res) {
       if (req.query?.action === 'listPatientProfileChangeRequests') {
         return res.status(200).json(await listPatientProfileChangeRequests(db, decodedToken, req));
       }
-      const snapshot = await getProfile(db, decodedToken);
+      let snapshot;
+      try {
+        snapshot = await getProfile(db, decodedToken);
+      } catch (error) {
+        throw annotateAccessError(error, 'getProfile.profileRef.get');
+      }
       const activeRole = normalizeText(req.query?.activeRole, 40);
       let profileData = null;
       if (snapshot.exists) {

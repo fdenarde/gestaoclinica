@@ -12,7 +12,7 @@ const psychologyBrainAsset = fs.statSync('public/brand/brain-psychology.webp');
 const generalBrainAsset = fs.statSync('public/brand/brain-health-balance.webp');
 
 test('rota Psicologia injeta contexto visual no Auth compartilhado', () => {
-  assert.match(appSource, /const visualContext: VisualContext = psychologyPilotRoute \? 'PSICOLOGIA' : 'DEFAULT'/);
+  assert.match(appSource, /const visualContext: VisualContext = psychologyAuthenticatedRoute \? 'PSICOLOGIA' : 'DEFAULT'/);
   assert.match(authSource, /export type AuthVisualContext = VisualContext/);
   assert.match(authSource, /data-auth-visual-context=\{visualContext\}/);
   assert.doesNotMatch(appSource, /PsychologyLoginPage/);
@@ -32,7 +32,7 @@ test('tema Psicologia reutiliza a paleta violeta existente sem alterar o tema gl
 
 test('todas as superfícies pré-entrada recebem o mesmo contexto visual', () => {
   assert.match(themeSource, /export type VisualContext = 'DEFAULT' \| 'PSICOLOGIA'/);
-  assert.match(appSource, /const visualContext: VisualContext = psychologyPilotRoute \? 'PSICOLOGIA' : 'DEFAULT'/);
+  assert.match(appSource, /const visualContext: VisualContext = psychologyAuthenticatedRoute \? 'PSICOLOGIA' : 'DEFAULT'/);
   assert.match(appSource, /<ProfileChoiceScreen[\s\S]*visualContext=\{visualContext\}/);
   assert.match(appSource, /<PasswordSecurityPanel[\s\S]*visualContext=\{visualContext\}/);
   assert.match(appSource, /data-auth-visual-context=\{visualContext\}/);
@@ -64,7 +64,7 @@ test('Auth funcional permanece compartilhado e protegido', () => {
     'role="radio"',
   ]) assert.match(authSource, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(appSource, /if \(!user \|\| !canAccessInternalSystem\)/);
-  assert.match(appSource, /if \(psychologyPilotRoute\) return <PsychologyPilot \/>;/);
+  assert.match(appSource, /if \(psychologyPilotRoute && !psychologyAuthenticatedRoute\) return <PsychologyPilot runtimeMode="pilot-local" \/>;/);
 });
 
 test('R2F4-A1 não introduz revisão, bypass, identidade sintética ou integração externa', () => {

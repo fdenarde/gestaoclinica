@@ -17,7 +17,7 @@ test('DEV seleciona explicitamente entre Piloto local e Authenticated Remote', (
 });
 test('Authenticated Remote só entrega PsychologyPilot depois do gate de acesso', () => {
   const accessGate = app.indexOf('if (!user || !canAccessInternalSystem)');
-  const remoteRender = app.indexOf('if (psychologyAuthenticatedRoute) return <PsychologyPilot />;');
+  const remoteRender = app.indexOf('if (psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="authenticated-remote" />;');
   assert.notEqual(accessGate, -1);
   assert.notEqual(remoteRender, -1);
   assert.ok(remoteRender > accessGate);
@@ -26,7 +26,7 @@ test('Authenticated Remote só entrega PsychologyPilot depois do gate de acesso'
 
 test('produção não usa o bypass direto do Piloto', () => {
   assert.match(app, /Boolean\(import\.meta\.env\.DEV\)/);
-  assert.match(app, /if \(psychologyPilotRoute && !psychologyAuthenticatedRoute\) return <PsychologyPilot \/>;/);
+  assert.match(app, /if \(psychologyPilotRoute && !psychologyAuthenticatedRoute\) return <PsychologyPilot runtimeMode="pilot-local" \/>;/);
   assert.match(app, /return <AuthenticatedApp psychologyAuthenticatedRoute=\{psychologyAuthenticatedRoute\} \/>;/);
 });
 

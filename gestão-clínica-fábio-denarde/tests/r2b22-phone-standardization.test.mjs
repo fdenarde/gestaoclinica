@@ -16,7 +16,7 @@ test('R2B22 — canonical interno preserva +55 e telefone internacional', () => 
   assert.equal(normalizePhoneForIntegration('+44 7731 970794').canonicalPhone, '447731970794');
 });
 
-test('R2B22 — pontos da Psicologia usam wrapper de display e API grava canonical', async () => {
+test('R2B22 — pontos da Psicologia usam wrapper de display e API preserva a representação', async () => {
   const list = await readFile(new URL('../src/features/psychology-pilot/psychologyPatientList.ts', import.meta.url), 'utf8');
   const chart = await readFile(new URL('../src/features/psychology-pilot/PsychologyPatientChart.tsx', import.meta.url), 'utf8');
   const pilot = await readFile(new URL('../src/features/psychology-pilot/PsychologyPilot.tsx', import.meta.url), 'utf8');
@@ -24,5 +24,5 @@ test('R2B22 — pontos da Psicologia usam wrapper de display e API grava canonic
   assert.match(list, /formatPsychologyPhoneDisplay/);
   assert.match(chart, /formatPsychologyPhoneDisplay/);
   assert.match(pilot, /normalizePsychologyPhoneForSearch/);
-  assert.match(api, /normalizePhone\(input, \{ defaultCountryCode: '55' \}\)\.canonicalPhone/);
+  assert.match(api, /normalizePhone\(input\)\.displayPhone/);
 });

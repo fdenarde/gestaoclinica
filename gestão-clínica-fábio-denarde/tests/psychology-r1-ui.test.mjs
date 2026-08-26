@@ -12,10 +12,11 @@ const psychologyPersonalAgenda = await readFile(resolve(root, 'src/features/psyc
 const app = await readFile(resolve(root, 'src/App.tsx'), 'utf8');
 
 test('rota privada da Psicologia reconhece produção, mas mantém o guard autenticado', () => {
-  assert.doesNotMatch(domain, /!isDev|localhost.*127\.0\.0\.1/);
   assert.ok(domain.includes("pathname.replace(/\\/+$/, '') === '/psicologia'"));
+  assert.match(domain, /export function resolvePsychologyRouteMode/);
+  assert.match(domain, /if \(psychologyRoute \|\| psychologyLocalPilotRoute\) return 'authenticated-remote'/);
   const guardIndex = app.indexOf('if (!user || !canAccessInternalSystem)');
-  const pilotIndex = app.indexOf('if (psychologyPilotRoute) return <PsychologyPilot />;');
+  const pilotIndex = app.indexOf('if (psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="authenticated-remote" />;');
   assert.ok(guardIndex >= 0, 'o guard de acesso interno continua presente');
   assert.ok(pilotIndex > guardIndex, 'PsychologyPilot somente renderiza depois do guard');
   assert.doesNotMatch(app, /if \(psychologyPilotRoute\) return <PsychologyPilot \/>;\s*return <AuthenticatedApp/);
@@ -72,8 +73,8 @@ test('R2A1 oferece painel por abas para Sessão, Pessoal e Mentoria', () => {
   assert.match(domain + pilot, /'Mentoria'/);
 });
 
-test('R2A1 oferece Ajustes com perfil, agenda, serviços, locais, financeiro, cores e lembretes', () => {
-  for (const label of ['Ajustes', 'Perfil profissional', 'Agenda', 'Atendimento / Locais', 'Serviços', 'Financeiro', 'Cores', 'Lembretes']) {
+test('R2A1 oferece Ajustes com perfil, agenda, serviços, locais, financeiro e cores', () => {
+  for (const label of ['Ajustes', 'Perfil profissional', 'Agenda', 'Atendimentos', 'Serviços', 'Financeiro', 'Cores']) {
     assert.match(pilot, new RegExp(label));
   }
   assert.match(domain + r2a, /Shopping Moxuara/);

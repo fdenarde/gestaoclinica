@@ -16,7 +16,6 @@ import {
 import type { PsychologyPersistenceScope } from './scope';
 import type { ApiPsychologyRepositoryOptions } from './repositories/api';
 import type { PsychologyPatientDeletionResult } from './repositoryTypes';
-
 export interface PsychologyRemotePatientClientOptions {
   scope: PsychologyPersistenceScope;
   api?: Omit<ApiPsychologyRepositoryOptions, 'scope'>;
@@ -169,7 +168,14 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
 
 export function patientStoreWithUpdates(store: PsychologyStore, patients: PsychologyPatient[]): PsychologyStore {
   const updates = new Map(patients.map(patient => [patient.id, patient]));
-  return { ...store, patients: store.patients.map(patient => updates.get(patient.id) || patient) };
+  const existingIds = new Set(store.patients.map(patient => patient.id));
+  return {
+    ...store,
+    patients: [
+      ...store.patients.map(patient => updates.get(patient.id) || patient),
+      ...patients.filter(patient => !existingIds.has(patient.id)),
+    ],
+  };
 }
 
 export function patientStoreWithoutIds(store: PsychologyStore, ids: readonly string[]): PsychologyStore {

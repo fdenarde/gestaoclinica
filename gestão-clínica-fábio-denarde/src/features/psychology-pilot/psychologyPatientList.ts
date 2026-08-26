@@ -1,7 +1,7 @@
 import { getPsychologyPatientSummary } from './psychologyPatientProfile';
 import { locationForSession, type PsychologyLocation } from './psychologyR2a';
 import type { PsychologyPatient, PsychologyStore } from './psychologyDomain';
-import { formatPhoneDisplay } from '../../../shared/phoneNormalization.js';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 export type PsychologyPatientStatusFilter = 'all' | 'active' | 'inactive' | 'review';
 export type PsychologyPatientLastSessionFilter = 'any' | 'recent' | 'oldest' | 'none' | '3m' | '6m' | '12m' | '18m' | '24m';
@@ -75,10 +75,7 @@ export function formatPsychologyPatientPhone(value?: string | null): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '—';
   try {
-    // The shared formatter keeps +55 for technical/general displays. The
-    // Psychology patient list is a Brazilian professional-facing surface, so
-    // remove only that visual country prefix; stored/integration values stay untouched.
-    return formatPhoneDisplay(raw).replace(/^\+55\s*/u, '');
+    return formatPsychologyPhoneDisplay(raw);
   } catch {
     return raw;
   }
