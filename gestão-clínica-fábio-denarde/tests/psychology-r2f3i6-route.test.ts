@@ -6,17 +6,20 @@ import { isPsychologyPilotRoute } from '../src/features/psychology-pilot/psychol
 const app = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const domain = await readFile(new URL('../src/features/psychology-pilot/psychologyDomain.ts', import.meta.url), 'utf8');
 
-test('production-like /psicologia is recognized independently of DEV hostname', () => {
-  assert.equal(isPsychologyPilotRoute('/psicologia', ''), true);
-  assert.equal(isPsychologyPilotRoute('/psicologia/', ''), true);
-  assert.equal(isPsychologyPilotRoute('/', '?psicologia=1'), true);
+test('Pilot local /psicologia is recognized only in DEV on localhost', () => {
+  assert.equal(isPsychologyPilotRoute('/psicologia', '', true, 'localhost'), true);
+  assert.equal(isPsychologyPilotRoute('/psicologia/', '', true, 'localhost'), true);
+  assert.equal(isPsychologyPilotRoute('/', '?psicologia=1', true, '127.0.0.1'), true);
+  assert.equal(isPsychologyPilotRoute('/psicologia', '', false, 'localhost'), false);
+  assert.equal(isPsychologyPilotRoute('/psicologia', '', true, 'production.example'), false);
 });
 
-test('route recognition does not bypass authentication or authorization', () => {
-  const guardIndex = app.indexOf('if (!user || !canAccessInternalSystem)');
-  const pilotIndex = app.indexOf('if (psychologyPilotRoute) return <PsychologyPilot />;');
-  assert.ok(guardIndex >= 0);
-  assert.ok(pilotIndex > guardIndex);
+test('Pilot local is separated from authenticated remote and production remains gated', () => {
+  const pilotIndex = app.indexOf('if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot />;');
+  const authenticatedIndex = app.indexOf('return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyAuthenticatedRoute} />;');
+  assert.ok(pilotIndex >= 0);
+  assert.ok(authenticatedIndex > pilotIndex);
+  assert.match(app, /VITE_PSYCHOLOGY_DEV_MODE/);
   assert.match(app, /<AccessPortal/);
   assert.doesNotMatch(app, /if \(psychologyPilotRoute\) return <PsychologyPilot \/>;\s*return <AuthenticatedApp/);
   assert.doesNotMatch(domain, /Review Mode|reviewMode|synthetic identity|syntheticIdentity/i);

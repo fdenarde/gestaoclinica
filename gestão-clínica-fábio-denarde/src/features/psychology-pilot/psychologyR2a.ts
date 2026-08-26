@@ -1,6 +1,5 @@
 import type { PsychologyScope } from './psychologyDomain';
 import { PSYCHOLOGY_SERVICE_CATALOG, psychologyCatalogEntry, canonicalPsychologyServiceId } from './psychologyServiceCatalog';
-import { normalizePsychologyPhoneForWrite } from './psychologyPhone';
 
 const PSYCHOLOGY_CONTEXT = 'PSICOLOGIA' as const;
 
@@ -267,7 +266,7 @@ export interface PsychologySettings {
 export const PSYCHOLOGY_COLOR_DEFAULTS: PsychologyColorRegistry = {
   ONLINE: '#16A34A',
   PRESENTIAL_PRIMARY: '#DC2626',
-  PERSONAL: '#2563EB',
+  PERSONAL: '#F97316',
   MENTORING: '#7C3AED',
   EXTERNAL_OFFICE: '#EA580C',
 };
@@ -635,11 +634,7 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
     professionalRegistration,
     clinicDisplayName: String(rawProfile.clinicDisplayName || '').trim(),
     email: String(rawProfile.email || '').trim(),
-    phone: (() => {
-      const raw = String(rawProfile.phone || '').trim();
-      if (!raw) return '';
-      try { return normalizePsychologyPhoneForWrite(raw); } catch { return raw; }
-    })(),
+    phone: String(rawProfile.phone || '').trim(),
     name: displayName,
     crp: professionalRegistration,
     specialty: professionalTitle,
@@ -689,7 +684,8 @@ export function colorForPsychologyLocation(location: PsychologyLocation | undefi
 }
 
 export type PsychologyAgendaEventSource = 'SESSION' | 'PERSONAL_AGENDA' | 'MENTORING';
-export const PSYCHOLOGY_PERSONAL_AGENDA_OVERLAY_COLOR = '#F97316';
+/** @deprecated Kept as a read-compatible alias; PERSONAL is the canonical setting. */
+export const PSYCHOLOGY_PERSONAL_AGENDA_OVERLAY_COLOR = PSYCHOLOGY_COLOR_DEFAULTS.PERSONAL;
 
 export interface PsychologyAgendaColorTokens {
   baseColor: string;
@@ -779,13 +775,7 @@ export function resolvePsychologyAgendaEventStyle(input: {
     : input.source === 'MENTORING'
       ? 'MENTORING'
       : agendaCategoryForSession({ modality: input.modality || 'presencial', locationType: input.location?.type }));
-  const baseColor = therapyCouple
-    ? '#EAB308'
-    : input.source === 'PERSONAL_AGENDA'
-      ? PSYCHOLOGY_PERSONAL_AGENDA_OVERLAY_COLOR
-      : input.source === 'SESSION' && input.modality === 'presencial' && category !== 'PERSONAL'
-      ? colorForPsychologyLocation(input.location)
-      : colorForAgendaCategory(input.colors, category);
+  const baseColor = therapyCouple ? '#EAB308' : colorForAgendaCategory(input.colors, category);
   const tokens = derivePsychologyAgendaColorTokens(baseColor);
   const cancelled = Boolean(input.cancelled);
   return {

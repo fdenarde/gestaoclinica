@@ -5,6 +5,7 @@ import {
 } from '../psychology-pilot/psychologyDomain';
 import type { BackupFile, BackupManifest, BackupSection, BackupVerification } from './types';
 import { isSafeArchivePath, createStoredZip, extractStoredZip } from './zip';
+import { selectPsychologyBackupData } from '../psychology-persistence/psychologyBackup';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -14,8 +15,11 @@ const REQUIRED_BACKUP_PATHS = [
   'appointments.json',
   'personal-appointments.json',
   'services.json',
+  'locations.json',
+  'session-packages.json',
   'financial/charges.json',
   'financial/payments.json',
+  'financial/expenses.json',
   'clinical/session-records.json',
   'documents/manifest.json',
   'attachments/manifest.json',
@@ -37,18 +41,28 @@ function section(path: string, entity: string, value: unknown): { path: string; 
   return { path, entity, value, bytes: jsonBytes(value) };
 }
 
-export async function buildPsychologyBackupFiles(store: PsychologyStore, createdAt = new Date().toISOString()): Promise<BackupFile[]> {
+export interface PsychologyBackupBuildOptions {
+  source?: BackupManifest['source'];
+  workspaceId?: string;
+  version?: BackupManifest['version'];
+}
+
+export async function buildPsychologyBackupFiles(store: PsychologyStore, createdAt = new Date().toISOString(), options: PsychologyBackupBuildOptions = {}): Promise<BackupFile[]> {
+  const data = selectPsychologyBackupData(store);
   const values = [
-    section('patients.json', 'patients', store.patients),
-    section('appointments.json', 'appointments', store.sessions),
-    section('personal-appointments.json', 'personalAppointments', store.personalCommitments),
-    section('services.json', 'services', store.services),
-    section('financial/charges.json', 'charges', store.charges),
-    section('financial/payments.json', 'payments', store.payments),
-    section('clinical/session-records.json', 'clinicalRecords', store.sessionRecords),
-    section('documents/manifest.json', 'documents', store.documents),
-    section('attachments/manifest.json', 'attachments', store.attachments),
-    section('settings.json', 'settings', store.settings),
+    section('patients.json', 'patients', data.patients),
+    section('appointments.json', 'appointments', data.appointments),
+    section('personal-appointments.json', 'personalAppointments', data.personalAppointments),
+    section('services.json', 'services', data.services),
+    section('locations.json', 'locations', data.locations),
+    section('session-packages.json', 'sessionPackages', data.sessionPackages),
+    section('financial/charges.json', 'charges', data.charges),
+    section('financial/payments.json', 'payments', data.payments),
+    section('financial/expenses.json', 'expenses', data.expenses),
+    section('clinical/session-records.json', 'clinicalRecords', data.clinicalRecords),
+    section('documents/manifest.json', 'documents', data.documents),
+    section('attachments/manifest.json', 'attachments', data.attachments),
+    section('settings.json', 'settings', data.settings),
   ];
   const sections: BackupSection[] = await Promise.all(values.map(async item => ({
     path: item.path,
@@ -59,21 +73,48 @@ export async function buildPsychologyBackupFiles(store: PsychologyStore, created
   })));
   const manifest: BackupManifest = {
     format: 'Gestao-Clinica-Backup',
-    version: 1,
+    version: options.version || 1,
     createdAt,
+    generatedAt: createdAt,
     applicationVersion: BACKUP_APPLICATION_VERSION,
     professionalId: store.scope.professionalId,
+    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
     context: 'PSICOLOGIA',
     timezone: 'America/Sao_Paulo',
     sections,
     fileCount: sections.length + 1,
     checksumAlgorithm: 'SHA-256',
-    source: 'psychology-local-synthetic',
+    source: options.source || 'psychology-local-synthetic',
   };
   return [
     { path: 'manifest.json', bytes: jsonBytes(manifest) },
     ...values.map(item => ({ path: item.path, bytes: item.bytes })),
   ];
+}
+
+export interface PsychologyBackupJsonResult {
+  fileName: string;
+  json: string;
+  source: Exclude<BackupManifest['source'], 'psychology-local-synthetic'>;
+  counts: Record<string, number>;
+}
+
+export async function buildPsychologyBackupJson(store: PsychologyStore, options: { source: 'psychology-local' | 'psychology-remote'; workspaceId?: string; generatedAt?: string }): Promise<PsychologyBackupJsonResult> {
+  const generatedAt = options.generatedAt || new Date().toISOString();
+  const files = await buildPsychologyBackupFiles(store, generatedAt, { ...options, version: 2 });
+  const manifest = JSON.parse(decoder.decode(files[0].bytes)) as BackupManifest;
+  const fileValues = Object.fromEntries(files.slice(1).map(file => [file.path, readJson<unknown>(file.bytes)]));
+  const date = generatedAt.slice(0, 10);
+  const time = generatedAt.slice(11, 16).replace(':', '');
+  return {
+    fileName: `backup-psicologia-${date}-${time}.json`,
+    json: JSON.stringify({ manifest, files: fileValues }, null, 2),
+    source: options.source,
+    counts: Object.fromEntries(files.slice(1).map(file => {
+      const value = readJson<unknown>(file.bytes);
+      return [file.path, Array.isArray(value) ? value.length : 1];
+    })),
+  };
 }
 
 export async function createPsychologyBackupZip(store: PsychologyStore, createdAt?: string): Promise<Uint8Array> {
@@ -130,7 +171,7 @@ export async function verifyPsychologyBackupFiles(files: BackupFile[]): Promise<
   }
   if (manifest) {
     if (manifest.format !== 'Gestao-Clinica-Backup') problems.push('Formato de backup não reconhecido.');
-    if (manifest.version !== 1) problems.push('Versão de backup não suportada.');
+    if (manifest.version !== 1 && manifest.version !== 2) problems.push('Versão de backup não suportada.');
     if (manifest.context !== 'PSICOLOGIA') problems.push('O backup não pertence ao contexto Psicologia.');
     if (manifest.checksumAlgorithm !== 'SHA-256') problems.push('Algoritmo de checksum não suportado.');
     for (const requiredPath of REQUIRED_BACKUP_PATHS) if (!paths.has(requiredPath)) problems.push(`Arquivo obrigatório ausente: ${requiredPath}`);

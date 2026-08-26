@@ -399,16 +399,18 @@ export interface BackupSection {
 
 export interface BackupManifest {
   format: 'Gestao-Clinica-Backup';
-  version: 1;
+  version: 1 | 2;
   createdAt: string;
+  generatedAt?: string;
   applicationVersion: string;
   professionalId: string;
+  workspaceId?: string;
   context: 'PSICOLOGIA';
   timezone: string;
   sections: BackupSection[];
   fileCount: number;
   checksumAlgorithm: 'SHA-256';
-  source: 'psychology-local-synthetic';
+  source: 'psychology-local-synthetic' | 'psychology-local' | 'psychology-remote';
 }
 
 export interface BackupFile {

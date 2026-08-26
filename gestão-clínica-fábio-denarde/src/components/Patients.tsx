@@ -112,6 +112,8 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   const setSelectedPatientId = propSetSelectedId || setInternalSelectedId;
 
   const [patientToDelete, setPatientToDelete] = useState<string | null>(null);
+  const [deletingPatientId, setDeletingPatientId] = useState<string | null>(null);
+  const deleteInFlightRef = useRef<string | null>(null);
   const [adminPortalPreviewPatientId, setAdminPortalPreviewPatientId] = useState<string | null>(null);
   const [requestedPatientSubTab, setRequestedPatientSubTab] = useState<string | null>(initialPatientSubTab || null);
 
@@ -294,19 +296,22 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
   };
 
   const confirmDelete = async () => {
-    if (!patientToDelete) return;
+    const targetPatientId = patientToDelete;
+    if (!targetPatientId || deleteInFlightRef.current) return;
+    deleteInFlightRef.current = targetPatientId;
+    setDeletingPatientId(targetPatientId);
 
-    const patientBeingDeleted = state.patients.find(item => item.id === patientToDelete);
-    const updatedPatients = state.patients.filter(p => p.id !== patientToDelete);
-    const updatedSessions = state.sessions.filter(s => s.patientId !== patientToDelete);
-    const updatedRepositions = state.repositions.filter(r => r.patientId !== patientToDelete);
+    const patientBeingDeleted = state.patients.find(item => item.id === targetPatientId);
+    const updatedPatients = state.patients.filter(p => p.id !== targetPatientId);
+    const updatedSessions = state.sessions.filter(s => s.patientId !== targetPatientId);
+    const updatedRepositions = state.repositions.filter(r => r.patientId !== targetPatientId);
 
     try {
-      if (state.payments.some(payment => payment.patientId === patientToDelete)) {
+      if (state.payments.some(payment => payment.patientId === targetPatientId)) {
         showToast('Este atendente possui histórico financeiro. Desative o cadastro para preservar os lançamentos.', 'error');
         return;
       }
-      if (currentUserId && await hasPatientActivityRecords(patientToDelete)) {
+      if (currentUserId && await hasPatientActivityRecords(targetPatientId)) {
         showToast('Este atendente possui registros históricos de atividades preservados. O cadastro não pode ser excluído sem uma auditoria específica desses dados.', 'error');
         return;
       }
@@ -330,6 +335,9 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
     } catch (error) {
       console.error('Erro ao excluir atendente:', error);
       showToast('Não foi possível excluir o atendente. Nenhum dado foi dado como removido.', 'error');
+    } finally {
+      if (deleteInFlightRef.current === targetPatientId) deleteInFlightRef.current = null;
+      setDeletingPatientId(current => current === targetPatientId ? null : current);
     }
   };
 
@@ -736,15 +744,17 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
           <div className="flex justify-end gap-3">
             <button
               onClick={() => setPatientToDelete(null)}
+              disabled={Boolean(deletingPatientId)}
               className="px-4 py-2 bg-clinic-bg text-clinic-text-muted font-bold rounded-lg hover:bg-clinic-border transition-all uppercase tracking-wide text-xs"
             >
               Cancelar
             </button>
             <button
               onClick={confirmDelete}
-              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs"
+              disabled={Boolean(deletingPatientId)}
+              className="px-4 py-2 bg-status-red-text text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition-all uppercase tracking-wide text-xs disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Excluir Atendente
+              {deletingPatientId ? 'Excluindo...' : 'Excluir Atendente'}
             </button>
           </div>
         </div>

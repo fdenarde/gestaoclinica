@@ -26,7 +26,15 @@ export interface PsychologyRepository<T extends { id: string }> {
   delete(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
 }
 
-export interface PsychologyPatientRepository extends PsychologyRepository<PsychologyPatientRecord> {}
+export interface PsychologyPatientDeletionResult {
+  id: string;
+  deleted: boolean;
+  reason?: string;
+}
+
+export interface PsychologyPatientRepository extends PsychologyRepository<PsychologyPatientRecord> {
+  deleteWithResult?: (scope: PsychologyPersistenceScope, id: string) => Promise<PsychologyPatientDeletionResult>;
+}
 export interface PsychologySessionRepository extends PsychologyRepository<PsychologySessionRecordEntity> {}
 export interface PsychologySessionRecordRepository extends PsychologyRepository<PsychologyClinicalSessionRecord> {}
 export interface PsychologyPersonalAppointmentRepository extends PsychologyRepository<PsychologyPersonalAppointmentRecord> {}
@@ -34,6 +42,21 @@ export interface PsychologyServiceRepository extends PsychologyRepository<Psycho
 export interface PsychologyLocationRepository extends PsychologyRepository<PsychologyLocationRecord> {}
 export interface PsychologyPackageRepository extends PsychologyRepository<PsychologyPackageRecord> {}
 export interface PsychologySettingsRepository extends PsychologyRepository<PsychologySettingsRecord> {}
+
+export interface PsychologyBackupReadBundle {
+  readonly patients: PsychologyPatientRepository;
+  readonly sessions: PsychologySessionRepository;
+  readonly sessionRecords: PsychologySessionRecordRepository;
+  readonly personalAppointments: PsychologyPersonalAppointmentRepository;
+  readonly services: PsychologyServiceRepository;
+  readonly locations: PsychologyLocationRepository;
+  readonly packages: PsychologyPackageRepository;
+  readonly documents: PsychologyDocumentRepository;
+  readonly attachments: PsychologyAttachmentRepository;
+  readonly listCharges: (scope: PsychologyPersistenceScope) => Promise<readonly PsychologyChargeRecord[]>;
+  readonly listPayments: (scope: PsychologyPersistenceScope) => Promise<readonly PsychologyPaymentRecord[]>;
+  readonly listExpenses: (scope: PsychologyPersistenceScope) => Promise<readonly PsychologyExpenseRecord[]>;
+}
 
 export interface PsychologyFinancialRepository {
   readonly scope: PsychologyPersistenceScope;
@@ -74,6 +97,7 @@ export interface PsychologyRepositoryBundle {
   readonly documents: PsychologyDocumentRepository;
   readonly attachments: PsychologyAttachmentRepository;
   readonly settings: PsychologySettingsRepository;
+  readonly backup?: PsychologyBackupReadBundle;
 }
 
 export interface PsychologyMemorySeed {

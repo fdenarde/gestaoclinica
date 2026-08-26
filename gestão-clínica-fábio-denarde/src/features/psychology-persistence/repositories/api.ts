@@ -4,8 +4,11 @@ import type {
   PsychologyAttachmentRepository,
   PsychologyDocumentRepository,
   PsychologyFinancialRepository,
+  PsychologyPatientRepository,
+  PsychologyPatientDeletionResult,
   PsychologyRepository,
   PsychologyRepositoryBundle,
+  PsychologyBackupReadBundle,
 } from '../repositoryTypes';
 import type {
   PsychologyAttachmentRecord,
@@ -14,7 +17,6 @@ import type {
   PsychologyDocumentRecord,
   PsychologyExpenseRecord,
   PsychologyPaymentRecord,
-  PsychologySessionRecordEntity,
 } from '../types';
 import type { PsychologyAggregate } from '../namespace';
 
@@ -37,125 +39,6 @@ export class ApiPsychologyError extends Error {
   }
 }
 
-type ApiPsychologyRepository<T extends { id: string }> = PsychologyRepository<T> & {
-  deleteWithDiagnostic(
-    scope: PsychologyPersistenceScope,
-    id: string,
-    diagnostic?: PsychologyDeleteDiagnosticContext,
-  ): Promise<{ id: string } | null>;
-  deleteWithResult(
-    scope: PsychologyPersistenceScope,
-    id: string,
-  ): Promise<ApiPsychologyDeleteResult>;
-};
-
-export interface ApiPsychologyDeleteResult {
-  id: string;
-  deleted: boolean;
-  cancelled: boolean;
-  session?: PsychologySessionRecordEntity;
-}
-
-export interface PsychologyDeleteDiagnosticContext {
-  correlationId: string;
-}
-
-export type PsychologyDeleteDiagnosticStage =
-  | 'confirm_start'
-  | 'before_repository'
-  | 'before_token'
-  | 'token_ok'
-  | 'token_error'
-  | 'before_fetch'
-  | 'fetch_response'
-  | 'catch';
-
-export interface PsychologyDeleteDiagnosticEvent {
-  DELETE_PATIENT_STAGE: PsychologyDeleteDiagnosticStage;
-  correlationId: string;
-  method: 'DELETE';
-  routeTemplate: '/api/psychology/patients/:id';
-  authUserPresent?: 'YES' | 'NO';
-  authorizationPresent?: 'YES' | 'NO';
-  errorName?: string;
-  errorCode?: string;
-  httpStatus?: number;
-  mutationLockPresent?: 'YES' | 'NO';
-  repositoryPresent?: 'YES' | 'NO';
-  patientSelectionPresent?: 'YES' | 'NO';
-}
-
-const DELETE_DIAGNOSTIC_ROUTE: PsychologyDeleteDiagnosticEvent['routeTemplate'] = '/api/psychology/patients/:id';
-const DELETE_DIAGNOSTIC_ENDPOINT = '/api/psychology-delete-diagnostic';
-
-function sanitizeDeleteDiagnosticValue(value: unknown, fallback = 'unknown'): string {
-  const sanitized = String(value || '').replace(/[^A-Za-z0-9._:/-]/g, '').slice(0, 80);
-  return sanitized || fallback;
-}
-
-export function deleteDiagnosticErrorFields(error: unknown): Pick<PsychologyDeleteDiagnosticEvent, 'errorName' | 'errorCode' | 'httpStatus'> {
-  const candidate = error as { name?: unknown; code?: unknown; status?: unknown; statusCode?: unknown } | null;
-  const status = Number(candidate?.status ?? candidate?.statusCode);
-  return {
-    errorName: sanitizeDeleteDiagnosticValue(candidate?.name),
-    ...(candidate?.code ? { errorCode: sanitizeDeleteDiagnosticValue(candidate.code) } : {}),
-    ...(Number.isFinite(status) && status > 0 ? { httpStatus: status } : {}),
-  };
-}
-
-export function createPsychologyDeleteDiagnosticCorrelationId(): string {
-  try {
-    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
-  } catch {
-    // The fallback remains opaque and contains no application identifier.
-  }
-  return `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-}
-
-export function logPsychologyDeleteDiagnostic(event: PsychologyDeleteDiagnosticEvent): void {
-  if (typeof console !== 'undefined' && typeof console.info === 'function') {
-    console.info('[PSYCHOLOGY DELETE DIAGNOSTIC]', event);
-  }
-
-  const payload: Record<string, string | number> = {
-    DELETE_PATIENT_STAGE: event.DELETE_PATIENT_STAGE,
-    correlationId: event.correlationId,
-    method: event.method,
-    routeTemplate: event.routeTemplate,
-  };
-  for (const key of [
-    'authUserPresent',
-    'authorizationPresent',
-    'errorName',
-    'errorCode',
-    'httpStatus',
-    'mutationLockPresent',
-    'repositoryPresent',
-    'patientSelectionPresent',
-  ] as const) {
-    const value = event[key];
-    if (value !== undefined) payload[key] = value;
-  }
-
-  try {
-    const diagnosticFetch = globalThis.fetch;
-    if (typeof diagnosticFetch !== 'function') return;
-    const request = diagnosticFetch(DELETE_DIAGNOSTIC_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      credentials: 'omit',
-      keepalive: true,
-    });
-    void Promise.resolve(request).catch(() => undefined);
-  } catch {
-    // Diagnostic transport failures must never change the delete result.
-  }
-}
-
 interface ApiErrorPayload {
   error?: { code?: string; message?: string };
 }
@@ -174,28 +57,26 @@ function withScope<T extends { id: string }>(value: T, scope: PsychologyPersiste
   return {
     ...value,
     workspaceId: scope.workspaceId,
-    ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
     professionalId: scope.professionalId,
     context: scope.context,
   } as T & PsychologyPersistenceScope;
 }
 
-function assertResponseScope(payload: unknown, scope: PsychologyPersistenceScope): void {
+function adoptResponseScope(scope: PsychologyPersistenceScope, payload: unknown): void {
   const responseScope = payload && typeof payload === 'object' && 'scope' in payload
     ? (payload as { scope?: Partial<PsychologyPersistenceScope> }).scope
     : undefined;
-  if (!responseScope) return;
-  if (
-    responseScope.workspaceId !== scope.workspaceId
-    || (scope.tenantId && responseScope.tenantId !== scope.tenantId)
-    || responseScope.professionalId !== scope.professionalId
-    || responseScope.context !== scope.context
-  ) {
-    throw new ApiPsychologyError('psychology/scope-conflict', 'A API retornou dados fora do escopo Psicologia selecionado.', 422);
-  }
+  if (!responseScope || responseScope.context !== 'PSICOLOGIA') return;
+  if (typeof responseScope.workspaceId !== 'string' || !responseScope.workspaceId.trim()) return;
+  if (typeof responseScope.professionalId !== 'string' || !responseScope.professionalId.trim()) return;
+  // The server is authoritative for the resolved access scope. Mutating this
+  // shared object lets the already-created provider continue with that scope
+  // after the first authenticated read, without a second bootstrap query.
+  scope.workspaceId = responseScope.workspaceId;
+  scope.professionalId = responseScope.professionalId;
 }
 
-async function readApiResponse<T>(response: Response, scope?: PsychologyPersistenceScope): Promise<T> {
+async function readApiResponse<T>(response: Response): Promise<T> {
   let payload: T & ApiErrorPayload;
   try {
     payload = await response.json() as T & ApiErrorPayload;
@@ -209,7 +90,6 @@ async function readApiResponse<T>(response: Response, scope?: PsychologyPersiste
       response.status,
     );
   }
-  if (scope) assertResponseScope(payload, scope);
   return payload;
 }
 
@@ -238,49 +118,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
 
-  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<T> {
-    const isDiagnosticDelete = method === 'DELETE' && Boolean(diagnostic);
-    if (isDiagnosticDelete && diagnostic) {
-      logPsychologyDeleteDiagnostic({
-        DELETE_PATIENT_STAGE: 'before_token',
-        correlationId: diagnostic.correlationId,
-        method: 'DELETE',
-        routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
-        authUserPresent: auth.currentUser ? 'YES' : 'NO',
-      });
-    }
-    let token: string;
-    try {
-      token = await getToken();
-      if (isDiagnosticDelete && diagnostic) {
-        logPsychologyDeleteDiagnostic({
-          DELETE_PATIENT_STAGE: 'token_ok',
-          correlationId: diagnostic.correlationId,
-          method: 'DELETE',
-          routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
-        });
-      }
-    } catch (error) {
-      if (isDiagnosticDelete && diagnostic) {
-        logPsychologyDeleteDiagnostic({
-          DELETE_PATIENT_STAGE: 'token_error',
-          correlationId: diagnostic.correlationId,
-          method: 'DELETE',
-          routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
-          ...deleteDiagnosticErrorFields(error),
-        });
-      }
-      throw error;
-    }
-    if (isDiagnosticDelete && diagnostic) {
-      logPsychologyDeleteDiagnostic({
-        DELETE_PATIENT_STAGE: 'before_fetch',
-        correlationId: diagnostic.correlationId,
-        method: 'DELETE',
-        routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
-        authorizationPresent: token ? 'YES' : 'NO',
-      });
-    }
+  async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string): Promise<T> {
+    const token = await getToken();
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
       headers: {
@@ -289,63 +128,24 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      ...(method === 'GET' || method === 'DELETE' ? { cache: 'no-store' } : {}),
+      ...(method === 'GET' ? { cache: 'no-store' } : {}),
     });
-    if (isDiagnosticDelete && diagnostic) {
-      logPsychologyDeleteDiagnostic({
-        DELETE_PATIENT_STAGE: 'fetch_response',
-        correlationId: diagnostic.correlationId,
-        method: 'DELETE',
-        routeTemplate: DELETE_DIAGNOSTIC_ROUTE,
-        httpStatus: response.status,
-      });
-    }
-    return readApiResponse<T>(response, scope);
+    const payload = await readApiResponse<T>(response);
+    adoptResponseScope(scope, payload);
+    return payload;
   }
 
-  function createApiRepository<K extends PsychologyAggregate>(aggregate: K): ApiPsychologyRepository<PsychologyAggregateRecordMap[K]> {
+  function createApiRepository<K extends PsychologyAggregate>(aggregate: K): PsychologyRepository<PsychologyAggregateRecordMap[K]> {
     type RecordType = PsychologyAggregateRecordMap[K];
     const apiResource = aggregate === 'sessionRecords'
       ? 'session-records'
       : aggregate === 'personalAppointments'
         ? 'personal-appointments'
         : aggregate;
-    const responseKey = aggregate === 'settings'
-      ? 'settings'
-      : aggregate === 'patients'
-        ? 'patient'
-        : aggregate === 'sessions'
-          ? 'session'
-          : aggregate === 'services'
-            ? 'service'
-            : aggregate === 'locations'
-              ? 'location'
-              : aggregate === 'personalAppointments'
-                ? 'personalAppointment'
-                : undefined;
     const assertRequestedScope = (requestedScope: PsychologyPersistenceScope): void => {
-      if (
-        requestedScope.workspaceId !== scope.workspaceId
-        || requestedScope.tenantId !== scope.tenantId
-        || requestedScope.professionalId !== scope.professionalId
-                || requestedScope.context !== scope.context
-      ) {
+      if (requestedScope.workspaceId !== scope.workspaceId || requestedScope.professionalId !== scope.professionalId || requestedScope.context !== scope.context) {
         throw new ApiPsychologyError('psychology/scope-conflict', 'O escopo da requisição não corresponde ao provider.', 422);
       }
-    };
-    const deleteRecordWithResult = async (requestedScope: PsychologyPersistenceScope, id: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<ApiPsychologyDeleteResult> => {
-      assertRequestedScope(requestedScope);
-      const result = await request<{ id?: string; deleted?: boolean; cancelled?: boolean; session?: PsychologySessionRecordEntity }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE', undefined, undefined, diagnostic);
-      return {
-        id: result.id || id,
-        deleted: result.deleted !== false,
-        cancelled: result.cancelled === true,
-        ...(result.session ? { session: withScope(clone(result.session), scope) as PsychologySessionRecordEntity } : {}),
-      };
-    };
-    const deleteRecord = async (requestedScope: PsychologyPersistenceScope, id: string, diagnostic?: PsychologyDeleteDiagnosticContext): Promise<{ id: string } | null> => {
-      const result = await deleteRecordWithResult(requestedScope, id, diagnostic);
-      return result.deleted ? { id: result.id } : null;
     };
     return {
       aggregate,
@@ -371,10 +171,12 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
       async upsert(requestedScope, entity) {
         assertRequestedScope(requestedScope);
         const method = aggregate === 'settings' ? 'PUT' : 'POST';
-        const requestBody = aggregate === 'settings' ? { settings: (entity as unknown as { settings?: unknown }).settings || {} } : entity;
+        const requestBody = aggregate === 'settings'
+          ? { settings: (entity as unknown as { settings?: unknown }).settings || {} }
+          : withScope(entity, scope);
         const idempotencyKey = `${aggregate}:${entity.id}:${entity.updatedAt}`;
-        const result = await request<Record<string, RecordType | undefined>>(`/${apiResource}`, method, requestBody, idempotencyKey);
-        const value = responseKey ? result[responseKey] : undefined;
+        const result = await request<{ patient?: RecordType; settings?: RecordType; item?: RecordType }>(`/${apiResource}`, method, requestBody, idempotencyKey);
+        const value = result.patient || result.settings || result.item;
         if (!value) throw new ApiPsychologyError('psychology/invalid-response', 'A API não retornou o registro salvo.', 500);
         return withScope(clone(value), scope) as RecordType;
       },
@@ -384,34 +186,36 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
           const result = await request<{ settings?: RecordType }>('/settings', 'PUT', patch);
           return result.settings ? withScope(clone(result.settings), scope) as RecordType : null;
         }
-        const result = await request<Record<string, RecordType | undefined>>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
-        const value = responseKey ? result[responseKey] : undefined;
+        const result = await request<{ patient?: RecordType; item?: RecordType }>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
+        const value = result.patient || result.item;
         return value ? withScope(clone(value), scope) as RecordType : null;
       },
       async delete(requestedScope, id) {
-        return deleteRecord(requestedScope, id);
+        assertRequestedScope(requestedScope);
+        const result = await request<{ deleted?: boolean; id?: string }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE');
+        return result.deleted ? { id: result.id || id } : null;
       },
-      async deleteWithResult(requestedScope, id) {
-        return deleteRecordWithResult(requestedScope, id);
-      },
-      async deleteWithDiagnostic(requestedScope, id, diagnostic) {
-        return deleteRecord(requestedScope, id, diagnostic);
-      },
+      ...(aggregate === 'patients' ? {
+        deleteSafely: async (requestedScope: PsychologyPersistenceScope, id: string): Promise<PsychologyPatientDeletionResult> => {
+          assertRequestedScope(requestedScope);
+          return request<PsychologyPatientDeletionResult>(`/patients/${encodeURIComponent(id)}`, 'DELETE');
+        },
+      } : {}),
     };
   }
 
-  const patients = createApiRepository('patients');
+  const patients = createApiRepository('patients') as PsychologyPatientRepository;
   const sessions = createApiRepository('sessions');
   const sessionRecords = createApiRepository('sessionRecords' as 'sessionRecords');
   const settings = createApiRepository('settings');
-  const documents = unsupported<PsychologyDocumentRecord>('documents', scope);
-  const attachments = unsupported<PsychologyAttachmentRecord>('attachments', scope);
-  const charges = unsupported<PsychologyChargeRecord>('charges', scope);
-  const payments = unsupported<PsychologyPaymentRecord>('payments', scope);
-  const expenses = unsupported<PsychologyExpenseRecord>('expenses', scope);
+  const documents = createApiRepository('documents');
+  const attachments = createApiRepository('attachments');
+  const charges = createApiRepository('charges');
+  const payments = createApiRepository('payments');
+  const expenses = createApiRepository('expenses');
   const services = createApiRepository('services');
   const locations = createApiRepository('locations');
-  const unsupportedPackage = unsupported<never>('packages', scope);
+  const packages = createApiRepository('packages');
   const personalAppointments = createApiRepository('personalAppointments');
 
   const documentQueries = <T extends PsychologyDocumentRecord | PsychologyAttachmentRecord>(repository: PsychologyRepository<T>) => ({
@@ -422,18 +226,33 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
 
   const financial: PsychologyFinancialRepository = {
     scope,
+    listCharges: unsupported<PsychologyChargeRecord>('charges', scope).list,
+    getCharge: unsupported<PsychologyChargeRecord>('charges', scope).get,
+    upsertCharge: unsupported<PsychologyChargeRecord>('charges', scope).upsert,
+    updateCharge: unsupported<PsychologyChargeRecord>('charges', scope).update,
+    listPayments: unsupported<PsychologyPaymentRecord>('payments', scope).list,
+    getPayment: unsupported<PsychologyPaymentRecord>('payments', scope).get,
+    createPayment: unsupported<PsychologyPaymentRecord>('payments', scope).upsert,
+    updatePayment: unsupported<PsychologyPaymentRecord>('payments', scope).update,
+    listExpenses: unsupported<PsychologyExpenseRecord>('expenses', scope).list,
+    getExpense: unsupported<PsychologyExpenseRecord>('expenses', scope).get,
+    upsertExpense: unsupported<PsychologyExpenseRecord>('expenses', scope).upsert,
+    updateExpense: unsupported<PsychologyExpenseRecord>('expenses', scope).update,
+  };
+
+  const backup: PsychologyBackupReadBundle = {
+    patients,
+    sessions,
+    sessionRecords,
+    personalAppointments,
+    services,
+    locations,
+    packages,
+    documents: documentQueries(documents) as never,
+    attachments: documentQueries(attachments) as never,
     listCharges: charges.list,
-    getCharge: charges.get,
-    upsertCharge: charges.upsert,
-    updateCharge: charges.update,
     listPayments: payments.list,
-    getPayment: payments.get,
-    createPayment: payments.upsert,
-    updatePayment: payments.update,
     listExpenses: expenses.list,
-    getExpense: expenses.get,
-    upsertExpense: expenses.upsert,
-    updateExpense: expenses.update,
   };
 
   return {
@@ -445,9 +264,10 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
     financial,
     services,
     locations,
-    packages: unsupportedPackage,
-    documents: documentQueries(documents),
-    attachments: documentQueries(attachments),
+    packages,
+    documents: documentQueries(documents) as never,
+    attachments: documentQueries(attachments) as never,
     settings,
+    backup,
   } as PsychologyRepositoryBundle;
 }

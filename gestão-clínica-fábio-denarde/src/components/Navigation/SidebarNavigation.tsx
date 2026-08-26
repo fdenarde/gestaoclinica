@@ -41,7 +41,7 @@ const GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: 'Principal', ids: ['dashboard', 'agenda', 'agenda-pessoal'] },
   { label: 'Atendimento', ids: ['atendentes', 'galeria-atividades', 'pre-cadastros'] },
   { label: 'Gestão', ids: ['pagamentos', 'relatorios'] },
-  { label: 'Sistema', ids: ['ajustes'] },
+  { label: 'Sistema', ids: ['ajustes', 'psicologia-monitoramento'] },
 ];
 
 function SidebarBody({

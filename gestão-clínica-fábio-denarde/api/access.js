@@ -2,7 +2,6 @@ import crypto from 'crypto';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
-import { logSanitizedAccessAudit } from './_lib/sanitizedAccessAudit.js';
 import {
   ACCESS_CONTEXTS,
   ACCESS_ROLES as ACCESS_PROFILE_ROLES,
@@ -24,6 +23,7 @@ import { getSaoPauloDateKey } from '../shared/clinicalDate.js';
 import { getPackagePaymentSummary } from '../shared/packagePayments.js';
 import { resolvePackageContract } from '../shared/packageContract.js';
 import { normalizePackageConsumptionDecision } from '../shared/sessionScheduling.js';
+import { normalizePhone } from '../shared/phoneNormalization.js';
 import {
   assertAccessUsername,
   directAccessPathForRole,
@@ -40,6 +40,7 @@ import {
   createSignedResponsibleDocumentUrl,
   getDriveFileMetadata,
 } from './_lib/googleDrive.js';
+import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
 
 const PRIMARY_ADMIN_EMAIL = 'fdenarde@gmail.com';
 const DEFAULT_PROFESSIONAL_NAME = 'Fábio Denarde';
@@ -51,8 +52,6 @@ const ALLOWED_ORIGINS = new Set([
   'https://fdenarde.github.io',
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://localhost:5177',
-  'http://127.0.0.1:5177',
 ]);
 const PROFESSIONAL_NOTIFICATION_INITIAL_LIMIT = 20;
 const PROFESSIONAL_NOTIFICATION_INCREMENTAL_LIMIT = 50;
@@ -228,11 +227,22 @@ function legacyRequestDocumentId(email, uid) {
   return crypto.createHash('sha256').update(`${normalizeEmail(email)}:${String(uid)}`).digest('hex');
 }
 
+function normalizeAccessPhone(value, { optional = false } = {}) {
+  const raw = normalizeText(value, 24);
+  if (!raw && optional) return '';
+  try {
+    const parsed = normalizePhone(raw, { defaultCountryCode: '55' });
+    if (parsed.countryCode !== '55' || !/^\d{10,11}$/.test(parsed.nationalNumber)) throw new Error('invalid');
+    return parsed.displayPhone;
+  } catch {
+    throw accessError('access/invalid-phone', 'Informe um telefone válido com DDD.');
+  }
+}
+
 function validateRequest(body, decodedToken = null) {
   const displayName = normalizeText(body.displayName, 120);
   const email = normalizeEmail(body.email);
-  const phone = normalizeText(body.phone, 24);
-  const phoneDigits = phone.replace(/\D/g, '');
+  const phone = normalizeAccessPhone(body.phone);
   const role = normalizeText(body.role, 20);
   const linkedPatientName = normalizeText(body.linkedPatientName, 120);
   const notes = normalizeText(body.notes, 1000);
@@ -243,9 +253,6 @@ function validateRequest(body, decodedToken = null) {
   }
   if (decodedToken && email !== normalizeEmail(decodedToken.email)) {
     throw accessError('access/email-mismatch', 'O e-mail informado não corresponde à conta autenticada.', 403);
-  }
-  if (!/^\d{10,11}$/.test(phoneDigits)) {
-    throw accessError('access/invalid-phone', 'Informe um telefone válido com DDD.');
   }
   if (!ACCESS_ROLES.has(role)) {
     throw accessError('access/invalid-role', 'Selecione um tipo de acesso válido.');
@@ -875,6 +882,56 @@ async function getPrimaryAdminUid() {
     });
 
   return primaryAdminUidCache.inFlight;
+}
+
+function isSafeCanonicalProfessionalId(value) {
+  const normalized = normalizeText(value, 128);
+  return Boolean(
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)
+      && !/^\+?[1-9]\d{7,14}$/.test(normalized)
+      && !normalized.includes('@')
+      && !/^(?:PROFESSIONAL-)?(?:UNMAPPED|UNKNOWN|PENDING|TEMPORARY)$/i.test(normalized),
+  );
+}
+
+async function listCanonicalProfessionalCandidates(db, decodedToken) {
+  const profileSnapshot = await db.collection('accessProfiles').doc(decodedToken.uid).get();
+  const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
+  const isPrimaryAdmin = normalizeEmail(decodedToken?.email) === PRIMARY_ADMIN_EMAIL;
+  const primaryAdminWorkspaceId = isPrimaryAdmin ? decodedToken.uid : await getPrimaryAdminUid();
+  const accessContext = buildEffectiveAccessContext({
+    decodedToken,
+    profile,
+    primaryAdminEmail: PRIMARY_ADMIN_EMAIL,
+    primaryAdminWorkspaceId,
+  });
+
+  const professionalsSnapshot = await db.collection('professionals')
+    .where('authUid', '==', decodedToken.uid)
+    .limit(25)
+    .get();
+  const candidates = new Map();
+
+  for (const professionalSnapshot of professionalsSnapshot.docs) {
+    const professional = professionalSnapshot.data() || {};
+    const professionalId = normalizeText(professional.professionalId || professionalSnapshot.id, 128);
+    if (!professional.active || professional.tenantId !== accessContext.workspaceId || !isSafeCanonicalProfessionalId(professionalId)) continue;
+
+    const contextsSnapshot = await db.collection('professionalContexts')
+      .where('professionalId', '==', professionalId)
+      .limit(25)
+      .get();
+    const contexts = [...new Set(
+      contextsSnapshot.docs
+        .map(snapshot => snapshot.data() || {})
+        .filter(contextLink => contextLink.active && contextLink.tenantId === accessContext.workspaceId)
+        .map(contextLink => normalizeText(contextLink.context, 40))
+        .filter(Boolean),
+    )];
+    candidates.set(professionalId, { professionalId, contexts });
+  }
+
+  return { candidates: [...candidates.values()] };
 }
 
 async function migrateLegacyReviewedRequest(db, requestSnapshot) {
@@ -1947,10 +2004,7 @@ async function createDirectAccess(db, decodedToken, body) {
   }
 
   const contactEmail = normalizeOptionalContactEmail(body.contactEmail);
-  const phone = normalizeText(body.phone, 24);
-  if (phone && !/^\d{10,11}$/.test(phone.replace(/\D/g, ''))) {
-    throw accessError('access/invalid-phone', 'Informe um telefone válido com DDD ou deixe o campo vazio.');
-  }
+  const phone = normalizeAccessPhone(body.phone, { optional: true });
 
   const linkedPatientIds = normalizeDirectLinkedPatientIds(body.linkedPatientIds, role);
   const linkedPatients = await validateDirectAccessPatients(db, decodedToken.uid, linkedPatientIds, role);
@@ -4914,16 +4968,10 @@ function isQuotaExceededError(error) {
     || message.includes('QUOTA EXCEEDED');
 }
 
-function sendError(req, res, error, audit = {}) {
+function sendError(res, error) {
   if (isQuotaExceededError(error)) {
     res.setHeader('Retry-After', '60');
-    logSanitizedAccessAudit(req, {
-      ...audit,
-      statusHttp: 503,
-      technicalCode: 'access/quota-temporarily-unavailable',
-      tokenVerificationResult: error?.tokenVerificationResult || audit.tokenVerificationResult,
-      requestAccessScreenCause: 'ACCESS_API_TECHNICAL_FAILURE',
-    });
+    console.error('[ACCESS API] access/quota-temporarily-unavailable', error?.message || error);
     return res.status(503).json({
       error: {
         code: 'access/quota-temporarily-unavailable',
@@ -4935,20 +4983,30 @@ function sendError(req, res, error, audit = {}) {
   const statusCode = Number(error?.statusCode) || 500;
   const code = error?.code || 'access/internal-error';
   const message = error?.message || 'Não foi possível processar o controle de acesso.';
-  logSanitizedAccessAudit(req, {
-    ...audit,
-    statusHttp: statusCode,
-    technicalCode: code,
-    tokenVerificationResult: error?.tokenVerificationResult || audit.tokenVerificationResult,
-    requestAccessScreenCause: statusCode >= 500 ? 'ACCESS_API_TECHNICAL_FAILURE' : audit.requestAccessScreenCause,
-  });
+  if (statusCode >= 500) console.error('[ACCESS API]', code, message);
   return res.status(statusCode).json({ error: { code, message } });
 }
 
 export default async function handler(req, res) {
   setSecurityHeaders(req, res);
+  const rawAccessMode = String(req.query?.mode || req.query?.action || req.body?.action || req.method || 'unknown');
+  const safeAccessModes = new Set(['monitoringPanel', 'adminResponsiblePreview', 'responsiblePortal', 'requests', 'professionalNotifications', 'canonicalProfessional', 'recordMonitoringAction']);
+  const accessMode = safeAccessModes.has(rawAccessMode) ? rawAccessMode : (req.method === 'POST' ? 'write' : 'profile');
+  const accessOperationText = rawAccessMode.toLowerCase();
+  attachFirestoreDiagnostics(res, {
+    endpoint: 'access',
+    logicalMode: accessMode,
+    logicalOperation: accessOperationText.includes('monitor')
+      ? 'monitoring_access'
+      : accessOperationText.includes('notification')
+        ? 'notification'
+        : accessOperationText.includes('photo') || accessOperationText.includes('document') || accessOperationText.includes('file')
+          ? 'gallery_access'
+          : 'portal_access',
+    dedupeHit: false,
+    writeAttempted: req.method === 'POST',
+  });
   if (req.method === 'OPTIONS') return res.status(204).end();
-  let audit = {};
 
   try {
     if (!['GET', 'POST'].includes(req.method)) {
@@ -4960,7 +5018,6 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       const decodedToken = await verifyFirebaseRequest(req);
-      audit = { authUid: decodedToken.uid, tokenVerificationResult: 'PASS' };
       if (req.query?.mode === 'requests') {
         requirePrimaryAdmin(decodedToken);
         return res.status(200).json({ requests: await listAccessRequests(db) });
@@ -4977,6 +5034,9 @@ export default async function handler(req, res) {
       if (req.query?.mode === 'professionalNotifications') {
         return res.status(200).json(await listProfessionalNotifications(db, decodedToken, req));
       }
+      if (req.query?.mode === 'canonicalProfessional') {
+        return res.status(200).json(await listCanonicalProfessionalCandidates(db, decodedToken));
+      }
       if (req.query?.action === 'listPatientProfileChangeRequests') {
         return res.status(200).json(await listPatientProfileChangeRequests(db, decodedToken, req));
       }
@@ -4985,31 +5045,11 @@ export default async function handler(req, res) {
       let profileData = null;
       if (snapshot.exists) {
         const sourceProfile = snapshot.data();
-        const selectedEntry = activeRole ? getProfileEntry(sourceProfile, activeRole) : sourceProfile;
-        audit = {
-          ...audit,
-          accessProfileFound: true,
-          accessProfileApproved: selectedEntry?.status === 'approved',
-          accessRole: selectedEntry?.role || sourceProfile?.role || activeRole || 'NOT_OBSERVED',
-          requestAccessScreenCause: selectedEntry?.status === 'approved' ? 'NOT_OBSERVED' : 'NO_APPROVED_PROFILE',
-        };
         const isPrimaryAdmin = normalizeEmail(decodedToken?.email) === PRIMARY_ADMIN_EMAIL;
         profileData = activeRole && !isPrimaryAdmin
           ? assertSelectedProfileIsActive(sourceProfile, activeRole)
           : sourceProfile;
-      } else {
-        audit = {
-          ...audit,
-          accessProfileFound: false,
-          accessProfileApproved: false,
-          requestAccessScreenCause: 'NO_APPROVED_PROFILE',
-        };
       }
-      logSanitizedAccessAudit(req, {
-        ...audit,
-        statusHttp: 200,
-        technicalCode: 'OK',
-      });
       return res.status(200).json({ profile: profileData ? serializeProfile(profileData) : null });
     }
 
@@ -5180,6 +5220,6 @@ export default async function handler(req, res) {
       profile: result.profile?.exists ? serializeProfile(result.profile.data()) : null,
     });
   } catch (error) {
-    return sendError(req, res, error, audit);
+    return sendError(res, error);
   }
 }

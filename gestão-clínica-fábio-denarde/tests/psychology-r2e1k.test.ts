@@ -30,7 +30,7 @@ function sessionInput(patientId: string, date = '2026-08-19', time = '10:00') {
   return { patientId, date, time, durationMinutes: 50, modality: 'online' as const, administrativeNote: '', bookingOrigin: 'PATIENT_SELF_BOOKING' as const };
 }
 
-test('R2E1K exclusão definitiva remove vínculos e preserva pagamento concluído sem PII ativa', () => {
+test('R31 exclusão definitiva remove todos os vínculos, inclusive cobranças e pagamentos', () => {
   let store = patientStore();
   store = upsertPsychologySession(store, sessionInput('patient-r2e1k'), 'session-r2e1k-a', '2026-08-01T10:00:00.000Z');
   store = upsertPsychologySession(store, sessionInput('patient-r2e1k', '2026-08-20', '11:00'), 'session-r2e1k-b', '2026-08-01T10:00:00.000Z');
@@ -60,14 +60,8 @@ test('R2E1K exclusão definitiva remove vínculos e preserva pagamento concluíd
   assert.equal(result.store.attachments.some(item => item.patientId === 'patient-r2e1k'), false);
   assert.equal(result.store.sessionPackages.some(item => item.patientId === 'patient-r2e1k'), false);
   assert.equal(result.store.charges.some(item => item.id === pending.charge?.id), false);
-  const preservedCharge = result.store.charges.find(item => item.id === paidCharge.id);
-  const preservedPayment = result.store.payments.find(item => item.chargeId === paidCharge.id);
-  assert.equal(preservedCharge?.patientId, null);
-  assert.equal(preservedCharge?.status, 'paid');
-  assert.equal(preservedPayment?.patientId, null);
-  assert.equal(preservedPayment?.sessionId, undefined);
-  assert.equal(preservedPayment?.amount, 100);
-  assert.equal(preservedPayment?.method, 'PIX');
+  assert.equal(result.store.charges.some(item => item.id === paidCharge.id), false);
+  assert.equal(result.store.payments.some(item => item.chargeId === paidCharge.id), false);
 });
 
 test('R2E1K exclusão sem financeiro não deixa resíduo e paciente real não depende de fingerprint', () => {
@@ -129,7 +123,7 @@ test('R2E1K novo agendamento público grava origem do paciente e cancelamento/re
 
 test('R2E1K interface confirma exclusão explícita e tipo de atendimento no reagendamento', () => {
   assert.match(psychologyPilotSource, /title="Excluir definitivamente\?"/);
-  assert.match(psychologyPilotSource, /Pagamentos já realizados serão preservados no Financeiro/);
+  assert.match(psychologyPilotSource, /Esta ação é irreversível e excluirá definitivamente o paciente/);
   assert.match(psychologyPilotSource, /Field label="Tipo de atendimento"/);
   assert.doesNotMatch(psychologyPilotSource, /A exclusão definitiva é permitida somente para um fingerprint/);
   assert.doesNotMatch(psychologyPilotSource, /Excluir paciente de teste\?/);

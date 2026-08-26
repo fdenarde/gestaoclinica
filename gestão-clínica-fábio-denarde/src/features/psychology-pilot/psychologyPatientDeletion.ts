@@ -47,10 +47,6 @@ export function isApprovedSyntheticTestPatient(patient: PsychologyPatient): bool
   return approvedSyntheticFingerprints.some(fingerprint => fingerprint.name === name && fingerprint.phone === phone);
 }
 
-function paymentIsCompleted(payment: PsychologyStore['payments'][number]): boolean {
-  return payment.status === 'active' && !payment.reversedAt && !payment.voidedAt;
-}
-
 export function getPsychologyPatientDeletionAssessment(store: PsychologyStore, patientId: string): PsychologyPatientDeletionAssessment | null {
   const patient = store.patients.find(item => item.id === patientId);
   if (!patient) return null;
@@ -87,11 +83,6 @@ export function deletePsychologyPatientLocally(store: PsychologyStore, patientId
   const recordIds = new Set(store.sessionRecords.filter(record => record.patientId === patientId || (record.sessionId ? sessionIds.has(record.sessionId) : false)).map(record => record.id));
   const chargeIds = new Set(store.charges.filter(charge => charge.patientId === patientId || (charge.sessionId ? sessionIds.has(charge.sessionId) : false)).map(charge => charge.id));
   const relatedPayments = store.payments.filter(payment => payment.patientId === patientId || (payment.chargeId ? chargeIds.has(payment.chargeId) : false) || (payment.sessionId ? sessionIds.has(payment.sessionId) : false));
-  const preservedChargeIds = new Set(store.charges
-    .filter(charge => chargeIds.has(charge.id))
-    .filter(charge => relatedPayments.some(payment => payment.chargeId === charge.id && paymentIsCompleted(payment)))
-    .map(charge => charge.id));
-  const preservedPaymentIds = new Set(relatedPayments.filter(payment => paymentIsCompleted(payment)).map(payment => payment.id));
   const documentIds = new Set(store.documents.filter(document => document.patientId === patientId).map(document => document.id));
   return {
     assessment,
@@ -101,16 +92,8 @@ export function deletePsychologyPatientLocally(store: PsychologyStore, patientId
       patients: store.patients.filter(patient => patient.id !== patientId),
       sessions: store.sessions.filter(session => !sessionIds.has(session.id)),
       sessionRecords: store.sessionRecords.filter(record => !recordIds.has(record.id)),
-      charges: store.charges
-        .filter(charge => !chargeIds.has(charge.id) || preservedChargeIds.has(charge.id))
-        .map(charge => preservedChargeIds.has(charge.id)
-          ? { ...charge, patientId: null, sessionId: undefined, packageId: undefined, description: 'Cobrança concluída — paciente excluído', updatedAt: now }
-          : charge),
-      payments: store.payments
-        .filter(payment => !relatedPayments.some(related => related.id === payment.id) || preservedPaymentIds.has(payment.id))
-        .map(payment => preservedPaymentIds.has(payment.id)
-          ? { ...payment, patientId: null, chargeId: preservedChargeIds.has(payment.chargeId || '') ? payment.chargeId : null, sessionId: undefined, updatedAt: now }
-          : payment),
+      charges: store.charges.filter(charge => !chargeIds.has(charge.id)),
+      payments: store.payments.filter(payment => !relatedPayments.some(related => related.id === payment.id)),
       sessionPackages: store.sessionPackages.filter(item => item.patientId !== patientId),
       documents: store.documents.filter(document => !documentIds.has(document.id)),
       attachments: store.attachments.filter(attachment => attachment.patientId !== patientId && !(attachment.sessionRecordId && recordIds.has(attachment.sessionRecordId)) && !(attachment.documentId && documentIds.has(attachment.documentId))),

@@ -9,6 +9,11 @@ import {
   isSameCompletedActivityUpload,
   isSameInProgressActivityUpload,
 } from './activityRecordsValidation.js';
+import {
+  evaluateActivityRecordDeletionGuard,
+  evaluatePatientActivityRecordDeletionGuard,
+  isActivityRecordDeletionBlocker,
+} from '../../shared/activityDeletionGuard.js';
 
 function createActivityUploadLease(now = Timestamp.now()) {
   return Timestamp.fromMillis(now.toMillis() + ACTIVITY_UPLOAD_LEASE_MS);
@@ -517,21 +522,38 @@ export async function listActivityRecords(context, patientId, sessionId = '') {
 }
 
 export async function hasActivityRecords(context, patientId) {
-  const patient = await patientRef(context, patientId).get();
-  if (!patient.exists) return false;
-  const snapshot = await patient.ref.collection('activityRecords').limit(100).get();
-  let hasRelevantRecord = false;
-  const cleanup = [];
-  for (const item of snapshot.docs) {
-    const data = item.data();
-    if (['failed', 'cancelled'].includes(data.status) && !data.driveFileId) {
-      cleanup.push(item.ref.delete());
-      continue;
-    }
-    hasRelevantRecord = true;
-  }
-  if (cleanup.length > 0) await Promise.allSettled(cleanup);
-  return hasRelevantRecord;
+  return evaluatePatientActivityRecordDeletionGuard({
+    getPatient: () => patientRef(context, patientId).get(),
+    evaluate: patient => {
+      const recordsRef = patient.ref.collection('activityRecords');
+      return evaluateActivityRecordDeletionGuard({
+        findStatusBlocker: async () => {
+          const snapshot = await recordsRef
+            .where('status', 'not-in', ['failed', 'cancelled'])
+            .limit(1)
+            .get();
+          return !snapshot.empty;
+        },
+        findDriveFileBlocker: async () => {
+          const snapshot = await recordsRef
+            .where('driveFileId', '>', '')
+            .limit(1)
+            .get();
+          return !snapshot.empty;
+        },
+        cleanupNonBlockingRecords: async () => {
+          const snapshot = await recordsRef
+            .where('status', 'in', ['failed', 'cancelled'])
+            .limit(100)
+            .get();
+          const cleanup = snapshot.docs
+            .filter(item => !isActivityRecordDeletionBlocker(item.data()))
+            .map(item => item.ref.delete());
+          await Promise.allSettled(cleanup);
+        },
+      });
+    },
+  });
 }
 
 export function serializeRecord(data) {

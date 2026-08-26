@@ -1,3 +1,5 @@
+import { normalizePhone } from '../../shared/phoneNormalization.js';
+
 export interface PsychologyAdministrativeResponsible {
   fullName: string;
   relationship: string;
@@ -27,6 +29,15 @@ function civilParts(value: string): [number, number, number] | null {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+function isValidPhoneInput(value: unknown): boolean {
+  try {
+    normalizePhone(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isValidCivilDate(value: string): boolean {
   const parts = civilParts(value);
   if (!parts) return false;
@@ -54,11 +65,9 @@ export function requiresResponsible(dateOfBirth: string, appointmentCivilDate: s
 }
 
 export function isCompleteAdministrativeResponsible(value: Partial<PsychologyAdministrativeResponsible> | undefined): value is PsychologyAdministrativeResponsible {
-  return Boolean(value
-    && String(value.fullName || '').trim()
-    && String(value.relationship || '').trim()
-    && String(value.phone || '').replace(/\D/g, '').length >= 8
-    && /^\S+@\S+\.\S+$/.test(String(value.email || '').trim()));
+  const phone = String(value?.phone || '').trim();
+  const email = String(value?.email || '').trim();
+  return Boolean(value && (!phone || isValidPhoneInput(phone)) && (!email || /^\S+@\S+\.\S+$/.test(email)));
 }
 
 export function profileCompleteness(input: {
@@ -70,15 +79,16 @@ export function profileCompleteness(input: {
 }, referenceCivilDate: string): PsychologyPatientProfileCompleteness {
   const missingFields: PsychologyPatientAdministrativeField[] = [];
   if (!String(input.name || '').trim()) missingFields.push('name');
-  if (!isValidCivilDate(String(input.dateOfBirth || ''))) missingFields.push('dateOfBirth');
-  if (String(input.phone || '').replace(/\D/g, '').length < 8) missingFields.push('phone');
-  if (!/^\S+@\S+\.\S+$/.test(String(input.email || '').trim())) missingFields.push('email');
-  const responsibleRequired = requiresResponsible(String(input.dateOfBirth || ''), referenceCivilDate);
-  if (responsibleRequired) {
-    if (!String(input.administrativeResponsible?.fullName || '').trim()) missingFields.push('responsible.fullName');
-    if (!String(input.administrativeResponsible?.relationship || '').trim()) missingFields.push('responsible.relationship');
-    if (String(input.administrativeResponsible?.phone || '').replace(/\D/g, '').length < 8) missingFields.push('responsible.phone');
-    if (!/^\S+@\S+\.\S+$/.test(String(input.administrativeResponsible?.email || '').trim())) missingFields.push('responsible.email');
+  if (String(input.dateOfBirth || '').trim() && !isValidCivilDate(String(input.dateOfBirth || ''))) missingFields.push('dateOfBirth');
+  if (!isValidPhoneInput(input.phone)) missingFields.push('phone');
+  if (String(input.email || '').trim() && !/^\S+@\S+\.\S+$/.test(String(input.email || '').trim())) missingFields.push('email');
+  const responsibleRequired = false;
+  const responsibleHasData = Boolean(input.administrativeResponsible && Object.values(input.administrativeResponsible).some(value => String(value || '').trim()));
+  if (responsibleHasData) {
+    const responsiblePhone = String(input.administrativeResponsible?.phone || '').trim();
+    const responsibleEmail = String(input.administrativeResponsible?.email || '').trim();
+    if (responsiblePhone && !isValidPhoneInput(responsiblePhone)) missingFields.push('responsible.phone');
+    if (responsibleEmail && !/^\S+@\S+\.\S+$/.test(responsibleEmail)) missingFields.push('responsible.email');
   }
   return { complete: missingFields.length === 0, missingFields, requiresResponsible: responsibleRequired };
 }
@@ -93,21 +103,24 @@ export function validateDateOfBirth(dateOfBirth: string, referenceCivilDate: str
 
 export function validateAdministrativeResponsible(value: Partial<PsychologyAdministrativeResponsible> | undefined): Partial<Record<keyof PsychologyAdministrativeResponsible, string>> {
   const errors: Partial<Record<keyof PsychologyAdministrativeResponsible, string>> = {};
-  if (!String(value?.fullName || '').trim()) errors.fullName = 'Informe o nome completo do responsável.';
-  if (!String(value?.relationship || '').trim()) errors.relationship = 'Informe o vínculo ou parentesco.';
-  if (String(value?.phone || '').replace(/\D/g, '').length < 8) errors.phone = 'Informe um telefone válido para o responsável.';
-  if (!/^\S+@\S+\.\S+$/.test(String(value?.email || '').trim())) errors.email = 'Informe um e-mail válido para o responsável.';
+  const phone = String(value?.phone || '').trim();
+  const email = String(value?.email || '').trim();
+  if (phone && !isValidPhoneInput(phone)) errors.phone = 'Informe um telefone válido para o responsável.';
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) errors.email = 'Informe um e-mail válido para o responsável.';
   return errors;
 }
 
 export function validatePsychologyPatientAdministrativeInput(input: PsychologyPatientAdministrativeInput, referenceCivilDate: string): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!String(input.name || '').trim()) errors.name = 'Informe o nome completo do paciente.';
-  const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
-  if (dateError) errors.dateOfBirth = dateError;
-  if (String(input.phone || '').replace(/\D/g, '').length < 8) errors.phone = 'Informe um telefone válido.';
-  if (!/^\S+@\S+\.\S+$/.test(String(input.email || '').trim())) errors.email = 'Informe um e-mail válido.';
-  if (requiresResponsible(input.dateOfBirth, referenceCivilDate)) {
+  if (String(input.dateOfBirth || '').trim()) {
+    const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
+    if (dateError) errors.dateOfBirth = dateError;
+  }
+  if (!isValidPhoneInput(input.phone)) errors.phone = 'Informe um telefone válido.';
+  if (String(input.email || '').trim() && !/^\S+@\S+\.\S+$/.test(String(input.email || '').trim())) errors.email = 'Informe um e-mail válido.';
+  const responsibleHasData = Boolean(input.administrativeResponsible && Object.values(input.administrativeResponsible).some(value => String(value || '').trim()));
+  if (responsibleHasData) {
     const responsibleErrors = validateAdministrativeResponsible(input.administrativeResponsible);
     Object.entries(responsibleErrors).forEach(([field, message]) => { errors[`administrativeResponsible.${field}`] = message; });
   }

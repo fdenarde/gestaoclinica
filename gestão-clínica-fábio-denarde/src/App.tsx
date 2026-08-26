@@ -8,7 +8,7 @@ import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
 import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
-import { applyTheme, resolveTheme, storeTheme, type AppTheme, type VisualContext } from './lib/theme';
+import { applyTheme, resolveTheme, storeTheme, type AppTheme } from './lib/theme';
 import packageJson from '../package.json';
 
 import { auth, db, logout, handleFirestoreError, OperationType } from './firebase';
@@ -38,7 +38,10 @@ import type {
 import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
 import { GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT } from './lib/googlePhotosAlbumsApi';
 import { loadUnregisteredActivities } from './lib/unregisteredActivities';
+import { buildActivityRefreshSignature } from './lib/activityRefreshPlan';
+import { createActivityRefreshGate, type ActivityRefreshGate } from './lib/activityRefreshGate';
 import type { UnregisteredActivityGroup } from './types/unregisteredActivities';
+import { emitFirestoreMetric } from './lib/firestoreDiagnostics';
 import { buildPackageToleranceAlerts } from './lib/packageTolerance';
 import { useDailyWhatsappOperationalReport } from './lib/useDailyWhatsappOperationalReport';
 import SidebarNavigation, { type AppNavigationItem } from './components/Navigation/SidebarNavigation';
@@ -62,6 +65,7 @@ const Settings = lazy(() => import('./components/Settings'));
 const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
 const ProfessionalGooglePhotosGallery = lazy(() => import('./components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery'));
 const MonitoringPanel = lazy(() => import('./components/Monitoring/MonitoringPanel'));
+const PsychologyOperationalMonitoringPanel = lazy(() => import('./components/PsychologyOperationalMonitoringPanel'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -119,25 +123,18 @@ function ProfileChoiceScreen({
   profile,
   onChoose,
   onLogout,
-  visualContext,
 }: {
   profile: AccessProfile;
   onChoose: (role: AccessRole) => void;
   onLogout: () => void;
-  visualContext: VisualContext;
 }) {
   const roles = getActiveProfileRoles(profile);
-  const psychologyContext = visualContext === 'PSICOLOGIA';
   return (
-    <div
-      className={`flex min-h-screen items-center justify-center bg-clinic-bg p-4 ${psychologyContext ? 'auth-psychology-theme' : ''}`}
-      data-auth-visual-context={visualContext}
-    >
+    <div className="flex min-h-screen items-center justify-center bg-clinic-bg p-4">
       <section className="w-full max-w-3xl rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-7">
         <BrandLogo
           variant="horizontal"
-          theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined}
-          visualContext={visualContext}
+          theme="health-balance"
           name="Fábio Denarde"
           subtitle="Gestão Clínica e Acompanhamento"
           className="mb-6"
@@ -155,7 +152,7 @@ function ProfileChoiceScreen({
               onClick={() => onChoose(role)}
               className="rounded-xl border border-clinic-border bg-white p-4 text-left shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg focus:outline-none focus:ring-2 focus:ring-clinic-primary/35"
             >
-              <span className={`flex h-11 w-11 items-center justify-center rounded-xl ${psychologyContext ? 'bg-violet-100 text-violet-700' : 'bg-status-green-bg text-status-green-text'}`}>
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-status-green-bg text-status-green-text">
                 {role === 'monitoring' ? <Monitor size={21} /> : <UserRound size={21} />}
               </span>
               <span className="mt-4 block text-lg font-black text-clinic-text">
@@ -212,17 +209,28 @@ function formatAuditDuration(value?: number): string {
   return `${seconds}s`;
 }
 
+type PsychologyDevelopmentMode = 'pilot-local' | 'authenticated-remote';
+
+function getPsychologyDevelopmentMode(): PsychologyDevelopmentMode {
+  const configured = String(import.meta.env.VITE_PSYCHOLOGY_DEV_MODE || '').trim().toLowerCase();
+  return configured === 'authenticated-remote' ? 'authenticated-remote' : 'pilot-local';
+}
+
 export default function App() {
   const psychologyPilotRoute = isPsychologyPilotRoute(
     window.location.pathname,
     window.location.search,
+    Boolean(import.meta.env.DEV),
+    window.location.hostname,
   );
+  const psychologyAuthenticatedRoute = psychologyPilotRoute
+    && getPsychologyDevelopmentMode() === 'authenticated-remote';
 
-  return <AuthenticatedApp psychologyPilotRoute={psychologyPilotRoute} />;
+  if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot />;
+  return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyAuthenticatedRoute} />;
 }
 
-function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: boolean }) {
-  const visualContext: VisualContext = psychologyPilotRoute ? 'PSICOLOGIA' : 'DEFAULT';
+function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychologyAuthenticatedRoute?: boolean }) {
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
   const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
     ? 'responsible'
@@ -267,6 +275,10 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
   const notificationLastLoadedAtRef = useRef(0);
   const notificationInFlightRef = useRef<Promise<boolean> | null>(null);
   const forceAccessTokenRefreshRef = useRef(false);
+  const activityRefreshStateRef = useRef(state);
+  activityRefreshStateRef.current = state;
+  const activityRefreshGateRef = useRef<ActivityRefreshGate | null>(null);
+  if (!activityRefreshGateRef.current) activityRefreshGateRef.current = createActivityRefreshGate();
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
   const whatsappOperationalReportState = useDailyWhatsappOperationalReport(
@@ -275,6 +287,31 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
       && accessProfile.role === 'admin',
   );
   const packageToleranceAlerts = useMemo(() => buildPackageToleranceAlerts(state), [state]);
+
+  useEffect(() => {
+    emitFirestoreMetric({ source: 'app-lifecycle', event: 'authenticated-app-mount' });
+    const emitLifecycleEvent = (event: string, fields: Record<string, string | boolean> = {}) => {
+      emitFirestoreMetric({ source: 'app-lifecycle', event, ...fields });
+    };
+    const handleVisibilityChange = () => emitLifecycleEvent('visibilitychange', { visibility: document.visibilityState });
+    const handleFocus = () => emitLifecycleEvent('focus');
+    const handleBlur = () => emitLifecycleEvent('blur');
+    const handleOnline = () => emitLifecycleEvent('online', { online: true });
+    const handleOffline = () => emitLifecycleEvent('offline', { online: false });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      emitLifecycleEvent('authenticated-app-unmount');
+    };
+  }, []);
 
   if (publicRegistrationMatch) {
     return <ExternalRegistrationPage token={publicRegistrationMatch[1]} />;
@@ -318,6 +355,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
   };
 
   const selectNavigationItem = (id: string) => {
+    if (id === 'psicologia-monitoramento' && accessProfile?.role !== 'admin') return;
     if (id === 'galeria-atividades') {
       setSelectedGalleryPatientId(null);
       setSelectedGallerySessionId(null);
@@ -337,16 +375,21 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
   };
 
   useEffect(() => {
+    let authReadyReported = false;
+    let previousAuthenticated = false;
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (!authReadyReported) {
+        emitFirestoreMetric({ source: 'app-lifecycle', event: 'auth-ready' });
+        authReadyReported = true;
+      } else if (previousAuthenticated !== Boolean(currentUser)) {
+        emitFirestoreMetric({ source: 'app-lifecycle', event: 'user-changed', userChanged: true });
+      }
+      previousAuthenticated = Boolean(currentUser);
       setUser(currentUser);
       if (!currentUser) {
         setAccessProfile(null);
         setSelectedAccessRole(directAccessRole);
         setAccessLoading(false);
-        setAccessError('');
-      } else {
-        setAccessProfile(null);
-        setAccessLoading(true);
         setAccessError('');
       }
       setAuthLoading(false);
@@ -363,18 +406,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
     setAccessLoading(true);
     setAccessError('');
-    const loadAccessProfile = async () => {
-      try {
-        return await getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole });
-      } catch (error) {
-        const code = (error as { code?: string } | null)?.code;
-        const canRefreshToken = !forceRefreshToken
-          && ['drive-api/expired-auth-token', 'drive-api/invalid-auth-token'].includes(String(code));
-        if (!canRefreshToken) throw error;
-        return getAccessProfile(user, { forceRefreshToken: true, activeRole: selectedAccessRole });
-      }
-    };
-    void loadAccessProfile()
+    void getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole })
       .then(profile => {
         if (!cancelled) setAccessProfile(profile);
       })
@@ -449,9 +481,10 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     setAccessProfile(current => current ? { ...current } : current);
   }, [directAccessRole, resetSessionScopedData]);
 
-  const canAccessInternalSystem =
+  const canAccessInternalSystem = (
     accessProfile?.status === 'approved'
-    && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
+    && (accessProfile.role === 'admin' || accessProfile.role === 'professional')
+  );
   const canManagePortalNotifications =
     accessProfile?.status === 'approved'
     && accessProfile.role === 'admin';
@@ -462,11 +495,18 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     accessProfile?.status === 'approved'
     && accessProfile.role === 'monitoring';
 
-  const refreshUnregisteredActivities = useCallback(async (force = false): Promise<void> => {
-    if (!canAccessInternalSystem) return;
+  const activityRefreshSignature = useMemo(
+    () => buildActivityRefreshSignature(state),
+    [state.settings?.activityMediaMonitoringStart, state.patients, state.sessions, state.payments],
+  );
+
+  useEffect(() => () => activityRefreshGateRef.current?.dispose(), []);
+
+  const runUnregisteredActivities = useCallback(async (force = false): Promise<void> => {
+    if (psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     setUnregisteredActivitiesLoading(true);
     try {
-      const result = await loadUnregisteredActivities(state, { force });
+      const result = await loadUnregisteredActivities(activityRefreshStateRef.current, { force });
       setUnregisteredActivities(result.groups);
       setUnregisteredActivitiesWarning(result.warning);
     } catch (error) {
@@ -475,10 +515,25 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     } finally {
       setUnregisteredActivitiesLoading(false);
     }
-  }, [canAccessInternalSystem, state]);
+  }, [canAccessInternalSystem, psychologyAuthenticatedRoute]);
+
+  const requestUnregisteredActivityRefresh = useCallback((force = false, delayMs = 900): Promise<void> => {
+    const gate = activityRefreshGateRef.current;
+    if (!gate) return Promise.resolve();
+    const task = () => runUnregisteredActivities(force);
+    if (delayMs === 0) {
+      return gate.runNow(buildActivityRefreshSignature(activityRefreshStateRef.current), task, force);
+    }
+    return gate.schedule(
+      () => buildActivityRefreshSignature(activityRefreshStateRef.current),
+      task,
+      delayMs,
+      force,
+    );
+  }, [runUnregisteredActivities]);
 
   useEffect(() => {
-    if (!canAccessInternalSystem) {
+    if (psychologyAuthenticatedRoute || !canAccessInternalSystem) {
       setUnregisteredActivities([]);
       setUnregisteredActivitiesWarning('');
       return;
@@ -486,28 +541,21 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     const coreCollectionsReady = ['settings', 'patients', 'sessions', 'payments']
       .every(collectionName => loadedCollectionsRef.current.has(collectionName));
     if (dataLoading || !coreCollectionsReady) return;
-    const timer = window.setTimeout(() => { void refreshUnregisteredActivities(false); }, 900);
-    return () => window.clearTimeout(timer);
-  }, [canAccessInternalSystem, dataLoading, refreshUnregisteredActivities]);
+    void requestUnregisteredActivityRefresh(false, 900);
+  }, [activityRefreshSignature, canAccessInternalSystem, dataLoading, psychologyAuthenticatedRoute, requestUnregisteredActivityRefresh]);
 
   useEffect(() => {
-    if (!canAccessInternalSystem) return;
-    let refreshTimer: number | null = null;
+    if (psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     const refresh = () => {
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshUnregisteredActivities(false);
-      }, 1200);
+      void requestUnregisteredActivityRefresh(true, 1200);
     };
     window.addEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
     window.addEventListener(GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT, refresh);
     return () => {
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       window.removeEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
       window.removeEventListener(GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT, refresh);
     };
-  }, [canAccessInternalSystem, refreshUnregisteredActivities]);
+  }, [canAccessInternalSystem, psychologyAuthenticatedRoute, requestUnregisteredActivityRefresh]);
 
   const refreshPortalNotifications = useCallback(async (options?: {
     initial?: boolean;
@@ -592,13 +640,40 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
 
   useEffect(() => {
-    if (!user || !canAccessInternalSystem) return;
+    if (!user || psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     
     setDataLoading(true);
     loadedCollectionsRef.current.clear();
     
     // Subscribe to all collections
     const unsubscribers: (() => void)[] = [];
+    const listenerCollections = [
+      'settings',
+      'patients',
+      'sessions',
+      'payments',
+      'repositions',
+      'expenses',
+      'evolutions',
+      'agenda_pessoal',
+      'externalRegistrationForms',
+    ];
+    const traceSnapshot = (collectionName: string, snapshot: { size: number; docs: Array<{ metadata?: { hasPendingWrites?: boolean } }>; metadata?: { fromCache?: boolean; hasPendingWrites?: boolean }; docChanges: (options?: { includeMetadataChanges?: boolean }) => unknown[] }) => {
+      const documentChanges = snapshot.docChanges({ includeMetadataChanges: false }).length;
+      const metadataOnly = documentChanges === 0 && snapshot.size > 0;
+      emitFirestoreMetric({
+        source: 'app-listener',
+        collection: collectionName,
+        event: 'snapshot',
+        docs: snapshot.size,
+        documentChanges,
+        metadataOnly,
+        billedRead: !metadataOnly && (documentChanges > 0 || snapshot.size > 0),
+        fromCache: Boolean(snapshot.metadata?.fromCache),
+        hasPendingWrites: Boolean(snapshot.metadata?.hasPendingWrites || snapshot.docs.some(item => item.metadata?.hasPendingWrites)),
+      });
+    };
+    listenerCollections.forEach(collectionName => emitFirestoreMetric({ source: 'app-listener', collection: collectionName, event: 'attach' }));
     
     const userDocRef = doc(db, 'users', user.uid);
     let hasReceivedAuthoritativeSessionsSnapshot = false;
@@ -609,6 +684,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // settings
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'settings'), (snapshot) => {
+        traceSnapshot('settings', snapshot);
         let settings = DEFAULT_SETTINGS;
         snapshot.forEach(doc => {
           if (doc.id === 'config') {
@@ -626,6 +702,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // patients
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'patients'), (snapshot) => {
+        traceSnapshot('patients', snapshot);
         const patients = snapshot.docs.map(doc => doc.data() as Patient);
         markCollectionLoaded('patients');
         setState(prev => ({ ...prev, patients }));
@@ -635,6 +712,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // sessions
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'sessions'), { includeMetadataChanges: true }, (snapshot) => {
+        traceSnapshot('sessions', snapshot);
         const sessions = snapshot.docs.map(doc => doc.data() as Session);
         markCollectionLoaded('sessions');
         setState(prev => ({ ...prev, sessions }));
@@ -655,6 +733,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // payments
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'payments'), (snapshot) => {
+        traceSnapshot('payments', snapshot);
         const payments = snapshot.docs.map(doc => doc.data() as Payment);
         markCollectionLoaded('payments');
         setState(prev => ({ ...prev, payments }));
@@ -664,6 +743,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // repositions
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'repositions'), (snapshot) => {
+        traceSnapshot('repositions', snapshot);
         const repositions = snapshot.docs.map(doc => doc.data() as Reposition);
         markCollectionLoaded('repositions');
         setState(prev => ({ ...prev, repositions }));
@@ -673,6 +753,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // expenses
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'expenses'), (snapshot) => {
+        traceSnapshot('expenses', snapshot);
         const expenses = snapshot.docs.map(doc => doc.data() as Expense);
         markCollectionLoaded('expenses');
         setState(prev => ({ ...prev, expenses }));
@@ -682,6 +763,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // evolutions
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'evolutions'), (snapshot) => {
+        traceSnapshot('evolutions', snapshot);
         const evolutions = snapshot.docs.map(doc => doc.data() as Evolution);
         markCollectionLoaded('evolutions');
         setState(prev => ({ ...prev, evolutions }));
@@ -691,6 +773,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     // agenda_pessoal
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'agenda_pessoal'), (snapshot) => {
+        traceSnapshot('agenda_pessoal', snapshot);
         const personalAppointments = snapshot.docs.map(doc => {
           const data = doc.data();
           return {
@@ -720,6 +803,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
     unsubscribers.push(
       onSnapshot(query(collection(db, 'externalRegistrationForms'), where('ownerUserId', '==', user.uid)), (snapshot) => {
+        traceSnapshot('externalRegistrationForms', snapshot);
         const externalRegistrationForms = snapshot.docs.map(doc => doc.data() as ExternalRegistrationForm);
         markCollectionLoaded('externalRegistrationForms');
         setState(prev => ({ ...prev, externalRegistrationForms }));
@@ -734,11 +818,12 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     return () => {
       clearTimeout(fallbackTimer);
       unsubscribers.forEach(unsub => unsub());
+      listenerCollections.forEach(collectionName => emitFirestoreMetric({ source: 'app-listener', collection: collectionName, event: 'detach' }));
     };
-  }, [canAccessInternalSystem, user]);
+  }, [canAccessInternalSystem, psychologyAuthenticatedRoute, user]);
 
   const updateState = async (newState: Partial<AppState>): Promise<boolean> => {
-    if (!user || !canAccessInternalSystem) return false;
+    if (!user || psychologyAuthenticatedRoute || !canAccessInternalSystem) return false;
     const userDocRef = doc(db, 'users', user.uid);
     const activityGalleryRelevantChange = Boolean(
       newState.settings
@@ -901,7 +986,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
       settings: { ...prev.settings, visualTheme },
     }));
 
-    if (!user || !canAccessInternalSystem || !loadedCollectionsRef.current.has('settings')) return false;
+    if (psychologyAuthenticatedRoute || !user || !canAccessInternalSystem || !loadedCollectionsRef.current.has('settings')) return false;
 
     try {
       const batch = writeBatch(db);
@@ -920,10 +1005,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
   if (authLoading) {
     return (
-      <div
-        className={`min-h-screen flex items-center justify-center bg-clinic-bg ${visualContext === 'PSICOLOGIA' ? 'auth-psychology-theme' : ''}`}
-        data-auth-visual-context={visualContext}
-      >
+      <div className="min-h-screen flex items-center justify-center bg-clinic-bg">
         <Loader2 className="w-12 h-12 text-clinic-primary animate-spin" />
       </div>
     );
@@ -945,7 +1027,6 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         required
         onProfileUpdated={handlePasswordProfileUpdated}
         onLogout={handleAccessPortalLogout}
-        visualContext={visualContext}
       />
     );
   }
@@ -956,7 +1037,6 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         profile={accessProfile}
         onChoose={chooseAccessRole}
         onLogout={() => void handleAccessPortalLogout()}
-        visualContext={visualContext}
       />
     );
   }
@@ -980,7 +1060,6 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
-            visualContext={visualContext}
           />
         )}
       </>
@@ -999,7 +1078,6 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
-            visualContext={visualContext}
           />
         )}
       </>
@@ -1024,12 +1102,11 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
         onRetryProfile={handleRetryAccessProfile}
         onChooseAnotherRole={directAccessRole ? undefined : switchAccessRole}
         onLogout={handleAccessPortalLogout}
-        visualContext={visualContext}
       />
     );
   }
 
-  if (psychologyPilotRoute) return <PsychologyPilot />;
+  if (psychologyAuthenticatedRoute) return <PsychologyPilot />;
 
   const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
     isPendingExternalRegistrationStatus(form.status)
@@ -1052,7 +1129,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
     if (opening) {
       await Promise.all([
         canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false),
-        refreshUnregisteredActivities(true),
+        requestUnregisteredActivityRefresh(true, 0),
       ]);
     }
   };
@@ -1193,6 +1270,9 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
 
   const tabs: AppNavigationItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ...(accessProfile?.role === 'admin'
+      ? [{ id: 'psicologia-monitoramento', label: 'Monitoramento Psicologia', icon: Monitor }]
+      : []),
     ...(accessProfile?.role === 'admin'
       ? [{ id: 'monitoramento', label: 'Visão do Monitoramento', icon: Monitor }]
       : []),
@@ -1359,7 +1439,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
                       <p className="mt-1 text-[11px] text-clinic-text-muted">{activityAttentionCount} atividade(s) não registrada(s) • {packageToleranceAttentionCount} pacote(s) em tolerância{canManagePortalNotifications ? ` • ${unreadPortalNotifications.length} não lida(s)` : ''}</p>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button type="button" onClick={() => void Promise.all([canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false), refreshUnregisteredActivities(true)])} disabled={notificationLoading || unregisteredActivitiesLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading || unregisteredActivitiesLoading ? 'animate-spin' : ''} /></button>
+                      <button type="button" onClick={() => void Promise.all([canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false), requestUnregisteredActivityRefresh(true, 0)])} disabled={notificationLoading || unregisteredActivitiesLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading || unregisteredActivitiesLoading ? 'animate-spin' : ''} /></button>
                       <button type="button" onClick={() => setNotificationsOpen(false)} className="rounded-full bg-white p-2 text-clinic-text-muted" aria-label="Fechar notificações"><X size={15} /></button>
                     </div>
                   </div>
@@ -1586,7 +1666,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
                   unregisteredActivities={unregisteredActivities}
                   unregisteredActivitiesLoading={unregisteredActivitiesLoading}
                   unregisteredActivitiesWarning={unregisteredActivitiesWarning}
-                  onRefreshUnregisteredActivities={() => refreshUnregisteredActivities(true)}
+                  onRefreshUnregisteredActivities={() => requestUnregisteredActivityRefresh(true, 0)}
                   onRegisterUnregisteredActivity={activity => openActivityGallery(activity.patientId, activity.sessionIds[0] || null, activity.packageNumber)}
                   packageToleranceAlerts={packageToleranceAlerts}
                   onOpenFinance={() => setActiveTab('pagamentos')}
@@ -1599,6 +1679,7 @@ function AuthenticatedApp({ psychologyPilotRoute }: { psychologyPilotRoute: bool
                   onExitPreview={() => setActiveTab('dashboard')}
                 />
               )}
+              {activeTab === 'psicologia-monitoramento' && accessProfile?.role === 'admin' && <PsychologyOperationalMonitoringPanel />}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserRole={accessProfile?.role || 'professional'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}

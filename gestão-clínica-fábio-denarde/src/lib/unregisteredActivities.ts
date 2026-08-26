@@ -6,13 +6,12 @@ import type { UnregisteredActivityResult } from '../types/unregisteredActivities
 import { buildActivityMediaPackageModel } from './activityMediaPackages';
 import { listActivityMediaPresence } from './activityRecordsApi';
 import { listGooglePhotosAlbums } from './googlePhotosAlbumsApi';
+import {
+  getActivityMonitoringStartDate,
+  selectActivityCandidateSessions,
+  selectActivityRefreshPackages,
+} from './activityRefreshPlan';
 import { buildUnregisteredActivityGroups } from '../../shared/unregisteredActivities.js';
-import { sessionAllowsActivity } from '../../shared/sessionScheduling.js';
-
-function monitoringStartDate(state: AppState): string {
-  const configured = String(state.settings?.activityMediaMonitoringStart || '').trim().slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(configured) ? configured : '';
-}
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
@@ -32,7 +31,7 @@ export async function loadUnregisteredActivities(
   state: AppState,
   options: { force?: boolean; now?: Date } = {},
 ): Promise<UnregisteredActivityResult> {
-  const monitoringStart = monitoringStartDate(state);
+  const monitoringStart = getActivityMonitoringStartDate(state);
   if (!monitoringStart) {
     return {
       groups: [],
@@ -42,8 +41,7 @@ export async function loadUnregisteredActivities(
   }
 
   const now = options.now || new Date();
-  const candidateSessions = state.sessions
-    .filter(session => String(session.date || '') >= monitoringStart && sessionAllowsActivity(session));
+  const candidateSessions = selectActivityCandidateSessions(state);
   const candidatePatientIds = [...new Set(candidateSessions
     .map(session => String(session.patientId || ''))
     .filter(Boolean))];
@@ -62,7 +60,8 @@ export async function loadUnregisteredActivities(
       packageTolerances: patient?.packageTolerances || [],
       now,
     });
-    const packageResults = await mapWithConcurrency(packageModel.packages, 3, pkg => listGooglePhotosAlbums({
+    const packagesToQuery = selectActivityRefreshPackages(packageModel.packages, candidateSessions);
+    const packageResults = await mapWithConcurrency(packagesToQuery, 3, pkg => listGooglePhotosAlbums({
       patientId,
       packageNumber: pkg.number,
       scope: 'manage',

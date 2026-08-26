@@ -21,24 +21,27 @@ import { createDefaultPsychologySettings, normalizePsychologySettings, PSYCHOLOG
 import { canonicalPsychologyServiceId } from './psychologyServiceCatalog';
 import { createPsychologyChargeInLedger, createPsychologyPaymentInLedger } from './psychologyFinancialLedger';
 import {
+  calculateAgeOnDate,
   civilDateFromDate,
   profileCompleteness as getAdministrativeProfileCompleteness,
   type PsychologyAdministrativeResponsible,
   validatePsychologyPatientAdministrativeInput,
 } from '../../lib/psychologyPatientAdministrative';
-import { normalizePsychologyPhoneForWrite } from './psychologyPhone';
+import { normalizePhone } from '../../../shared/phoneNormalization.js';
+
+export type PsychologyModality = 'presencial' | 'online';
 
 function sanitizeStoredPhone(value: unknown): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
   try {
-    return normalizePsychologyPhoneForWrite(raw);
+    return normalizePhone(raw).displayPhone;
   } catch {
+    // Legacy fixtures may intentionally contain incomplete values; validation
+    // remains responsible for blocking them at a new-entry boundary.
     return raw;
   }
 }
-
-export type PsychologyModality = 'presencial' | 'online';
 export type PsychologySessionStatus = 'agendada' | 'realizada' | 'falta' | 'cancelada';
 export type PsychologyCanonicalSessionStatus = 'CANCELLED' | 'LEGACY_ATTENDANCE_UNKNOWN' | 'SCHEDULED';
 export type PsychologyBookingOrigin = 'PATIENT_SELF_BOOKING' | 'PROFESSIONAL';
@@ -71,6 +74,8 @@ export interface PsychologyPatient {
   administrativeNotes?: string;
   administrativeResponsible?: PsychologyAdministrativeResponsible;
   externalReferences?: PsychologyExternalReference[];
+  inReview?: boolean;
+  reviewMarkedAt?: string;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -379,6 +384,8 @@ export function normalizePsychologyStore(value: unknown, scope = createPsycholog
       administrativeResponsible: responsible,
       administrativeNotes: item.administrativeNotes || item.administrativeNote || undefined,
       externalReferences: Array.isArray(item.externalReferences) ? item.externalReferences.filter(reference => reference && String(reference.source || '').trim() && String(reference.externalId || '').trim()).map(reference => ({ source: String(reference.source).trim(), externalId: String(reference.externalId).trim(), importedAt: reference.importedAt ? String(reference.importedAt) : undefined })) : undefined,
+      inReview: Boolean(item.inReview),
+      reviewMarkedAt: item.reviewMarkedAt ? String(item.reviewMarkedAt) : undefined,
       };
     }) as PsychologyPatient[] : [],
     sessions: Array.isArray(input.sessions) ? input.sessions.filter(item => belongsToScope(item, scope)).map(item => {
@@ -432,6 +439,23 @@ export function getPsychologyPatientDateOfBirth(patient: Pick<PsychologyPatient,
   return String(patient.dateOfBirth || patient.birthDate || '').trim();
 }
 
+export const PSYCHOLOGY_ADOLESCENT_SERVICE_ID = 'psychotherapy-adolescent';
+
+export function getPsychologyAutomaticServiceIdForPatient(patient: Pick<PsychologyPatient, 'dateOfBirth' | 'birthDate'> | undefined, referenceCivilDate = civilDateFromDate(new Date())): string | undefined {
+  if (!patient) return undefined;
+  const age = calculateAgeOnDate(getPsychologyPatientDateOfBirth(patient), referenceCivilDate);
+  return age !== null && age < 18 ? PSYCHOLOGY_ADOLESCENT_SERVICE_ID : undefined;
+}
+
+export function synchronizePsychologyServiceForPatient(store: PsychologyStore, patientId: string, currentServiceId?: string, referenceCivilDate = civilDateFromDate(new Date())): string | undefined {
+  const automaticServiceId = getPsychologyAutomaticServiceIdForPatient(store.patients.find(patient => patient.id === patientId), referenceCivilDate);
+  if (automaticServiceId && store.services.some(service => service.id === automaticServiceId && service.active)) return automaticServiceId;
+  if (canonicalPsychologyServiceId(currentServiceId) === PSYCHOLOGY_ADOLESCENT_SERVICE_ID) {
+    return store.services.find(service => service.active && service.id !== PSYCHOLOGY_ADOLESCENT_SERVICE_ID)?.id;
+  }
+  return currentServiceId ? canonicalPsychologyServiceId(currentServiceId) : undefined;
+}
+
 export function getPsychologyPatientProfileCompleteness(patient: Pick<PsychologyPatient, 'name' | 'dateOfBirth' | 'birthDate' | 'phone' | 'email' | 'administrativeResponsible'>, referenceCivilDate = civilDateFromDate(new Date())) {
   return getAdministrativeProfileCompleteness({
     name: patient.name,
@@ -477,6 +501,10 @@ export function validatePsychologySession(input: PsychologySessionInput, store: 
   return null;
 }
 
+export function getPsychologyAgendaSessionsForSlot(sessions: PsychologySession[], date: string, time: string): PsychologySession[] {
+  return sessions.filter(session => session.date === date && session.time === time && session.status !== 'cancelada');
+}
+
 function createId(prefix: string): string {
   const randomPart = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -501,12 +529,7 @@ export function setPsychologyCategoryColor(store: PsychologyStore, category: key
 }
 
 export function restorePsychologyDefaultColors(store: PsychologyStore, now = new Date().toISOString()): PsychologyStore {
-  const locations = store.locations.map(location => ({
-    ...location,
-    color: location.type === 'EXTERNAL_OFFICE' ? PSYCHOLOGY_COLOR_DEFAULTS.EXTERNAL_OFFICE : PSYCHOLOGY_COLOR_DEFAULTS.PRESENTIAL_PRIMARY,
-    updatedAt: now,
-  }));
-  return updatePsychologySettings({ ...store, locations }, { colors: { ...PSYCHOLOGY_COLOR_DEFAULTS }, locations }, now);
+  return updatePsychologySettings(store, { colors: { ...PSYCHOLOGY_COLOR_DEFAULTS } }, now);
 }
 
 export function createPsychologyLocation(store: PsychologyStore, input: PsychologyLocationInput, now = new Date().toISOString()): PsychologyStore {
@@ -611,6 +634,8 @@ export function upsertPsychologyPatient(store: PsychologyStore, input: Psycholog
     administrativeNotes: input.administrativeNote.trim() || undefined,
     administrativeResponsible: responsible,
     externalReferences: input.externalReferences?.filter(item => item.source.trim() && item.externalId.trim()).map(item => ({ ...item, source: item.source.trim(), externalId: item.externalId.trim() })),
+    inReview: existing?.inReview,
+    reviewMarkedAt: existing?.reviewMarkedAt,
     active: input.active,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
@@ -827,6 +852,7 @@ export function parsePsychologyStore(raw: string | null, scope = createPsycholog
   }
 }
 
-export function isPsychologyPilotRoute(pathname: string, search: string): boolean {
+export function isPsychologyPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
+  if (!isDev || !['localhost', '127.0.0.1'].includes(hostname)) return false;
   return pathname.replace(/\/+$/, '') === '/psicologia' || new URLSearchParams(search).get('psicologia') === '1';
 }

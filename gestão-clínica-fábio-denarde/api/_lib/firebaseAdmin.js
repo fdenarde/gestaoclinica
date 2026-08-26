@@ -131,35 +131,6 @@ export function getAdminDb() {
   return databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 }
 
-export function classifyFirebaseTokenVerificationError(verificationError) {
-  const sourceCode = String(verificationError?.code || '').toLowerCase();
-  const sourceMessage = String(verificationError?.message || '').toLowerCase();
-  const isExpired = sourceCode === 'auth/id-token-expired' || sourceMessage.includes('expired');
-  const isProjectMismatch = sourceCode.includes('invalid-audience')
-    || sourceCode.includes('invalid-issuer')
-    || sourceMessage.includes('audience')
-    || sourceMessage.includes('issuer');
-  if (isExpired) {
-    return {
-      code: 'drive-api/expired-auth-token',
-      message: 'Sua sessão expirou. Entre novamente no sistema.',
-      tokenVerificationResult: 'EXPIRED',
-    };
-  }
-  if (isProjectMismatch) {
-    return {
-      code: 'drive-api/project-mismatch',
-      message: 'Não foi possível validar esta sessão. Entre novamente no sistema.',
-      tokenVerificationResult: 'PROJECT_MISMATCH',
-    };
-  }
-  return {
-    code: 'drive-api/invalid-auth-token',
-    message: 'Não foi possível validar esta sessão. Entre novamente no sistema.',
-    tokenVerificationResult: 'INVALID',
-  };
-}
-
 export async function verifyFirebaseRequest(req) {
   ensureFirebaseAdmin();
 
@@ -169,18 +140,15 @@ export async function verifyFirebaseRequest(req) {
     const error = new Error('Sessão não identificada. Entre novamente no sistema.');
     error.statusCode = 401;
     error.code = 'drive-api/missing-auth-token';
-    error.tokenVerificationResult = 'MISSING';
     throw error;
   }
 
   try {
     return await getAuth().verifyIdToken(match[1]);
-  } catch (verificationError) {
-    const classification = classifyFirebaseTokenVerificationError(verificationError);
-    const error = new Error(classification.message);
+  } catch {
+    const error = new Error('Sua sessão expirou. Entre novamente no sistema.');
     error.statusCode = 401;
-    error.code = classification.code;
-    error.tokenVerificationResult = classification.tokenVerificationResult;
+    error.code = 'drive-api/invalid-auth-token';
     throw error;
   }
 }

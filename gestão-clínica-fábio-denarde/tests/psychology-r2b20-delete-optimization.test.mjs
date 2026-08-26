@@ -14,7 +14,7 @@ const SCOPE = {
   context: 'PSICOLOGIA',
   role: 'professional',
   authUid: 'auth-r2b20-a',
-  permissions: ['patients.list', 'patients.create', 'patients.edit', 'agenda.own.view', 'agenda.edit'],
+  permissions: ['patients.list', 'patients.create', 'patients.edit', 'patients.delete', 'agenda.own.view', 'agenda.edit'],
 };
 const PROTECTED_AGGREGATES = ['sessions', 'sessionRecords', 'packages', 'documents', 'attachments', 'charges', 'payments'];
 
@@ -173,7 +173,7 @@ test('R2B20 DELETE sem vínculos usa somente consultas limitadas e exclui o paci
   assert.ok(db.metrics.queries.every(query => query.field === 'patientId' && query.operator === '==' && query.value === patientId && query.limit === 1));
 });
 
-test('R2B20 cada vínculo protegido força inativação e preserva os dados relacionados', async () => {
+test('R31 cada vínculo protegido é removido pela cascata dirigida', async () => {
   for (const aggregate of PROTECTED_AGGREGATES) {
     const db = new FakeDb();
     const patientId = `r2b20-related-${aggregate}`;
@@ -183,11 +183,10 @@ test('R2B20 cada vínculo protegido força inativação e preserva os dados rela
     const result = await call(createSyntheticHandler(db), 'DELETE', `patients/${patientId}`);
 
     assert.equal(result.statusCode, 200, aggregate);
-    assert.equal(result.body.deleted, false, aggregate);
-    assert.equal(result.body.inactivated, true, aggregate);
-    assert.equal(result.body.patient.active, false, aggregate);
-    assert.equal(db.value(aggregatePath('patients', patientId)).active, false, aggregate);
-    assert.ok(db.value(aggregatePath(aggregate, `reference-${aggregate}`), aggregate), aggregate);
+    assert.equal(result.body.deleted, true, aggregate);
+    assert.equal(result.body.inactivated, undefined, aggregate);
+    assert.equal(db.value(aggregatePath('patients', patientId)), undefined, aggregate);
+    assert.equal(db.value(aggregatePath(aggregate, `reference-${aggregate}`)), undefined, aggregate);
     assert.equal(db.metrics.collectionGets, 0, aggregate);
     assert.equal(db.metrics.queryGets, PROTECTED_AGGREGATES.length, aggregate);
   }
@@ -212,15 +211,9 @@ test('R2B20 servidor e cliente não reintroduzem scans completos no fluxo de DEL
   const patientDeleteStart = apiSource.indexOf("if (resource === 'patients' && req.method === 'DELETE' && id)");
   const patientDeleteEnd = apiSource.indexOf("if (resource === 'settings'", patientDeleteStart);
   const patientDeleteBranch = apiSource.slice(patientDeleteStart, patientDeleteEnd);
-  const remoteDeleteStart = pilotSource.indexOf('if (!isLocalPersistence)', pilotSource.indexOf('const confirmPatientDelete'));
-  const localDeleteStart = pilotSource.indexOf('const result = deletePsychologyPatientLocally', remoteDeleteStart);
-  const remoteDeleteBranch = pilotSource.slice(remoteDeleteStart, localDeleteStart);
-
   assert.match(repositorySource, /where\('patientId', '==', normalizedPatientId\)\.limit\(1\)\.get\(\)/);
-  assert.match(patientDeleteBranch, /hasPatientReference/);
+  assert.match(patientDeleteBranch, /deletePsychologyPatientSafely/);
   assert.doesNotMatch(patientDeleteBranch, /\.list\(/);
-  assert.match(remoteDeleteBranch, /await patientRepository\.get\(remoteRepositories\.scope, patientDelete\.id\)/);
-  assert.doesNotMatch(remoteDeleteBranch, /remoteRepositories\.patients\.list\(/);
-  assert.match(remoteDeleteBranch, /current\.patients\.filter\(patient => patient\.id !== patientDelete\.id\)/);
-  assert.match(remoteDeleteBranch, /current\.patients\.map\(patient => patient\.id === patientDelete\.id \? remaining : patient\)/);
+  assert.match(pilotSource, /remoteClient\.deletePatient\(patientId\)/);
+  assert.doesNotMatch(pilotSource, /remoteRepositories\.patients\.list\(/);
 });

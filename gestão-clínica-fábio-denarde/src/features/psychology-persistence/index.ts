@@ -12,4 +12,6 @@ export * from './repositories/local';
 export * from './repositories/firestore';
 export * from './repositories/api';
 export * from './realRead';
+export * from './remotePatientClient';
+export * from './psychologyBackup';
 export * from './doctoraliaShadowImport';
