@@ -494,6 +494,7 @@ function normalizePsychologyServices(value: unknown, scope: PsychologyScope, def
         updatedAt: String(raw.updatedAt || now),
       } satisfies PsychologyService;
     });
+  if (normalized.length === 0) return defaults;
   const firstRawId = value.length === 1 && value[0] && typeof value[0] === 'object' ? String((value[0] as Partial<PsychologyService>).id || '') : '';
   const isLegacySingleServiceStore = firstRawId === 'psychology-service-psychotherapy';
   return isLegacySingleServiceStore

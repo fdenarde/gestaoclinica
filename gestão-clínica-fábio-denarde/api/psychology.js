@@ -5,6 +5,7 @@ import { buildPsychologyAuditEvent, createPsychologyRequestId, logPsychologyAudi
 import { createPsychologyServerRepository, psychologyCollectionPath } from './_lib/psychologyRepository.js';
 import { deletePsychologyPatientSafely } from './_lib/psychologyPatientDeletion.js';
 import { buildScopedPsychologyBackup } from './_lib/psychologyBackup.js';
+import { readPsychologySettingsProjection, sanitizePsychologySettingsProjectionError } from './_lib/psychologySettingsProjection.js';
 import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
 import { normalizePhone } from '../shared/phoneNormalization.js';
 
@@ -563,6 +564,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
   const getDb = dependencies.getDb || getAdminDb;
   const resolveAccess = dependencies.resolveAccess || resolvePsychologyAccessContext;
   const resolveAdminMonitoring = dependencies.resolveAdminMonitoring || resolvePsychologyAdminMonitoringContext;
+  const readSettingsProjection = dependencies.readSettingsProjection || readPsychologySettingsProjection;
   const now = dependencies.now || (() => new Date().toISOString());
   const auditLogger = dependencies.auditLogger || logPsychologyAuditEvent;
 
@@ -591,6 +593,23 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
       const [resource, id] = routeParts(req);
       if (!resource) throw apiError('psychology/route-not-found', 'Rota Psicologia não encontrada.', 404);
+      if (resource === 'settings-readiness' && req.method === 'GET' && !id) {
+        const db = getDb();
+        const resolvedScope = await resolveAccess(req, {
+          db,
+          requiredAnyPermissions: ['agenda.own.view', 'settings.clinic.manage'],
+        });
+        try {
+          const readiness = await readSettingsProjection({ db, runtimeScope: resolvedScope });
+          auditHeaders(res, resolvedScope, 'read', 'settings-readiness');
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope: resolvedScope, operation: 'GET:settings-readiness', status: 'success', timestamp: now() }));
+          return res.status(200).json(readiness);
+        } catch (error) {
+          const sanitized = sanitizePsychologySettingsProjectionError(error);
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope: resolvedScope, operation: 'GET:settings-readiness', status: 'denied', timestamp: now(), code: sanitized.errorCode }));
+          return res.status(sanitized.httpStatus).json({ error: sanitized });
+        }
+      }
       operation = `${req.method}:${resource}`;
       const db = getDb();
       const body = parseBody(req);
@@ -704,7 +723,10 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'settings' && req.method === 'GET' && !id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.view'] });
+        const runtimeScope = await resolveAccess(req, {
+          db,
+          requiredAnyPermissions: ['agenda.own.view', 'settings.clinic.manage'],
+        });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
         const current = await repository.settings.get('settings');
         auditHeaders(res, runtimeScope, 'read', 'settings');

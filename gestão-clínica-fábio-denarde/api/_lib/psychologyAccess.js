@@ -1,5 +1,6 @@
 import { getAdminDb } from './firebaseAdmin.js';
 import { resolveAccessContext } from './accessContext.js';
+import { assertAnyAccessPermission } from './accessPermissions.js';
 
 const PSYCHOLOGY_CONTEXT = 'PSICOLOGIA';
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -179,6 +180,13 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     if (!baseContext.permissions?.[permission]) {
       throw psychologyError('access/permission-denied', 'Você não possui permissão para esta operação.', 403);
     }
+  }
+  if (options.requiredAnyPermissions !== undefined) {
+    assertAnyAccessPermission(
+      baseContext,
+      options.requiredAnyPermissions,
+      'Você não possui permissão para esta operação.',
+    );
   }
 
   return Object.freeze({

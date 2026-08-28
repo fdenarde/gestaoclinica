@@ -620,6 +620,23 @@ export function assertAccessPermission(context, permissionKey, message = 'Você 
   }
 }
 
+export function assertAnyAccessPermission(
+  context,
+  permissionKeys,
+  message = 'Você não possui permissão para realizar esta ação.',
+) {
+  if (!Array.isArray(permissionKeys) || permissionKeys.length === 0 || permissionKeys.some(key => !PERMISSION_KEY_SET.has(key))) {
+    throw accessPermissionError(
+      'access/unknown-permission',
+      'A permissão solicitada não está registrada no contrato de acesso.',
+      500,
+    );
+  }
+  if (!permissionKeys.some(permissionKey => isPermissionAllowed(context, permissionKey))) {
+    throw accessPermissionError('access/permission-denied', message, 403);
+  }
+}
+
 export function assertPatientBinding(context, patientId, message = 'Você não possui autorização para acessar este atendente.') {
   const normalizedPatientId = normalizeText(patientId, 160);
   if (!normalizedPatientId) {
