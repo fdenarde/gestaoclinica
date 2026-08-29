@@ -60,7 +60,7 @@ export function selectPsychologyBackupData(store: PsychologyStore): PsychologyBa
     settings: pickSettings(store),
     patients: store.patients.map(patient => ({ ...pick(patient as unknown as Record<string, unknown>, [
       'id', 'name', 'dateOfBirth', 'birthDate', 'phone', 'additionalPhone', 'email', 'address', 'demographics',
-      'migrationReview', 'preferredModality', 'administrativeNote', 'administrativeNotes', 'administrativeResponsible',
+      'migrationReview', 'preferredModality', 'financialSettings', 'administrativeNote', 'administrativeNotes', 'administrativeResponsible',
       'externalReferences', 'inReview', 'reviewMarkedAt', 'active', 'createdAt', 'updatedAt',
     ]),
       ...(pickNested(patient.address, ['street', 'number', 'postalCode', 'neighborhood', 'city', 'state', 'province', 'country']) ? { address: pickNested(patient.address, ['street', 'number', 'postalCode', 'neighborhood', 'city', 'state', 'province', 'country']) } : {}),

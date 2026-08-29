@@ -46,6 +46,28 @@ function normalizeAdministrativeResponsible(value) {
   return Object.values(normalized).some(Boolean) ? normalized : undefined;
 }
 
+function normalizePatientFinancialSettings(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value;
+  const mode = source.mode === 'single' || source.mode === 'package' ? source.mode : 'none';
+  const numberOrUndefined = candidate => {
+    const number = Number(candidate);
+    return Number.isFinite(number) && number >= 0 ? number : undefined;
+  };
+  const packageQuantity = Number(source.packageQuantity);
+  return {
+    mode,
+    serviceId: normalize(source.serviceId, 128) || undefined,
+    sessionPrice: numberOrUndefined(source.sessionPrice),
+    packageId: normalize(source.packageId, 128) || undefined,
+    packageQuantity: Number.isInteger(packageQuantity) && packageQuantity > 0 && packageQuantity <= 100 ? packageQuantity : undefined,
+    packageTotalPrice: numberOrUndefined(source.packageTotalPrice),
+    packageDueDate: /^\d{4}-\d{2}-\d{2}$/u.test(normalize(source.packageDueDate, 32)) ? normalize(source.packageDueDate, 32) : undefined,
+    note: normalize(source.note, 1000) || undefined,
+    updatedAt: normalize(source.updatedAt, 64) || undefined,
+  };
+}
+
 function validateAdministrativeResponsibleForWrite(value) {
   const normalized = normalizeAdministrativeResponsible(value);
   if (!normalized) return undefined;
@@ -264,6 +286,7 @@ function administrativePatientDto(value) {
     phone: value.phone,
     email: value.email || '',
     preferredModality: value.preferredModality,
+    financialSettings: normalizePatientFinancialSettings(value.financialSettings),
     administrativeNote: value.administrativeNote || value.administrativeNotes || '',
     administrativeResponsible: normalizeAdministrativeResponsible(value.administrativeResponsible),
     externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
@@ -575,6 +598,7 @@ function preparePatient(body, runtimeScope, now) {
     phone,
     email: normalize(source.email, 160) || '',
     preferredModality,
+    financialSettings: normalizePatientFinancialSettings(source.financialSettings),
     administrativeNote: normalize(source.administrativeNote || source.administrativeNotes, 1000),
     administrativeResponsible: validateAdministrativeResponsibleForWrite(source.administrativeResponsible),
     externalReferences: Array.isArray(source.externalReferences) ? source.externalReferences.slice(0, 20) : [],

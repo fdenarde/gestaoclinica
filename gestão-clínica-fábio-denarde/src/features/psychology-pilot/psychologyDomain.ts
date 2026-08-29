@@ -70,6 +70,7 @@ export interface PsychologyPatient {
   demographics?: PsychologyPatientDemographics;
   migrationReview?: PsychologyPatientMigrationReview;
   preferredModality: PsychologyModality;
+  financialSettings?: PsychologyPatientFinancialSettings;
   administrativeNote?: string;
   administrativeNotes?: string;
   administrativeResponsible?: PsychologyAdministrativeResponsible;
@@ -79,6 +80,20 @@ export interface PsychologyPatient {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export type PsychologyPatientFinancialMode = 'none' | 'single' | 'package';
+
+export interface PsychologyPatientFinancialSettings {
+  mode: PsychologyPatientFinancialMode;
+  serviceId?: string;
+  sessionPrice?: number;
+  packageId?: string;
+  packageQuantity?: number;
+  packageTotalPrice?: number;
+  packageDueDate?: string;
+  note?: string;
+  updatedAt?: string;
 }
 
 export interface PsychologyPatientAddress {
@@ -235,6 +250,7 @@ export interface PsychologyPatientInput {
   phone: string;
   email: string;
   preferredModality: PsychologyModality;
+  financialSettings?: PsychologyPatientFinancialSettings;
   administrativeNote: string;
   active: boolean;
   administrativeResponsible?: PsychologyAdministrativeResponsible;
@@ -350,6 +366,28 @@ function belongsToScope(item: { professionalId?: string; context?: string }, sco
   return item.professionalId === scope.professionalId && item.context === scope.context;
 }
 
+function normalizePsychologyPatientFinancialSettings(value: unknown): PsychologyPatientFinancialSettings | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Partial<PsychologyPatientFinancialSettings>;
+  const mode = raw.mode === 'single' || raw.mode === 'package' ? raw.mode : 'none';
+  const numberOrUndefined = (candidate: unknown) => {
+    const number = Number(candidate);
+    return Number.isFinite(number) && number >= 0 ? number : undefined;
+  };
+  const packageQuantity = Number(raw.packageQuantity);
+  return {
+    mode,
+    serviceId: raw.serviceId ? canonicalPsychologyServiceId(raw.serviceId) : undefined,
+    sessionPrice: numberOrUndefined(raw.sessionPrice),
+    packageId: raw.packageId ? String(raw.packageId).trim() : undefined,
+    packageQuantity: Number.isInteger(packageQuantity) && packageQuantity > 0 ? packageQuantity : undefined,
+    packageTotalPrice: numberOrUndefined(raw.packageTotalPrice),
+    packageDueDate: raw.packageDueDate ? String(raw.packageDueDate).slice(0, 10) : undefined,
+    note: raw.note ? String(raw.note).trim() : undefined,
+    updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
+  };
+}
+
 export function normalizePsychologyStore(value: unknown, scope = createPsychologyScope()): PsychologyStore {
   const input = value && typeof value === 'object' ? value as Partial<PsychologyStore> : {};
   const settings = normalizePsychologySettings({
@@ -385,6 +423,7 @@ export function normalizePsychologyStore(value: unknown, scope = createPsycholog
       dateOfBirth,
       birthDate: dateOfBirth || undefined,
       administrativeResponsible: responsible,
+      financialSettings: normalizePsychologyPatientFinancialSettings(item.financialSettings),
       administrativeNotes: item.administrativeNotes || item.administrativeNote || undefined,
       externalReferences: Array.isArray(item.externalReferences) ? item.externalReferences.filter(reference => reference && String(reference.source || '').trim() && String(reference.externalId || '').trim()).map(reference => ({ source: String(reference.source).trim(), externalId: String(reference.externalId).trim(), importedAt: reference.importedAt ? String(reference.importedAt) : undefined })) : undefined,
       inReview: Boolean(item.inReview),
@@ -636,6 +675,9 @@ export function upsertPsychologyPatient(store: PsychologyStore, input: Psycholog
     phone: sanitizeStoredPhone(input.phone),
     email: input.email.trim() || undefined,
     preferredModality: input.preferredModality,
+    financialSettings: input.financialSettings
+      ? { ...normalizePsychologyPatientFinancialSettings(input.financialSettings), updatedAt: now }
+      : existing?.financialSettings,
     administrativeNote: input.administrativeNote.trim() || undefined,
     administrativeNotes: input.administrativeNote.trim() || undefined,
     administrativeResponsible: responsible,
