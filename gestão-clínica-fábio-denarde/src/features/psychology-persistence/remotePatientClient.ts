@@ -44,14 +44,16 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
   const repositories = provider.repositories;
 
   async function load(): Promise<PsychologyStore> {
-    const [patients, sessions, settings] = await Promise.all([
+    const [patients, sessions, personalAppointments, settings] = await Promise.all([
       repositories.patients.list(scope),
       repositories.sessions.list(scope),
+      repositories.personalAppointments.list(scope),
       repositories.settings.get(scope, 'settings'),
     ]);
     const next = normalizePsychologyStore({
       patients,
       sessions,
+      personalCommitments: personalAppointments,
       settings: settings?.settings,
     }, createPsychologyScope(scope.professionalId));
     return next;
@@ -180,5 +182,18 @@ export function patientStoreWithUpdates(store: PsychologyStore, patients: Psycho
 
 export function patientStoreWithoutIds(store: PsychologyStore, ids: readonly string[]): PsychologyStore {
   const removed = new Set(ids);
-  return { ...store, patients: store.patients.filter(patient => !removed.has(patient.id)) };
+  return {
+    ...store,
+    patients: store.patients.filter(patient => !removed.has(patient.id)),
+    // The server cascade removes these records remotely. Keep the in-memory
+    // provider consistent immediately as well, so a successful deletion never
+    // leaves an orphan session visible until the next authenticated load.
+    sessions: store.sessions.filter(session => !removed.has(session.patientId)),
+    sessionRecords: store.sessionRecords.filter(record => !record.patientId || !removed.has(record.patientId)),
+    charges: store.charges.filter(charge => !charge.patientId || !removed.has(charge.patientId)),
+    payments: store.payments.filter(payment => !payment.patientId || !removed.has(payment.patientId)),
+    sessionPackages: store.sessionPackages.filter(item => !removed.has(item.patientId)),
+    documents: store.documents.filter(document => !document.patientId || !removed.has(document.patientId)),
+    attachments: store.attachments.filter(attachment => !attachment.patientId || !removed.has(attachment.patientId)),
+  };
 }

@@ -107,6 +107,7 @@ function configureFetch({ failCreate = false } = {}) {
     requests.push({ method, path: parsed.pathname, body });
     if (method === 'GET' && parsed.pathname === '/api/psychology/patients') return response({ scope, items: [patient] });
     if (method === 'GET' && parsed.pathname === '/api/psychology/sessions') return response({ scope, items: [] });
+    if (method === 'GET' && parsed.pathname === '/api/psychology/personal-appointments') return response({ scope, items: [] });
     if (method === 'GET' && parsed.pathname === '/api/psychology/settings') return response({ scope, settings: { id: 'settings', ...scope, settings, updatedAt: settings.updatedAt } });
     if (method === 'POST' && parsed.pathname === '/api/psychology/sessions') {
       if (failCreate) return response({ error: { code: 'psychology/synthetic-create-failed', message: 'Falha sintética no agendamento.' } }, 503);
