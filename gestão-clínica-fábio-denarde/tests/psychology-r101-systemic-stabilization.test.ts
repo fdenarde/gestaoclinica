@@ -82,6 +82,7 @@ test('R101 hidrata Agenda Pessoal/Mentoria pelo repository remoto sem leitura cl
         if (path.endsWith('/patients')) return new Response(JSON.stringify({ items: [] }), { status: 200 });
         if (path.endsWith('/sessions')) return new Response(JSON.stringify({ items: [] }), { status: 200 });
         if (path.endsWith('/personal-appointments')) return new Response(JSON.stringify({ items: [personal] }), { status: 200 });
+        if (path.endsWith('/packages')) return new Response(JSON.stringify({ items: [] }), { status: 200 });
         if (path.endsWith('/charges') || path.endsWith('/payments') || path.endsWith('/expenses')) return new Response(JSON.stringify({ items: [] }), { status: 200 });
         if (path.endsWith('/settings')) return new Response(JSON.stringify({ settings: {} }), { status: 200 });
         throw new Error(`Unexpected request: ${path}`);

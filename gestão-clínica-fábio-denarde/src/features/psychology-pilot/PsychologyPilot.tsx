@@ -110,6 +110,7 @@ import {
   PSYCHOLOGY_COLOR_DEFAULTS,
   agendaCategoryForSession,
   colorForAgendaCategory,
+  isPsychologyMentoringService,
   locationForSession,
   type PsychologyAgendaCategory,
   type PsychologyAgendaDayParts,
@@ -593,6 +594,15 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
 
   const persistRemoteFinanceMutation = async (mutation: PsychologyLedgerMutation): Promise<boolean> => {
     if (!remoteClient || remoteLoading || remoteError || !remoteStore) return false;
+    if (mutation.sessionPackage) {
+      const currentPackage = remoteStore.sessionPackages.find(item => item.id === mutation.sessionPackage!.id);
+      const savedPackage = currentPackage
+        ? await remoteClient.repositories.packages.update(remoteClient.scope, mutation.sessionPackage.id, mutation.sessionPackage)
+        : await remoteClient.repositories.packages.upsert(remoteClient.scope, mutation.sessionPackage);
+      if (!savedPackage) return false;
+      setRemoteStore(current => current ? { ...current, sessionPackages: mutation.store.sessionPackages } : current);
+      return true;
+    }
     const financial = remoteClient.repositories.financial;
     const target = mutation.payment
       ? { current: remoteStore.payments.find(item => item.id === mutation.payment!.id), record: mutation.payment, update: financial.updatePayment, create: financial.createPayment }
@@ -1160,8 +1170,8 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
   );
 }
 
-function sessionCategory(session: PsychologySession): PsychologyAgendaCategory {
-  return agendaCategoryForSession(session);
+function sessionCategory(session: PsychologySession, settings: PsychologySettings): PsychologyAgendaCategory {
+  return isPsychologyMentoringService(sessionServiceName(session, settings)) ? 'MENTORING' : agendaCategoryForSession(session);
 }
 
 function sessionLocationLabel(session: PsychologySession, settings: PsychologySettings): string {
@@ -1176,7 +1186,7 @@ function sessionBookingOriginLabel(session: PsychologySession): 'Agendado pelo P
 }
 
 function sessionColor(session: PsychologySession, settings: PsychologySettings): string {
-  return colorForAgendaCategory(settings.colors, sessionCategory(session));
+  return colorForAgendaCategory(settings.colors, sessionCategory(session, settings));
 }
 
 function DayView({ date, setDate, store, sessions, settings, onSchedule, onPersonal, onOpenSession }: { date: string; setDate: (date: string) => void; store: PsychologyStore; sessions: PsychologySession[]; settings: PsychologySettings; onSchedule: () => void; onPersonal: () => void; onOpenSession: (session: PsychologySession) => void }) {
@@ -1290,7 +1300,7 @@ function primaryPsychologyLocation(settings: PsychologySettings) {
 
 function SessionCard({ session, settings, patient, hasRecord, onEdit, onStatus, onRecord }: { session: PsychologySession; settings: PsychologySettings; patient?: PsychologyPatient; hasRecord: boolean; onEdit: () => void; onStatus: (status: PsychologySessionStatus) => void; onRecord: () => void }) {
   const color = sessionColor(session, settings); const originLabel = sessionBookingOriginLabel(session);
-  return <article className="rounded-2xl border p-4 shadow-sm" style={{ borderColor: color, backgroundColor: `${color}18` }} data-testid="psychology-clinical-session" data-agenda-category={sessionCategory(session)}><div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-start gap-3"><div className="rounded-xl p-2.5 text-white" style={{ backgroundColor: color }}><Clock3 size={19} /></div><div><p className="text-lg font-black">{session.time} <span className="text-sm font-bold text-slate-500">· {session.durationMinutes} min</span></p><p className="mt-0.5 font-bold text-slate-800">{patient?.name || 'Paciente não encontrado'}</p><p className="mt-1 flex flex-wrap gap-2 text-xs font-bold text-slate-600"><span>{session.modality === 'online' ? 'Online' : session.locationType === 'EXTERNAL_OFFICE' ? 'Consultório Externo' : 'Presencial'}</span><span>· {sessionLocationLabel(session, settings)}</span>{session.administrativeNote && <span>· {session.administrativeNote}</span>}{originLabel && <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-black text-slate-600">{originLabel}</span>}</p></div></div><StatusPill status={session.status} previewStatus={session.previewStatus} /></div><div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200/80 pt-3"><button type="button" onClick={onEdit} className={secondaryButton}><Pencil size={14} /> Reagendar</button>{session.status !== 'realizada' && session.status !== 'cancelada' && <><button type="button" onClick={() => onStatus('realizada')} className="inline-flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-100"><Check size={14} /> Marcar como realizada</button><button type="button" onClick={() => onStatus('falta')} className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-black text-rose-700 hover:bg-rose-100">Falta</button><button type="button" onClick={() => onStatus('cancelada')} className="rounded-xl px-3 py-2 text-xs font-black text-slate-500 hover:bg-slate-100">Cancelar</button></>}{session.status === 'realizada' && <button type="button" onClick={onRecord} className="inline-flex items-center gap-2 rounded-xl bg-violet-700 px-3 py-2 text-xs font-black text-white hover:bg-violet-800"><FileText size={14} /> {hasRecord ? 'Editar registro' : 'Registrar sessão'}</button>}</div></article>;
+  return <article className="rounded-2xl border p-4 shadow-sm" style={{ borderColor: color, backgroundColor: `${color}18` }} data-testid="psychology-clinical-session" data-agenda-category={sessionCategory(session, settings)}><div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-start gap-3"><div className="rounded-xl p-2.5 text-white" style={{ backgroundColor: color }}><Clock3 size={19} /></div><div><p className="text-lg font-black">{session.time} <span className="text-sm font-bold text-slate-500">· {session.durationMinutes} min</span></p><p className="mt-0.5 font-bold text-slate-800">{patient?.name || 'Paciente não encontrado'}</p><p className="mt-1 flex flex-wrap gap-2 text-xs font-bold text-slate-600"><span>{session.modality === 'online' ? 'Online' : session.locationType === 'EXTERNAL_OFFICE' ? 'Consultório Externo' : 'Presencial'}</span><span>· {sessionLocationLabel(session, settings)}</span>{session.administrativeNote && <span>· {session.administrativeNote}</span>}{originLabel && <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-black text-slate-600">{originLabel}</span>}</p></div></div><StatusPill status={session.status} previewStatus={session.previewStatus} /></div><div className="mt-4 flex flex-wrap gap-2 border-t border-slate-200/80 pt-3"><button type="button" onClick={onEdit} className={secondaryButton}><Pencil size={14} /> Reagendar</button>{session.status !== 'realizada' && session.status !== 'cancelada' && <><button type="button" onClick={() => onStatus('realizada')} className="inline-flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-100"><Check size={14} /> Marcar como realizada</button><button type="button" onClick={() => onStatus('falta')} className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-black text-rose-700 hover:bg-rose-100">Falta</button><button type="button" onClick={() => onStatus('cancelada')} className="rounded-xl px-3 py-2 text-xs font-black text-slate-500 hover:bg-slate-100">Cancelar</button></>}{session.status === 'realizada' && <button type="button" onClick={onRecord} className="inline-flex items-center gap-2 rounded-xl bg-violet-700 px-3 py-2 text-xs font-black text-white hover:bg-violet-800"><FileText size={14} /> {hasRecord ? 'Editar registro' : 'Registrar sessão'}</button>}</div></article>;
 }
 
 function PersonalCard({ commitment, settings }: { commitment: PsychologyPersonalCommitment; settings?: PsychologySettings }) {
@@ -1651,7 +1661,7 @@ function agendaTileKeyDown(event: React.KeyboardEvent<HTMLDivElement>, onOpen: (
 function WeeklySessionTile({ session, settings, patient, onOpen, onRemoveCancelled, scale, simultaneous = false }: { key?: React.Key; session: PsychologySession; settings: PsychologySettings; patient?: PsychologyPatient; onOpen: () => void; onRemoveCancelled?: () => void; scale: ReturnType<typeof getPsychologyAgendaScale>; simultaneous?: boolean }) {
   const height = Math.max(26, scale.eventHeightForMinutes(session.durationMinutes));
   const bucket = psychologyAgendaCardBucket(height);
-  const category = sessionCategory(session);
+  const category = sessionCategory(session, settings);
   const serviceName = sessionServiceName(session, settings);
   const style = resolvePsychologyAgendaEventStyle({ source: 'SESSION', colors: settings.colors, modality: session.modality, location: locationForSession(settings, session), serviceName, cancelled: session.status === 'cancelada' });
   const patientName = patient?.name || 'Paciente não encontrado';

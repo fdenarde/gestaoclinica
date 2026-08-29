@@ -151,6 +151,7 @@ test('R104 contrato financeiro remoto passa pelo adapter real e carrega os três
         if (method === 'GET' && parsed.pathname.endsWith('/patients')) return new Response(JSON.stringify({ ...payload, items: [patient] }), { status: 200 });
         if (method === 'GET' && parsed.pathname.endsWith('/sessions')) return new Response(JSON.stringify({ ...payload, items: [] }), { status: 200 });
         if (method === 'GET' && parsed.pathname.endsWith('/personal-appointments')) return new Response(JSON.stringify({ ...payload, items: [] }), { status: 200 });
+        if (method === 'GET' && parsed.pathname.endsWith('/packages')) return new Response(JSON.stringify({ ...payload, items: [] }), { status: 200 });
         if (method === 'GET' && parsed.pathname.endsWith('/charges')) return new Response(JSON.stringify({ ...payload, items: [charge] }), { status: 200 });
         if (method === 'GET' && parsed.pathname.endsWith('/payments')) return new Response(JSON.stringify({ ...payload, items: [payment] }), { status: 200 });
         if (method === 'GET' && parsed.pathname.endsWith('/expenses')) return new Response(JSON.stringify({ ...payload, items: [expense] }), { status: 200 });
@@ -222,12 +223,12 @@ test('R104 ledger mantém domínio financeiro existente e recalcula resumo após
 
 test('R104 Mentoria usa o token marrom central em todas as superfícies sem herdar Online', () => {
   const defaults = createDefaultPsychologySettings({ professionalId: PROFESSIONAL, context: 'PSICOLOGIA' });
-  assert.equal(PSYCHOLOGY_COLOR_DEFAULTS.MENTORING, '#C9823B');
-  assert.equal(colorForAgendaCategory({ ...defaults.colors, MENTORING: defaults.colors.ONLINE }, 'MENTORING'), '#C9823B');
+  assert.equal(PSYCHOLOGY_COLOR_DEFAULTS.MENTORING, '#C8803E');
+  assert.equal(colorForAgendaCategory({ ...defaults.colors, MENTORING: defaults.colors.ONLINE }, 'MENTORING'), '#C8803E');
   const normalized = normalizePsychologySettings({ colors: { ONLINE: '#16A34A', MENTORING: '#16A34A' } }, defaults.scope);
-  assert.equal(normalized.colors.MENTORING, '#C9823B');
+  assert.equal(normalized.colors.MENTORING, '#C8803E');
   const style = resolvePsychologyAgendaEventStyle({ source: 'MENTORING', colors: normalized.colors });
-  assert.equal(style.baseColor, '#C9823B');
+  assert.equal(style.baseColor, '#C8803E');
   const source = fs.readFileSync(new URL('../src/features/psychology-pilot/PsychologyPilot.tsx', import.meta.url), 'utf8');
   assert.match(source, /resolvePsychologyAgendaEventStyle\(\{ source: commitment\.type === 'Mentoria' \? 'MENTORING'/);
   assert.match(source, /colorForAgendaCategory\(settings\.colors, category\)/);

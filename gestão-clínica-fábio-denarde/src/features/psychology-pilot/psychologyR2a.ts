@@ -94,6 +94,8 @@ export interface PsychologyCharge {
   canceledBy?: string;
   cancelledBy?: string;
   cancellationReason?: string;
+  reactivatedAt?: string;
+  reactivatedBy?: string;
   exemptionReason?: string;
 }
 
@@ -120,6 +122,8 @@ export interface PsychologyPayment {
   voidedAt?: string;
   voidedBy?: string;
   voidReason?: string;
+  reactivatedAt?: string;
+  reactivatedBy?: string;
 }
 
 export type PsychologyExpenseCategory = 'Aluguel' | 'Materiais' | 'Serviços' | 'Impostos/Taxas' | 'Marketing' | 'Capacitação' | 'Tecnologia' | 'Outros';
@@ -140,6 +144,8 @@ export interface PsychologyExpense {
   reversedAt?: string;
   reversedBy?: string;
   reversalReason?: string;
+  reactivatedAt?: string;
+  reactivatedBy?: string;
 }
 
 export interface PsychologySessionPackage {
@@ -154,6 +160,9 @@ export interface PsychologySessionPackage {
   endDate?: string;
   active: boolean;
   price?: number;
+  serviceId?: string;
+  pricePerSession?: number;
+  totalPrice?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -267,7 +276,7 @@ export const PSYCHOLOGY_COLOR_DEFAULTS: PsychologyColorRegistry = {
   ONLINE: '#16A34A',
   PRESENTIAL_PRIMARY: '#DC2626',
   PERSONAL: '#F97316',
-  MENTORING: '#C9823B',
+  MENTORING: '#C8803E',
   EXTERNAL_OFFICE: '#EA580C',
 };
 
@@ -732,6 +741,11 @@ export function isPsychologyTherapyCoupleService(serviceName: string | undefined
   return key === 'terapiadecasal' || key.startsWith('terapiadecasal');
 }
 
+export function isPsychologyMentoringService(serviceName: string | undefined): boolean {
+  const key = psychologyAgendaServiceKey(serviceName);
+  return key.includes('mentoria') || key.includes('mentoring');
+}
+
 function hexColor(value: string): [number, number, number] {
   const normalized = value.replace('#', '');
   return [0, 2, 4].map(index => parseInt(normalized.slice(index, index + 2), 16)) as [number, number, number];
@@ -784,12 +798,15 @@ export function resolvePsychologyAgendaEventStyle(input: {
   cancelled?: boolean;
 }): PsychologyAgendaEventStyle {
   const therapyCouple = isPsychologyTherapyCoupleService(input.serviceName);
+  const mentoringService = isPsychologyMentoringService(input.serviceName);
   const category: PsychologyAgendaCategory = input.category || (input.source === 'PERSONAL_AGENDA'
     ? 'PERSONAL'
     : input.source === 'MENTORING'
       ? 'MENTORING'
+      : mentoringService
+        ? 'MENTORING'
       : agendaCategoryForSession({ modality: input.modality || 'presencial', locationType: input.location?.type }));
-  const baseColor = therapyCouple ? '#EAB308' : colorForAgendaCategory(input.colors, category);
+  const baseColor = therapyCouple && category !== 'MENTORING' ? '#EAB308' : colorForAgendaCategory(input.colors, category);
   const tokens = derivePsychologyAgendaColorTokens(baseColor);
   const cancelled = Boolean(input.cancelled);
   return {

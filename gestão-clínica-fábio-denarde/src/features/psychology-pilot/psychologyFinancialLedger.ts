@@ -9,8 +9,11 @@ import type {
   PsychologyChargeInput,
   PsychologyPaymentInput,
   PsychologyScope,
+  PsychologySessionPackageInput,
   PsychologyStore,
 } from './psychologyDomain';
+import { validatePsychologySessionPackage, upsertPsychologySessionPackage } from './psychologyDomain';
+import type { PsychologySessionPackage } from './psychologyR2a';
 
 export const PSYCHOLOGY_FINANCE_TIMEZONE = 'America/Sao_Paulo';
 
@@ -66,6 +69,7 @@ export interface PsychologyLedgerMutation {
   charge?: PsychologyCharge;
   payment?: PsychologyPayment;
   expense?: PsychologyExpense;
+  sessionPackage?: PsychologySessionPackage;
 }
 
 const PERIOD_DAYS = { week: 7, month: 0, year: 0 } as const;
@@ -107,11 +111,11 @@ function normalizedStatus(value: unknown): string {
   return String(value || '').trim().toLowerCase().replace('ç', 'c');
 }
 
-export function isPsychologyPaymentReversed(payment: Pick<PsychologyPayment, 'status' | 'reversedAt' | 'voidedAt'>): boolean {
-  return normalizedStatus(payment.status) === 'voided' || normalizedStatus(payment.status) === 'reversed' || Boolean(payment.reversedAt || payment.voidedAt);
+export function isPsychologyPaymentReversed(payment: Pick<PsychologyPayment, 'status' | 'reversedAt' | 'voidedAt' | 'reactivatedAt'>): boolean {
+  return normalizedStatus(payment.status) === 'voided' || normalizedStatus(payment.status) === 'reversed' || (Boolean(payment.reversedAt || payment.voidedAt) && !payment.reactivatedAt);
 }
 
-export function isPsychologyPaymentActive(payment: Pick<PsychologyPayment, 'status' | 'reversedAt' | 'voidedAt'>): boolean {
+export function isPsychologyPaymentActive(payment: Pick<PsychologyPayment, 'status' | 'reversedAt' | 'voidedAt' | 'reactivatedAt'>): boolean {
   return !isPsychologyPaymentReversed(payment);
 }
 
@@ -201,6 +205,15 @@ function mutation(store: PsychologyStore, error?: string, values: Omit<Psycholog
   return { store, ...(error ? { error } : {}), ...values };
 }
 
+function validateChargePackage(store: PsychologyStore, packageId: string | undefined, patientId: string, chargeAmount: number): string | undefined {
+  if (!packageId) return undefined;
+  const sessionPackage = store.sessionPackages.find(item => item.id === packageId && scopeMatch(item, store.scope));
+  if (!sessionPackage || sessionPackage.patientId !== patientId || !sessionPackage.active || sessionPackage.usedSessions >= sessionPackage.totalSessions) return 'Selecione um pacote ativo deste paciente com sessões disponíveis.';
+  const packageTotal = sessionPackage.totalPrice ?? sessionPackage.price;
+  if (packageTotal !== undefined && amount(packageTotal) !== chargeAmount) return `A cobrança do pacote deve usar o total de ${formatPsychologyMoney(amount(packageTotal))}.`;
+  return undefined;
+}
+
 function id(prefix: string): string {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`;
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -211,8 +224,9 @@ export function createPsychologyChargeInLedger(store: PsychologyStore, input: Ps
   const description = String(input.description || '').trim();
   const numericAmount = amount(input.amount);
   if (!store.patients.some(patient => patient.id === input.patientId && patient.active && scopeMatch(patient, store.scope))) return mutation(store, 'Selecione um paciente ativo da Psicologia.');
-  if (!description) return mutation(store, 'Informe a descrição da cobrança.');
   if (!Number.isFinite(Number(input.amount)) || Number(input.amount) < 0) return mutation(store, 'Informe um valor válido.');
+  const packageError = validateChargePackage(store, input.packageId, input.patientId, numericAmount);
+  if (packageError) return mutation(store, packageError);
   const charge: PsychologyCharge = {
     id: id('charge'),
     patientId: input.patientId,
@@ -231,6 +245,20 @@ export function createPsychologyChargeInLedger(store: PsychologyStore, input: Ps
     exemptionReason: input.exempt ? input.exemptionReason?.trim() || undefined : undefined,
   };
   return mutation({ ...store, charges: [...store.charges, charge] }, undefined, { charge });
+}
+
+export function updatePsychologyChargeInLedger(store: PsychologyStore, chargeId: string, patch: Partial<Pick<PsychologyCharge, 'patientId' | 'description' | 'amount' | 'dueDate' | 'sessionId' | 'serviceId' | 'packageId' | 'exemptionReason'>>, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const current = store.charges.find(item => item.id === chargeId && scopeMatch(item, store.scope));
+  if (!current) return mutation(store, 'Cobrança não encontrada neste contexto.');
+  const next = { ...current, ...patch, description: String(patch.description ?? current.description ?? '').trim(), amount: amount(patch.amount ?? current.amount), updatedAt: now };
+  if (next.patientId && !store.patients.some(patient => patient.id === next.patientId && patient.active && scopeMatch(patient, store.scope))) return mutation(store, 'Selecione um paciente ativo da Psicologia.');
+  if (!Number.isFinite(Number(next.amount)) || Number(next.amount) < 0) return mutation(store, 'Informe um valor válido.');
+  const packageError = next.packageId !== current.packageId ? validateChargePackage(store, next.packageId, next.patientId, next.amount) : undefined;
+  if (packageError) return mutation(store, packageError);
+  const received = getPsychologyChargeFinancialState(current, store.payments).received;
+  if (next.amount < received) return mutation(store, 'O valor da cobrança não pode ser menor que o total já recebido.');
+  const updated = { ...next, status: next.amount === 0 ? 'exempt' as const : current.status === 'canceled' || current.status === 'cancelled' ? current.status : received >= next.amount ? 'paid' as const : received > 0 ? 'partial' as const : 'pending' as const };
+  return mutation({ ...store, charges: store.charges.map(item => item.id === chargeId ? updated : item) }, undefined, { charge: updated });
 }
 
 export function createPsychologyPaymentInLedger(store: PsychologyStore, input: PsychologyPaymentInput, now = new Date().toISOString()): PsychologyLedgerMutation {
@@ -272,9 +300,25 @@ export function createPsychologyPaymentInLedger(store: PsychologyStore, input: P
   return mutation({ ...store, charges, payments }, undefined, { payment });
 }
 
+export function updatePsychologyPaymentInLedger(store: PsychologyStore, paymentId: string, patch: Partial<Pick<PsychologyPayment, 'amount' | 'date' | 'method'>>, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const current = store.payments.find(item => item.id === paymentId && scopeMatch(item, store.scope));
+  if (!current) return mutation(store, 'Pagamento não encontrado neste contexto.');
+  if (!Number.isFinite(Number(patch.amount ?? current.amount)) || Number(patch.amount ?? current.amount) <= 0) return mutation(store, 'O valor do pagamento deve ser maior que zero.');
+  if (patch.date !== undefined && !patch.date) return mutation(store, 'Informe a data do pagamento.');
+  if (patch.method !== undefined && !PAYMENT_METHODS.has(patch.method)) return mutation(store, 'Informe um meio de pagamento válido.');
+  const amountValue = amount(patch.amount ?? current.amount);
+  const charge = current.chargeId ? store.charges.find(item => item.id === current.chargeId) : undefined;
+  if (charge && isPsychologyPaymentActive(current)) {
+    const receivedWithoutCurrent = store.payments.filter(item => item.chargeId === charge.id && item.id !== current.id && isPsychologyPaymentActive(item)).reduce((sum, item) => sum + amount(item.amount), 0);
+    if (receivedWithoutCurrent + amountValue > amount(charge.amount)) return mutation(store, 'O pagamento ultrapassa o saldo atual da cobrança.');
+  }
+  const updated = { ...current, amount: amountValue, date: String(patch.date ?? current.date).slice(0, 10), method: patch.method ?? current.method, updatedAt: now };
+  const payments = store.payments.map(item => item.id === paymentId ? updated : item);
+  return mutation({ ...store, payments }, undefined, { payment: updated });
+}
+
 export function createPsychologyExpenseInLedger(store: PsychologyStore, input: PsychologyExpenseInput, now = new Date().toISOString()): PsychologyLedgerMutation {
   const description = String(input.description || '').trim();
-  if (!description) return mutation(store, 'Informe a descrição da despesa.');
   if (!Number.isFinite(Number(input.amount)) || Number(input.amount) <= 0) return mutation(store, 'O valor da despesa deve ser maior que zero.');
   if (!input.date) return mutation(store, 'Informe a data da despesa.');
   if (!EXPENSE_CATEGORIES.has(input.category)) return mutation(store, 'Informe uma categoria válida.');
@@ -296,6 +340,17 @@ export function createPsychologyExpenseInLedger(store: PsychologyStore, input: P
   return mutation({ ...store, expenses: [...(store.expenses || []), expense] }, undefined, { expense });
 }
 
+export function updatePsychologyExpenseInLedger(store: PsychologyStore, expenseId: string, patch: Partial<Pick<PsychologyExpense, 'description' | 'amount' | 'date' | 'category' | 'status'>>, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const current = (store.expenses || []).find(item => item.id === expenseId && scopeMatch(item, store.scope));
+  if (!current) return mutation(store, 'Despesa não encontrada neste contexto.');
+  const description = String(patch.description ?? current.description ?? '').trim();
+  if (!Number.isFinite(Number(patch.amount ?? current.amount)) || Number(patch.amount ?? current.amount) <= 0) return mutation(store, 'O valor da despesa deve ser maior que zero.');
+  if (patch.date !== undefined && !patch.date) return mutation(store, 'Informe a data da despesa.');
+  if (patch.category !== undefined && !EXPENSE_CATEGORIES.has(patch.category)) return mutation(store, 'Informe uma categoria válida.');
+  const updated = { ...current, description, amount: amount(patch.amount ?? current.amount), date: String(patch.date ?? current.date).slice(0, 10), category: patch.category ?? current.category, status: patch.status ?? current.status, updatedAt: now };
+  return mutation({ ...store, expenses: (store.expenses || []).map(item => item.id === expenseId ? updated : item) }, undefined, { expense: updated });
+}
+
 export function cancelPsychologyCharge(store: PsychologyStore, chargeId: string, reason: string, actor = store.scope.professionalId, now = new Date().toISOString()): PsychologyLedgerMutation {
   const normalizedReason = String(reason || '').trim();
   if (!normalizedReason) return mutation(store, 'O motivo do cancelamento é obrigatório.');
@@ -305,13 +360,22 @@ export function cancelPsychologyCharge(store: PsychologyStore, chargeId: string,
   return mutation({ ...store, charges: store.charges.map(item => item.id === chargeId ? updated : item) }, undefined, { charge: updated });
 }
 
+export function reactivatePsychologyCharge(store: PsychologyStore, chargeId: string, actor = store.scope.professionalId, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const charge = store.charges.find(item => item.id === chargeId && scopeMatch(item, store.scope));
+  if (!charge) return mutation(store, 'Cobrança não encontrada neste contexto.');
+  if (normalizePsychologyChargeStatus(charge) !== 'CANCELLED') return mutation(store, undefined, { charge });
+  const refreshed = getPsychologyChargeFinancialState({ ...charge, status: charge.amount === 0 ? 'exempt' : 'pending' }, store.payments);
+  const updated = { ...charge, status: refreshed.status === 'PAID' ? 'paid' as const : refreshed.status === 'PARTIALLY_PAID' ? 'partial' as const : refreshed.status === 'EXEMPT' ? 'exempt' as const : 'pending' as const, reactivatedAt: now, reactivatedBy: actor, updatedAt: now };
+  return mutation({ ...store, charges: store.charges.map(item => item.id === chargeId ? updated : item) }, undefined, { charge: updated });
+}
+
 export function reversePsychologyPayment(store: PsychologyStore, paymentId: string, reason: string, actor = store.scope.professionalId, now = new Date().toISOString()): PsychologyLedgerMutation {
   const normalizedReason = String(reason || '').trim();
   if (!normalizedReason) return mutation(store, 'O motivo do estorno é obrigatório.');
   const payment = store.payments.find(item => item.id === paymentId && scopeMatch(item, store.scope));
   if (!payment) return mutation(store, 'Pagamento não encontrado neste contexto.');
   if (isPsychologyPaymentReversed(payment)) return mutation(store, undefined, { payment });
-  const updated = { ...payment, status: 'voided' as const, reversedAt: now, reversedBy: actor, reversalReason: normalizedReason, voidedAt: now, voidedBy: actor, voidReason: normalizedReason, updatedAt: now };
+  const updated = { ...payment, status: 'voided' as const, reversedAt: now, reversedBy: actor, reversalReason: normalizedReason, voidedAt: now, voidedBy: actor, voidReason: normalizedReason, reactivatedAt: undefined, reactivatedBy: undefined, updatedAt: now };
   const payments = store.payments.map(item => item.id === paymentId ? updated : item);
   const charge = store.charges.find(item => item.id === payment.chargeId);
   const refreshed = charge ? getPsychologyChargeFinancialState(charge, payments, psychologyCivilDate()) : undefined;
@@ -321,14 +385,49 @@ export function reversePsychologyPayment(store: PsychologyStore, paymentId: stri
   return mutation({ ...store, charges, payments }, undefined, { payment: updated });
 }
 
+export function reactivatePsychologyPayment(store: PsychologyStore, paymentId: string, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const payment = store.payments.find(item => item.id === paymentId && scopeMatch(item, store.scope));
+  if (!payment) return mutation(store, 'Pagamento não encontrado neste contexto.');
+  if (isPsychologyPaymentActive(payment)) return mutation(store, undefined, { payment });
+  const charge = payment.chargeId ? store.charges.find(item => item.id === payment.chargeId) : undefined;
+  if (charge) {
+    const activeTotal = store.payments.filter(item => item.chargeId === charge.id && item.id !== payment.id && isPsychologyPaymentActive(item)).reduce((sum, item) => sum + amount(item.amount), 0);
+    if (activeTotal + amount(payment.amount) > amount(charge.amount)) return mutation(store, 'A reativação ultrapassaria o valor da cobrança.');
+  }
+  const updated = { ...payment, status: 'active' as const, reactivatedAt: now, reactivatedBy: store.scope.professionalId, updatedAt: now };
+  const payments = store.payments.map(item => item.id === paymentId ? updated : item);
+  const charges = charge ? store.charges.map(item => item.id === charge.id ? { ...item, status: getPsychologyChargeFinancialState(item, payments).status === 'PAID' ? 'paid' as const : getPsychologyChargeFinancialState(item, payments).status === 'PARTIALLY_PAID' ? 'partial' as const : 'pending' as const, updatedAt: now } : item) : store.charges;
+  return mutation({ ...store, charges, payments }, undefined, { payment: updated });
+}
+
 export function reversePsychologyExpense(store: PsychologyStore, expenseId: string, reason: string, actor = store.scope.professionalId, now = new Date().toISOString()): PsychologyLedgerMutation {
   const normalizedReason = String(reason || '').trim();
   if (!normalizedReason) return mutation(store, 'O motivo do estorno é obrigatório.');
   const expense = (store.expenses || []).find(item => item.id === expenseId && scopeMatch(item, store.scope));
   if (!expense) return mutation(store, 'Despesa não encontrada neste contexto.');
   if (expense.status === 'REVERSED') return mutation(store, undefined, { expense });
-  const updated = { ...expense, status: 'REVERSED' as const, reversedAt: now, reversedBy: actor, reversalReason: normalizedReason, updatedAt: now };
+  const updated = { ...expense, status: 'REVERSED' as const, reversedAt: now, reversedBy: actor, reversalReason: normalizedReason, reactivatedAt: undefined, reactivatedBy: undefined, updatedAt: now };
   return mutation({ ...store, expenses: (store.expenses || []).map(item => item.id === expenseId ? updated : item) }, undefined, { expense: updated });
+}
+
+export function reactivatePsychologyExpense(store: PsychologyStore, expenseId: string, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const expense = (store.expenses || []).find(item => item.id === expenseId && scopeMatch(item, store.scope));
+  if (!expense) return mutation(store, 'Despesa não encontrada neste contexto.');
+  if (expense.status !== 'REVERSED') return mutation(store, undefined, { expense });
+  const updated = { ...expense, status: 'REALIZED' as const, reactivatedAt: now, reactivatedBy: store.scope.professionalId, updatedAt: now };
+  return mutation({ ...store, expenses: (store.expenses || []).map(item => item.id === expenseId ? updated : item) }, undefined, { expense: updated });
+}
+
+export function upsertPsychologySessionPackageInLedger(store: PsychologyStore, input: PsychologySessionPackageInput, packageId?: string, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const error = validatePsychologySessionPackage(input, store);
+  if (error) return mutation(store, error);
+  const next = upsertPsychologySessionPackage(store, input, packageId, now);
+  const sessionPackage = next.sessionPackages.find(item => item.id === (packageId || next.sessionPackages[next.sessionPackages.length - 1]?.id));
+  return mutation(next, undefined, { sessionPackage });
+}
+
+export function createPsychologySessionPackageInLedger(store: PsychologyStore, input: PsychologySessionPackageInput, now = new Date().toISOString()): PsychologyLedgerMutation {
+  return upsertPsychologySessionPackageInLedger(store, input, undefined, now);
 }
 
 export function formatPsychologyMoney(value: number): string {

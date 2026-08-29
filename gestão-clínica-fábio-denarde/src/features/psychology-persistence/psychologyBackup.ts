@@ -88,16 +88,16 @@ export function selectPsychologyBackupData(store: PsychologyStore): PsychologyBa
       ...(pickReferences(location.externalReferences) ? { externalReferences: pickReferences(location.externalReferences) } : {}),
     })),
     sessionPackages: store.sessionPackages.map(item => pick(item as unknown as Record<string, unknown>, [
-      'id', 'patientId', 'name', 'totalSessions', 'usedSessions', 'startDate', 'endDate', 'active', 'price',
+      'id', 'patientId', 'name', 'serviceId', 'totalSessions', 'usedSessions', 'startDate', 'endDate', 'active', 'price', 'pricePerSession', 'totalPrice',
       'createdAt', 'updatedAt',
     ])),
     charges: store.charges.map(charge => pick(charge as unknown as Record<string, unknown>, [
       'id', 'patientId', 'sessionId', 'serviceId', 'packageId', 'description', 'amount', 'dueDate', 'status',
-      'createdAt', 'updatedAt', 'cancelledAt', 'cancellationReason', 'exempt', 'exemptionReason',
+      'createdAt', 'updatedAt', 'cancelledAt', 'cancellationReason', 'reactivatedAt', 'reactivatedBy', 'exempt', 'exemptionReason',
     ])),
     payments: store.payments.map(payment => pick(payment as unknown as Record<string, unknown>, [
       'id', 'chargeId', 'patientId', 'sessionId', 'amount', 'date', 'method', 'status', 'createdAt', 'updatedAt',
-      'reversedAt', 'reversalReason', 'voidedAt', 'operationKey',
+      'reversedAt', 'reversalReason', 'voidedAt', 'reactivatedAt', 'reactivatedBy', 'operationKey',
     ])),
     expenses: store.expenses.map(expense => pick(expense as unknown as Record<string, unknown>, [
       'id', 'description', 'amount', 'date', 'category', 'status', 'createdAt', 'updatedAt',

@@ -69,6 +69,7 @@ test('R101 sessão atrasada mostra processamento, impede duplo envio e libera a 
     if (method === 'GET' && parsed.pathname.endsWith('/patients')) return response({ scope, items: [patient] });
     if (method === 'GET' && parsed.pathname.endsWith('/sessions')) return response({ scope, items: [] });
     if (method === 'GET' && parsed.pathname.endsWith('/personal-appointments')) return response({ scope, items: [] });
+    if (method === 'GET' && parsed.pathname.endsWith('/packages')) return response({ scope, items: [] });
     if (method === 'GET' && (parsed.pathname.endsWith('/charges') || parsed.pathname.endsWith('/payments') || parsed.pathname.endsWith('/expenses'))) return response({ scope, items: [] });
     if (method === 'GET' && parsed.pathname.endsWith('/settings')) return response({ scope, settings: { id: 'settings', ...scope, settings, updatedAt: settings.updatedAt } });
     if (method === 'POST' && parsed.pathname.endsWith('/sessions')) return createResponse;

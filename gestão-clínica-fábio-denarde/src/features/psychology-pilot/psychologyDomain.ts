@@ -308,6 +308,9 @@ export interface PsychologySessionPackageInput {
   endDate?: string;
   active?: boolean;
   price?: number;
+  serviceId?: string;
+  pricePerSession?: number;
+  totalPrice?: number;
 }
 
 export interface PsychologySessionValidationOptions {
@@ -414,6 +417,9 @@ export function normalizePsychologyStore(value: unknown, scope = createPsycholog
       totalSessions: Math.max(1, Math.floor(Number(item.totalSessions) || 1)),
       usedSessions: Math.max(0, Math.min(Math.floor(Number(item.usedSessions) || 0), Math.max(1, Math.floor(Number(item.totalSessions) || 1)))),
       active: item.active !== false,
+      serviceId: item.serviceId ? canonicalPsychologyServiceId(item.serviceId) : undefined,
+      pricePerSession: typeof item.pricePerSession === 'number' && item.pricePerSession >= 0 ? item.pricePerSession : undefined,
+      totalPrice: typeof item.totalPrice === 'number' && item.totalPrice >= 0 ? item.totalPrice : undefined,
     })) as PsychologySessionPackage[] : [],
     documents: Array.isArray(input.documents) ? input.documents.filter(item => belongsToScope(item, scope) && item.context === PSYCHOLOGY_CONTEXT) as PsychologyDocument[] : [],
     attachments: Array.isArray(input.attachments) ? input.attachments.filter(item => belongsToScope(item, scope) && item.context === PSYCHOLOGY_CONTEXT) as PsychologyAttachment[] : [],
@@ -800,6 +806,9 @@ export function validatePsychologySessionPackage(input: PsychologySessionPackage
   if (!Number.isInteger(input.usedSessions || 0) || (input.usedSessions || 0) < 0 || (input.usedSessions || 0) > input.totalSessions) return 'As sessões utilizadas não podem ultrapassar o total.';
   if (!input.startDate) return 'Informe a data inicial do pacote.';
   if (input.endDate && input.endDate < input.startDate) return 'A data final não pode ser anterior à inicial.';
+  if (input.serviceId && !store.services.some(service => service.id === canonicalPsychologyServiceId(input.serviceId) && service.active)) return 'Selecione um serviço ativo.';
+  if (input.pricePerSession !== undefined && (!Number.isFinite(input.pricePerSession) || input.pricePerSession < 0)) return 'Informe um valor por sessão válido.';
+  if (input.totalPrice !== undefined && (!Number.isFinite(input.totalPrice) || input.totalPrice < 0)) return 'Informe um valor total válido.';
   return null;
 }
 
@@ -820,6 +829,9 @@ export function upsertPsychologySessionPackage(store: PsychologyStore, input: Ps
     endDate: input.endDate || undefined,
     active: input.active !== false,
     price: typeof input.price === 'number' && input.price >= 0 ? input.price : undefined,
+    serviceId: input.serviceId ? canonicalPsychologyServiceId(input.serviceId) : undefined,
+    pricePerSession: typeof input.pricePerSession === 'number' && input.pricePerSession >= 0 ? input.pricePerSession : undefined,
+    totalPrice: typeof input.totalPrice === 'number' && input.totalPrice >= 0 ? input.totalPrice : undefined,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };

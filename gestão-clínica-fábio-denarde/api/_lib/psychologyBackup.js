@@ -80,15 +80,15 @@ function selectBackupData({ scope, settings, patients, sessions, personalAppoint
       ...(pickReferences(item?.externalReferences) ? { externalReferences: pickReferences(item.externalReferences) } : {}),
     })),
     sessionPackages: (sessionPackages || []).map(item => pick(item, [
-      'id', 'patientId', 'name', 'totalSessions', 'usedSessions', 'startDate', 'endDate', 'active', 'price', 'createdAt', 'updatedAt',
+      'id', 'patientId', 'name', 'serviceId', 'totalSessions', 'usedSessions', 'startDate', 'endDate', 'active', 'price', 'pricePerSession', 'totalPrice', 'createdAt', 'updatedAt',
     ])),
     charges: (charges || []).map(item => pick(item, [
       'id', 'patientId', 'sessionId', 'serviceId', 'packageId', 'description', 'amount', 'dueDate', 'status',
-      'createdAt', 'updatedAt', 'cancelledAt', 'cancellationReason', 'exempt', 'exemptionReason',
+      'createdAt', 'updatedAt', 'cancelledAt', 'cancellationReason', 'reactivatedAt', 'reactivatedBy', 'exempt', 'exemptionReason',
     ])),
     payments: (payments || []).map(item => pick(item, [
       'id', 'chargeId', 'patientId', 'sessionId', 'amount', 'date', 'method', 'status', 'createdAt', 'updatedAt',
-      'reversedAt', 'reversalReason', 'voidedAt', 'operationKey',
+      'reversedAt', 'reversalReason', 'voidedAt', 'reactivatedAt', 'reactivatedBy', 'operationKey',
     ])),
     expenses: (expenses || []).map(item => pick(item, ['id', 'description', 'amount', 'date', 'category', 'status', 'createdAt', 'updatedAt'])),
     clinicalRecords: (sessionRecords || []).map(item => pick(item, [

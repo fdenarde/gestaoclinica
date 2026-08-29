@@ -44,13 +44,14 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
   const repositories = provider.repositories;
 
   async function load(): Promise<PsychologyStore> {
-    const [patients, sessions, personalAppointments, charges, payments, expenses, settings] = await Promise.all([
+    const [patients, sessions, personalAppointments, charges, payments, expenses, packages, settings] = await Promise.all([
       repositories.patients.list(scope),
       repositories.sessions.list(scope),
       repositories.personalAppointments.list(scope),
       repositories.financial.listCharges(scope),
       repositories.financial.listPayments(scope),
       repositories.financial.listExpenses(scope),
+      repositories.packages.list(scope),
       repositories.settings.get(scope, 'settings'),
     ]);
     const next = normalizePsychologyStore({
@@ -60,6 +61,7 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
       charges,
       payments,
       expenses,
+      sessionPackages: packages,
       settings: settings?.settings,
     }, createPsychologyScope(scope.professionalId));
     return next;

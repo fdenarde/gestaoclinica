@@ -107,7 +107,7 @@ const GENERIC_OPERATION_ROUTES = Object.freeze({
   'personal-appointments': { aggregate: 'personalAppointments', readPermission: 'agenda.own.view', writePermission: 'agenda.edit' },
   services: { aggregate: 'services', readPermission: 'agenda.own.view', writePermission: 'agenda.edit' },
   locations: { aggregate: 'locations', readPermission: 'agenda.own.view', writePermission: 'agenda.edit' },
-  packages: { aggregate: 'packages', readPermission: 'finance.patient.view', writePermission: null },
+  packages: { aggregate: 'packages', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
   charges: { aggregate: 'charges', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
   payments: { aggregate: 'payments', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
   expenses: { aggregate: 'expenses', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
@@ -139,11 +139,17 @@ function assertFinancialDate(value) {
 
 async function validateFinancialRecord({ aggregate, record, repository, existing }) {
   if (aggregate === 'charges') {
-    if (!normalize(record.description, 240)) throw apiError('psychology/financial-invalid-description', 'Informe a descrição da cobrança.', 422);
+    if (record.description !== undefined && typeof record.description !== 'string') throw apiError('psychology/financial-invalid-description', 'A descrição da cobrança é inválida.', 422);
     assertFinancialAmount(record.amount, { allowZero: true });
     if (!normalize(record.patientId, 128)) throw apiError('psychology/financial-patient-required', 'A cobrança exige um paciente da Psicologia.', 422);
     const patient = await repository.patients.get(record.patientId);
     if (!patient || patient.active === false) throw apiError('psychology/financial-patient-invalid', 'Selecione um paciente ativo da Psicologia.', 422);
+    if (record.packageId) {
+      const sessionPackage = await repository.packages.get(record.packageId);
+      if (!sessionPackage || sessionPackage.patientId !== record.patientId || sessionPackage.active === false || Number(sessionPackage.usedSessions || 0) >= Number(sessionPackage.totalSessions || 0)) throw apiError('psychology/package-reference-invalid', 'Selecione um pacote ativo deste paciente com sessões disponíveis.', 422);
+      const packageTotal = sessionPackage.totalPrice ?? sessionPackage.price;
+      if (packageTotal !== undefined && Math.abs(Number(packageTotal) - Number(record.amount)) > 0.0001) throw apiError('psychology/package-amount-mismatch', 'A cobrança do pacote deve usar o total cadastrado do pacote.', 422);
+    }
     if (!['pending', 'partial', 'paid', 'exempt', 'canceled', 'cancelled'].includes(String(record.status || '').toLowerCase())) {
       throw apiError('psychology/financial-invalid-status', 'O status da cobrança é inválido.', 422);
     }
@@ -160,7 +166,7 @@ async function validateFinancialRecord({ aggregate, record, repository, existing
     if (String(record.status).toLowerCase() === 'active') {
       const payments = await repository.financial.listPayments();
       const received = payments
-        .filter(payment => payment.chargeId === charge.id && payment.id !== existing?.id && String(payment.status || '').toLowerCase() !== 'voided' && !payment.reversedAt && !payment.voidedAt)
+        .filter(payment => payment.chargeId === charge.id && payment.id !== existing?.id && String(payment.status || '').toLowerCase() !== 'voided' && (!payment.reversedAt || payment.reactivatedAt) && (!payment.voidedAt || payment.reactivatedAt))
         .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount) || 0), 0);
       if (received + Number(record.amount) > Math.max(0, Number(charge.amount) || 0) + 0.0001) {
         throw apiError('psychology/financial-balance-exceeded', 'O pagamento ultrapassa o saldo atual da cobrança.', 422);
@@ -168,11 +174,31 @@ async function validateFinancialRecord({ aggregate, record, repository, existing
     }
   }
   if (aggregate === 'expenses') {
-    if (!normalize(record.description, 240)) throw apiError('psychology/financial-invalid-description', 'Informe a descrição da despesa.', 422);
+    if (record.description !== undefined && typeof record.description !== 'string') throw apiError('psychology/financial-invalid-description', 'A descrição da despesa é inválida.', 422);
     assertFinancialAmount(record.amount);
     assertFinancialDate(record.date);
     if (!FINANCIAL_EXPENSE_CATEGORIES.has(record.category)) throw apiError('psychology/financial-invalid-category', 'Informe uma categoria válida.', 422);
     if (!['REALIZED', 'PENDING', 'REVERSED'].includes(record.status)) throw apiError('psychology/financial-invalid-status', 'O status da despesa é inválido.', 422);
+  }
+  return record;
+}
+
+async function validatePackageRecord({ record, repository }) {
+  if (!normalize(record.patientId, 128)) throw apiError('psychology/package-patient-required', 'O pacote exige um paciente da Psicologia.', 422);
+  const patient = await repository.patients.get(record.patientId);
+  if (!patient || patient.active === false) throw apiError('psychology/package-patient-invalid', 'Selecione um paciente ativo da Psicologia.', 422);
+  if (!normalize(record.name, 240)) throw apiError('psychology/package-invalid-name', 'Informe o nome do pacote.', 422);
+  if (!Number.isInteger(Number(record.totalSessions)) || Number(record.totalSessions) < 1) throw apiError('psychology/package-invalid-total', 'Informe uma quantidade válida de sessões.', 422);
+  if (!Number.isInteger(Number(record.usedSessions || 0)) || Number(record.usedSessions || 0) < 0 || Number(record.usedSessions || 0) > Number(record.totalSessions)) throw apiError('psychology/package-invalid-used', 'As sessões utilizadas não podem ultrapassar o total.', 422);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(record.startDate || ''))) throw apiError('psychology/package-invalid-start-date', 'Informe uma data inicial válida para o pacote.', 422);
+  if (record.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(record.endDate))) throw apiError('psychology/package-invalid-end-date', 'Informe uma data final válida para o pacote.', 422);
+  if (record.endDate && record.endDate < record.startDate) throw apiError('psychology/package-invalid-range', 'A data final não pode ser anterior à inicial.', 422);
+  if (record.serviceId) {
+    const service = await repository.services.get(record.serviceId);
+    if (!service || service.active === false) throw apiError('psychology/package-service-invalid', 'Selecione um serviço ativo.', 422);
+  }
+  for (const [field, label] of [['price', 'preço'], ['pricePerSession', 'valor por sessão'], ['totalPrice', 'valor total']]) {
+    if (record[field] !== undefined && (!Number.isFinite(Number(record[field])) || Number(record[field]) < 0)) throw apiError(`psychology/package-invalid-${field}`, `Informe um ${label} válido.`, 422);
   }
   return record;
 }
@@ -912,6 +938,19 @@ export function createPsychologyApiHandler(dependencies = {}) {
         }
         const item = await financialRepository.upsert(candidate);
         auditHeaders(res, runtimeScope, req.method === 'POST' ? 'create' : 'update', genericRoute.aggregate);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(req.method === 'POST' ? 201 : 200).json({ scope: scopeFields(runtimeScope), item });
+      }
+
+      if (genericRoute?.writePermission && genericRoute.aggregate === 'packages' && (req.method === 'POST' || req.method === 'PATCH')) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const current = req.method === 'PATCH' ? await repository.packages.get(id) : undefined;
+        if (req.method === 'PATCH' && !current) throw apiError('psychology/resource-not-found', 'Pacote não encontrado neste escopo.', 404);
+        const candidate = prepareGenericRecord(req.method === 'PATCH' ? { ...current, ...financialRecordSource(body), id } : body, runtimeScope, now());
+        await validatePackageRecord({ record: candidate, repository });
+        const item = await repository.packages.upsert(candidate);
+        auditHeaders(res, runtimeScope, req.method === 'POST' ? 'create' : 'update', 'packages');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(req.method === 'POST' ? 201 : 200).json({ scope: scopeFields(runtimeScope), item });
       }
