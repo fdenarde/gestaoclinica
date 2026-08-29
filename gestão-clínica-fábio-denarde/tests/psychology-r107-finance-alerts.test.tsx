@@ -115,14 +115,14 @@ test('R107 alertas aceitam apenas sessão passada não concluída e saldo financ
 });
 
 test('R107 Meu Dia renderiza alertas acionáveis para a sessão e para o Financeiro', async () => {
-  const past: PsychologySession = { id: 'session-action', ...scope, patientId: patient.id, date: '2020-01-01', time: '09:00', durationMinutes: 50, modality: 'presencial', serviceId: service.id, status: 'agendada', createdAt: patient.createdAt, updatedAt: patient.updatedAt };
+  const past: PsychologySession = { id: 'session-action', ...scope, patientId: patient.id, date: '2026-08-28', time: '09:00', durationMinutes: 50, modality: 'presencial', serviceId: service.id, status: 'agendada', createdAt: patient.createdAt, updatedAt: patient.updatedAt };
   let store: PsychologyStore = { ...baseStore, patients: [patient], sessions: [past] };
   store = createPsychologyChargeInLedger(store, { patientId: patient.id, amount: 200, description: 'Cobrança sintética' }, patient.createdAt).store;
   let openedSession = '';
   let openedFinance = 0;
   let renderer!: TestRenderer.ReactTestRenderer;
   await act(async () => {
-    renderer = TestRenderer.create(<DayView date="2026-08-29" setDate={() => {}} store={store} sessions={store.sessions} settings={store.settings} onSchedule={() => {}} onPersonal={() => {}} onOpenSession={session => { openedSession = session.id; }} onOpenFinance={() => { openedFinance += 1; }} />);
+    renderer = TestRenderer.create(<DayView date="2026-08-29" setDate={() => {}} store={store} sessions={store.sessions} settings={store.settings} onSchedule={() => {}} onPersonal={() => {}} onOpenSession={session => { openedSession = session.id; }} onOpenFinance={() => { openedFinance += 1; }} operationalReference={new Date('2026-08-29T15:00:00-03:00')} />);
   });
   assert.doesNotMatch(textContent(renderer.root), /Sem próxima sessão/);
   await act(async () => renderer.root.findByProps({ 'data-alert-key': `session:${past.id}` }).props.onClick());

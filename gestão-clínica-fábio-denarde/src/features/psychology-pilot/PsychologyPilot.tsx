@@ -68,7 +68,7 @@ import { createPublicBookingException, getPublicBookingAgendaMarker, isLocationR
 import type { PublicBookingException, PublicBookingSettings } from '../psychology-online-booking/types';
 import { civilDateFromDate, requiresResponsible } from '../../lib/psychologyPatientAdministrative';
 import { createPsychologyPeriod, getPsychologyFinancialLedger, getPsychologyFinancialOverview, type PsychologyLedgerMutation } from './psychologyFinancialLedger';
-import { buildPsychologyOperationalAlerts } from './psychologyOperationalAlerts';
+import { deriveOperationalPendencies, OPERATIONAL_ALERT_INITIAL_LIMIT } from './psychologyOperationalAlerts';
 import {
   countPsychologyPatientList,
   filterPsychologyPatientList,
@@ -342,11 +342,13 @@ function StatusPill({ status, previewStatus, compact = false, style, labelOverri
   return <span title={fullLabel} aria-label={fullLabel} className={`rounded-full whitespace-nowrap ${compact ? 'px-1.5 py-0.5 text-[9px] leading-none' : 'px-2.5 py-1 text-[11px]'} font-black ${style ? 'border' : ''} ${className}`} style={style}>{label}</span>;
 }
 
-function RemoteProviderState({ loading }: { loading: boolean }) {
-  if (loading) {
+export type PsychologyRemoteProviderStatus = 'BOOTSTRAPPING' | 'LOADING' | 'READY' | 'ERROR';
+
+function RemoteProviderState({ status, onRetry }: { status: PsychologyRemoteProviderStatus; onRetry: () => void }) {
+  if (status === 'BOOTSTRAPPING' || status === 'LOADING') {
     return <div className="rounded-2xl border border-sky-200 bg-sky-50 px-5 py-10 text-center" role="status" data-testid="psychology-remote-loading-state"><p className="text-lg font-black text-sky-950">Carregando dados da Psicologia...</p><p className="mx-auto mt-2 max-w-lg text-sm font-semibold text-sky-800">Aguarde a leitura autenticada do provider remoto antes de consultar ou salvar pacientes.</p></div>;
   }
-  return <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-10 text-center" role="alert" data-testid="psychology-remote-error-state"><p className="text-lg font-black text-rose-950">Não foi possível carregar os dados da Psicologia.</p><p className="mx-auto mt-2 max-w-lg text-sm font-semibold text-rose-800">Nenhum dado local será usado como fallback e as gravações permanecem bloqueadas.</p></div>;
+  return <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-10 text-center" role="alert" data-testid="psychology-remote-error-state"><p className="text-lg font-black text-rose-950">Não foi possível carregar os dados da Psicologia.</p><p className="mx-auto mt-2 max-w-lg text-sm font-semibold text-rose-800">Nenhum dado local será usado como fallback e as gravações permanecem bloqueadas.</p><button type="button" onClick={onRetry} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-black text-rose-800 hover:bg-rose-100" data-testid="psychology-remote-retry">Tentar novamente</button></div>;
 }
 
 export default function PsychologyPilot({ runtimeMode }: { runtimeMode: PsychologyRuntimeMode }) {
@@ -364,8 +366,10 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     ? createPsychologyRemotePatientClient({ scope: remoteConfiguration.scope, api: {} })
     : null, [remoteConfiguration]);
   const [remoteStore, setRemoteStore] = useState<PsychologyStore | null>(null);
-  const [remoteLoading, setRemoteLoading] = useState(remoteConfiguration.enabled);
+  const [remoteStatus, setRemoteStatus] = useState<PsychologyRemoteProviderStatus>(remoteConfiguration.enabled ? 'BOOTSTRAPPING' : 'READY');
   const [remoteError, setRemoteError] = useState('');
+  const remoteRequestGeneration = useRef(0);
+  const remoteLoading = remoteStatus === 'BOOTSTRAPPING' || remoteStatus === 'LOADING';
   const publicBookingRepository = useMemo(() => typeof window === 'undefined' ? null : createLocalPublicBookingRepository({ storage: window.localStorage }), []);
   const [publicBookingSettings, setPublicBookingSettings] = useState<PublicBookingSettings | null>(null);
   const [doctoraliaPreview, setDoctoraliaPreview] = useState<PsychologyDoctoraliaPreview | null>(null);
@@ -400,17 +404,36 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     presentationProfile: store.settings.professionalProfile,
   }), [remoteConfiguration.scope.workspaceId, store.scope.professionalId, store.settings.professionalProfile]);
 
+  const loadRemoteProvider = useCallback((status: 'BOOTSTRAPPING' | 'LOADING' = 'LOADING') => {
+    if (!remoteConfiguration.enabled || !remoteClient) return Promise.resolve(false);
+    const generation = ++remoteRequestGeneration.current;
+    setRemoteStatus(status);
+    setRemoteError('');
+    return remoteClient.load()
+      .then(next => {
+        if (generation !== remoteRequestGeneration.current) return false;
+        setRemoteStore(next);
+        setRemoteStatus('READY');
+        return true;
+      })
+      .catch(cause => {
+        if (generation !== remoteRequestGeneration.current) return false;
+        setRemoteError(cause instanceof Error ? cause.message : 'Provider remoto da Psicologia indisponível.');
+        setRemoteStatus('ERROR');
+        return false;
+      });
+  }, [remoteClient, remoteConfiguration.enabled]);
+
   useEffect(() => {
     if (!remoteConfiguration.enabled || !remoteClient) return;
-    let disposed = false;
-    setRemoteLoading(true);
-    setRemoteError('');
-    void remoteClient.load()
-      .then(next => { if (!disposed) setRemoteStore(next); })
-      .catch(cause => { if (!disposed) setRemoteError(cause instanceof Error ? cause.message : 'Provider remoto da Psicologia indisponível.'); })
-      .finally(() => { if (!disposed) setRemoteLoading(false); });
-    return () => { disposed = true; };
-  }, [remoteClient, remoteConfiguration.enabled]);
+    void loadRemoteProvider('BOOTSTRAPPING');
+    return () => { remoteRequestGeneration.current += 1; };
+  }, [loadRemoteProvider, remoteClient, remoteConfiguration.enabled]);
+
+  const retryRemoteProvider = useCallback(() => {
+    if (remoteStatus !== 'ERROR') return;
+    void loadRemoteProvider('LOADING');
+  }, [loadRemoteProvider, remoteStatus]);
 
   useEffect(() => {
     let disposed = false;
@@ -1109,7 +1132,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
   };
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900" data-testid="psychology-pilot">
+    <div className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900" data-testid="psychology-pilot" data-remote-provider-status={remoteConfiguration.enabled ? remoteStatus : undefined}>
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-2.5 backdrop-blur sm:px-6 sm:py-3">
         <div className="flex w-full items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
@@ -1121,9 +1144,9 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
       </header>
 
       {doctoraliaPreview && <div className="border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-amber-950 sm:px-6" role="status" data-testid="doctoralia-preview-banner"><div className="mx-auto flex max-w-7xl items-center justify-between gap-2"><p className="min-w-0 truncate text-[11px] font-black uppercase tracking-[0.12em] text-amber-800" title="Dados reais carregados somente neste ambiente local. Nenhuma informação foi migrada ou sincronizada.">PRÉVIA DOCTORALIA <span className="font-bold normal-case tracking-normal text-amber-900">· somente local · não migrado</span></p><button type="button" onClick={requestEndDoctoraliaPreview} className="shrink-0 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-[11px] font-black text-amber-900 hover:bg-amber-100">Encerrar prévia</button></div></div>}
-      {remoteConfiguration.enabled && <div className="border-b border-sky-200 bg-sky-50 px-4 py-1.5 text-sky-950 sm:px-6" role="status" data-testid="psychology-remote-provider-banner"><div className="mx-auto flex max-w-7xl items-center justify-between gap-2"><p className="min-w-0 truncate text-[11px] font-black uppercase tracking-[0.12em] text-sky-800">PROVIDER REMOTO <span className="font-bold normal-case tracking-normal text-sky-900">· fonte autenticada da Psicologia</span></p><span className="shrink-0 text-[11px] font-black">{remoteLoading ? 'Carregando…' : remoteError ? 'Indisponível' : 'Disponível'}</span></div></div>}
+      {remoteConfiguration.enabled && <div className={`border-b px-4 py-1.5 sm:px-6 ${remoteStatus === 'ERROR' ? 'border-rose-200 bg-rose-50 text-rose-950' : 'border-sky-200 bg-sky-50 text-sky-950'}`} role="status" data-testid="psychology-remote-provider-banner"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2"><p className={`min-w-0 text-[11px] font-black uppercase tracking-[0.12em] ${remoteStatus === 'ERROR' ? 'text-rose-800' : 'text-sky-800'}`}>PROVIDER REMOTO <span className="font-bold normal-case tracking-normal">· fonte autenticada da Psicologia</span></p><div className="flex shrink-0 items-center gap-2"><span className="text-[11px] font-black">{remoteStatus === 'BOOTSTRAPPING' ? 'Inicializando…' : remoteStatus === 'LOADING' ? 'Carregando…' : remoteStatus === 'ERROR' ? 'Erro de carregamento' : 'Disponível'}</span>{remoteStatus === 'ERROR' && <button type="button" onClick={retryRemoteProvider} className="min-h-9 rounded-lg border border-rose-300 bg-white px-3 py-1 text-[11px] font-black text-rose-800 hover:bg-rose-100">Tentar novamente</button>}</div></div></div>}
 
-      <div className="psychology-mobile-content flex w-full flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:px-8 lg:py-5">
+      <div className="psychology-mobile-content flex w-full flex-col gap-4 px-4 pt-4 sm:px-6 lg:flex-row lg:px-8 lg:pt-5">
         <aside className="hidden md:block lg:w-60 lg:shrink-0">
           <div className="mb-3 rounded-2xl border border-violet-100 bg-violet-50 p-3 text-xs text-violet-900"><p className="font-black">Contexto Psicologia</p><p className="mt-1 leading-relaxed text-violet-700">{remoteConfiguration.enabled ? 'Dados do provider remoto, escopados pelo profissional autenticado.' : 'Dados locais deste piloto, separados por profissional.'}</p></div>
           <nav className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-1" aria-label="Navegação da Psicologia">
@@ -1145,11 +1168,11 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
 
           {notice && <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800" role="status">{notice}</div>}
 
-           {page === 'day' && <DayView date={selectedDate} setDate={setSelectedDate} store={store} sessions={daySessions} settings={store.settings} onSchedule={() => openNewEvent()} onPersonal={() => openNewEvent(selectedDate, '09:00', 'personal')} onOpenFinance={() => openPage('finance')} onOpenSession={setSessionActions} />}
-             {page === 'patients' && remoteConfiguration.enabled && (remoteLoading || remoteError) ? <RemoteProviderState loading={remoteLoading} /> : page === 'patients' && <PatientsView rows={visiblePatients} search={search} searchKey={normalizedPatientSearch} setSearch={setSearch} onNew={() => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog(patient); }} onOpen={patient => { setPatientChartInitialTab('summary'); setPatientChart(patient); }} onOpenFinance={patient => { setPatientChartInitialTab('finance'); setPatientChart(patient); }} onDelete={requestPatientDelete} onSetReview={updatePatientReview} onBulkDelete={processBulkPatientDeletion} preview={doctoraliaPreview} />}
+           {page === 'day' && <DayView date={selectedDate} setDate={setSelectedDate} store={store} sessions={daySessions} settings={store.settings} onSchedule={() => openNewEvent()} onPersonal={() => openNewEvent(selectedDate, '09:00', 'personal')} onOpenFinance={(patientId) => { const patient = patientId ? store.patients.find(item => item.id === patientId && item.active === true) : undefined; if (!patient) { openPage('finance'); return; } setPatientChartInitialTab('finance'); setPatientChart(patient); }} onOpenSession={setSessionActions} />}
+             {page === 'patients' && remoteConfiguration.enabled && remoteStatus !== 'READY' ? <RemoteProviderState status={remoteStatus} onRetry={retryRemoteProvider} /> : page === 'patients' && <PatientsView rows={visiblePatients} search={search} searchKey={normalizedPatientSearch} setSearch={setSearch} onNew={() => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog(patient); }} onOpen={patient => { setPatientChartInitialTab('summary'); setPatientChart(patient); }} onOpenFinance={patient => { setPatientChartInitialTab('finance'); setPatientChart(patient); }} onDelete={requestPatientDelete} onSetReview={updatePatientReview} onBulkDelete={processBulkPatientDeletion} preview={doctoraliaPreview} />}
             {page === 'agenda' && <AgendaView sessions={visibleAgendaSessions} personalCommitments={agendaPersonalOccurrences} patientMap={patientMap} settings={store.settings} publicBookingSettings={publicBookingSettings || undefined} weekStart={agendaWeekStart} onPreviousWeek={() => setAgendaWeekStart(current => subWeeks(current, 1))} onNextWeek={() => setAgendaWeekStart(current => addWeeks(current, 1))} onToday={() => { setAgendaWeekStart(startOfWeek(new Date(), { weekStartsOn: 0 })); }} onNew={openNewEvent} onPublicBookingAction={action => { void applyPublicBookingQuickAction(action); }} onOpenSession={setSessionActions} onRemoveCancelled={doctoraliaPreview ? requestHideCancelledPreviewSession : undefined} onOpenPersonal={(item) => { setSelectedDate(item.date); setPage('personal'); }} />}
            {page === 'personal' && <PsychologyPersonalAgenda commitments={store.personalCommitments} scope={store.scope} onPersist={persistPersonalCommitments} />}
-          {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} onNotice={setNotice} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} />}
+          {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} onNotice={setNotice} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} remoteProviderStatus={remoteConfiguration.enabled ? remoteStatus : undefined} onRetryRemote={retryRemoteProvider} />}
            {page === 'reports' && <PsychologyReportsView store={store} />}
           {page === 'settings' && <PsychologySettingsView store={store} settings={store.settings} patients={store.patients} sessionPackages={store.sessionPackages} onUpdatePackage={input => updateSettingsStore(upsertPsychologySessionPackage(store, input, undefined))} onUpdate={patch => updateSettingsStore(updatePsychologySettings(store, patch))} onUpdateLocation={(id, patch) => updateSettingsStore(updatePsychologyLocation(store, id, patch))} onCreateLocation={input => updateSettingsStore(createPsychologyLocation(store, input))} onSetLocationColor={(id, color) => updateSettingsStore(setPsychologyLocationColor(store, id, color))} onSetPrimary={id => updateSettingsStore(setPsychologyPrimaryLocation(store, id))} onSetActive={(id, active) => updateSettingsStore(setPsychologyLocationActive(store, id, active))} onSetColor={(category, color) => updateSettingsStore(setPsychologyCategoryColor(store, category, color))} onRestoreColors={() => updateSettingsStore(restorePsychologyDefaultColors(store))} preview={doctoraliaPreview} hiddenCancelledEventCount={hiddenDoctoraliaCancelledEventIds.length} onRestoreHiddenCancelled={restoreHiddenDoctoraliaCancelledEvents} previewLoading={previewLoading} previewLoadError={previewLoadError} onActivatePreview={activateDoctoraliaPreview} onEndPreview={requestEndDoctoraliaPreview} onGenerateBackup={remoteConfiguration.enabled ? generatePsychologyBackup : undefined} />}
         </main>
@@ -1215,8 +1238,9 @@ function sessionColor(session: PsychologySession, settings: PsychologySettings):
   return resolvePsychologyAgendaEventStyle({ source: 'SESSION', category, colors: settings.colors, modality: session.modality, location: locationForSession(settings, session), serviceName: sessionServiceName(session, settings) }).baseColor;
 }
 
-function DayView({ date, setDate, store, sessions, settings, onSchedule, onPersonal, onOpenFinance, onOpenSession }: { date: string; setDate: (date: string) => void; store: PsychologyStore; sessions: PsychologySession[]; settings: PsychologySettings; onSchedule: () => void; onPersonal: () => void; onOpenFinance: () => void; onOpenSession: (session: PsychologySession) => void }) {
+function DayView({ date, setDate, store, sessions, settings, onSchedule, onPersonal, onOpenFinance, onOpenSession, operationalReference }: { date: string; setDate: (date: string) => void; store: PsychologyStore; sessions: PsychologySession[]; settings: PsychologySettings; onSchedule: () => void; onPersonal: () => void; onOpenFinance: (patientId?: string, chargeId?: string) => void; onOpenSession: (session: PsychologySession) => void; operationalReference?: Date }) {
   const patientMap = useMemo(() => new Map(store.patients.map(patient => [patient.id, patient])), [store.patients]);
+  const [showAllAlerts, setShowAllAlerts] = useState(false);
   const todayAllSessions = sessions.filter(session => session.date === date && session.status !== 'cancelada').sort((a, b) => a.time.localeCompare(b.time));
   const todaySessions = todayAllSessions.filter(session => session.status === 'agendada');
   const tomorrow = format(addDays(new Date(`${date}T12:00:00`), 1), 'yyyy-MM-dd');
@@ -1237,9 +1261,8 @@ function DayView({ date, setDate, store, sessions, settings, onSchedule, onPerso
     realized: todayAllSessions.filter(session => session.status === 'realizada').length,
     absences: todayAllSessions.filter(session => session.status === 'falta').length,
   };
-  const alerts = buildPsychologyOperationalAlerts(store);
-  const pendingSessions = alerts.filter(alert => alert.kind === 'SESSION_PAST_UNFINISHED');
-  const pendingPayments = alerts.filter(alert => alert.kind === 'CHARGE_OPEN_BALANCE');
+  const pendencies = useMemo(() => deriveOperationalPendencies(store, operationalReference), [operationalReference, store]);
+  const visibleAlerts = showAllAlerts ? pendencies.alerts : pendencies.alerts.slice(0, OPERATIONAL_ALERT_INITIAL_LIMIT);
   const activePackages = getActivePsychologySessionPackages(store);
   const birthdays = activePatients.map(patient => ({ patient, dateOfBirth: getPsychologyPatientDateOfBirth(patient) })).filter(item => item.dateOfBirth && item.dateOfBirth.slice(5, 7) === date.slice(5, 7)).sort((a, b) => a.dateOfBirth.localeCompare(b.dateOfBirth));
   const money = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -1258,10 +1281,10 @@ function DayView({ date, setDate, store, sessions, settings, onSchedule, onPerso
     </section>
     <div className="grid gap-4 lg:grid-cols-3" data-testid="psychology-operational-panels">
       <section className={cardClass}><div className="flex items-center justify-between"><h3 className="text-lg font-black text-slate-900">Hoje</h3><CalendarDays size={18} className="text-violet-700" /></div><div className="mt-4 grid grid-cols-3 gap-2"><MiniCount label="Agendadas" value={todayCounts.scheduled} tone="violet" /><MiniCount label="Realizadas" value={todayCounts.realized} tone="green" /><MiniCount label="Faltas" value={todayCounts.absences} tone="rose" /></div></section>
-      <section className={cardClass} data-testid="psychology-pendencies"><div className="flex items-center justify-between gap-2"><h3 className="text-lg font-black text-slate-900">Pendências</h3><div className="flex items-center gap-2"><button type="button" onClick={onOpenFinance} className="rounded-lg px-2 py-1 text-[11px] font-black text-violet-700 hover:bg-violet-50">Abrir Financeiro</button><AlertTriangle size={18} className="text-amber-600" /></div></div><div className="mt-3 space-y-2 text-sm"><PendingRow label="Sessões passadas não concluídas" value={pendingSessions.length} /><PendingRow label="Saldos financeiros em aberto" value={pendingPayments.length} /></div></section>
+      <section className={cardClass} data-testid="psychology-pendencies"><div className="flex items-center justify-between gap-2"><h3 className="text-lg font-black text-slate-900">Pendências</h3><div className="flex items-center gap-2"><button type="button" onClick={() => onOpenFinance()} className="rounded-lg px-2 py-1 text-[11px] font-black text-violet-700 hover:bg-violet-50">Abrir Financeiro</button><AlertTriangle size={18} className="text-amber-600" /></div></div><div className="mt-3 space-y-2 text-sm"><PendingRow label="Sessões pendentes de registro" value={pendencies.sessionPendingCount} /><PendingRow label="Saldos financeiros em aberto" value={pendencies.financialPendingCount} /></div></section>
       <section className={cardClass} data-testid="psychology-personal-summary"><div className="flex items-center justify-between"><h3 className="text-lg font-black text-slate-900">Agenda Pessoal</h3><WalletCards size={18} className="text-blue-600" /></div><p className="mt-1 text-xs text-slate-500">Resumo de hoje; a agenda completa continua no menu.</p>{todayPersonal.length > 0 ? <div className="mt-3 space-y-2">{todayPersonal.slice(0, 3).map(item => <div key={item.occurrenceId} className="flex items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2 text-xs"><span className="min-w-0 truncate font-black text-slate-800">{item.time} · {item.title || item.type}</span>{item.alarmEnabled && <span className="shrink-0 text-blue-700">Alarme</span>}</div>)}</div> : <p className="mt-3 rounded-xl border border-dashed border-blue-200 px-3 py-2 text-sm text-slate-500">Nenhum compromisso hoje.</p>}<p className="mt-3 text-xs font-black text-blue-700">{todayPersonal.filter(item => !item.isDone).length} pendência(s) pessoal(is)</p></section>
     </div>
-    {alerts.length > 0 && <section className="space-y-2" data-testid="psychology-alerts"><h3 className="text-lg font-black text-slate-900">Alertas</h3>{alerts.slice(0, 6).map(alert => <button type="button" key={alert.key} data-alert-key={alert.key} onClick={() => { if (alert.sessionId) { const session = sessions.find(item => item.id === alert.sessionId); if (session) onOpenSession(session); return; } onOpenFinance(); }} className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left text-sm font-bold transition hover:-translate-y-0.5 hover:shadow-sm ${alert.tone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-violet-200 bg-violet-50 text-violet-900'}`}><AlertTriangle size={16} className="shrink-0" /><span className="flex-1">{alert.text}</span><span className="text-[11px] font-black uppercase tracking-wide">Abrir</span></button>)}</section>}
+    {pendencies.alerts.length > 0 && <section className="space-y-2" data-testid="psychology-alerts"><h3 className="text-lg font-black text-slate-900">Alertas</h3>{visibleAlerts.map(alert => <button type="button" key={alert.key} data-alert-key={alert.key} data-alert-patient-id={alert.patientId} data-alert-session-id={alert.sessionId} data-alert-charge-id={alert.chargeId} onClick={() => { if (alert.sessionId) { const session = store.sessions.find(item => item.id === alert.sessionId && item.patientId === alert.patientId); if (session) onOpenSession(session); return; } onOpenFinance(alert.patientId, alert.chargeId); }} className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left text-sm font-bold transition hover:-translate-y-0.5 hover:shadow-sm ${alert.tone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-violet-200 bg-violet-50 text-violet-900'}`}><AlertTriangle size={16} className="shrink-0" /><span className="flex-1">{alert.text}</span><span className="text-[11px] font-black uppercase tracking-wide">Abrir</span></button>)}{pendencies.alerts.length > OPERATIONAL_ALERT_INITIAL_LIMIT && <button type="button" onClick={() => setShowAllAlerts(current => !current)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-black text-violet-700 hover:bg-violet-50">{showAllAlerts ? 'Mostrar menos' : `Ver todas as pendências (${pendencies.alerts.length})`}</button>}</section>}
     <div className="grid gap-4 xl:grid-cols-2">
       <SessionListPanel title="Próximas Sessões — Hoje" sessions={todaySessions} patientMap={patientMap} settings={settings} onOpen={onOpenSession} emptyText="Nenhuma sessão agendada hoje." />
       <SessionListPanel title="Próximas Sessões — Amanhã" sessions={tomorrowSessions} patientMap={patientMap} settings={settings} onOpen={onOpenSession} emptyText="Nenhuma sessão agendada amanhã." />
