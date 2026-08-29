@@ -230,14 +230,17 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
     getCharge: charges.get,
     upsertCharge: charges.upsert,
     updateCharge: charges.update,
+    deleteCharge: charges.delete,
     listPayments: payments.list,
     getPayment: payments.get,
     createPayment: payments.upsert,
     updatePayment: payments.update,
+    deletePayment: payments.delete,
     listExpenses: expenses.list,
     getExpense: expenses.get,
     upsertExpense: expenses.upsert,
     updateExpense: expenses.update,
+    deleteExpense: expenses.delete,
   };
 
   const backup: PsychologyBackupReadBundle = {

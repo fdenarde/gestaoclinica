@@ -140,6 +140,13 @@ const GENERIC_OPERATION_ROUTES = Object.freeze({
 const FINANCIAL_AGGREGATES = new Set(['charges', 'payments', 'expenses']);
 const FINANCIAL_PAYMENT_METHODS = new Set(['PIX', 'CASH', 'CARD', 'TRANSFER', 'OTHER']);
 const FINANCIAL_EXPENSE_CATEGORIES = new Set(['Aluguel', 'Materiais', 'Serviços', 'Impostos/Taxas', 'Marketing', 'Capacitação', 'Tecnologia', 'Outros']);
+const CANONICAL_PSYCHOLOGY_SERVICE_IDS = new Set([
+  'psychotherapy-individual',
+  'therapy-couple',
+  'mentoring',
+  'eneagram-test',
+  'psychotherapy-adolescent',
+]);
 
 function financialRecordSource(body) {
   return body?.item && typeof body.item === 'object' ? body.item : body || {};
@@ -216,13 +223,79 @@ async function validatePackageRecord({ record, repository }) {
   if (record.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(record.endDate))) throw apiError('psychology/package-invalid-end-date', 'Informe uma data final válida para o pacote.', 422);
   if (record.endDate && record.endDate < record.startDate) throw apiError('psychology/package-invalid-range', 'A data final não pode ser anterior à inicial.', 422);
   if (record.serviceId) {
-    const service = await repository.services.get(record.serviceId);
-    if (!service || service.active === false) throw apiError('psychology/package-service-invalid', 'Selecione um serviço ativo.', 422);
+    const settingsRecord = await repository.settings.get('settings');
+    const configuredServices = Array.isArray(settingsRecord?.settings?.services) ? settingsRecord.settings.services : [];
+    const serviceIsActive = configuredServices.length > 0
+      ? configuredServices.some(service => service?.id === record.serviceId && service.active !== false)
+      : CANONICAL_PSYCHOLOGY_SERVICE_IDS.has(record.serviceId);
+    if (!serviceIsActive) throw apiError('psychology/package-service-invalid', 'Selecione um serviço ativo.', 422);
   }
   for (const [field, label] of [['price', 'preço'], ['pricePerSession', 'valor por sessão'], ['totalPrice', 'valor total']]) {
     if (record[field] !== undefined && (!Number.isFinite(Number(record[field])) || Number(record[field]) < 0)) throw apiError(`psychology/package-invalid-${field}`, `Informe um ${label} válido.`, 422);
   }
   return record;
+}
+
+function isActiveFinancialPayment(payment) {
+  const status = String(payment?.status || '').toLowerCase();
+  return status !== 'voided' && status !== 'reversed' && (!payment?.reversedAt || payment?.reactivatedAt) && (!payment?.voidedAt || payment?.reactivatedAt);
+}
+
+function chargeStatusAfterPaymentDeletion(charge, payments) {
+  const currentStatus = String(charge?.status || '').toLowerCase();
+  if (currentStatus === 'canceled' || currentStatus === 'cancelled') return currentStatus;
+  if (currentStatus === 'exempt' || Number(charge?.amount || 0) === 0) return 'exempt';
+  const received = payments
+    .filter(payment => payment.chargeId === charge.id && isActiveFinancialPayment(payment))
+    .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount) || 0), 0);
+  if (received >= Math.max(0, Number(charge.amount) || 0)) return 'paid';
+  return received > 0 ? 'partial' : 'pending';
+}
+
+async function deleteFinancialRecord({ aggregate, id, repository }) {
+  if (aggregate === 'charges') {
+    const charge = await repository.financial.getCharge(id);
+    if (!charge) throw apiError('psychology/resource-not-found', 'Cobrança não encontrada neste escopo.', 404);
+    const payments = await repository.financial.listPayments();
+    if (payments.some(payment => payment.chargeId === charge.id)) {
+      throw apiError('psychology/charge-delete-blocked-by-payments', 'Esta cobrança possui pagamentos vinculados. Estorne ou exclua os pagamentos antes de excluir a cobrança.', 409);
+    }
+    return repository.financial.deleteChargeKnown(charge);
+  }
+  if (aggregate === 'payments') {
+    const payment = await repository.financial.getPayment(id);
+    if (!payment) throw apiError('psychology/resource-not-found', 'Pagamento não encontrado neste escopo.', 404);
+    const charge = payment.chargeId ? await repository.financial.getCharge(payment.chargeId) : null;
+    const remainingPayments = charge
+      ? (await repository.financial.listPayments()).filter(candidate => candidate.id !== payment.id)
+      : [];
+    const deleted = await repository.financial.deletePaymentKnown(payment);
+    if (charge) {
+      await repository.financial.updateChargeKnown(charge, {
+        status: chargeStatusAfterPaymentDeletion(charge, remainingPayments),
+      });
+    }
+    return deleted;
+  }
+  const expense = await repository.financial.getExpense(id);
+  if (!expense) throw apiError('psychology/resource-not-found', 'Despesa não encontrada neste escopo.', 404);
+  return repository.financial.deleteExpenseKnown(expense);
+}
+
+async function deletePackageRecord({ id, repository }) {
+  const sessionPackage = await repository.packages.get(id);
+  if (!sessionPackage) throw apiError('psychology/resource-not-found', 'Pacote não encontrado neste escopo.', 404);
+  const [charges, patients] = await Promise.all([
+    repository.financial.listCharges(),
+    repository.patients.list(),
+  ]);
+  const hasOperationalDependency = Number(sessionPackage.usedSessions || 0) > 0
+    || charges.some(charge => charge.packageId === sessionPackage.id)
+    || patients.some(patient => patient?.financialSettings?.packageId === sessionPackage.id);
+  if (hasOperationalDependency) {
+    throw apiError('psychology/package-delete-blocked-by-dependencies', 'Este pacote já possui uso ou vínculo financeiro. Desative-o para preservar o histórico.', 409);
+  }
+  return repository.packages.delete(sessionPackage.id);
 }
 
 function financialRepositoryFor(repository, aggregate) {
@@ -977,6 +1050,24 @@ export function createPsychologyApiHandler(dependencies = {}) {
         auditHeaders(res, runtimeScope, req.method === 'POST' ? 'create' : 'update', 'packages');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(req.method === 'POST' ? 201 : 200).json({ scope: scopeFields(runtimeScope), item });
+      }
+
+      if (genericRoute?.writePermission && FINANCIAL_AGGREGATES.has(genericRoute.aggregate) && req.method === 'DELETE' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const deleted = await deleteFinancialRecord({ aggregate: genericRoute.aggregate, id, repository });
+        auditHeaders(res, runtimeScope, 'delete', genericRoute.aggregate);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: true, id: deleted.id });
+      }
+
+      if (genericRoute?.writePermission && genericRoute.aggregate === 'packages' && req.method === 'DELETE' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const deleted = await deletePackageRecord({ id, repository });
+        auditHeaders(res, runtimeScope, 'delete', 'packages');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), deleted: true, id: deleted.id });
       }
 
       if (genericRoute?.writePermission && req.method === 'POST' && !id) {

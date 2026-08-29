@@ -348,6 +348,7 @@ export function createPsychologyServerRepository({ db, runtimeScope, now = () =>
       getCharge: repositories.charges.get,
       upsertCharge: repositories.charges.upsert,
       updateCharge: repositories.charges.update,
+      deleteCharge: repositories.charges.delete,
       updateChargeKnown: repositories.charges.updateKnown,
       deleteChargeKnown: repositories.charges.deleteKnown,
       listChargesByPatientOrSessionIds: repositories.charges.listByPatientOrSessionIds,
@@ -355,6 +356,7 @@ export function createPsychologyServerRepository({ db, runtimeScope, now = () =>
       getPayment: repositories.payments.get,
       createPayment: repositories.payments.upsert,
       updatePayment: repositories.payments.update,
+      deletePayment: repositories.payments.delete,
       updatePaymentKnown: repositories.payments.updateKnown,
       deletePaymentKnown: repositories.payments.deleteKnown,
       listPaymentsByPatientOrSessionOrChargeIds: repositories.payments.listByPatientOrSessionOrChargeIds,
@@ -362,6 +364,8 @@ export function createPsychologyServerRepository({ db, runtimeScope, now = () =>
       getExpense: repositories.expenses.get,
       upsertExpense: repositories.expenses.upsert,
       updateExpense: repositories.expenses.update,
+      deleteExpense: repositories.expenses.delete,
+      deleteExpenseKnown: repositories.expenses.deleteKnown,
     },
   };
 }

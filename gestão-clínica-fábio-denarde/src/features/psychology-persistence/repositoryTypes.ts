@@ -64,14 +64,17 @@ export interface PsychologyFinancialRepository {
   getCharge(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyChargeRecord | null>;
   upsertCharge(scope: PsychologyPersistenceScope, entity: PsychologyChargeRecord): Promise<PsychologyChargeRecord>;
   updateCharge(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyChargeRecord>): Promise<PsychologyChargeRecord | null>;
+  deleteCharge(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
   listPayments(scope: PsychologyPersistenceScope): Promise<readonly PsychologyPaymentRecord[]>;
   getPayment(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyPaymentRecord | null>;
   createPayment(scope: PsychologyPersistenceScope, entity: PsychologyPaymentRecord): Promise<PsychologyPaymentRecord>;
   updatePayment(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyPaymentRecord>): Promise<PsychologyPaymentRecord | null>;
+  deletePayment(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
   listExpenses(scope: PsychologyPersistenceScope): Promise<readonly PsychologyExpenseRecord[]>;
   getExpense(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyExpenseRecord | null>;
   upsertExpense(scope: PsychologyPersistenceScope, entity: PsychologyExpenseRecord): Promise<PsychologyExpenseRecord>;
   updateExpense(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyExpenseRecord>): Promise<PsychologyExpenseRecord | null>;
+  deleteExpense(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
 }
 
 export interface PsychologyDocumentRepository extends PsychologyRepository<PsychologyDocumentRecord> {

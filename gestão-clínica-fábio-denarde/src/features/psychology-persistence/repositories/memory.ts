@@ -166,6 +166,7 @@ function createFinancialRepository(
     getCharge: charges.get,
     upsertCharge: charges.upsert,
     updateCharge: charges.update,
+    deleteCharge: charges.delete,
     listPayments: payments.list,
     getPayment: payments.get,
     createPayment: async (requestedScope, entity) => {
@@ -177,10 +178,12 @@ function createFinancialRepository(
       return payments.upsert(requestedScope, entity);
     },
     updatePayment: payments.update,
+    deletePayment: payments.delete,
     listExpenses: expenses.list,
     getExpense: expenses.get,
     upsertExpense: expenses.upsert,
     updateExpense: expenses.update,
+    deleteExpense: expenses.delete,
   };
 }
 

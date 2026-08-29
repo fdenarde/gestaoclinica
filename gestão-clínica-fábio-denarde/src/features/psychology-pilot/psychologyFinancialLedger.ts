@@ -70,6 +70,10 @@ export interface PsychologyLedgerMutation {
   payment?: PsychologyPayment;
   expense?: PsychologyExpense;
   sessionPackage?: PsychologySessionPackage;
+  deleted?: {
+    aggregate: 'charges' | 'payments' | 'expenses' | 'packages';
+    id: string;
+  };
 }
 
 const PERIOD_DAYS = { week: 7, month: 0, year: 0 } as const;
@@ -349,6 +353,74 @@ export function updatePsychologyExpenseInLedger(store: PsychologyStore, expenseI
   if (patch.category !== undefined && !EXPENSE_CATEGORIES.has(patch.category)) return mutation(store, 'Informe uma categoria válida.');
   const updated = { ...current, description, amount: amount(patch.amount ?? current.amount), date: String(patch.date ?? current.date).slice(0, 10), category: patch.category ?? current.category, status: patch.status ?? current.status, updatedAt: now };
   return mutation({ ...store, expenses: (store.expenses || []).map(item => item.id === expenseId ? updated : item) }, undefined, { expense: updated });
+}
+
+export function deletePsychologyChargeFromLedger(store: PsychologyStore, chargeId: string): PsychologyLedgerMutation {
+  const charge = store.charges.find(item => item.id === chargeId && scopeMatch(item, store.scope));
+  if (!charge) return mutation(store, 'Cobrança não encontrada neste contexto.');
+  if (store.payments.some(payment => payment.chargeId === charge.id && scopeMatch(payment, store.scope))) {
+    return mutation(store, 'Esta cobrança possui pagamentos vinculados. Estorne ou exclua os pagamentos antes de excluir a cobrança.');
+  }
+  return mutation(
+    { ...store, charges: store.charges.filter(item => item.id !== charge.id) },
+    undefined,
+    { deleted: { aggregate: 'charges', id: charge.id } },
+  );
+}
+
+export function deletePsychologyPaymentFromLedger(store: PsychologyStore, paymentId: string, now = new Date().toISOString()): PsychologyLedgerMutation {
+  const payment = store.payments.find(item => item.id === paymentId && scopeMatch(item, store.scope));
+  if (!payment) return mutation(store, 'Pagamento não encontrado neste contexto.');
+  const payments = store.payments.filter(item => item.id !== payment.id);
+  const charge = payment.chargeId ? store.charges.find(item => item.id === payment.chargeId && scopeMatch(item, store.scope)) : undefined;
+  const refreshed = charge ? getPsychologyChargeFinancialState(charge, payments) : undefined;
+  const updatedCharge = charge && refreshed ? {
+    ...charge,
+    status: refreshed.status === 'PAID'
+      ? 'paid' as const
+      : refreshed.status === 'PARTIALLY_PAID'
+        ? 'partial' as const
+        : refreshed.status === 'EXEMPT'
+          ? 'exempt' as const
+          : refreshed.status === 'CANCELLED'
+            ? charge.status
+            : 'pending' as const,
+    updatedAt: now,
+  } : undefined;
+  const charges = updatedCharge
+    ? store.charges.map(item => item.id === updatedCharge.id ? updatedCharge : item)
+    : store.charges;
+  return mutation(
+    { ...store, charges, payments },
+    undefined,
+    { charge: updatedCharge, deleted: { aggregate: 'payments', id: payment.id } },
+  );
+}
+
+export function deletePsychologyExpenseFromLedger(store: PsychologyStore, expenseId: string): PsychologyLedgerMutation {
+  const expense = (store.expenses || []).find(item => item.id === expenseId && scopeMatch(item, store.scope));
+  if (!expense) return mutation(store, 'Despesa não encontrada neste contexto.');
+  return mutation(
+    { ...store, expenses: (store.expenses || []).filter(item => item.id !== expense.id) },
+    undefined,
+    { deleted: { aggregate: 'expenses', id: expense.id } },
+  );
+}
+
+export function deletePsychologySessionPackageFromLedger(store: PsychologyStore, packageId: string): PsychologyLedgerMutation {
+  const sessionPackage = store.sessionPackages.find(item => item.id === packageId && scopeMatch(item, store.scope));
+  if (!sessionPackage) return mutation(store, 'Pacote não encontrado neste contexto.');
+  const hasOperationalDependency = sessionPackage.usedSessions > 0
+    || store.charges.some(charge => charge.packageId === sessionPackage.id && scopeMatch(charge, store.scope))
+    || store.patients.some(patient => patient.financialSettings?.packageId === sessionPackage.id && scopeMatch(patient, store.scope));
+  if (hasOperationalDependency) {
+    return mutation(store, 'Este pacote já possui uso ou vínculo financeiro. Desative-o para preservar o histórico.');
+  }
+  return mutation(
+    { ...store, sessionPackages: store.sessionPackages.filter(item => item.id !== sessionPackage.id) },
+    undefined,
+    { deleted: { aggregate: 'packages', id: sessionPackage.id } },
+  );
 }
 
 export function cancelPsychologyCharge(store: PsychologyStore, chargeId: string, reason: string, actor = store.scope.professionalId, now = new Date().toISOString()): PsychologyLedgerMutation {
