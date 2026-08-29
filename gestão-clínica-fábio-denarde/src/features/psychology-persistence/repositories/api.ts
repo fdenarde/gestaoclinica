@@ -226,18 +226,18 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
 
   const financial: PsychologyFinancialRepository = {
     scope,
-    listCharges: unsupported<PsychologyChargeRecord>('charges', scope).list,
-    getCharge: unsupported<PsychologyChargeRecord>('charges', scope).get,
-    upsertCharge: unsupported<PsychologyChargeRecord>('charges', scope).upsert,
-    updateCharge: unsupported<PsychologyChargeRecord>('charges', scope).update,
-    listPayments: unsupported<PsychologyPaymentRecord>('payments', scope).list,
-    getPayment: unsupported<PsychologyPaymentRecord>('payments', scope).get,
-    createPayment: unsupported<PsychologyPaymentRecord>('payments', scope).upsert,
-    updatePayment: unsupported<PsychologyPaymentRecord>('payments', scope).update,
-    listExpenses: unsupported<PsychologyExpenseRecord>('expenses', scope).list,
-    getExpense: unsupported<PsychologyExpenseRecord>('expenses', scope).get,
-    upsertExpense: unsupported<PsychologyExpenseRecord>('expenses', scope).upsert,
-    updateExpense: unsupported<PsychologyExpenseRecord>('expenses', scope).update,
+    listCharges: charges.list,
+    getCharge: charges.get,
+    upsertCharge: charges.upsert,
+    updateCharge: charges.update,
+    listPayments: payments.list,
+    getPayment: payments.get,
+    createPayment: payments.upsert,
+    updatePayment: payments.update,
+    listExpenses: expenses.list,
+    getExpense: expenses.get,
+    upsertExpense: expenses.upsert,
+    updateExpense: expenses.update,
   };
 
   const backup: PsychologyBackupReadBundle = {

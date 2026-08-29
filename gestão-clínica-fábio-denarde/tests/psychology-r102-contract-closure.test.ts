@@ -5,21 +5,22 @@ import test from 'node:test';
 const root = new URL('../', import.meta.url);
 const read = (path: string) => fs.readFileSync(new URL(path, root), 'utf8');
 
-test('R102 financeiro remoto não deixa controles habilitados nem confirma alteração local falsa', () => {
+test('R102/R104 financeiro remoto usa contrato explícito e não confirma alteração local falsa', () => {
   const finance = read('src/features/psychology-pilot/PsychologyFinanceView.tsx');
   const routes = read('api/psychology.js');
   const accessPermissions = read('api/_lib/accessPermissions.js');
 
-  assert.match(finance, /remoteWriteBlocked\?: boolean/);
-  assert.match(finance, /disabled=\{remoteWriteBlocked\}/);
+  assert.match(finance, /onRemoteMutation\?:/);
+  assert.match(finance, /disabled=\{remoteWriteBlocked \|\| processing\}/);
   assert.match(finance, /data-testid="psychology-finance-remote-readonly"/);
-  assert.match(finance, /Provider remoto ativo: a consulta financeira está disponível/);
-  assert.ok(finance.indexOf('if (remoteWriteBlocked)') < finance.indexOf('onStoreChange(result.store)'));
-  assert.match(routes, /charges: \{ aggregate: 'charges', readPermission: 'finance\.patient\.view', writePermission: null \}/);
-  assert.match(routes, /payments: \{ aggregate: 'payments', readPermission: 'finance\.patient\.view', writePermission: null \}/);
-  assert.match(routes, /expenses: \{ aggregate: 'expenses', readPermission: 'finance\.patient\.view', writePermission: null \}/);
+  assert.match(finance, /Aguarde o carregamento do provider remoto antes de salvar o financeiro/);
+  assert.ok(finance.indexOf('if (remoteWriteBlocked)') < finance.indexOf('onRemoteMutation(result)'));
+  assert.match(routes, /charges: \{ aggregate: 'charges', readPermission: 'finance\.patient\.view', writePermission: 'finance\.manage' \}/);
+  assert.match(routes, /payments: \{ aggregate: 'payments', readPermission: 'finance\.patient\.view', writePermission: 'finance\.manage' \}/);
+  assert.match(routes, /expenses: \{ aggregate: 'expenses', readPermission: 'finance\.patient\.view', writePermission: 'finance\.manage' \}/);
   const professionalBlock = accessPermissions.match(/const PROFESSIONAL_PERMISSIONS = permissionsFromAllowedKeys\(\[(.*?)\]\);/s)?.[1] || '';
-  assert.doesNotMatch(professionalBlock, /finance\.manage/);
+  assert.match(professionalBlock, /finance\.patient\.view/);
+  assert.match(professionalBlock, /finance\.manage/);
 });
 
 test('R102 registros clínicos e documentos não ficam como controles remotos habilitados sem contrato', () => {

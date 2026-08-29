@@ -108,12 +108,92 @@ const GENERIC_OPERATION_ROUTES = Object.freeze({
   services: { aggregate: 'services', readPermission: 'agenda.own.view', writePermission: 'agenda.edit' },
   locations: { aggregate: 'locations', readPermission: 'agenda.own.view', writePermission: 'agenda.edit' },
   packages: { aggregate: 'packages', readPermission: 'finance.patient.view', writePermission: null },
-  charges: { aggregate: 'charges', readPermission: 'finance.patient.view', writePermission: null },
-  payments: { aggregate: 'payments', readPermission: 'finance.patient.view', writePermission: null },
-  expenses: { aggregate: 'expenses', readPermission: 'finance.patient.view', writePermission: null },
+  charges: { aggregate: 'charges', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
+  payments: { aggregate: 'payments', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
+  expenses: { aggregate: 'expenses', readPermission: 'finance.patient.view', writePermission: 'finance.manage' },
   documents: { aggregate: 'documents', readPermission: 'documents.view', writePermission: null },
   attachments: { aggregate: 'attachments', readPermission: 'documents.view', writePermission: null },
 });
+
+const FINANCIAL_AGGREGATES = new Set(['charges', 'payments', 'expenses']);
+const FINANCIAL_PAYMENT_METHODS = new Set(['PIX', 'CASH', 'CARD', 'TRANSFER', 'OTHER']);
+const FINANCIAL_EXPENSE_CATEGORIES = new Set(['Aluguel', 'Materiais', 'Serviços', 'Impostos/Taxas', 'Marketing', 'Capacitação', 'Tecnologia', 'Outros']);
+
+function financialRecordSource(body) {
+  return body?.item && typeof body.item === 'object' ? body.item : body || {};
+}
+
+function assertFinancialAmount(value, { allowZero = false } = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || (allowZero ? numeric < 0 : numeric <= 0)) {
+    throw apiError('psychology/financial-invalid-amount', 'Informe um valor financeiro válido.', 422);
+  }
+  return numeric;
+}
+
+function assertFinancialDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || '').slice(0, 10))) {
+    throw apiError('psychology/financial-invalid-date', 'Informe uma data financeira válida.', 422);
+  }
+}
+
+async function validateFinancialRecord({ aggregate, record, repository, existing }) {
+  if (aggregate === 'charges') {
+    if (!normalize(record.description, 240)) throw apiError('psychology/financial-invalid-description', 'Informe a descrição da cobrança.', 422);
+    assertFinancialAmount(record.amount, { allowZero: true });
+    if (!normalize(record.patientId, 128)) throw apiError('psychology/financial-patient-required', 'A cobrança exige um paciente da Psicologia.', 422);
+    const patient = await repository.patients.get(record.patientId);
+    if (!patient || patient.active === false) throw apiError('psychology/financial-patient-invalid', 'Selecione um paciente ativo da Psicologia.', 422);
+    if (!['pending', 'partial', 'paid', 'exempt', 'canceled', 'cancelled'].includes(String(record.status || '').toLowerCase())) {
+      throw apiError('psychology/financial-invalid-status', 'O status da cobrança é inválido.', 422);
+    }
+    if (record.dueDate) assertFinancialDate(record.dueDate);
+  }
+  if (aggregate === 'payments') {
+    if (!normalize(record.chargeId, 128) || !normalize(record.patientId, 128)) throw apiError('psychology/financial-reference-required', 'O pagamento exige cobrança e paciente válidos.', 422);
+    const charge = await repository.financial.getCharge(record.chargeId);
+    if (!charge || charge.patientId !== record.patientId) throw apiError('psychology/financial-reference-invalid', 'O pagamento não corresponde a uma cobrança da Psicologia.', 422);
+    assertFinancialAmount(record.amount);
+    assertFinancialDate(record.date);
+    if (!FINANCIAL_PAYMENT_METHODS.has(record.method)) throw apiError('psychology/financial-invalid-method', 'Informe um meio de pagamento válido.', 422);
+    if (!['active', 'voided'].includes(String(record.status || '').toLowerCase())) throw apiError('psychology/financial-invalid-status', 'O status do pagamento é inválido.', 422);
+    if (String(record.status).toLowerCase() === 'active') {
+      const payments = await repository.financial.listPayments();
+      const received = payments
+        .filter(payment => payment.chargeId === charge.id && payment.id !== existing?.id && String(payment.status || '').toLowerCase() !== 'voided' && !payment.reversedAt && !payment.voidedAt)
+        .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount) || 0), 0);
+      if (received + Number(record.amount) > Math.max(0, Number(charge.amount) || 0) + 0.0001) {
+        throw apiError('psychology/financial-balance-exceeded', 'O pagamento ultrapassa o saldo atual da cobrança.', 422);
+      }
+    }
+  }
+  if (aggregate === 'expenses') {
+    if (!normalize(record.description, 240)) throw apiError('psychology/financial-invalid-description', 'Informe a descrição da despesa.', 422);
+    assertFinancialAmount(record.amount);
+    assertFinancialDate(record.date);
+    if (!FINANCIAL_EXPENSE_CATEGORIES.has(record.category)) throw apiError('psychology/financial-invalid-category', 'Informe uma categoria válida.', 422);
+    if (!['REALIZED', 'PENDING', 'REVERSED'].includes(record.status)) throw apiError('psychology/financial-invalid-status', 'O status da despesa é inválido.', 422);
+  }
+  return record;
+}
+
+function financialRepositoryFor(repository, aggregate) {
+  if (aggregate === 'charges') return {
+    get: repository.financial.getCharge,
+    list: repository.financial.listCharges,
+    upsert: repository.financial.upsertCharge,
+  };
+  if (aggregate === 'payments') return {
+    get: repository.financial.getPayment,
+    list: repository.financial.listPayments,
+    upsert: repository.financial.createPayment,
+  };
+  return {
+    get: repository.financial.getExpense,
+    list: repository.financial.listExpenses,
+    upsert: repository.financial.upsertExpense,
+  };
+}
 
 function prepareGenericRecord(body, runtimeScope, now) {
   const source = body.item && typeof body.item === 'object' ? body.item : body;
@@ -804,11 +884,36 @@ export function createPsychologyApiHandler(dependencies = {}) {
       if (genericRoute && req.method === 'GET') {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.readPermission] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
-        const aggregateRepository = repository[genericRoute.aggregate];
+        const aggregateRepository = FINANCIAL_AGGREGATES.has(genericRoute.aggregate)
+          ? financialRepositoryFor(repository, genericRoute.aggregate)
+          : repository[genericRoute.aggregate];
         const items = id ? [await aggregateRepository.get(id)].filter(Boolean) : await aggregateRepository.list();
         auditHeaders(res, runtimeScope, 'read', genericRoute.aggregate);
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(200).json({ scope: scopeFields(runtimeScope), items });
+      }
+
+      if (genericRoute?.writePermission && FINANCIAL_AGGREGATES.has(genericRoute.aggregate) && (req.method === 'POST' || req.method === 'PATCH')) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const financialRepository = financialRepositoryFor(repository, genericRoute.aggregate);
+        const current = req.method === 'PATCH' ? await financialRepository.get(id) : undefined;
+        if (req.method === 'PATCH' && !current) throw apiError('psychology/resource-not-found', 'Registro financeiro não encontrado neste escopo.', 404);
+        const source = financialRecordSource(body);
+        const candidate = prepareGenericRecord(req.method === 'PATCH' ? { ...current, ...source, id } : source, runtimeScope, now());
+        await validateFinancialRecord({ aggregate: genericRoute.aggregate, record: candidate, repository, existing: current });
+        if (req.method === 'POST' && genericRoute.aggregate === 'payments' && candidate.operationKey) {
+          const existingByOperation = (await financialRepository.list()).find(item => item.operationKey === candidate.operationKey);
+          if (existingByOperation) {
+            auditHeaders(res, runtimeScope, 'create', genericRoute.aggregate);
+            auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+            return res.status(200).json({ scope: scopeFields(runtimeScope), item: existingByOperation });
+          }
+        }
+        const item = await financialRepository.upsert(candidate);
+        auditHeaders(res, runtimeScope, req.method === 'POST' ? 'create' : 'update', genericRoute.aggregate);
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(req.method === 'POST' ? 201 : 200).json({ scope: scopeFields(runtimeScope), item });
       }
 
       if (genericRoute?.writePermission && req.method === 'POST' && !id) {

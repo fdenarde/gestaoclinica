@@ -267,7 +267,7 @@ export const PSYCHOLOGY_COLOR_DEFAULTS: PsychologyColorRegistry = {
   ONLINE: '#16A34A',
   PRESENTIAL_PRIMARY: '#DC2626',
   PERSONAL: '#F97316',
-  MENTORING: '#7C3AED',
+  MENTORING: '#C9823B',
   EXTERNAL_OFFICE: '#EA580C',
 };
 
@@ -640,6 +640,14 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
     crp: professionalRegistration,
     specialty: professionalTitle,
   };
+  const normalizedOnlineColor = normalizePsychologyColor(colors.ONLINE, defaults.colors.ONLINE);
+  const normalizedMentoringColor = normalizePsychologyColor(colors.MENTORING, defaults.colors.MENTORING);
+  // Older candidates accidentally persisted the Online token for Mentoria.
+  // Repair that known cross-category value at the normalization boundary so
+  // every agenda surface receives the same semantic token.
+  const mentoringColor = normalizedMentoringColor === normalizedOnlineColor
+    ? defaults.colors.MENTORING
+    : normalizedMentoringColor;
   return {
     ...defaults,
     ...input,
@@ -649,10 +657,10 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
     services,
     locations: stableLocations,
     colors: {
-      ONLINE: normalizePsychologyColor(colors.ONLINE, defaults.colors.ONLINE),
+      ONLINE: normalizedOnlineColor,
       PRESENTIAL_PRIMARY: normalizePsychologyColor(colors.PRESENTIAL_PRIMARY, defaults.colors.PRESENTIAL_PRIMARY),
       PERSONAL: normalizePsychologyColor(colors.PERSONAL, defaults.colors.PERSONAL),
-      MENTORING: normalizePsychologyColor(colors.MENTORING, defaults.colors.MENTORING),
+      MENTORING: mentoringColor,
       EXTERNAL_OFFICE: normalizePsychologyColor(colors.EXTERNAL_OFFICE, defaults.colors.EXTERNAL_OFFICE),
     },
     reminders: { ...defaults.reminders, ...(input.reminders || {}) },
@@ -666,7 +674,12 @@ export function agendaCategoryForSession(input: { modality: 'presencial' | 'onli
 }
 
 export function colorForAgendaCategory(colors: PsychologyColorRegistry, category: PsychologyAgendaCategory): string {
-  return normalizePsychologyColor(colors[category], PSYCHOLOGY_COLOR_DEFAULTS[category]);
+  const fallback = PSYCHOLOGY_COLOR_DEFAULTS[category];
+  const color = normalizePsychologyColor(colors[category], fallback);
+  return category === 'MENTORING'
+    && color === normalizePsychologyColor(colors.ONLINE, PSYCHOLOGY_COLOR_DEFAULTS.ONLINE)
+    ? fallback
+    : color;
 }
 
 export function locationForSession(settings: PsychologySettings, session: { modality: 'presencial' | 'online'; locationId?: string; locationType?: PsychologyLocationType }): PsychologyLocation | undefined {

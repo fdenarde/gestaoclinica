@@ -65,7 +65,7 @@ import { syncLocalPublicBookingSettings } from '../psychology-online-booking/pub
 import { createPublicBookingException, getPublicBookingAgendaMarker, isLocationReadyForReminder, isValidGoogleMapsUrl, LOCATION_REMINDER_INCOMPLETE_MESSAGE, minutesToTime, timeToMinutes, type PublicBookingAgendaMarker } from '../psychology-online-booking/bookingDomain';
 import type { PublicBookingException, PublicBookingSettings } from '../psychology-online-booking/types';
 import { civilDateFromDate, requiresResponsible } from '../../lib/psychologyPatientAdministrative';
-import { createPsychologyPeriod, getPsychologyFinancialLedger, getPsychologyFinancialOverview } from './psychologyFinancialLedger';
+import { createPsychologyPeriod, getPsychologyFinancialLedger, getPsychologyFinancialOverview, type PsychologyLedgerMutation } from './psychologyFinancialLedger';
 import {
   countPsychologyPatientList,
   filterPsychologyPatientList,
@@ -591,6 +591,33 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     });
   };
 
+  const persistRemoteFinanceMutation = async (mutation: PsychologyLedgerMutation): Promise<boolean> => {
+    if (!remoteClient || remoteLoading || remoteError || !remoteStore) return false;
+    const financial = remoteClient.repositories.financial;
+    const target = mutation.payment
+      ? { current: remoteStore.payments.find(item => item.id === mutation.payment!.id), record: mutation.payment, update: financial.updatePayment, create: financial.createPayment }
+      : mutation.expense
+        ? { current: remoteStore.expenses.find(item => item.id === mutation.expense!.id), record: mutation.expense, update: financial.updateExpense, create: financial.upsertExpense }
+        : mutation.charge
+          ? { current: remoteStore.charges.find(item => item.id === mutation.charge!.id), record: mutation.charge, update: financial.updateCharge, create: financial.upsertCharge }
+          : null;
+    if (!target) return false;
+    const saved = target.current
+      ? await target.update(remoteClient.scope, target.record.id, target.record)
+      : await target.create(remoteClient.scope, target.record);
+    if (!saved) return false;
+    setRemoteStore(current => current ? {
+      ...current,
+      // The local ledger has already applied its deterministic derived status;
+      // the server persists the primary financial fact and derives the same
+      // summary on the next read.
+      charges: mutation.store.charges,
+      payments: mutation.store.payments,
+      expenses: mutation.store.expenses,
+    } : current);
+    return true;
+  };
+
   const openPage = (next: PsychologyPage) => {
     setPage(next);
     setNotice('');
@@ -929,12 +956,9 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
         return { ...current, sessions };
       });
       setSelectedDate(input.date);
-      if (id) {
-        setSessionDialog(null);
-        setSessionPatientId(undefined);
-      } else {
-        setNewEventDialog(null);
-      }
+      setSessionDialog(null);
+      setNewEventDialog(null);
+      setSessionPatientId(undefined);
       setPage('agenda');
       setNotice(id ? 'Sessão atualizada no provider remoto.' : 'Sessão agendada no provider remoto.');
       return true;
@@ -986,6 +1010,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
       if (!updateStore(upsertPsychologySession(store, input, isNew ? undefined : sessionDialog?.id))) return false;
       setSelectedDate(input.date);
       setSessionDialog(null);
+      setNewEventDialog(null);
       setSessionPatientId(undefined);
       setPage('agenda');
       setNotice(isNew ? 'Sessão agendada neste ambiente local.' : 'Sessão atualizada.');
@@ -1089,7 +1114,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
            {page === 'patients' && remoteConfiguration.enabled && (remoteLoading || remoteError) ? <RemoteProviderState loading={remoteLoading} /> : page === 'patients' && <PatientsView rows={visiblePatients} search={search} searchKey={normalizedPatientSearch} setSearch={setSearch} onNew={() => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog(patient); }} onOpen={setPatientChart} onDelete={requestPatientDelete} onSetReview={updatePatientReview} onBulkDelete={processBulkPatientDeletion} preview={doctoraliaPreview} />}
             {page === 'agenda' && <AgendaView sessions={visibleAgendaSessions} personalCommitments={agendaPersonalOccurrences} patientMap={patientMap} settings={store.settings} publicBookingSettings={publicBookingSettings || undefined} weekStart={agendaWeekStart} onPreviousWeek={() => setAgendaWeekStart(current => subWeeks(current, 1))} onNextWeek={() => setAgendaWeekStart(current => addWeeks(current, 1))} onToday={() => { setAgendaWeekStart(startOfWeek(new Date(), { weekStartsOn: 0 })); }} onNew={openNewEvent} onPublicBookingAction={action => { void applyPublicBookingQuickAction(action); }} onOpenSession={setSessionActions} onRemoveCancelled={doctoraliaPreview ? requestHideCancelledPreviewSession : undefined} onOpenPersonal={(item) => { setSelectedDate(item.date); setPage('personal'); }} />}
            {page === 'personal' && <PsychologyPersonalAgenda commitments={store.personalCommitments} scope={store.scope} onPersist={persistPersonalCommitments} />}
-          {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onNotice={setNotice} remoteWriteBlocked={remoteConfiguration.enabled} />}
+          {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} onNotice={setNotice} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} />}
            {page === 'reports' && <PsychologyReportsView store={store} />}
           {page === 'settings' && <PsychologySettingsView store={store} settings={store.settings} patients={store.patients} sessionPackages={store.sessionPackages} onUpdatePackage={input => updateSettingsStore(upsertPsychologySessionPackage(store, input, undefined))} onUpdate={patch => updateSettingsStore(updatePsychologySettings(store, patch))} onUpdateLocation={(id, patch) => updateSettingsStore(updatePsychologyLocation(store, id, patch))} onCreateLocation={input => updateSettingsStore(createPsychologyLocation(store, input))} onSetLocationColor={(id, color) => updateSettingsStore(setPsychologyLocationColor(store, id, color))} onSetPrimary={id => updateSettingsStore(setPsychologyPrimaryLocation(store, id))} onSetActive={(id, active) => updateSettingsStore(setPsychologyLocationActive(store, id, active))} onSetColor={(category, color) => updateSettingsStore(setPsychologyCategoryColor(store, category, color))} onRestoreColors={() => updateSettingsStore(restorePsychologyDefaultColors(store))} preview={doctoraliaPreview} hiddenCancelledEventCount={hiddenDoctoraliaCancelledEventIds.length} onRestoreHiddenCancelled={restoreHiddenDoctoraliaCancelledEvents} previewLoading={previewLoading} previewLoadError={previewLoadError} onActivatePreview={activateDoctoraliaPreview} onEndPreview={requestEndDoctoraliaPreview} onGenerateBackup={remoteConfiguration.enabled ? generatePsychologyBackup : undefined} />}
         </main>

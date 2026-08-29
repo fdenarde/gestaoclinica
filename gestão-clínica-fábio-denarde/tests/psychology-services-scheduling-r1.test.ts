@@ -125,6 +125,8 @@ function createRemoteClient() {
     requests.push(url);
     if (url.endsWith('/patients')) return jsonResponse({ scope, items: [patient] });
     if (url.endsWith('/sessions')) return jsonResponse({ scope, items: [] });
+    if (url.endsWith('/personal-appointments')) return jsonResponse({ scope, items: [] });
+    if (url.endsWith('/charges') || url.endsWith('/payments') || url.endsWith('/expenses')) return jsonResponse({ scope, items: [] });
     if (url.endsWith('/settings')) {
       return jsonResponse({
         scope,

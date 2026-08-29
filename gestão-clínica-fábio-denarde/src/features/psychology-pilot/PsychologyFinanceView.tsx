@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Banknote, CalendarDays, Check, CircleDollarSign, Plus, Receipt, RotateCcw, Search, WalletCards, X } from 'lucide-react';
 import type { PsychologyPatient, PsychologyStore } from './psychologyDomain';
 import {
@@ -13,6 +13,7 @@ import {
   psychologyCivilDate,
   reversePsychologyExpense,
   reversePsychologyPayment,
+  type PsychologyLedgerMutation,
   type PsychologyCanonicalChargeStatus,
   type PsychologyExpenseInput,
   type PsychologyFinancialPeriod,
@@ -67,7 +68,7 @@ function OverviewCard({ label, value, tone }: { label: string; value: string; to
   return <article className={`rounded-2xl border p-4 shadow-sm ${tones[tone]}`}><p className="text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">{label}</p><p className="mt-2 text-2xl font-black text-slate-950">{value}</p></article>;
 }
 
-export default function PsychologyFinanceView({ store, onStoreChange, onNotice, remoteWriteBlocked = false }: { store: PsychologyStore; onStoreChange: (store: PsychologyStore) => boolean; onNotice: (message: string) => void; remoteWriteBlocked?: boolean }) {
+export default function PsychologyFinanceView({ store, onStoreChange, onNotice, onRemoteMutation, remoteWriteBlocked = false }: { store: PsychologyStore; onStoreChange: (store: PsychologyStore) => boolean; onNotice: (message: string) => void; onRemoteMutation?: (mutation: PsychologyLedgerMutation) => boolean | Promise<boolean>; remoteWriteBlocked?: boolean }) {
   const [tab, setTab] = useState<FinanceTab>('overview');
   const [modal, setModal] = useState<Modal>(null);
   const [reasonRequest, setReasonRequest] = useState<ReasonRequest | null>(null);
@@ -79,6 +80,8 @@ export default function PsychologyFinanceView({ store, onStoreChange, onNotice, 
   const [chargeFilter, setChargeFilter] = useState('all');
   const [paymentFilter, setPaymentFilter] = useState('all');
   const [expenseFilter, setExpenseFilter] = useState('all');
+  const [processing, setProcessing] = useState(false);
+  const mutationLock = useRef(false);
   const period = useMemo<PsychologyFinancialPeriod>(() => createPsychologyPeriod(preset, new Date(), customStart, customEnd), [customEnd, customStart, preset]);
   const ledger = useMemo(() => getPsychologyFinancialLedger(store), [store]);
   const overview = useMemo(() => getPsychologyFinancialOverview(store, period), [period, store]);
@@ -102,19 +105,36 @@ export default function PsychologyFinanceView({ store, onStoreChange, onNotice, 
     return matchesSearch && matchesFilter;
   }), [expenseFilter, ledger.expenses, search]);
 
-  const saveMutation = (result: { store: PsychologyStore; error?: string }, success: string) => {
+  const saveMutation = (result: PsychologyLedgerMutation, success: string, onSuccess?: () => void): boolean | Promise<boolean> => {
     if (result.error) { onNotice(result.error); return false; }
     if (remoteWriteBlocked) {
-      onNotice('Provider remoto ativo: escritas financeiras ainda não estão disponíveis neste painel.');
+      onNotice('Aguarde o carregamento do provider remoto antes de salvar o financeiro.');
       return false;
     }
-    if (!onStoreChange(result.store)) {
-      onNotice('Nenhuma alteração financeira foi confirmada.');
-      return false;
+    if (processing || mutationLock.current) return false;
+    const finish = (saved: boolean): boolean => {
+      setProcessing(false);
+      mutationLock.current = false;
+      if (!saved) {
+        onNotice('Nenhuma alteração financeira foi confirmada.');
+        return false;
+      }
+      onNotice(success);
+      setModal(null);
+      onSuccess?.();
+      return true;
+    };
+    if (onRemoteMutation) {
+      mutationLock.current = true;
+      setProcessing(true);
+      try {
+        const saved = onRemoteMutation(result);
+        return saved instanceof Promise ? saved.then(finish).catch(() => finish(false)) : finish(saved);
+      } catch {
+        return finish(false);
+      }
     }
-    onNotice(success);
-    setModal(null);
-    return true;
+    return finish(onStoreChange(result.store));
   };
 
   const confirmReason = () => {
@@ -125,19 +145,20 @@ export default function PsychologyFinanceView({ store, onStoreChange, onNotice, 
         ? reversePsychologyPayment(store, reasonRequest.id, reason)
         : reversePsychologyExpense(store, reasonRequest.id, reason);
     const success = reasonRequest.type === 'charge' ? 'Cobrança cancelada.' : reasonRequest.type === 'payment' ? 'Pagamento estornado.' : 'Despesa estornada.';
-    if (saveMutation(result, success)) { setReasonRequest(null); setReason(''); }
+    void Promise.resolve(saveMutation(result, success, () => { setReasonRequest(null); setReason(''); }));
   };
 
-  return <div className="space-y-5" data-testid="psychology-finance"><div className="flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-700">Financeiro administrativo</p><h3 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Acompanhe recebimentos, pendências e despesas.</h3><p className="mt-2 text-sm text-slate-500">Visão financeira da Psicologia · caixa por data de recebimento e realização.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setModal('charge')} disabled={remoteWriteBlocked} title={remoteWriteBlocked ? 'Escrita financeira remota ainda não disponível' : undefined} className={primaryButton}><Plus size={16} /> Nova cobrança</button><button type="button" onClick={() => setModal('payment')} disabled={remoteWriteBlocked} title={remoteWriteBlocked ? 'Escrita financeira remota ainda não disponível' : undefined} className={secondaryButton}><WalletCards size={16} /> Registrar pagamento</button><button type="button" onClick={() => setModal('expense')} disabled={remoteWriteBlocked} title={remoteWriteBlocked ? 'Escrita financeira remota ainda não disponível' : undefined} className={secondaryButton}><Banknote size={16} /> Nova despesa</button></div></div>{remoteWriteBlocked && <div role="status" data-testid="psychology-finance-remote-readonly" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">Provider remoto ativo: a consulta financeira está disponível, mas escritas de cobrança, pagamento e despesa ainda não estão disponíveis neste painel.</div>}
+  return <div className="space-y-5" data-testid="psychology-finance" aria-busy={processing}><div className="flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-700">Financeiro administrativo</p><h3 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Acompanhe recebimentos, pendências e despesas.</h3><p className="mt-2 text-sm text-slate-500">Visão financeira da Psicologia · caixa por data de recebimento e realização.</p></div><div className="flex flex-wrap gap-2"><button type="button" onClick={() => setModal('charge')} disabled={remoteWriteBlocked || processing} title={remoteWriteBlocked ? 'Aguarde o carregamento financeiro' : undefined} className={primaryButton}><Plus size={16} /> Nova cobrança</button><button type="button" onClick={() => setModal('payment')} disabled={remoteWriteBlocked || processing} title={remoteWriteBlocked ? 'Aguarde o carregamento financeiro' : undefined} className={secondaryButton}><WalletCards size={16} /> Registrar pagamento</button><button type="button" onClick={() => setModal('expense')} disabled={remoteWriteBlocked || processing} title={remoteWriteBlocked ? 'Aguarde o carregamento financeiro' : undefined} className={secondaryButton}><Banknote size={16} /> Nova despesa</button></div></div>{remoteWriteBlocked && <div role="status" data-testid="psychology-finance-remote-readonly" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">Provider remoto ativo: carregando a consulta financeira; as escritas serão habilitadas após o carregamento.</div>}
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap gap-2" role="group" aria-label="Período financeiro">{([['week', 'Esta semana'], ['month', 'Este mês'], ['year', 'Este ano'], ['custom', 'Personalizado']] as const).map(([value, label]) => <button type="button" key={value} onClick={() => setPreset(value)} className={`rounded-xl px-3 py-2 text-xs font-black ${preset === value ? 'bg-violet-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div><span className="text-xs font-bold text-slate-500">{dateLabel(period.startDate)} até {dateLabel(period.endDate)}</span></div>{preset === 'custom' && <div className="mt-3 grid gap-3 sm:grid-cols-2"><Field label="Data inicial"><input type="date" value={customStart} onChange={event => setCustomStart(event.target.value)} className={inputClass} /></Field><Field label="Data final"><input type="date" value={customEnd} onChange={event => setCustomEnd(event.target.value)} className={inputClass} /></Field></div>}</section>
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"><OverviewCard label="Recebido no mês" value={formatPsychologyMoney(overview.received)} tone="emerald" /><OverviewCard label="A receber" value={formatPsychologyMoney(overview.receivable)} tone="amber" /><OverviewCard label="Vencido" value={formatPsychologyMoney(overview.overdue)} tone="rose" /><OverviewCard label="Despesas no mês" value={formatPsychologyMoney(overview.expenses)} tone="slate" /><OverviewCard label="Saldo" value={formatPsychologyMoney(overview.balance)} tone={overview.balance >= 0 ? 'violet' : 'rose'} /></div>
     <div className="flex gap-2 overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Áreas financeiras">{([['overview', 'Visão geral'], ['charges', 'Cobranças'], ['payments', 'Pagamentos'], ['expenses', 'Despesas']] as const).map(([value, label]) => <button type="button" role="tab" aria-selected={tab === value} key={value} onClick={() => setTab(value)} className={`whitespace-nowrap border-b-2 px-3 py-3 text-sm font-black ${tab === value ? 'border-violet-700 text-violet-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>{label}</button>)}</div>
     {tab === 'overview' && <OverviewPanel overview={overview} onTab={setTab} />}
-    {tab !== 'overview' && <section className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row"><label className="relative min-w-0 flex-1"><Search size={16} className="absolute left-3 top-3.5 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder={tab === 'charges' ? 'Buscar paciente ou descrição' : tab === 'payments' ? 'Buscar paciente, cobrança ou meio' : 'Buscar descrição ou categoria'} className={`${inputClass} pl-9`} /></label>{tab === 'charges' && <select value={chargeFilter} onChange={event => setChargeFilter(event.target.value)} className={`${inputClass} sm:w-52`}><option value="all">Todas as cobranças</option><option value="pending">Pendentes</option><option value="partially_paid">Parcialmente pagas</option><option value="paid">Pagas</option><option value="overdue">Vencidas</option><option value="exempt">Isentas</option><option value="cancelled">Canceladas</option></select>}{tab === 'payments' && <select value={paymentFilter} onChange={event => setPaymentFilter(event.target.value)} className={`${inputClass} sm:w-44`}><option value="all">Todos os pagamentos</option><option value="active">Ativos</option><option value="reversed">Estornados</option></select>}{tab === 'expenses' && <select value={expenseFilter} onChange={event => setExpenseFilter(event.target.value)} className={`${inputClass} sm:w-44`}><option value="all">Todas as despesas</option><option value="REALIZED">Realizadas</option><option value="PENDING">Pendentes</option><option value="REVERSED">Estornadas</option></select>}</div>{tab === 'charges' && <ChargesList charges={charges} patientMap={patientMap} onCancel={(id) => { setReasonRequest({ type: 'charge', id }); setReason(''); }} writeBlocked={remoteWriteBlocked} />}{tab === 'payments' && <PaymentsList payments={payments} charges={ledger.charges} patientMap={patientMap} onReverse={(id) => { setReasonRequest({ type: 'payment', id }); setReason(''); }} writeBlocked={remoteWriteBlocked} />}{tab === 'expenses' && <ExpensesList expenses={expenses} onReverse={(id) => { setReasonRequest({ type: 'expense', id }); setReason(''); }} writeBlocked={remoteWriteBlocked} />}</section>}
+    {tab !== 'overview' && <section className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row"><label className="relative min-w-0 flex-1"><Search size={16} className="absolute left-3 top-3.5 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder={tab === 'charges' ? 'Buscar paciente ou descrição' : tab === 'payments' ? 'Buscar paciente, cobrança ou meio' : 'Buscar descrição ou categoria'} className={`${inputClass} pl-9`} /></label>{tab === 'charges' && <select value={chargeFilter} onChange={event => setChargeFilter(event.target.value)} className={`${inputClass} sm:w-52`}><option value="all">Todas as cobranças</option><option value="pending">Pendentes</option><option value="partially_paid">Parcialmente pagas</option><option value="paid">Pagas</option><option value="overdue">Vencidas</option><option value="exempt">Isentas</option><option value="cancelled">Canceladas</option></select>}{tab === 'payments' && <select value={paymentFilter} onChange={event => setPaymentFilter(event.target.value)} className={`${inputClass} sm:w-44`}><option value="all">Todos os pagamentos</option><option value="active">Ativos</option><option value="reversed">Estornados</option></select>}{tab === 'expenses' && <select value={expenseFilter} onChange={event => setExpenseFilter(event.target.value)} className={`${inputClass} sm:w-44`}><option value="all">Todas as despesas</option><option value="REALIZED">Realizadas</option><option value="PENDING">Pendentes</option><option value="REVERSED">Estornadas</option></select>}</div>{tab === 'charges' && <ChargesList charges={charges} patientMap={patientMap} onCancel={(id) => { setReasonRequest({ type: 'charge', id }); setReason(''); }} writeBlocked={remoteWriteBlocked || processing} />}{tab === 'payments' && <PaymentsList payments={payments} charges={ledger.charges} patientMap={patientMap} onReverse={(id) => { setReasonRequest({ type: 'payment', id }); setReason(''); }} writeBlocked={remoteWriteBlocked || processing} />}{tab === 'expenses' && <ExpensesList expenses={expenses} onReverse={(id) => { setReasonRequest({ type: 'expense', id }); setReason(''); }} writeBlocked={remoteWriteBlocked || processing} />}</section>}
     {modal === 'charge' && <ChargeDialog store={store} onClose={() => setModal(null)} onSave={(input) => saveMutation(createPsychologyChargeInLedger(store, input), 'Cobrança criada.')} />}
     {modal === 'payment' && <PaymentDialog store={store} onClose={() => setModal(null)} onSave={(input) => saveMutation(createPsychologyPaymentInLedger(store, input), 'Pagamento registrado.')} />}
     {modal === 'expense' && <ExpenseDialog onClose={() => setModal(null)} onSave={(input) => saveMutation(createPsychologyExpenseInLedger(store, input), 'Despesa criada.')} />}
     {reasonRequest && <ReasonDialog type={reasonRequest.type} reason={reason} setReason={setReason} onClose={() => setReasonRequest(null)} onConfirm={confirmReason} />}
+    {processing && <div className="fixed inset-0 z-[400] flex items-center justify-center bg-slate-950/15" role="status" data-testid="psychology-finance-mutation-processing"><div className="rounded-xl bg-white px-4 py-3 text-sm font-black text-slate-800 shadow-xl">Salvando financeiro…</div></div>}
   </div>;
 }
 
