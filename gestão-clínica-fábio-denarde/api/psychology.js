@@ -713,7 +713,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'patients' && req.method === 'DELETE' && id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.delete'] });
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.edit'] });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
         const deletion = await deletePsychologyPatientSafely({ repository, patientId: id, now: now() });
         if (!deletion.deleted) throw apiError('psychology/patient-not-found', deletion.reason || 'Paciente não encontrado neste escopo.', 404);

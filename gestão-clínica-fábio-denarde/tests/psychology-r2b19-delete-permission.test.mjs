@@ -54,12 +54,16 @@ const scopes = {
   editOnly: { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-r2b19-a', context: 'PSICOLOGIA', role: 'professional', authUid: 'auth-r2b19-a', permissions: [...sharedPermissions, 'patients.edit'] },
   noEdit: { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-r2b19-a', context: 'PSICOLOGIA', role: 'professional', authUid: 'auth-r2b19-no-edit', permissions: [...sharedPermissions] },
   otherProfessional: { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-r2b19-b', context: 'PSICOLOGIA', role: 'professional', authUid: 'auth-r2b19-b', permissions: [...sharedPermissions, 'patients.edit'] },
+  wrongWorkspace: { workspaceId: 'workspace-r2b19-other', tenantId: 'workspace-r2b19-other', professionalId: 'professional-r2b19-a', context: 'PSICOLOGIA', role: 'professional', authUid: 'auth-r2b19-other-workspace', permissions: [...sharedPermissions, 'patients.edit'] },
+  wrongContext: { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-r2b19-a', context: 'NEUROPSICOPEDAGOGIA', role: 'professional', authUid: 'auth-r2b19-wrong-context', permissions: [...sharedPermissions, 'patients.edit'] },
 };
 
 function scopeForToken(token) {
   if (token === 'edit-only') return scopes.editOnly;
   if (token === 'no-edit') return scopes.noEdit;
   if (token === 'other-professional') return scopes.otherProfessional;
+  if (token === 'wrong-workspace') return scopes.wrongWorkspace;
+  if (token === 'wrong-context') return scopes.wrongContext;
   throw Object.assign(new Error('Sessão sintética não identificada.'), { code: 'access/missing-auth-token', statusCode: 401 });
 }
 
@@ -142,7 +146,21 @@ test('R2B19 DELETE mantém proteção de escopo entre profissionais', async () =
   assert.equal(denied.body.error.code, 'psychology/patient-not-found');
 });
 
-test('R2B19 DELETE com histórico inativa e preserva o paciente', async () => {
+test('R2B19 DELETE nega contexto e workspace incompatíveis sem remover o paciente', async () => {
+  const db = new FakeDb();
+  const handler = createSyntheticHandler(db);
+  const patientId = 'r2b19-context-workspace';
+  assert.equal((await call(handler, 'POST', 'patients', 'edit-only', patient(patientId, 'R2B19 CONTEXT WORKSPACE'))).statusCode, 201);
+  const wrongContext = await call(handler, 'DELETE', `patients/${patientId}`, 'wrong-context');
+  const wrongWorkspace = await call(handler, 'DELETE', `patients/${patientId}`, 'wrong-workspace');
+  assert.equal(wrongContext.statusCode, 422);
+  assert.equal(wrongWorkspace.statusCode, 404);
+  const preserved = await call(handler, 'GET', `patients/${patientId}`, 'edit-only');
+  assert.equal(preserved.statusCode, 200);
+  assert.equal(preserved.body.items[0].id, patientId);
+});
+
+test('R2B19 DELETE com histórico remove a cascata seletiva e exclui o paciente', async () => {
   const db = new FakeDb();
   const handler = createSyntheticHandler(db);
   const patientId = 'r2b19-related-data';
@@ -159,10 +177,9 @@ test('R2B19 DELETE com histórico inativa e preserva o paciente', async () => {
 
   const result = await call(handler, 'DELETE', `patients/${patientId}`, 'edit-only');
   assert.equal(result.statusCode, 200);
-  assert.equal(result.body.deleted, false);
-  assert.equal(result.body.inactivated, true);
-  assert.equal(result.body.patient.active, false);
-  const preserved = await call(handler, 'GET', `patients/${patientId}`, 'edit-only');
-  assert.equal(preserved.statusCode, 200);
-  assert.equal(preserved.body.items[0].active, false);
+  assert.equal(result.body.deleted, true);
+  assert.equal(result.body.inactivated, undefined);
+  const removed = await call(handler, 'GET', `patients/${patientId}`, 'edit-only');
+  assert.equal(removed.statusCode, 200);
+  assert.deepEqual(removed.body.items, []);
 });

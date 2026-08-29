@@ -175,8 +175,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
           ? { settings: (entity as unknown as { settings?: unknown }).settings || {} }
           : withScope(entity, scope);
         const idempotencyKey = `${aggregate}:${entity.id}:${entity.updatedAt}`;
-        const result = await request<{ patient?: RecordType; settings?: RecordType; item?: RecordType }>(`/${apiResource}`, method, requestBody, idempotencyKey);
-        const value = result.patient || result.settings || result.item;
+        const result = await request<{ patient?: RecordType; session?: RecordType; settings?: RecordType; item?: RecordType }>(`/${apiResource}`, method, requestBody, idempotencyKey);
+        const value = result.patient || result.session || result.settings || result.item;
         if (!value) throw new ApiPsychologyError('psychology/invalid-response', 'A API não retornou o registro salvo.', 500);
         return withScope(clone(value), scope) as RecordType;
       },
@@ -186,8 +186,8 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
           const result = await request<{ settings?: RecordType }>('/settings', 'PUT', patch);
           return result.settings ? withScope(clone(result.settings), scope) as RecordType : null;
         }
-        const result = await request<{ patient?: RecordType; item?: RecordType }>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
-        const value = result.patient || result.item;
+        const result = await request<{ patient?: RecordType; session?: RecordType; item?: RecordType }>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
+        const value = result.patient || result.session || result.item;
         return value ? withScope(clone(value), scope) as RecordType : null;
       },
       async delete(requestedScope, id) {

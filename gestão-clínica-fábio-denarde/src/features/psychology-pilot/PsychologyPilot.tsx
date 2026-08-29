@@ -346,7 +346,7 @@ function RemoteProviderState({ loading }: { loading: boolean }) {
 export default function PsychologyPilot({ runtimeMode }: { runtimeMode: PsychologyRuntimeMode }) {
   const [localStore, setLocalStore] = useState<PsychologyStore>(loadLocalStore);
   const remoteConfiguration = useMemo(() => {
-    const env = import.meta.env as unknown as Record<string, unknown>;
+    const env = ((import.meta as ImportMeta & { env?: unknown }).env || {}) as Record<string, unknown>;
     const professionalId = String(env.VITE_PSYCHOLOGY_PROFESSIONAL_ID || LOCAL_PSYCHOLOGY_PROFESSIONAL_ID).trim() || LOCAL_PSYCHOLOGY_PROFESSIONAL_ID;
     const workspaceId = String(env.VITE_PSYCHOLOGY_WORKSPACE_ID || 'psychology-remote-workspace').trim() || 'psychology-remote-workspace';
     return {
@@ -527,6 +527,22 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     } finally {
       queueMicrotask(() => parentMutationLocks.current.delete(key));
     }
+  };
+
+  const remoteSessionMutationLocks = useRef(new Set<string>());
+  const runRemoteSessionMutation = (key: string, action: () => Promise<boolean>): Promise<boolean> => {
+    if (remoteSessionMutationLocks.current.has(key)) return Promise.resolve(false);
+    remoteSessionMutationLocks.current.add(key);
+    let result: Promise<boolean>;
+    try {
+      result = action();
+    } catch (cause) {
+      remoteSessionMutationLocks.current.delete(key);
+      return Promise.reject(cause);
+    }
+    return result.finally(() => {
+      queueMicrotask(() => remoteSessionMutationLocks.current.delete(key));
+    });
   };
 
   const openPage = (next: PsychologyPage) => {
@@ -796,9 +812,63 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     });
   };
 
-  const saveSession = (input: PsychologySessionInput): boolean => {
+  const persistRemoteSession = async (input: PsychologySessionInput, id?: string): Promise<boolean> => {
+    if (!remoteClient || remoteLoading || remoteError || !remoteStore) {
+      setNotice('Aguarde o carregamento do provider remoto antes de agendar.');
+      return false;
+    }
+    const nextStore = upsertPsychologySession(store, input, id);
+    const nextSession = id
+      ? nextStore.sessions.find(item => item.id === id)
+      : nextStore.sessions.find(item => !store.sessions.some(existing => existing.id === item.id));
+    if (!nextSession) {
+      setNotice('Não foi possível preparar a sessão para o provider remoto.');
+      return false;
+    }
+    const remoteSession = {
+      ...nextSession,
+      workspaceId: remoteClient.scope.workspaceId,
+      ...(remoteClient.scope.tenantId ? { tenantId: remoteClient.scope.tenantId } : {}),
+    };
+    try {
+      const saved = id
+        ? await remoteClient.repositories.sessions.update(remoteClient.scope, id, remoteSession)
+        : await remoteClient.repositories.sessions.upsert(remoteClient.scope, remoteSession);
+      if (!saved) {
+        setNotice('O provider remoto não retornou a sessão salva.');
+        return false;
+      }
+      setRemoteStore(current => {
+        if (!current) return current;
+        const sessions = current.sessions.some(item => item.id === saved.id)
+          ? current.sessions.map(item => item.id === saved.id ? saved : item)
+          : [...current.sessions, saved];
+        return { ...current, sessions };
+      });
+      setSelectedDate(input.date);
+      if (id) {
+        setSessionDialog(null);
+        setSessionPatientId(undefined);
+      } else {
+        setNewEventDialog(null);
+      }
+      setPage('agenda');
+      setNotice(id ? 'Sessão atualizada no provider remoto.' : 'Sessão agendada no provider remoto.');
+      return true;
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : 'Não foi possível salvar a sessão no provider remoto.');
+      return false;
+    }
+  };
+
+  const saveSession = (input: PsychologySessionInput): boolean | Promise<boolean> => {
     const isNew = sessionDialog === 'new';
-    return runParentMutation(`session:${isNew ? 'new' : sessionDialog?.id || 'unknown'}:${input.patientId}:${input.date}:${input.time}`, () => {
+    const key = `session:${isNew ? 'new' : sessionDialog?.id || 'unknown'}:${input.patientId}:${input.date}:${input.time}`;
+    if (remoteConfiguration.enabled) {
+      const sessionId = !isNew && sessionDialog ? sessionDialog.id : undefined;
+      return runRemoteSessionMutation(key, () => persistRemoteSession(input, sessionId));
+    }
+    return runParentMutation(key, () => {
       if (!updateStore(upsertPsychologySession(store, input, isNew ? undefined : sessionDialog?.id))) return false;
       setSelectedDate(input.date);
       setSessionDialog(null);
@@ -809,8 +879,12 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     });
   };
 
-  const saveNewSession = (input: PsychologySessionInput): boolean => {
-    return runParentMutation(`new-session:${input.patientId}:${input.date}:${input.time}`, () => {
+  const saveNewSession = (input: PsychologySessionInput): boolean | Promise<boolean> => {
+    const key = `new-session:${input.patientId}:${input.date}:${input.time}`;
+    if (remoteConfiguration.enabled) {
+      return runRemoteSessionMutation(key, () => persistRemoteSession(input));
+    }
+    return runParentMutation(key, () => {
       if (!updateStore(upsertPsychologySession(store, input))) return false;
       setSelectedDate(input.date);
       setNewEventDialog(null);
@@ -1701,7 +1775,7 @@ function LegacyEventCreationDialog({ defaults, store, settings, onClose, onNewPa
   return <div className="fixed inset-0 z-[200] bg-slate-950/45" role="dialog" aria-modal="true" aria-label="Novo agendamento"><section ref={movable.dialogRef} style={movable.positionStyle} className="absolute flex max-h-[calc(100vh-2rem)] w-[calc(100vw-1.5rem)] max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"><header {...movable.dragHandleProps} data-testid="psychology-event-dialog-drag-handle" className={`sticky top-0 z-10 border-b border-slate-200 bg-white px-5 pb-0 pt-4 select-none ${movable.isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}><div className="flex items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-700">Arraste para mover</p><h2 className="mt-1 text-xl font-black text-slate-900">Organize sua agenda</h2></div><button type="button" data-no-dialog-drag onClick={onClose} aria-label="Fechar" className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"><X size={18} /></button></div><div className="mt-5 flex gap-1 overflow-x-auto">{tabs.map(tab => <button key={tab.id} type="button" onClick={() => updateKind(tab.id)} className={`border-b-2 px-4 py-3 text-sm font-black transition ${kind === tab.id ? 'border-violet-700 text-violet-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>{tab.label}</button>)}</div></header><form onSubmit={save} className="flex min-h-0 flex-1 flex-col"><div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5"><div className="grid gap-3 sm:grid-cols-2"><Field label="Data"><input type="date" value={isSession ? sessionForm.date : personalForm.date} onChange={event => isSession ? setSessionForm({ ...sessionForm, date: event.target.value }) : setPersonalForm({ ...personalForm, date: event.target.value })} className={inputClass} /></Field><Field label="Horário"><input type="time" value={isSession ? sessionForm.time : personalForm.time} onChange={event => isSession ? setSessionForm({ ...sessionForm, time: event.target.value }) : setPersonalForm({ ...personalForm, time: event.target.value })} className={inputClass} /></Field></div>{isSession ? <><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="flex items-center justify-between gap-3"><Field label="Paciente"><select autoFocus value={sessionForm.patientId} onChange={event => setSessionForm({ ...sessionForm, patientId: event.target.value })} className={inputClass}><option value="">Selecione um paciente</option>{store.patients.filter(patient => patient.active).sort((a, b) => a.name.localeCompare(b.name)).map(patient => <option key={patient.id} value={patient.id}>{patient.name}</option>)}</select></Field><button type="button" onClick={onNewPatient} className="mt-6 shrink-0 text-sm font-black text-violet-700 hover:underline">+ Novo paciente</button></div></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Duração"><select value={sessionForm.durationMinutes} onChange={event => setSessionForm({ ...sessionForm, durationMinutes: Number(event.target.value) })} className={inputClass}><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="50">50 minutos</option><option value="60">60 minutos</option><option value="90">90 minutos</option></select></Field><Field label="Modalidade"><select value={sessionForm.modality} onChange={event => { const modality = event.target.value as PsychologyModality; setSessionForm({ ...sessionForm, modality, locationId: modality === 'online' ? undefined : settings.locations.find(location => location.type === 'PRIMARY_OFFICE')?.id, locationType: modality === 'online' ? undefined : 'PRIMARY_OFFICE' }); }} className={inputClass}><option value="presencial">Presencial</option><option value="online">Online</option></select></Field></div>{sessionForm.modality === 'presencial' && <Field label="Local"><select value={sessionForm.locationId || ''} onChange={event => { const location = settings.locations.find(item => item.id === event.target.value); setSessionForm({ ...sessionForm, locationId: location?.id, locationType: location?.type }); }} className={inputClass}>{settings.locations.filter(location => location.active).map(location => <option key={location.id} value={location.id}>{location.type === 'PRIMARY_OFFICE' ? `Presencial — ${location.displayName}` : location.displayName}</option>)}</select></Field>}<Field label="Observação (opcional)"><textarea value={sessionForm.administrativeNote} onChange={event => setSessionForm({ ...sessionForm, administrativeNote: event.target.value })} className={`${inputClass} min-h-24`} /></Field></> : <><Field label="Título"><input autoFocus placeholder={selectedType === 'Mentoria' ? 'Ex.: Mentoria profissional' : 'Ex.: Compromisso pessoal'} value={personalForm.title} onChange={event => setPersonalForm({ ...personalForm, title: event.target.value })} className={inputClass} /></Field><div className="grid gap-3 sm:grid-cols-2"><Field label="Duração"><select value={personalForm.durationMinutes} onChange={event => setPersonalForm({ ...personalForm, durationMinutes: Number(event.target.value) })} className={inputClass}><option value="15">15 minutos</option><option value="30">30 minutos</option><option value="60">1 hora</option><option value="90">1h30</option><option value="120">2 horas</option></select></Field><Field label="Categoria"><div className="flex h-[46px] items-center rounded-xl border border-violet-200 bg-violet-50 px-3.5 text-sm font-black text-violet-900">{selectedType}</div></Field></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Recorrência"><select value={personalForm.recurrence} onChange={event => setPersonalForm({ ...personalForm, recurrence: event.target.value as PsychologyPersonalInput['recurrence'] })} className={inputClass}><option>Não repetir</option><option>Toda semana</option><option>Todo mês</option></select></Field><label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold"><input type="checkbox" checked={Boolean(personalForm.alarmEnabled)} onChange={event => setPersonalForm({ ...personalForm, alarmEnabled: event.target.checked })} /> Ativar alarme local</label></div>{personalForm.alarmEnabled && <Field label="Antecedência"><select value={personalForm.alarmAdvance} onChange={event => setPersonalForm({ ...personalForm, alarmAdvance: event.target.value as PsychologyPersonalInput['alarmAdvance'] })} className={inputClass}>{ALARM_ADVANCE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></Field>}<Field label="Observação (opcional)"><textarea value={personalForm.note} onChange={event => setPersonalForm({ ...personalForm, note: event.target.value })} className={`${inputClass} min-h-24`} /></Field></>}{isSession && outsideAvailability && <div role="alert" data-testid="psychology-outside-availability-warning" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm font-bold text-amber-900"><p>Este horário está fora da sua disponibilidade habitual.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setOutsideAvailability(false)} className={secondaryButton}>Cancelar</button><button type="button" onClick={() => { setOutsideAvailability(false); onSaveSession(sessionForm); }} className={primaryButton}>Agendar mesmo assim</button></div></div>}{error && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</p>}</div><footer className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 p-4 sm:flex-row sm:justify-end"><button type="button" onClick={onClose} className={secondaryButton}>Fechar</button><button type="submit" className={primaryButton}>{isSession ? 'Agendar sessão' : 'Salvar compromisso'}</button></footer></form></section></div>;
 }
 
-function EventCreationDialog({ defaults, store, settings, onClose, onNewPatient, onSaveSession, onSavePersonal }: { defaults: NewEventDefaults; store: PsychologyStore; settings: PsychologySettings; onClose: () => void; onNewPatient: () => void; onSaveSession: (input: PsychologySessionInput) => boolean; onSavePersonal: (input: PsychologyPersonalInput) => boolean }) {
+function EventCreationDialog({ defaults, store, settings, onClose, onNewPatient, onSaveSession, onSavePersonal }: { defaults: NewEventDefaults; store: PsychologyStore; settings: PsychologySettings; onClose: () => void; onNewPatient: () => void; onSaveSession: (input: PsychologySessionInput) => boolean | Promise<boolean>; onSavePersonal: (input: PsychologyPersonalInput) => boolean }) {
   const firstService = settings.services.find(service => service.active) || settings.services[0];
   const primaryLocation = primaryPsychologyLocation(settings);
   const defaultPatientId = store.patients.find(patient => patient.active)?.id || '';
@@ -1732,8 +1806,16 @@ function EventCreationDialog({ defaults, store, settings, onClose, onNewPatient,
   const commit = (kindToSave: 'session' | 'personal') => {
     if (submitLock.current) return;
     submitLock.current = true;
-    const saved = kindToSave === 'session' ? onSaveSession(sessionForm) : onSavePersonal({ ...personalForm, type: selectedType });
-    if (!saved) submitLock.current = false;
+    try {
+      const saved = kindToSave === 'session' ? onSaveSession(sessionForm) : onSavePersonal({ ...personalForm, type: selectedType });
+      void Promise.resolve(saved).then(value => {
+        if (!value) submitLock.current = false;
+      }).catch(() => {
+        submitLock.current = false;
+      });
+    } catch {
+      submitLock.current = false;
+    }
   };
   const save = (event: React.FormEvent) => {
     event.preventDefault();
@@ -1801,7 +1883,7 @@ function LegacySessionDialog({ value, store, settings, defaultPatientId, default
   return <Dialog title={value ? 'Reagendar sessão' : 'Agendar sessão'} onClose={onClose}><form onSubmit={save} className="space-y-4"><Field label="Paciente" error={error && !form.patientId ? error : undefined}><select value={form.patientId} onChange={event => setForm({ ...form, patientId: event.target.value })} className={inputClass}><option value="">Selecione um paciente</option>{store.patients.filter(patient => patient.active).sort((a, b) => a.name.localeCompare(b.name)).map(patient => <option key={patient.id} value={patient.id}>{patient.name}</option>)}</select></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Data" error={error && !form.date ? error : undefined}><input type="date" value={form.date} onChange={event => setForm({ ...form, date: event.target.value })} className={inputClass} /></Field><Field label="Horário" error={error && !form.time ? error : undefined}><input type="time" value={form.time} onChange={event => setForm({ ...form, time: event.target.value })} className={inputClass} /></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="Duração"><select value={form.durationMinutes} onChange={event => setForm({ ...form, durationMinutes: Number(event.target.value) })} className={inputClass}><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="50">50 minutos</option><option value="60">60 minutos</option><option value="90">90 minutos</option></select></Field><Field label="Tipo de atendimento"><select value={form.modality} onChange={event => { const modality = event.target.value as PsychologyModality; setForm({ ...form, modality, locationId: modality === 'online' ? undefined : form.locationId || settings.locations.find(location => location.type === 'PRIMARY_OFFICE')?.id, locationType: modality === 'online' ? undefined : form.locationType || 'PRIMARY_OFFICE' }); }} className={inputClass}><option value="presencial">Presencial</option><option value="online">Online</option></select></Field></div>{form.modality === 'presencial' && <Field label="Local"><select value={form.locationId || ''} onChange={event => { const location = settings.locations.find(item => item.id === event.target.value); setForm({ ...form, locationId: location?.id, locationType: location?.type }); }} className={inputClass}>{settings.locations.filter(location => location.active).map(location => <option key={location.id} value={location.id}>{location.type === 'PRIMARY_OFFICE' ? `Presencial — ${location.displayName}` : location.displayName}</option>)}</select></Field>}<Field label="Observação administrativa (opcional)"><textarea value={form.administrativeNote} onChange={event => setForm({ ...form, administrativeNote: event.target.value })} className={`${inputClass} min-h-24`} /></Field>{outsideAvailability && <div role="alert" data-testid="psychology-outside-availability-warning" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm font-bold text-amber-900"><p>Este horário está fora da sua disponibilidade habitual.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setOutsideAvailability(false)} className={secondaryButton}>Cancelar</button><button type="button" onClick={() => { setOutsideAvailability(false); onSave(form); }} className={primaryButton}>Agendar mesmo assim</button></div></div>}{error && <p className="text-sm font-bold text-red-600">{error}</p>}<div className="flex justify-end gap-2 pt-2"><button type="button" onClick={onClose} className={secondaryButton}>Voltar</button><button type="submit" className={primaryButton}>Salvar sessão</button></div></form></Dialog>;
 }
 
-function SessionDialog({ value, store, settings, defaultPatientId, defaultDate, defaultTime, onClose, onSave }: { value: PsychologySession | null; store: PsychologyStore; settings: PsychologySettings; defaultPatientId?: string; defaultDate: string; defaultTime?: string; onClose: () => void; onSave: (input: PsychologySessionInput) => boolean }) {
+function SessionDialog({ value, store, settings, defaultPatientId, defaultDate, defaultTime, onClose, onSave }: { value: PsychologySession | null; store: PsychologyStore; settings: PsychologySettings; defaultPatientId?: string; defaultDate: string; defaultTime?: string; onClose: () => void; onSave: (input: PsychologySessionInput) => boolean | Promise<boolean> }) {
   const defaultService = settings.services.find(service => service.active && service.id === value?.serviceId) || settings.services.find(service => service.active) || settings.services[0];
   const defaultLocation = primaryPsychologyLocation(settings);
   const valueService = value?.serviceId ? settings.services.find(service => service.id === value.serviceId) : undefined;
