@@ -80,7 +80,7 @@ import {
   type PsychologyPatientReviewFilter,
 } from './psychologyPatientList';
 import { deletePsychologyPatientLocally, getPsychologyPatientDeletionAssessment, normalizePsychologyPhone } from './psychologyPatientDeletion';
-import { normalizePsychologyPhoneForSearch } from './psychologyPhone';
+import { formatPsychologyPhoneInput, normalizePsychologyPhoneForSearch } from './psychologyPhone';
 import {
   createDoctoraliaPreview,
   DOCTORALIA_PREVIEW_STORAGE_KEY,
@@ -752,6 +752,43 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     return false;
   };
 
+  const reactivatePatient = (patient: PsychologyPatient): boolean | Promise<boolean> => {
+    if (isPreview) {
+      setNotice('Dados da prévia Doctoralia são somente leitura.');
+      return false;
+    }
+    const currentPatient = store.patients.find(item => item.id === patient.id);
+    if (!currentPatient || currentPatient.active) {
+      setNotice('Este paciente já está ativo ou não está disponível neste escopo.');
+      return false;
+    }
+    if (remoteConfiguration.enabled) {
+      if (!remoteClient || remoteLoading || remoteError) {
+        setNotice('Aguarde o carregamento do provider remoto antes de reativar.');
+        return false;
+      }
+      return remoteClient.reactivatePatient(currentPatient.id)
+        .then(savedPatient => {
+          setRemoteStore(current => current ? patientStoreWithUpdates(current, [savedPatient]) : current);
+          setPatientDialog(null);
+          setPatientChart(savedPatient);
+          setNotice('Paciente reativado no provider remoto.');
+          return true;
+        })
+        .catch(cause => {
+          setNotice(cause instanceof Error ? cause.message : 'Não foi possível reativar o paciente no provider remoto.');
+          return false;
+        });
+    }
+    const updatedAt = new Date().toISOString();
+    const nextPatient = { ...currentPatient, active: true, updatedAt };
+    if (!updateStore({ ...store, patients: store.patients.map(item => item.id === currentPatient.id ? nextPatient : item) })) return false;
+    setPatientDialog(null);
+    setPatientChart(nextPatient);
+    setNotice('Paciente reativado no ambiente local.');
+    return true;
+  };
+
   const updatePatientReview = (patientIds: string[], inReview: boolean): boolean | Promise<boolean> => {
     if (isPreview) {
       setNotice('Dados da prévia Doctoralia são somente leitura.');
@@ -1088,7 +1125,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
       {patientChart && <PsychologyPatientChart store={store} patientId={patientChart.id} previewDetails={doctoraliaPreview?.patientDetailsById.get(patientChart.id)} previewClinicalBackground={doctoraliaPreview?.bundle.clinicalBackgrounds.find(item => item.externalPatientId === doctoraliaPreview.patientDetailsById.get(patientChart.id)?.externalPatientId)} readOnly={isPreview} onClose={() => setPatientChart(null)} onDelete={requestPatientDelete} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientChart(null); setPatientDialog(patient); }} onSchedule={(patient) => { if (isPreview) { setNotice('Novas sessões estão desabilitadas nesta prévia.'); return; } setPatientChart(null); setSessionPatientId(patient.id); setSessionDefaults({ date: today(), time: '09:00' }); setSessionDialog('new'); }} onOpenSession={setSessionActions} onStoreChange={updateStore} onStatus={updateSessionStatus} onRecord={setRecordDialog} />}
       {previewEndConfirmation && <Dialog title="Encerrar prévia Doctoralia?" onClose={() => setPreviewEndConfirmation(false)}><p className="text-sm leading-relaxed text-slate-600">Os dados deixarão de aparecer temporariamente, mas os arquivos originais não serão alterados e a prévia poderá ser ativada novamente.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setPreviewEndConfirmation(false)} className={secondaryButton}>Cancelar</button><button type="button" onClick={() => { setPreviewEndConfirmation(false); endDoctoraliaPreview(); }} className="inline-flex items-center justify-center rounded-xl bg-amber-700 px-4 py-3 text-sm font-black text-white hover:bg-amber-800">Encerrar prévia</button></div></Dialog>}
       {cancelledPreviewRemoval && <Dialog title="Remover consulta cancelada da Agenda?" onClose={() => setCancelledPreviewRemoval(null)}><p className="text-sm leading-relaxed text-slate-600">Ela será apenas ocultada desta prévia. O backup da Doctoralia não será alterado.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setCancelledPreviewRemoval(null)} className={secondaryButton}>Cancelar</button><button type="button" onClick={confirmHideCancelledPreviewSession} className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-4 py-3 text-sm font-black text-white hover:bg-slate-900">Remover da Agenda</button></div></Dialog>}
-          {patientDialog && <PatientDialogR2F3E value={patientDialog === 'new' ? null : patientDialog} onClose={() => setPatientDialog(null)} onSave={savePatient} />}
+          {patientDialog && <PatientDialogR2F3E value={patientDialog === 'new' ? null : patientDialog} onClose={() => setPatientDialog(null)} onSave={savePatient} onReactivate={patientDialog === 'new' ? undefined : () => reactivatePatient(patientDialog)} />}
           {patientDelete && <DeletePatientDialog assessment={getPsychologyPatientDeletionAssessment(store, patientDelete.id)} onClose={() => setPatientDelete(null)} onConfirm={confirmPatientDelete} />}
           {sessionDialog && <SessionDialog value={sessionDialog === 'new' ? null : sessionDialog} store={store} settings={store.settings} defaultPatientId={sessionDialog === 'new' ? sessionPatientId : undefined} defaultDate={sessionDialog === 'new' ? sessionDefaults.date : selectedDate} defaultTime={sessionDialog === 'new' ? sessionDefaults.time : undefined} onClose={() => { setSessionDialog(null); setSessionPatientId(undefined); }} onSave={saveSession} />}
           {newEventDialog && <EventCreationDialog defaults={newEventDialog} store={store} settings={store.settings} onClose={() => setNewEventDialog(null)} onNewPatient={() => setPatientDialog('new')} onSaveSession={saveNewSession} onSavePersonal={savePersonal} />}
@@ -1816,13 +1853,17 @@ function LocationEditor({ location, onSave, onSetColor, onSetPrimary, onSetActiv
  return <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><div><p className="text-sm font-black">{location.isPrimary ? 'Local principal' : 'Local presencial'}</p><span className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-black ${location.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>{location.active ? 'Ativo' : 'Inativo'}</span></div><label className="mt-3 block text-xs font-bold text-slate-600">Nome<input aria-label={`Nome do local ${location.displayName}`} value={name} onChange={event => setName(event.target.value)} className={`${inputClass} mt-1`} /></label><label className="mt-3 block text-xs font-bold text-slate-600">Endereço (opcional)<input aria-label={`Endereço do local ${location.displayName}`} value={address} onChange={event => setAddress(event.target.value)} className={`${inputClass} mt-1`} /></label><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => onSave({ displayName: name, address })} className={secondaryButton}>Salvar local</button>{location.active && !location.isPrimary && <button type="button" onClick={onSetPrimary} className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-black text-violet-700">Definir principal</button>}<button type="button" onClick={() => onSetActive(!location.active)} className="rounded-xl px-3 py-2 text-xs font-black text-slate-500 hover:bg-white">{location.active ? 'Desativar' : 'Ativar'}</button></div></div>;
 }
 
-function PatientDialogR2F3E({ value, onClose, onSave }: { value: PsychologyPatient | null; onClose: () => void; onSave: (input: PsychologyPatientInput) => boolean | Promise<boolean> }) {
+function PatientDialogR2F3E({ value, onClose, onSave, onReactivate }: { value: PsychologyPatient | null; onClose: () => void; onSave: (input: PsychologyPatientInput) => boolean | Promise<boolean>; onReactivate?: () => boolean | Promise<boolean> }) {
   const emptyResponsible = { fullName: '', relationship: '', phone: '', email: '' };
-  const [form, setForm] = useState<PsychologyPatientInput>({ name: value?.name || '', dateOfBirth: value?.dateOfBirth || value?.birthDate || '', phone: value?.phone || '', email: value?.email || '', administrativeResponsible: value?.administrativeResponsible || emptyResponsible, preferredModality: value?.preferredModality || 'presencial', administrativeNote: value?.administrativeNotes || value?.administrativeNote || '', active: value?.active ?? true, externalReferences: value?.externalReferences });
+  const [form, setForm] = useState<PsychologyPatientInput>({ name: value?.name || '', dateOfBirth: value?.dateOfBirth || value?.birthDate || '', phone: formatPsychologyPhoneInput(value?.phone || ''), email: value?.email || '', administrativeResponsible: value?.administrativeResponsible ? { ...value.administrativeResponsible, phone: formatPsychologyPhoneInput(value.administrativeResponsible.phone) } : emptyResponsible, preferredModality: value?.preferredModality || 'presencial', administrativeNote: value?.administrativeNotes || value?.administrativeNote || '', active: value?.active ?? true, externalReferences: value?.externalReferences });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [reactivationConfirmationOpen, setReactivationConfirmationOpen] = useState(false);
+  const [reactivationError, setReactivationError] = useState('');
+  const [isReactivating, setIsReactivating] = useState(false);
   const submitLock = useRef(false);
+  const reactivationLock = useRef(false);
   const referenceDate = civilDateFromDate(new Date());
   const showResponsible = requiresResponsible(String(form.dateOfBirth || form.birthDate || ''), referenceDate);
   const clearErrors = (keys: string[]) => setErrors(current => {
@@ -1846,8 +1887,34 @@ function PatientDialogR2F3E({ value, onClose, onSave }: { value: PsychologyPatie
     });
     if (keys.length > 0) clearErrors(keys);
   }, [form.administrativeResponsible?.email, form.administrativeResponsible?.phone]);
-  const save = (event: React.FormEvent) => { event.preventDefault(); const nextErrors = validatePsychologyPatientProfile(form) as Record<string, string>; setErrors(nextErrors); setSubmitError(''); if (Object.keys(nextErrors).length !== 0 || submitLock.current) return; submitLock.current = true; setIsSubmitting(true); const finish = (valueSaved: boolean) => { setIsSubmitting(false); if (!valueSaved) { submitLock.current = false; setSubmitError('Não foi possível salvar o paciente. Nenhuma alteração foi realizada.'); } }; try { const saved = onSave({ ...form, dateOfBirth: String(form.dateOfBirth || form.birthDate || ''), birthDate: undefined }); if (saved instanceof Promise) void saved.then(finish).catch(() => finish(false)); else finish(saved); } catch { finish(false); } };
-  return <Dialog title={value ? 'Editar paciente' : 'Novo paciente'} onClose={onClose} wide><form onSubmit={save} className="space-y-4" data-testid="psychology-patient-dialog-form"><Field label="Nome completo *" error={errors.name}><input required autoFocus value={form.name} onChange={event => updateForm({ name: event.target.value }, ['name'])} className={inputClass} /></Field><div className="grid gap-3 md:grid-cols-2"><Field label="Data de nascimento (opcional)" error={errors.dateOfBirth || errors.birthDate}><input type="date" max={referenceDate} value={form.dateOfBirth || form.birthDate || ''} onChange={event => updateForm({ dateOfBirth: event.target.value, birthDate: undefined }, ['dateOfBirth', 'birthDate'])} className={inputClass} /></Field><Field label="Telefone *" error={errors.phone}><input required minLength={8} value={form.phone} onChange={event => updateForm({ phone: event.target.value }, ['phone'])} className={inputClass} /></Field></div><div className="grid gap-3 md:grid-cols-2"><Field label="E-mail (opcional)" error={errors.email}><input type="email" value={form.email} onChange={event => updateForm({ email: event.target.value }, ['email'])} className={inputClass} /></Field><Field label="Modalidade preferencial *"><select required value={form.preferredModality} onChange={event => updateForm({ preferredModality: event.target.value as PsychologyModality }, [])} className={inputClass}><option value="presencial">Presencial</option><option value="online">Online</option></select></Field></div>{showResponsible && <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4" data-testid="psychology-patient-responsible"><div><p className="text-sm font-black text-amber-950">Dados do responsável</p><p className="mt-1 text-xs font-semibold text-amber-900">Paciente com menos de 18 anos na data de hoje. Todos os campos são opcionais.</p></div><div className="mt-3 grid gap-3 md:grid-cols-2"><Field label="Nome completo do responsável" error={errors['administrativeResponsible.fullName']}><input value={form.administrativeResponsible?.fullName || ''} onChange={event => updateResponsible('fullName', event.target.value)} className={inputClass} /></Field><Field label="Vínculo / parentesco" error={errors['administrativeResponsible.relationship']}><input value={form.administrativeResponsible?.relationship || ''} onChange={event => updateResponsible('relationship', event.target.value)} className={inputClass} /></Field><Field label="Telefone do responsável" error={errors['administrativeResponsible.phone']}><input value={form.administrativeResponsible?.phone || ''} onChange={event => updateResponsible('phone', event.target.value)} className={inputClass} /></Field><Field label="E-mail do responsável" error={errors['administrativeResponsible.email']}><input type="email" value={form.administrativeResponsible?.email || ''} onChange={event => updateResponsible('email', event.target.value)} className={inputClass} /></Field></div></div>}{!showResponsible && value?.administrativeResponsible && <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600">Dados históricos do responsável permanecem preservados, mas não são exigidos pela idade atual.</p>}{value && <Field label="Observação administrativa"><textarea value={form.administrativeNote} onChange={event => updateForm({ administrativeNote: event.target.value }, [])} className={`${inputClass} min-h-20`} /></Field>}{submitError && <p role="alert" data-testid="psychology-patient-save-error" className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{submitError}</p>}<div data-testid="psychology-patient-dialog-footer" className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end"><button type="button" onClick={onClose} className={secondaryButton}>Voltar</button><button type="submit" disabled={isSubmitting} className={primaryButton}>{isSubmitting ? 'Salvando...' : 'Salvar paciente'}</button></div></form></Dialog>;
+  const requestReactivation = () => {
+    if (!value || value.active || !onReactivate || isSubmitting || isReactivating) return;
+    setReactivationError('');
+    setReactivationConfirmationOpen(true);
+  };
+  const confirmReactivation = () => {
+    if (!value || value.active || !onReactivate || reactivationLock.current) return;
+    reactivationLock.current = true;
+    setReactivationConfirmationOpen(false);
+    setReactivationError('');
+    setIsReactivating(true);
+    const finish = (reactivated: boolean) => {
+      setIsReactivating(false);
+      if (!reactivated) {
+        reactivationLock.current = false;
+        setReactivationError('Não foi possível reativar o paciente. Nenhuma alteração foi realizada.');
+      }
+    };
+    try {
+      const result = onReactivate();
+      if (result instanceof Promise) void result.then(finish).catch(() => finish(false));
+      else finish(result);
+    } catch {
+      finish(false);
+    }
+  };
+  const save = (event: React.FormEvent) => { event.preventDefault(); const nextErrors = validatePsychologyPatientProfile(form) as Record<string, string>; setErrors(nextErrors); setSubmitError(''); if (Object.keys(nextErrors).length !== 0 || submitLock.current || isReactivating) return; submitLock.current = true; setIsSubmitting(true); const finish = (valueSaved: boolean) => { setIsSubmitting(false); if (!valueSaved) { submitLock.current = false; setSubmitError('Não foi possível salvar o paciente. Nenhuma alteração foi realizada.'); } }; try { const saved = onSave({ ...form, dateOfBirth: String(form.dateOfBirth || form.birthDate || ''), birthDate: undefined }); if (saved instanceof Promise) void saved.then(finish).catch(() => finish(false)); else finish(saved); } catch { finish(false); } };
+  return <Dialog title={value ? 'Editar paciente' : 'Novo paciente'} onClose={isReactivating ? () => {} : onClose} wide><form onSubmit={save} className="space-y-4" data-testid="psychology-patient-dialog-form"><Field label="Nome completo *" error={errors.name}><input required autoFocus value={form.name} onChange={event => updateForm({ name: event.target.value }, ['name'])} className={inputClass} /></Field><div className="grid gap-3 md:grid-cols-2"><Field label="Data de nascimento (opcional)" error={errors.dateOfBirth || errors.birthDate}><input type="date" max={referenceDate} value={form.dateOfBirth || form.birthDate || ''} onChange={event => updateForm({ dateOfBirth: event.target.value, birthDate: undefined }, ['dateOfBirth', 'birthDate'])} className={inputClass} /></Field><Field label="Telefone *" error={errors.phone}><input required minLength={8} value={form.phone} onChange={event => updateForm({ phone: event.target.value }, ['phone'])} className={inputClass} /></Field></div><div className="grid gap-3 md:grid-cols-2"><Field label="E-mail (opcional)" error={errors.email}><input type="email" value={form.email} onChange={event => updateForm({ email: event.target.value }, ['email'])} className={inputClass} /></Field><Field label="Modalidade preferencial *"><select required value={form.preferredModality} onChange={event => updateForm({ preferredModality: event.target.value as PsychologyModality }, [])} className={inputClass}><option value="presencial">Presencial</option><option value="online">Online</option></select></Field></div>{showResponsible && <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4" data-testid="psychology-patient-responsible"><div><p className="text-sm font-black text-amber-950">Dados do responsável</p><p className="mt-1 text-xs font-semibold text-amber-900">Paciente com menos de 18 anos na data de hoje. Todos os campos são opcionais.</p></div><div className="mt-3 grid gap-3 md:grid-cols-2"><Field label="Nome completo do responsável" error={errors['administrativeResponsible.fullName']}><input value={form.administrativeResponsible?.fullName || ''} onChange={event => updateResponsible('fullName', event.target.value)} className={inputClass} /></Field><Field label="Vínculo / parentesco" error={errors['administrativeResponsible.relationship']}><input value={form.administrativeResponsible?.relationship || ''} onChange={event => updateResponsible('relationship', event.target.value)} className={inputClass} /></Field><Field label="Telefone do responsável" error={errors['administrativeResponsible.phone']}><input value={form.administrativeResponsible?.phone || ''} onChange={event => updateResponsible('phone', event.target.value)} className={inputClass} /></Field><Field label="E-mail do responsável" error={errors['administrativeResponsible.email']}><input type="email" value={form.administrativeResponsible?.email || ''} onChange={event => updateResponsible('email', event.target.value)} className={inputClass} /></Field></div></div>}{!showResponsible && value?.administrativeResponsible && <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600">Dados históricos do responsável permanecem preservados, mas não são exigidos pela idade atual.</p>}{value && <Field label="Observação administrativa"><textarea value={form.administrativeNote} onChange={event => updateForm({ administrativeNote: event.target.value }, [])} className={`${inputClass} min-h-20`} /></Field>}{value && !value.active && onReactivate && <section className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3" data-testid="psychology-patient-reactivation"><p className="text-sm font-black text-amber-950">Paciente inativo</p><p className="mt-1 text-xs font-semibold text-amber-900">Este paciente foi importado ou arquivado e não aparece nos fluxos ativos.</p><button type="button" onClick={requestReactivation} disabled={isSubmitting || isReactivating} className="mt-3 rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm font-black text-amber-900 hover:bg-amber-100">{isReactivating ? 'Reativando...' : 'Reativar paciente'}</button>{reactivationConfirmationOpen && <div className="mt-3 rounded-xl border border-amber-300 bg-white p-3" data-testid="psychology-patient-reactivation-confirmation"><p className="text-sm font-bold text-slate-700">Confirmar reativação deste paciente?</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setReactivationConfirmationOpen(false)} className={secondaryButton}>Cancelar</button><button type="button" onClick={confirmReactivation} className={primaryButton}>Confirmar reativação</button></div></div>}{reactivationError && <p role="alert" data-testid="psychology-patient-reactivation-error" className="mt-2 text-xs font-bold text-rose-700">{reactivationError}</p>}</section>}{submitError && <p role="alert" data-testid="psychology-patient-save-error" className="rounded-xl bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{submitError}</p>}<div data-testid="psychology-patient-dialog-footer" className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end"><button type="button" onClick={onClose} disabled={isReactivating} className={secondaryButton}>Voltar</button><button type="submit" disabled={isSubmitting || isReactivating} className={primaryButton}>{isSubmitting ? 'Salvando...' : 'Salvar paciente'}</button></div></form></Dialog>;
 }
 
 function PatientDialog({ value, onClose, onSave }: { value: PsychologyPatient | null; onClose: () => void; onSave: (input: PsychologyPatientInput) => void }) {

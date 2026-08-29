@@ -113,6 +113,12 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     return savedPatient;
   }
 
+  async function reactivatePatient(patientId: string): Promise<PsychologyPatient> {
+    const saved = await repositories.patients.update(scope, patientId, { active: true });
+    if (!saved) throw new Error('O paciente não foi encontrado no provider remoto.');
+    return asPatient(saved);
+  }
+
   async function updatePatientReview(patientIds: string[], inReview: boolean): Promise<PsychologyPatient[]> {
     const markedAt = now();
     const saved = await Promise.all(patientIds.map(id => repositories.patients.update(scope, id, {
@@ -162,6 +168,7 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     loadBackupSnapshot,
     updateSettings,
     updatePatient,
+    reactivatePatient,
     updatePatientReview,
     deletePatient,
     deletePatients,
