@@ -22,6 +22,7 @@ function psychologyCatalogEntry(id) {
 var LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID = "psychology-local-professional";
 var LOCAL_ONLINE_BOOKING_DEFAULT_SLUG = "leila-chaves";
 var DEFAULT_MANAGEMENT_TOKEN_TTL_DAYS = 180;
+var PUBLIC_BOOKING_START_GRID_MINUTES = 60;
 function normalizeProfessionalSlug(value) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }
@@ -74,22 +75,12 @@ function clone(value) {
 function weekdayOf(date) {
   return (/* @__PURE__ */ new Date(`${date}T12:00:00`)).getDay();
 }
-function periodFits(startTime, durationMinutes, period) {
-  const start = timeToMinutes(startTime);
-  const periodStart = timeToMinutes(period.startTime);
-  const periodEnd = timeToMinutes(period.endTime);
-  return start >= periodStart && start + durationMinutes <= periodEnd;
-}
 function overlaps(startTime, durationMinutes, block) {
   const start = timeToMinutes(startTime);
   const end = start + durationMinutes;
   const blockStart = timeToMinutes(block.startTime);
   const blockEnd = blockStart + Math.max(1, block.durationMinutes);
   return start < blockEnd && blockStart < end;
-}
-function validWeeklyPeriod(days, date, startTime, durationMinutes) {
-  const day = days.find((item) => item.enabled && item.dayOfWeek === weekdayOf(date));
-  return Boolean(day?.periods.some((period) => periodFits(startTime, durationMinutes, period)));
 }
 function exceptionApplies(exception, modality, locationId) {
   return (!exception.modality || exception.modality === modality) && (!exception.locationId || exception.locationId === locationId);
@@ -141,11 +132,12 @@ function getPublishedSlots(input) {
     if (dayStart > latest) continue;
     const publicPeriods = effectivePublicPeriods(settings, date, input.modality, input.locationId);
     for (const period of publicPeriods) {
-      for (let minute = period.start; minute + service.durationMinutes <= period.end; minute += Math.max(5, settings.slotIntervalMinutes)) {
+      const firstPublicStart = Math.ceil(period.start / PUBLIC_BOOKING_START_GRID_MINUTES) * PUBLIC_BOOKING_START_GRID_MINUTES;
+      for (let minute = firstPublicStart; minute + service.durationMinutes <= period.end; minute += PUBLIC_BOOKING_START_GRID_MINUTES) {
         const time = minutesToTime(minute);
         const dateTime = dateToLocalDateTime(date, time);
         if (!dateTime || dateTime < earliest || dateTime > latest) continue;
-        if (!period.extra && !validWeeklyPeriod(settings.weeklyAvailability, date, time, service.durationMinutes)) continue;
+        if (minute % PUBLIC_BOOKING_START_GRID_MINUTES !== 0) continue;
         if (blocks.some((block) => block.date === date && overlaps(time, service.durationMinutes, block))) continue;
         slots.push({ date, time, endTime: minutesToTime(minute + service.durationMinutes), durationMinutes: service.durationMinutes, serviceId: service.id, modality: input.modality, locationId: input.locationId });
       }
@@ -331,8 +323,10 @@ function normalizePublicBookingSettings(value, now = /* @__PURE__ */ new Date())
     };
   })).sort((a, b) => a.sortOrder - b.sortOrder);
   const rawAvailability = Array.isArray(input.publicBookingAvailability) ? input.publicBookingAvailability : fallback.publicBookingAvailability;
+  const fallbackPublicModalities = fallback.publishedModalities.filter((item) => item.active).map((item) => item.id);
   const publicBookingAvailability = rawAvailability.map((period) => ({
     ...period,
+    modalities: Array.isArray(period.modalities) ? period.modalities : fallbackPublicModalities,
     locationIds: period.locationIds?.some((id) => locationIds.includes(id)) ? period.locationIds.filter((id) => locationIds.includes(id)) : locationIds
   }));
   const rawExceptions = Array.isArray(input.publicBookingExceptions) ? input.publicBookingExceptions : [];
@@ -383,11 +377,319 @@ function normalizePublicBookingSettings(value, now = /* @__PURE__ */ new Date())
   };
 }
 
+// shared/phoneNormalization.js
+var PHONE_APOSTROPHES = /['’]/gu;
+var PHONE_INVISIBLE = /[\u0000-\u001F\u007F\u00A0\u00AD\u061C\u1680\u180E\u2000-\u200D\u2028\u2029\u202F\u205F\u2060\u2066-\u2069\u3000\uFEFF]/gu;
+var PHONE_FORMATTING = /[\s().,\-–—‑−/]/u;
+var KNOWN_COUNTRY_CODES = /* @__PURE__ */ new Set([
+  "1",
+  "20",
+  "27",
+  "30",
+  "31",
+  "32",
+  "33",
+  "34",
+  "36",
+  "39",
+  "40",
+  "41",
+  "43",
+  "44",
+  "45",
+  "46",
+  "47",
+  "48",
+  "49",
+  "51",
+  "52",
+  "53",
+  "54",
+  "55",
+  "56",
+  "57",
+  "58",
+  "60",
+  "61",
+  "62",
+  "63",
+  "64",
+  "65",
+  "66",
+  "81",
+  "82",
+  "84",
+  "86",
+  "90",
+  "91",
+  "92",
+  "93",
+  "94",
+  "95",
+  "98",
+  "211",
+  "212",
+  "213",
+  "216",
+  "218",
+  "220",
+  "221",
+  "222",
+  "223",
+  "224",
+  "225",
+  "226",
+  "227",
+  "228",
+  "229",
+  "230",
+  "231",
+  "232",
+  "233",
+  "234",
+  "235",
+  "236",
+  "237",
+  "238",
+  "239",
+  "240",
+  "241",
+  "242",
+  "243",
+  "244",
+  "245",
+  "246",
+  "248",
+  "249",
+  "250",
+  "251",
+  "252",
+  "253",
+  "254",
+  "255",
+  "256",
+  "257",
+  "258",
+  "260",
+  "261",
+  "262",
+  "263",
+  "264",
+  "265",
+  "266",
+  "267",
+  "268",
+  "269",
+  "290",
+  "291",
+  "297",
+  "298",
+  "299",
+  "350",
+  "351",
+  "352",
+  "353",
+  "354",
+  "355",
+  "356",
+  "357",
+  "358",
+  "359",
+  "370",
+  "371",
+  "372",
+  "373",
+  "374",
+  "375",
+  "376",
+  "377",
+  "378",
+  "379",
+  "380",
+  "381",
+  "382",
+  "383",
+  "385",
+  "386",
+  "387",
+  "389",
+  "420",
+  "421",
+  "423",
+  "500",
+  "501",
+  "502",
+  "503",
+  "504",
+  "505",
+  "506",
+  "507",
+  "508",
+  "509",
+  "590",
+  "591",
+  "592",
+  "593",
+  "594",
+  "595",
+  "596",
+  "597",
+  "598",
+  "599",
+  "670",
+  "672",
+  "673",
+  "674",
+  "675",
+  "676",
+  "677",
+  "678",
+  "679",
+  "680",
+  "681",
+  "682",
+  "683",
+  "685",
+  "686",
+  "687",
+  "688",
+  "689",
+  "690",
+  "691",
+  "692",
+  "850",
+  "852",
+  "853",
+  "855",
+  "856",
+  "880",
+  "886",
+  "960",
+  "961",
+  "962",
+  "963",
+  "964",
+  "965",
+  "966",
+  "967",
+  "968",
+  "970",
+  "971",
+  "972",
+  "973",
+  "974",
+  "975",
+  "976",
+  "977",
+  "992",
+  "993",
+  "994",
+  "995",
+  "996",
+  "998"
+]);
+var PhoneNormalizationError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "PhoneNormalizationError";
+    this.code = code;
+  }
+};
+function fail(code, message) {
+  throw new PhoneNormalizationError(code, message);
+}
+function rawText(value) {
+  return value === null || value === void 0 ? "" : String(value);
+}
+function anomalyFlags(raw, cleaned) {
+  const anomalies = [];
+  if (raw.includes("'")) anomalies.push("ASCII_APOSTROPHE");
+  if (raw.includes("\u2019")) anomalies.push("TYPOGRAPHIC_APOSTROPHE");
+  if (/[\u00A0\u202F\u2000-\u200D\u2060\u3000\uFEFF]/u.test(raw)) anomalies.push("UNICODE_SPACE_OR_INVISIBLE");
+  if (cleaned.includes("++") || (cleaned.match(/\+/gu) || []).length > 1) anomalies.push("DOUBLE_PLUS");
+  if (/[()\-–—‑−./\s]/u.test(cleaned)) anomalies.push("DISPLAY_MASK");
+  return anomalies;
+}
+function cleanPhoneText(value) {
+  const rawImportedPhone = rawText(value);
+  const cleaned = rawImportedPhone.normalize("NFKC").replace(PHONE_APOSTROPHES, "").replace(PHONE_INVISIBLE, "").trim();
+  return { rawImportedPhone, cleaned, anomalies: anomalyFlags(rawImportedPhone, cleaned) };
+}
+function findExplicitCountryCode(digits) {
+  for (const length of [3, 2, 1]) {
+    const candidate = digits.slice(0, length);
+    const nationalLength = digits.length - length;
+    if (KNOWN_COUNTRY_CODES.has(candidate) && nationalLength >= 7 && nationalLength <= 12) return candidate;
+  }
+  return null;
+}
+function ensureCountryCode(value) {
+  const code = String(value || "").replace(/\D/g, "");
+  if (!KNOWN_COUNTRY_CODES.has(code)) fail("INVALID_COUNTRY_CODE", "C\xF3digo do pa\xEDs inv\xE1lido.");
+  return code;
+}
+function validateStructure(cleaned) {
+  const withoutFormatting = [...cleaned].filter((character) => !PHONE_FORMATTING.test(character)).join("");
+  const plusCount = (withoutFormatting.match(/\+/gu) || []).length;
+  if (plusCount > 1) fail("DOUBLE_PLUS", "Telefone possui mais de um sinal de +.");
+  if (plusCount === 1 && !withoutFormatting.startsWith("+")) fail("PLUS_POSITION", "O sinal de + deve estar no in\xEDcio do telefone.");
+  if (/[^\d+]/u.test(withoutFormatting)) fail("INVALID_CHARACTERS", "Telefone possui caracteres n\xE3o permitidos.");
+  const digits = withoutFormatting.replace(/\D/g, "");
+  if (!digits) fail("EMPTY_PHONE", "Telefone vazio.");
+  if (digits.length < 8 || digits.length > 15) fail("INVALID_LENGTH", "Telefone fora do comprimento permitido.");
+  return { digits, explicitPlus: plusCount === 1 };
+}
+function normalizePhone(value, { defaultCountryCode = null, requireCountryCode = false } = {}) {
+  const { rawImportedPhone, cleaned, anomalies } = cleanPhoneText(value);
+  const { digits, explicitPlus } = validateStructure(cleaned);
+  let countryCode = null;
+  let nationalNumber = digits;
+  if (explicitPlus) {
+    countryCode = findExplicitCountryCode(digits);
+    if (!countryCode) fail("INVALID_COUNTRY_CODE", "N\xE3o foi poss\xEDvel validar o c\xF3digo do pa\xEDs.");
+    nationalNumber = digits.slice(countryCode.length);
+  } else if (digits.startsWith("55") && /^55\d{10,11}$/.test(digits)) {
+    countryCode = "55";
+    nationalNumber = digits.slice(2);
+  } else if ((digits.length > 11 || digits.length === 11 && digits.startsWith("1")) && findExplicitCountryCode(digits)) {
+    countryCode = findExplicitCountryCode(digits);
+    if (countryCode) nationalNumber = digits.slice(countryCode.length);
+  } else if (defaultCountryCode) {
+    countryCode = ensureCountryCode(defaultCountryCode);
+    if (countryCode === "55" && !/^\d{10,11}$/.test(digits)) fail("INVALID_BRAZILIAN_NATIONAL_NUMBER", "Telefone brasileiro deve conter DDD e n\xFAmero v\xE1lidos.");
+    nationalNumber = digits;
+  }
+  if (requireCountryCode && !countryCode) fail("MISSING_COUNTRY_CODE", "Telefone sem country code expl\xEDcito ou configurado.");
+  if (nationalNumber.length < 7 || nationalNumber.length > 12) fail("INVALID_NATIONAL_NUMBER", "N\xFAmero nacional fora do comprimento permitido.");
+  const canonicalPhone = countryCode ? `${countryCode}${nationalNumber}` : digits;
+  return {
+    rawImportedPhone,
+    displayPhone: cleaned,
+    canonicalPhone,
+    canonicalDigits: canonicalPhone,
+    countryCode,
+    nationalNumber,
+    countryCodeResolved: Boolean(countryCode),
+    missingCountryCode: !countryCode,
+    anomalies,
+    whatsappRecipientId: countryCode ? canonicalPhone : null,
+    metaRecipientId: countryCode ? canonicalPhone : null
+  };
+}
+
 // src/lib/psychologyPatientAdministrative.ts
 function civilParts(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
   if (!match) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+function isValidPhoneInput(value) {
+  try {
+    normalizePhone(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function isValidCivilDate(value) {
   const parts = civilParts(value);
@@ -395,18 +697,6 @@ function isValidCivilDate(value) {
   const [year, month, day] = parts;
   const parsed = new Date(year, month - 1, day);
   return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
-}
-function calculateAgeOnDate(dateOfBirth, referenceCivilDate) {
-  if (!isValidCivilDate(dateOfBirth) || !isValidCivilDate(referenceCivilDate)) return null;
-  const birth = civilParts(dateOfBirth);
-  const reference = civilParts(referenceCivilDate);
-  let age = reference[0] - birth[0];
-  if (reference[1] < birth[1] || reference[1] === birth[1] && reference[2] < birth[2]) age -= 1;
-  return age >= 0 ? age : null;
-}
-function requiresResponsible(dateOfBirth, appointmentCivilDate) {
-  const age = calculateAgeOnDate(dateOfBirth, appointmentCivilDate);
-  return age !== null && age < 18;
 }
 function validateDateOfBirth(dateOfBirth, referenceCivilDate) {
   if (!String(dateOfBirth || "").trim()) return "Informe a data de nascimento.";
@@ -417,20 +707,23 @@ function validateDateOfBirth(dateOfBirth, referenceCivilDate) {
 }
 function validateAdministrativeResponsible(value) {
   const errors = {};
-  if (!String(value?.fullName || "").trim()) errors.fullName = "Informe o nome completo do respons\xE1vel.";
-  if (!String(value?.relationship || "").trim()) errors.relationship = "Informe o v\xEDnculo ou parentesco.";
-  if (String(value?.phone || "").replace(/\D/g, "").length < 8) errors.phone = "Informe um telefone v\xE1lido para o respons\xE1vel.";
-  if (!/^\S+@\S+\.\S+$/.test(String(value?.email || "").trim())) errors.email = "Informe um e-mail v\xE1lido para o respons\xE1vel.";
+  const phone = String(value?.phone || "").trim();
+  const email = String(value?.email || "").trim();
+  if (phone && !isValidPhoneInput(phone)) errors.phone = "Informe um telefone v\xE1lido para o respons\xE1vel.";
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) errors.email = "Informe um e-mail v\xE1lido para o respons\xE1vel.";
   return errors;
 }
 function validatePsychologyPatientAdministrativeInput(input, referenceCivilDate) {
   const errors = {};
   if (!String(input.name || "").trim()) errors.name = "Informe o nome completo do paciente.";
-  const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
-  if (dateError) errors.dateOfBirth = dateError;
-  if (String(input.phone || "").replace(/\D/g, "").length < 8) errors.phone = "Informe um telefone v\xE1lido.";
-  if (!/^\S+@\S+\.\S+$/.test(String(input.email || "").trim())) errors.email = "Informe um e-mail v\xE1lido.";
-  if (requiresResponsible(input.dateOfBirth, referenceCivilDate)) {
+  if (String(input.dateOfBirth || "").trim()) {
+    const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
+    if (dateError) errors.dateOfBirth = dateError;
+  }
+  if (!isValidPhoneInput(input.phone)) errors.phone = "Informe um telefone v\xE1lido.";
+  if (String(input.email || "").trim() && !/^\S+@\S+\.\S+$/.test(String(input.email || "").trim())) errors.email = "Informe um e-mail v\xE1lido.";
+  const responsibleHasData = Boolean(input.administrativeResponsible && Object.values(input.administrativeResponsible).some((value) => String(value || "").trim()));
+  if (responsibleHasData) {
     const responsibleErrors = validateAdministrativeResponsible(input.administrativeResponsible);
     Object.entries(responsibleErrors).forEach(([field, message]) => {
       errors[`administrativeResponsible.${field}`] = message;

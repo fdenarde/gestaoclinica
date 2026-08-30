@@ -219,24 +219,34 @@ function canonicalLocationFromPublic(location, scope, index, now) {
 }
 
 function projectSettingsFromCanonical(settings, services, locations, scope) {
-  const serviceById = new Map(services.map(service => [service.id, service]));
   const locationById = new Map(locations.map(location => [location.id, location]));
-  const publishedServices = settings.publishedServices.map(publication => {
-    const source = serviceById.get(publication.id);
-    if (!source) return { ...publication, active: false };
-    const publicBooking = source.publicBooking || {};
-    return {
-      ...publication,
-      id: source.id,
-      name: source.name,
-      durationMinutes: source.defaultDurationMinutes,
-      active: publicBooking.active ?? publication.active,
-      onlineEnabled: publicBooking.onlineEnabled ?? publication.onlineEnabled,
-      inPersonEnabled: publicBooking.inPersonEnabled ?? publication.inPersonEnabled,
-      allowedLocationIds: [...(publicBooking.allowedLocationIds || publication.allowedLocationIds)].filter(id => locationById.has(id)),
-      sortOrder: publicBooking.sortOrder || publication.sortOrder,
-    };
-  });
+  const configuredById = new Map(settings.publishedServices.map(publication => [publication.id, publication]));
+  const canonicalIds = new Set();
+  const publishedServices = services
+    .filter(source => {
+      if (!source?.id || canonicalIds.has(source.id)) return false;
+      canonicalIds.add(source.id);
+      return true;
+    })
+    .map((source, index) => {
+      const publication = source.publicBooking || {};
+      const configured = configuredById.get(source.id);
+      const onlineEnabled = publication.onlineEnabled ?? configured?.onlineEnabled ?? source.modality !== 'PRESENTIAL';
+      const inPersonEnabled = publication.inPersonEnabled ?? configured?.inPersonEnabled ?? source.modality !== 'ONLINE';
+      return {
+        id: source.id,
+        name: source.name,
+        durationMinutes: source.defaultDurationMinutes,
+        active: source.active !== false && (publication.active ?? configured?.active ?? source.active !== false),
+        onlineEnabled,
+        inPersonEnabled,
+        allowedLocationIds: [...(publication.allowedLocationIds ?? configured?.allowedLocationIds ?? [])].filter(id => locationById.has(id)),
+        sortOrder: publication.sortOrder ?? configured?.sortOrder ?? index + 1,
+      };
+    })
+    .concat(settings.publishedServices
+      .filter(publication => !canonicalIds.has(publication.id))
+      .map(publication => ({ ...publication, active: false })));
   const projectedLocations = settings.locations.map(location => {
     const source = locationById.get(location.id);
     if (!source) return { ...location, active: false };
