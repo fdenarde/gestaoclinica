@@ -133,11 +133,19 @@ test('R45 — authenticated remote carrega patients, sessions e settings separad
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     const path = new URL(String(url), 'http://localhost').pathname;
-    calls.push({ path, method: init.method || 'GET', authorization: Boolean(init.headers?.Authorization) });
+    calls.push({ path, method: init.method || 'GET', authorization: Boolean(init.headers?.Authorization), body: init.body });
     if (path === '/api/psychology/patients' && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [patient] });
     if (path === '/api/psychology/sessions' && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [] });
     if (path === '/api/psychology/personal-appointments' && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [] });
     if (['/api/psychology/charges', '/api/psychology/payments', '/api/psychology/expenses'].includes(path) && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [] });
+    if (path === '/api/psychology/services' && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [
+      { id: 'psychotherapy-individual', name: 'Psicoterapia Individual', defaultDurationMinutes: 50, defaultPrice: 0, modality: 'BOTH', active: true, publicBooking: { active: true, onlineEnabled: true, inPersonEnabled: true, allowedLocationIds: ['location-1'], sortOrder: 1 } },
+      { id: 'therapy-couple', name: 'Terapia de Casal', defaultDurationMinutes: 50, defaultPrice: 0, modality: 'BOTH', active: true, publicBooking: { active: true, onlineEnabled: true, inPersonEnabled: true, allowedLocationIds: ['location-1'], sortOrder: 2 } },
+    ] });
+    if (path === '/api/psychology/locations' && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [
+      { id: 'location-1', displayName: 'Local Sintético', active: true, sortOrder: 1, type: 'PRIMARY_OFFICE' },
+    ] });
+    if (path === '/api/psychology/packages' && (init.method || 'GET') === 'GET') return jsonResponse({ scope: resolvedScope, items: [] });
     if (path === '/api/psychology/settings' && (init.method || 'GET') === 'GET') {
       return jsonResponse({
         scope: resolvedScope,
@@ -150,6 +158,10 @@ test('R45 — authenticated remote carrega patients, sessions e settings separad
     }
     if (path === '/api/psychology/patients' && init.method === 'POST') {
       return jsonResponse({ scope: resolvedScope, patient: { ...patient, name: 'Paciente Sintético Atualizado' } });
+    }
+    if (path === '/api/psychology/services' && init.method === 'POST') {
+      const service = JSON.parse(init.body);
+      return jsonResponse({ scope: resolvedScope, item: service });
     }
     throw new Error(`Rota sintética inesperada: ${init.method || 'GET'} ${path}`);
   };
@@ -164,11 +176,13 @@ test('R45 — authenticated remote carrega patients, sessions e settings separad
   assert.equal(isPsychologyRemoteClientEnabled('pilot-local'), false);
   assert.equal(store.patients.length > 0, true);
   assert.equal(store.patients[0].id, patient.id);
+  assert.equal(store.services.length, 5);
+  assert.equal(store.locations.length, 1);
   assert.equal(client.scope.professionalId, resolvedScope.professionalId);
   assert.equal(client.scope.workspaceId, resolvedScope.workspaceId);
   assert.deepEqual(
     calls.map(call => call.path).sort(),
-    ['/api/psychology/charges', '/api/psychology/expenses', '/api/psychology/patients', '/api/psychology/payments', '/api/psychology/personal-appointments', '/api/psychology/sessions', '/api/psychology/settings'],
+    ['/api/psychology/charges', '/api/psychology/expenses', '/api/psychology/locations', '/api/psychology/packages', '/api/psychology/patients', '/api/psychology/payments', '/api/psychology/personal-appointments', '/api/psychology/services', '/api/psychology/sessions', '/api/psychology/settings'],
   );
   assert.ok(calls.every(call => call.method === 'GET' && call.authorization));
 
@@ -176,15 +190,23 @@ test('R45 — authenticated remote carrega patients, sessions e settings separad
   assert.equal(updated.name, 'Paciente Sintético Atualizado');
   assert.equal(calls.at(-1).path, '/api/psychology/patients');
   assert.equal(calls.at(-1).method, 'POST');
+
+  const mentoring = store.services.find(service => service.id === 'mentoring');
+  assert.ok(mentoring);
+  const savedService = await client.updateService({ ...mentoring, publicBooking: { ...mentoring.publicBooking, active: false } });
+  assert.equal(savedService.publicBooking.active, false);
+  assert.equal(calls.at(-1).path, '/api/psychology/services');
+  assert.equal(calls.at(-1).method, 'POST');
+  assert.equal(JSON.parse(calls.at(-1).body).id, 'mentoring');
 });
 
 test('R45 — UI diferencia carregamento/erro de zero real e bloqueia fallback local durante falha', () => {
   assert.match(pilotSource, /Carregando dados da Psicologia\.\.\./);
   assert.match(pilotSource, /Não foi possível carregar os dados da Psicologia\./);
-  assert.match(pilotSource, /remoteConfiguration\.enabled && \(remoteLoading \|\| remoteError\)/);
+  assert.match(pilotSource, /remoteConfiguration\.enabled[\s\S]*?remoteLoading \|\| remoteError/);
   assert.match(pilotSource, /Nenhum dado local será usado como fallback/);
   assert.match(pilotSource, /if \(!remoteClient \|\| remoteLoading \|\| remoteError\)/);
   assert.match(pilotSource, /remoteClient\.updatePatient\(nextPatient\)/);
   assert.doesNotMatch(pilotSource, /remoteError\s*\?\s*[^:]+\s*:\s*localStore/);
-  assert.match(remoteClientSource, /const \[patients, sessions, personalAppointments, charges, payments, expenses, settings\] = await Promise\.all/);
+  assert.match(remoteClientSource, /const \[patients, sessions, personalAppointments, charges, payments, expenses, packages, services, locations, settings\] = await Promise\.all/);
 });

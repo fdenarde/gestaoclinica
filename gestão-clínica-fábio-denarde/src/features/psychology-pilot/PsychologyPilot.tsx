@@ -122,6 +122,7 @@ import {
   type PsychologySettings,
   type PsychologyProfessionalPresentation,
   type PsychologyLocation,
+  type PsychologyService,
   type PsychologyLocationInput,
   type PsychologyAgendaPeriod,
   type PsychologyDailyAvailability,
@@ -540,9 +541,15 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     settingsMutationLock.current = true;
     setNotice('Salvando Ajustes no provider remoto…');
     try {
-      return remoteClient.updateSettings(next.settings)
+      const { services: _services, ...settingsPatch } = next.settings;
+      return remoteClient.updateSettings(settingsPatch)
         .then(saved => {
-          setRemoteStore(current => current ? { ...current, settings: saved, services: saved.services, locations: saved.locations } : current);
+          setRemoteStore(current => current ? {
+            ...current,
+            settings: { ...saved, services: current.services, locations: current.locations },
+            services: current.services,
+            locations: current.locations,
+          } : current);
           setNotice('Ajustes salvos no provider remoto.');
           return true;
         })
@@ -556,6 +563,46 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     } catch (cause) {
       settingsMutationLock.current = false;
       setNotice(cause instanceof Error ? cause.message : 'Não foi possível salvar os Ajustes no provider remoto.');
+      return false;
+    }
+  };
+
+  const serviceMutationLock = useRef(false);
+  const updateServicesStore = (services: PsychologyService[]): boolean | Promise<boolean> => {
+    if (!remoteConfiguration.enabled) {
+      return updateStore({ ...store, services, settings: { ...store.settings, services } });
+    }
+    if (!remoteClient || remoteLoading || remoteError) {
+      setNotice('Aguarde o carregamento do provider remoto antes de salvar os serviços.');
+      return false;
+    }
+    if (serviceMutationLock.current) {
+      setNotice('Já existe um salvamento de serviços em andamento.');
+      return false;
+    }
+    serviceMutationLock.current = true;
+    setNotice('Salvando serviços no provider remoto…');
+    try {
+      return remoteClient.updateServices(services)
+        .then(saved => {
+          setRemoteStore(current => current ? {
+            ...current,
+            services: saved,
+            settings: { ...current.settings, services: saved },
+          } : current);
+          setNotice('Serviços salvos no provider remoto.');
+          return true;
+        })
+        .catch(cause => {
+          setNotice(cause instanceof Error ? cause.message : 'Não foi possível salvar os serviços no provider remoto.');
+          return false;
+        })
+        .finally(() => {
+          serviceMutationLock.current = false;
+        });
+    } catch (cause) {
+      serviceMutationLock.current = false;
+      setNotice(cause instanceof Error ? cause.message : 'Não foi possível salvar os serviços no provider remoto.');
       return false;
     }
   };
@@ -1174,7 +1221,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
            {page === 'personal' && <PsychologyPersonalAgenda commitments={store.personalCommitments} scope={store.scope} onPersist={persistPersonalCommitments} />}
           {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} onNotice={setNotice} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} remoteProviderStatus={remoteConfiguration.enabled ? remoteStatus : undefined} onRetryRemote={retryRemoteProvider} />}
            {page === 'reports' && <PsychologyReportsView store={store} />}
-          {page === 'settings' && <PsychologySettingsView store={store} settings={store.settings} patients={store.patients} sessionPackages={store.sessionPackages} onUpdatePackage={input => updateSettingsStore(upsertPsychologySessionPackage(store, input, undefined))} onUpdate={patch => updateSettingsStore(updatePsychologySettings(store, patch))} onUpdateLocation={(id, patch) => updateSettingsStore(updatePsychologyLocation(store, id, patch))} onCreateLocation={input => updateSettingsStore(createPsychologyLocation(store, input))} onSetLocationColor={(id, color) => updateSettingsStore(setPsychologyLocationColor(store, id, color))} onSetPrimary={id => updateSettingsStore(setPsychologyPrimaryLocation(store, id))} onSetActive={(id, active) => updateSettingsStore(setPsychologyLocationActive(store, id, active))} onSetColor={(category, color) => updateSettingsStore(setPsychologyCategoryColor(store, category, color))} onRestoreColors={() => updateSettingsStore(restorePsychologyDefaultColors(store))} preview={doctoraliaPreview} hiddenCancelledEventCount={hiddenDoctoraliaCancelledEventIds.length} onRestoreHiddenCancelled={restoreHiddenDoctoraliaCancelledEvents} previewLoading={previewLoading} previewLoadError={previewLoadError} onActivatePreview={activateDoctoraliaPreview} onEndPreview={requestEndDoctoraliaPreview} onGenerateBackup={remoteConfiguration.enabled ? generatePsychologyBackup : undefined} />}
+          {page === 'settings' && <PsychologySettingsView store={store} settings={store.settings} patients={store.patients} sessionPackages={store.sessionPackages} remoteMode={remoteConfiguration.enabled} onUpdatePackage={input => updateSettingsStore(upsertPsychologySessionPackage(store, input, undefined))} onUpdate={patch => updateSettingsStore(updatePsychologySettings(store, patch))} onUpdateServices={updateServicesStore} onUpdateLocation={(id, patch) => updateSettingsStore(updatePsychologyLocation(store, id, patch))} onCreateLocation={input => updateSettingsStore(createPsychologyLocation(store, input))} onSetLocationColor={(id, color) => updateSettingsStore(setPsychologyLocationColor(store, id, color))} onSetPrimary={id => updateSettingsStore(setPsychologyPrimaryLocation(store, id))} onSetActive={(id, active) => updateSettingsStore(setPsychologyLocationActive(store, id, active))} onSetColor={(category, color) => updateSettingsStore(setPsychologyCategoryColor(store, category, color))} onRestoreColors={() => updateSettingsStore(restorePsychologyDefaultColors(store))} preview={doctoraliaPreview} hiddenCancelledEventCount={hiddenDoctoraliaCancelledEventIds.length} onRestoreHiddenCancelled={restoreHiddenDoctoraliaCancelledEvents} previewLoading={previewLoading} previewLoadError={previewLoadError} onActivatePreview={activateDoctoraliaPreview} onEndPreview={requestEndDoctoraliaPreview} onGenerateBackup={remoteConfiguration.enabled ? generatePsychologyBackup : undefined} />}
         </main>
       </div>
 
@@ -1780,8 +1827,10 @@ type PsychologySettingsViewProps = {
   settings: PsychologySettings;
   patients: PsychologyPatient[];
   sessionPackages: PsychologyStore['sessionPackages'];
+  remoteMode: boolean;
   onUpdatePackage: (input: PsychologySessionPackageInput) => void;
   onUpdate: (patch: Partial<PsychologySettings>) => void;
+  onUpdateServices: (services: PsychologyService[]) => boolean | Promise<boolean>;
   onUpdateLocation: (id: string, patch: PsychologyLocationInput) => void;
   onCreateLocation: (input: PsychologyLocationInput) => void;
   onSetLocationColor: (id: string, color: string) => void;
@@ -1807,7 +1856,7 @@ function SettingsPageHeader({ title, description }: { title: string; description
   return <section className="flex flex-col justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:p-5" data-testid="psychology-settings-page-header"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-700">Ajustes · Psicologia</p><h2 className="mt-1 text-xl font-black tracking-tight text-slate-950">{title}</h2><p className="mt-1 max-w-3xl text-sm font-semibold leading-relaxed text-slate-500">{description}</p></div></section>;
 }
 
-function PsychologySettingsView({ store, settings, patients, sessionPackages, onUpdatePackage, onUpdate, onUpdateLocation, onCreateLocation, onSetLocationColor, onSetPrimary, onSetActive, onSetColor, onRestoreColors, preview, hiddenCancelledEventCount, onRestoreHiddenCancelled, previewLoading, previewLoadError, onActivatePreview, onEndPreview, onGenerateBackup }: PsychologySettingsViewProps) {
+function PsychologySettingsView({ store, settings, patients, sessionPackages, remoteMode, onUpdatePackage, onUpdate, onUpdateServices, onUpdateLocation, onCreateLocation, onSetLocationColor, onSetPrimary, onSetActive, onSetColor, onRestoreColors, preview, hiddenCancelledEventCount, onRestoreHiddenCancelled, previewLoading, previewLoadError, onActivatePreview, onEndPreview, onGenerateBackup }: PsychologySettingsViewProps) {
   const [activeTab, setActiveTab] = useState<PsychologySettingsTab>('profile');
   const [profile, setProfile] = useState(settings.professionalProfile);
   const [profileEditing, setProfileEditing] = useState(false);
@@ -1867,11 +1916,21 @@ function PsychologySettingsView({ store, settings, patients, sessionPackages, on
     const name = newServiceName.trim();
     if (!name) return;
     const now = new Date().toISOString();
-    onUpdate({ services: [...settings.services, { id: `service-${Date.now()}`, professionalId: settings.scope.professionalId, context: PSYCHOLOGY_CONTEXT, name, defaultDurationMinutes: agenda.defaultDurationMinutes, defaultPrice: 0, modality: 'BOTH', active: true, createdAt: now, updatedAt: now }] });
-    setNewServiceName('');
-    setNotice('Serviço adicionado no provider ativo.');
+    const newService: PsychologyService = { id: `service-${Date.now()}`, professionalId: settings.scope.professionalId, context: PSYCHOLOGY_CONTEXT, name, defaultDurationMinutes: agenda.defaultDurationMinutes, defaultPrice: 0, modality: 'BOTH', active: true, createdAt: now, updatedAt: now };
+    const nextServices = [...settings.services, newService];
+    void Promise.resolve(onUpdateServices(nextServices)).then(saved => {
+      if (!saved) return;
+      setNewServiceName('');
+      setNotice('Serviço adicionado no provider ativo.');
+    });
   };
-  const saveServices = () => { onUpdate({ services: serviceDrafts }); setAttendanceSection(null); setNotice('Serviços salvos no provider ativo.'); };
+  const saveServices = () => {
+    void Promise.resolve(onUpdateServices(serviceDrafts)).then(saved => {
+      if (!saved) return;
+      setAttendanceSection(null);
+      setNotice('Serviços salvos no provider ativo.');
+    });
+  };
   const saveLocation = (id: string, patch: PsychologyLocationInput) => { onUpdateLocation(id, patch); setNotice('Local atualizado no provider ativo.'); };
   const addLocation = () => {
     if (!newLocation.displayName?.trim()) return;
@@ -1899,7 +1958,7 @@ return <div className={psychologySettingsContainerClass} data-testid="psychology
 
     {activeTab === 'agenda' && <div className="space-y-3" data-testid="psychology-settings-panel-agenda"><div className="grid gap-3 md:grid-cols-2"><SettingsSummaryCard title="Horário habitual" summary={`${agenda.weeklyAvailability.filter(day => day.enabled).length} dias ativos · ${agenda.defaultDurationMinutes} min`} action={agendaEditing ? 'Fechar' : 'Editar'} onAction={() => setAgendaEditing(value => !value)}><p className="mt-1 text-xs text-slate-500">Duração padrão, intervalos e faixas por dia.</p></SettingsSummaryCard><SettingsSummaryCard title="Períodos do dia" summary="Manhã · Tarde · Noite" action={agendaEditing ? 'Editando' : 'Editar'} onAction={() => setAgendaEditing(true)}><p className="mt-1 text-xs text-slate-500">Os atalhos da Agenda usam esses limites administrativos.</p></SettingsSummaryCard></div><section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Ações rápidas</p><p className="mt-1 text-sm font-black text-slate-900">Bloqueio público disponível pela Agenda</p></div><button type="button" onClick={() => setActiveTab('agenda')} className={secondaryButton}>Configurar</button></div></section><section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Cores da Agenda</p><div className="mt-2 flex flex-wrap gap-2">{categoryOrder.map(category => <span key={category} className="flex items-center gap-1.5 text-xs font-bold text-slate-600"><span className="h-3 w-3 rounded-full border border-white shadow-sm" style={{ backgroundColor: settings.colors[category] }} />{PSYCHOLOGY_CATEGORY_LABELS[category]}</span>)}</div></div><button type="button" onClick={() => setShowAgendaColors(value => !value)} className={secondaryButton}>{showAgendaColors ? 'Fechar' : 'Personalizar'}</button></div>{showAgendaColors && <div className="mt-4 grid gap-2 sm:grid-cols-2">{categoryOrder.map(category => <label key={category} className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold"><span>{PSYCHOLOGY_CATEGORY_LABELS[category]}</span><input type="color" value={settings.colors[category]} onChange={event => onSetColor(category, event.target.value)} aria-label={`Cor ${PSYCHOLOGY_CATEGORY_LABELS[category]}`} className="h-8 w-10" /></label>)}</div>}</section>{agendaEditing && <section className="rounded-2xl border border-violet-200 bg-white p-4 shadow-sm" data-testid="psychology-agenda-settings-editor"><div className="grid gap-3 sm:grid-cols-2"><Field label="Duração padrão"><input type="number" min="1" value={agenda.defaultDurationMinutes} onChange={event => setAgenda({ ...agenda, defaultDurationMinutes: Number(event.target.value) })} className={inputClass} /></Field><Field label="Intervalo entre sessões"><input type="number" min="0" value={agenda.intervalMinutes} onChange={event => setAgenda({ ...agenda, intervalMinutes: Number(event.target.value) })} className={inputClass} /></Field></div><PsychologyAvailabilitySettings weeklyAvailability={agenda.weeklyAvailability} onChange={weeklyAvailability => setAgenda({ ...agenda, weeklyAvailability })} /><PsychologyDaypartSettings dayParts={agenda.dayParts} onChange={dayParts => setAgenda({ ...agenda, dayParts })} />{agendaError && <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700" role="alert">{agendaError}</p>}<div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={saveAgenda} className={primaryButton}>Salvar Agenda</button><button type="button" onClick={() => { setAgenda(settings.agenda); setAgendaError(''); setAgendaEditing(false); }} className={secondaryButton}>Cancelar</button></div></section>}</div>}
 
-    {activeTab === 'online' && <div data-testid="psychology-settings-panel-online"><PublicBookingSettingsPanel /></div>}
+    {activeTab === 'online' && <div data-testid="psychology-settings-panel-online"><PublicBookingSettingsPanel remoteServices={remoteMode ? store.services : undefined} remoteLocations={remoteMode ? store.locations : undefined} onSaveRemoteServices={remoteMode ? onUpdateServices : undefined} /></div>}
 
     {activeTab === 'backup' && <div className="space-y-3" data-testid="psychology-settings-panel-backup"><PsychologyImportExport store={store} onGenerateBackup={onGenerateBackup} /></div>}
 

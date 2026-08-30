@@ -4,6 +4,8 @@ import {
   type PsychologyPatient,
   type PsychologyStore,
 } from '../psychology-pilot/psychologyDomain';
+import { canonicalPsychologyServiceId } from '../psychology-pilot/psychologyServiceCatalog';
+import { createDefaultPsychologyServices, type PsychologyService } from '../psychology-pilot/psychologyR2a';
 import { normalizePsychologySettings, type PsychologySettings } from '../psychology-pilot/psychologyR2a';
 import {
   createPsychologyPersistenceProvider,
@@ -32,6 +34,46 @@ function asPatient(value: unknown): PsychologyPatient {
   return value as PsychologyPatient;
 }
 
+function asService(value: unknown): PsychologyService {
+  return value as PsychologyService;
+}
+
+function effectiveRemoteServices(remoteServices: readonly PsychologyService[], scope: PsychologyPersistenceScope, locationIds: string[], now: string): PsychologyService[] {
+  const defaults = createDefaultPsychologyServices(createPsychologyScope(scope.professionalId), now)
+    .map(service => ({
+      ...service,
+      publicBooking: service.publicBooking
+        ? { ...service.publicBooking, allowedLocationIds: [...locationIds] }
+        : service.publicBooking,
+    }));
+  const remoteById = new Map<string, PsychologyService>();
+  remoteServices.forEach(service => {
+    const canonicalId = canonicalPsychologyServiceId(service.id);
+    const current = remoteById.get(canonicalId);
+    if (!current || service.id === canonicalId) remoteById.set(canonicalId, { ...service, id: canonicalId });
+  });
+  const merged = defaults.map(fallback => {
+    const remote = remoteById.get(fallback.id);
+    if (!remote) return fallback;
+    return {
+      ...fallback,
+      ...remote,
+      id: fallback.id,
+      professionalId: scope.professionalId,
+      context: 'PSICOLOGIA' as const,
+      publicBooking: remote.publicBooking
+        ? {
+          ...fallback.publicBooking,
+          ...remote.publicBooking,
+          allowedLocationIds: remote.publicBooking.allowedLocationIds ?? fallback.publicBooking?.allowedLocationIds ?? [],
+        }
+        : fallback.publicBooking,
+    };
+  });
+  const canonicalIds = new Set(defaults.map(service => service.id));
+  return [...merged, ...remoteServices.filter(service => !canonicalIds.has(canonicalPsychologyServiceId(service.id)))];
+}
+
 export function createPsychologyRemotePatientClient(options: PsychologyRemotePatientClientOptions) {
   const now = options.now || (() => new Date().toISOString());
   const provider: PsychologyPersistenceProvider = createPsychologyPersistenceProvider({
@@ -44,7 +86,7 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
   const repositories = provider.repositories;
 
   async function load(): Promise<PsychologyStore> {
-    const [patients, sessions, personalAppointments, charges, payments, expenses, packages, settings] = await Promise.all([
+    const [patients, sessions, personalAppointments, charges, payments, expenses, packages, services, locations, settings] = await Promise.all([
       repositories.patients.list(scope),
       repositories.sessions.list(scope),
       repositories.personalAppointments.list(scope),
@@ -52,8 +94,13 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
       repositories.financial.listPayments(scope),
       repositories.financial.listExpenses(scope),
       repositories.packages.list(scope),
+      repositories.services.list(scope),
+      repositories.locations.list(scope),
       repositories.settings.get(scope, 'settings'),
     ]);
+    const effectiveLocations = [...locations];
+    const effectiveServices = effectiveRemoteServices(services, scope, effectiveLocations.map(location => location.id), now());
+    const psychologyScope = createPsychologyScope(scope.professionalId);
     const next = normalizePsychologyStore({
       patients,
       sessions,
@@ -62,9 +109,16 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
       payments,
       expenses,
       sessionPackages: packages,
-      settings: settings?.settings,
-    }, createPsychologyScope(scope.professionalId));
-    return next;
+      services: effectiveServices,
+      locations: effectiveLocations,
+      settings: { ...(settings?.settings || {}), services: effectiveServices, locations: effectiveLocations },
+    }, psychologyScope);
+    return {
+      ...next,
+      services: effectiveServices,
+      locations: effectiveLocations,
+      settings: { ...next.settings, services: effectiveServices, locations: effectiveLocations },
+    };
   }
 
   async function loadBackupSnapshot(): Promise<PsychologyStore> {
@@ -106,6 +160,22 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     const saved = await repositories.settings.update(scope, 'settings', patch as never);
     if (!saved) throw new Error('Os Ajustes da Psicologia não foram encontrados no provider remoto.');
     return normalizePsychologySettings(saved.settings, createPsychologyScope(scope.professionalId), now());
+  }
+
+  async function updateService(service: PsychologyService): Promise<PsychologyService> {
+    const saved = await repositories.services.upsert(scope, {
+      ...service,
+      workspaceId: scope.workspaceId,
+      professionalId: scope.professionalId,
+      context: scope.context,
+      ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
+      updatedAt: now(),
+    });
+    return asService(saved);
+  }
+
+  async function updateServices(services: PsychologyService[]): Promise<PsychologyService[]> {
+    return Promise.all(services.map(updateService));
   }
 
   async function updatePatient(patient: PsychologyPatient): Promise<PsychologyPatient> {
@@ -175,6 +245,8 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     load,
     loadBackupSnapshot,
     updateSettings,
+    updateService,
+    updateServices,
     updatePatient,
     reactivatePatient,
     updatePatientReview,

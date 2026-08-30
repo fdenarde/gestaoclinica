@@ -1077,9 +1077,12 @@ function createPublicBookingServerHandler(options) {
   };
 }
 export {
+  PSYCHOLOGY_SERVICE_CATALOG,
+  canonicalPsychologyServiceId,
   createDefaultPublicBookingSettings,
   createMemoryPublicBookingServerStore,
   createPublicBookingServerHandler,
   createServerPublicBookingRepository,
-  normalizePublicBookingSettings
+  normalizePublicBookingSettings,
+  psychologyCatalogEntry
 };

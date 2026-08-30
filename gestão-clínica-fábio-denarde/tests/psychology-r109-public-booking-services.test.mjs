@@ -99,7 +99,15 @@ function canonicalService(id, name, durationMinutes, sortOrder, overrides = {}) 
   };
 }
 
-function seedDatabase({ hiddenId } = {}) {
+const allServiceIds = [
+  'psychotherapy-individual',
+  'therapy-couple',
+  'mentoring',
+  'eneagram-test',
+  'psychotherapy-adolescent',
+];
+
+function seedDatabase({ remoteServiceIds = ['psychotherapy-individual', 'therapy-couple'], inactiveId, unpublishedId } = {}) {
   const database = new FakeDb();
   database.values.set(rootPath, {
     schemaVersion: 1,
@@ -116,17 +124,19 @@ function seedDatabase({ hiddenId } = {}) {
     },
   });
   const services = [
-    canonicalService('psychotherapy-individual', 'Nome canônico individual', 50, 1),
-    canonicalService('therapy-couple', 'Nome canônico casal', 60, 2),
-    canonicalService('mentoring', 'Mentoria', 45, 3),
-    canonicalService('eneagram-test', 'Teste de Eneagrama', 30, 4),
-    canonicalService('psychotherapy-adolescent', 'Psicoterapia Adolescente', 55, 5),
+    canonicalService('psychotherapy-individual', 'Psicoterapia Individual', 50, 1),
+    canonicalService('therapy-couple', 'Terapia de Casal', 50, 2),
+    canonicalService('mentoring', 'Mentoria', 50, 3),
+    canonicalService('eneagram-test', 'Teste de Eneagrama', 50, 4),
+    canonicalService('psychotherapy-adolescent', 'Psicoterapia Adolescente', 50, 5),
   ];
-  if (hiddenId) {
-    const hidden = services.find(service => service.id === hiddenId);
-    hidden.publicBooking = { ...hidden.publicBooking, active: false };
-  }
-  services.forEach(service => database.values.set(`${canonicalPath}/services/${service.id}`, service));
+  services
+    .filter(service => remoteServiceIds.includes(service.id))
+    .forEach(service => {
+      if (service.id === inactiveId) service.active = false;
+      if (service.id === unpublishedId) service.publicBooking = { ...service.publicBooking, active: false };
+      database.values.set(`${canonicalPath}/services/${service.id}`, service);
+    });
   locations.forEach(location => database.values.set(`${canonicalPath}/locations/${location.id}`, location));
   return database;
 }
@@ -147,8 +157,12 @@ async function withRuntime(callback) {
 
 test('R109 reconcilia configuração pública parcial com o inventário canônico sem duplicar', async () => {
   await withRuntime(async () => {
-    const store = createFirestorePublicBookingServerStore({ db: seedDatabase() });
+    const database = seedDatabase();
+    const store = createFirestorePublicBookingServerStore({ db: database });
     const state = await store.loadState();
+    assert.equal([...state.settings.publishedServices].length, 5);
+    assert.equal(state.settings.publishedServices.some(service => service.id === 'mentoring' && service.active), true);
+    assert.equal(database.values.has(`${canonicalPath}/services/mentoring`), false);
     assert.deepEqual(state.settings.publishedServices.map(service => service.id), [
       'psychotherapy-individual',
       'therapy-couple',
@@ -157,7 +171,7 @@ test('R109 reconcilia configuração pública parcial com o inventário canônic
       'psychotherapy-adolescent',
     ]);
     assert.equal(new Set(state.settings.publishedServices.map(service => service.id)).size, 5);
-    assert.deepEqual(state.settings.publishedServices.map(service => service.durationMinutes), [50, 60, 45, 30, 55]);
+    assert.deepEqual(state.settings.publishedServices.map(service => service.durationMinutes), [50, 50, 50, 50, 50]);
     assert.deepEqual(state.settings.publishedServices.map(service => service.name), [
       'Psicoterapia Individual',
       'Terapia de Casal',
@@ -173,9 +187,9 @@ test('R109 reconcilia configuração pública parcial com o inventário canônic
   });
 });
 
-test('R109 mantém serviços inativos/não publicáveis fora do catálogo elegível', async () => {
+test('R109 preserva serviço canônico explicitamente inativo', async () => {
   await withRuntime(async () => {
-    const store = createFirestorePublicBookingServerStore({ db: seedDatabase({ hiddenId: 'mentoring' }) });
+    const store = createFirestorePublicBookingServerStore({ db: seedDatabase({ remoteServiceIds: allServiceIds, inactiveId: 'mentoring' }) });
     const state = await store.loadState();
     assert.equal(state.settings.publishedServices.find(service => service.id === 'mentoring')?.active, false);
     assert.deepEqual(state.settings.publishedServices.filter(service => service.active).map(service => service.id), [
@@ -184,5 +198,14 @@ test('R109 mantém serviços inativos/não publicáveis fora do catálogo elegí
       'eneagram-test',
       'psychotherapy-adolescent',
     ]);
+  });
+});
+
+test('R109 preserva serviço explicitamente não publicável por publicBooking.active', async () => {
+  await withRuntime(async () => {
+    const store = createFirestorePublicBookingServerStore({ db: seedDatabase({ remoteServiceIds: allServiceIds, unpublishedId: 'eneagram-test' }) });
+    const state = await store.loadState();
+    assert.equal(state.settings.publishedServices.find(service => service.id === 'eneagram-test')?.active, false);
+    assert.equal(state.settings.publishedServices.find(service => service.id === 'eneagram-test')?.onlineEnabled, true);
   });
 });

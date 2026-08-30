@@ -5,6 +5,7 @@ import { syncLocalPublicBookingSettings } from './publicApiClient';
 import PublicBookingAvailabilityEditor from './PublicBookingAvailabilityEditor';
 import { isValidGoogleMapsUrl, normalizeProfessionalSlug, publicBookingWeekdayLabel } from './bookingDomain';
 import type { PublicBookingAvailabilityPeriod, PublicBookingException, PublicBookingExceptionType, PublicBookingLocation, PublicBookingService, PublicBookingSettings } from './types';
+import type { PsychologyLocation, PsychologyService } from '../psychology-pilot/psychologyR2a';
 
 const inputClass = 'w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-600 focus:ring-2 focus:ring-violet-100';
 const primaryButton = 'inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-4 py-3 text-sm font-black text-white shadow-sm transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50';
@@ -157,7 +158,7 @@ function LegacyPublicBookingSettingsPanel() {
 
 type PublicBookingSettingsPanelSection = 'overview' | 'availability' | 'services' | 'rules' | 'confirmation';
 
-export default function PublicBookingSettingsPanel() {
+function LocalPublicBookingSettingsPanel() {
   const repository = useMemo(() => createLocalPublicBookingRepository({ storage: window.localStorage }), []);
   const [settings, setSettings] = useState<PublicBookingSettings | null>(null);
   const [activeSection, setActiveSection] = useState<PublicBookingSettingsPanelSection>('overview');
@@ -185,4 +186,85 @@ export default function PublicBookingSettingsPanel() {
   const cardClass = 'rounded-2xl border border-slate-200 bg-white p-4 shadow-sm';
   const selectSection = (section: PublicBookingSettingsPanelSection) => setActiveSection(current => current === section ? 'overview' : section);
   return <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="psychology-online-booking-settings"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-700">Ajustes · Psicologia</p><h3 className="mt-1 text-xl font-black tracking-tight text-slate-950">Agendamento Online</h3><p className="mt-1 max-w-3xl text-sm font-semibold text-slate-500">Configure o link público, a disponibilidade e as regras sem deixar todos os formulários abertos ao mesmo tempo.</p></div><span className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-black ${form.active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}><Globe2 size={14} /> {form.active ? 'Ativo' : 'Inativo'}</span></div>{activeSection === 'overview' && <div className="mt-5 space-y-3" data-testid="psychology-online-booking-overview"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-black uppercase tracking-[0.14em] text-violet-700">Link público</p><p className="mt-2 break-all text-sm font-black text-violet-800">{publicUrl}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => { void navigator.clipboard?.writeText(publicUrl).then(() => setNotice('Link público copiado.')).catch(() => setNotice('Copie o link exibido manualmente.')); }} className={secondaryButton}>Copiar link</button><a href={publicUrl} target="_blank" rel="noreferrer" className={secondaryButton}><ExternalLink size={15} /> Abrir página</a></div></div><div className="grid gap-3 md:grid-cols-2"><button type="button" onClick={() => selectSection('availability')} className={`${cardClass} text-left hover:border-violet-300`}><p className="text-sm font-black text-slate-900">Disponibilidade pública</p><p className="mt-1 text-xs text-slate-500">{settings.publicBookingAvailability.filter(item => item.enabled).length} faixas habituais · {settings.publicBookingExceptions.length} exceções</p><span className="mt-3 inline-flex rounded-lg bg-violet-50 px-2.5 py-1.5 text-xs font-black text-violet-700">Gerenciar</span></button><button type="button" onClick={() => selectSection('services')} className={`${cardClass} text-left hover:border-violet-300`}><p className="text-sm font-black text-slate-900">Serviços publicados</p><p className="mt-1 text-xs text-slate-500">{settings.publishedServices.filter(item => item.active).length} ativos · modalidades públicas preservadas</p><span className="mt-3 inline-flex rounded-lg bg-violet-50 px-2.5 py-1.5 text-xs font-black text-violet-700">Gerenciar</span></button><button type="button" onClick={() => selectSection('rules')} className={`${cardClass} text-left hover:border-violet-300`}><p className="text-sm font-black text-slate-900">Regras de agendamento</p><p className="mt-1 text-xs text-slate-500">Até {form.maxAdvanceDays} dias · mínimo {form.minNoticeHours}h</p><span className="mt-3 inline-flex rounded-lg bg-violet-50 px-2.5 py-1.5 text-xs font-black text-violet-700">Editar</span></button><button type="button" onClick={() => selectSection('confirmation')} className={`${cardClass} text-left hover:border-violet-300`}><p className="text-sm font-black text-slate-900">Confirmação e cancelamento</p><p className="mt-1 text-xs text-slate-500">Link de gestão · cancelamento conforme antecedência · reagendamento por WhatsApp</p><span className="mt-3 inline-flex rounded-lg bg-violet-50 px-2.5 py-1.5 text-xs font-black text-violet-700">Editar</span></button></div></div>}{activeSection !== 'overview' && <div className="mt-4"><button type="button" onClick={() => setActiveSection('overview')} className="mb-3 rounded-lg px-2 py-1 text-xs font-black text-violet-700 hover:bg-violet-100">← Voltar ao resumo</button>{activeSection === 'availability' && <PublicBookingAvailabilitySettings settings={settings} onSave={saveAvailability} />}{activeSection === 'services' && <section className={cardClass} data-testid="psychology-public-services-settings"><p className="text-sm font-black text-slate-900">Serviços publicados</p><p className="mt-1 text-xs text-slate-500">Nome, ativo, ordem, duração, modalidades e locais permitidos continuam no contrato público canônico.</p><div className="mt-3 space-y-3">{sortedServices.map(service => <ServiceRow key={service.id} service={service} locations={settings.locations} onSave={saveService} />)}</div></section>}{(activeSection === 'rules' || activeSection === 'confirmation') && <section className={cardClass} data-testid={`psychology-online-${activeSection}-editor`}><div className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-slate-600">Slug público<input value={form.professionalSlug} onChange={event => setForm({ ...form, professionalSlug: event.target.value })} className={`${inputClass} mt-1`} /></label>{activeSection === 'confirmation' && <label className="text-xs font-bold text-slate-600">WhatsApp para solicitações<input value={form.whatsappContactPhoneE164} onChange={event => setForm({ ...form, whatsappContactPhoneE164: event.target.value })} className={`${inputClass} mt-1`} placeholder="552799529638" inputMode="tel" /><span className="mt-1 block text-[11px] font-semibold text-slate-500">Cada profissional poderá registrar seu próprio número.</span></label>}{activeSection === 'rules' && <><label className="text-xs font-bold text-slate-600">Antecedência máxima<input type="number" min="1" max="90" value={form.maxAdvanceDays} onChange={event => setForm({ ...form, maxAdvanceDays: Number(event.target.value) })} className={`${inputClass} mt-1`} /></label><label className="text-xs font-bold text-slate-600">Antecedência mínima (horas)<input type="number" min="0" max="168" value={form.minNoticeHours} onChange={event => setForm({ ...form, minNoticeHours: Number(event.target.value) })} className={`${inputClass} mt-1`} /></label></>}{activeSection === 'confirmation' && <label className="text-xs font-bold text-slate-600">Limite para cancelamento (horas)<input type="number" min="0" max="168" value={form.cancellationCutoffHours} onChange={event => setForm({ ...form, cancellationCutoffHours: Number(event.target.value) })} className={`${inputClass} mt-1`} /></label>}</div><div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-black text-slate-700"><input type="checkbox" checked={form.active} onChange={event => setForm({ ...form, active: event.target.checked })} /> Agendamento online ativo</label>{activeSection === 'confirmation' && <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-black text-slate-700"><input type="checkbox" checked={form.cancellationEnabled} onChange={event => setForm({ ...form, cancellationEnabled: event.target.checked })} /> Permitir cancelamento pelo paciente</label>}</div><button type="button" onClick={() => void save()} className={`${primaryButton} mt-4`}>Salvar alterações</button>{error && <p role="alert" className="mt-3 text-xs font-bold text-rose-700">{error}</p>}</section>}</div>}{notice && <p role="status" className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">{notice}</p>}</section>;
+}
+
+type RemotePublicBookingSettingsPanelProps = {
+  services: PsychologyService[];
+  locations: PsychologyLocation[];
+  onSave: (services: PsychologyService[]) => boolean | Promise<boolean>;
+};
+
+function toPublicBookingLocation(location: PsychologyLocation): PublicBookingLocation {
+  return {
+    id: location.id,
+    professionalId: location.professionalId,
+    displayName: location.displayName,
+    fullAddress: location.fullAddress || location.address || '',
+    city: location.city || '',
+    state: location.state || '',
+    googleMapsUrl: location.googleMapsUrl || '',
+    active: location.active !== false,
+    sortOrder: location.sortOrder || 1,
+  };
+}
+
+function toPublicBookingService(service: PsychologyService, index: number): PublicBookingService {
+  const publication = service.publicBooking;
+  return {
+    id: service.id,
+    name: service.name,
+    durationMinutes: service.defaultDurationMinutes,
+    active: service.active && (publication?.active ?? true),
+    sortOrder: publication?.sortOrder || index + 1,
+    onlineEnabled: publication?.onlineEnabled ?? service.modality !== 'PRESENTIAL',
+    inPersonEnabled: publication?.inPersonEnabled ?? service.modality !== 'ONLINE',
+    allowedLocationIds: [...(publication?.allowedLocationIds || [])],
+  };
+}
+
+function RemotePublicBookingServicesPanel({ services, locations, onSave }: RemotePublicBookingSettingsPanelProps) {
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const publicLocations = useMemo(() => locations.map(toPublicBookingLocation).sort((a, b) => a.sortOrder - b.sortOrder), [locations]);
+  const sortedServices = useMemo(() => services
+    .map((service, index) => toPublicBookingService(service, index))
+    .sort((a, b) => a.sortOrder - b.sortOrder), [services]);
+
+  const saveService = async (publicService: PublicBookingService) => {
+    setError('');
+    const nextServices = services.map(service => {
+      if (service.id !== publicService.id) return service;
+      return {
+        ...service,
+        publicBooking: {
+          active: publicService.active,
+          onlineEnabled: publicService.onlineEnabled,
+          inPersonEnabled: publicService.inPersonEnabled,
+          allowedLocationIds: [...publicService.allowedLocationIds],
+          sortOrder: Math.max(1, publicService.sortOrder),
+        },
+      };
+    });
+    const saved = await onSave(nextServices);
+    if (!saved) {
+      setError('O provider remoto não confirmou a publicação do serviço.');
+      return;
+    }
+    setNotice('Publicação do serviço salva no provider remoto.');
+  };
+
+  return <section className="rounded-2xl border border-violet-200 bg-violet-50/60 p-5 shadow-sm" data-testid="psychology-online-booking-settings"><div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-700">Ajustes · Agendamento Online</p><h3 className="mt-1 text-xl font-black text-violet-950">Publicação remota da Psicologia</h3><p className="mt-1 max-w-3xl text-sm text-violet-900">Serviços, modalidades, ordem e locais permitidos são persistidos no catálogo remoto oficial. Este painel não usa localStorage para confirmar alterações.</p></div><div className="mt-5 space-y-3">{sortedServices.map(service => <ServiceRow key={service.id} service={service} locations={publicLocations} onSave={saveService} />)}</div>{notice && <p role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">{notice}</p>}{error && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">{error}</p>}</section>;
+}
+
+type PublicBookingSettingsPanelProps = {
+  remoteServices?: PsychologyService[];
+  remoteLocations?: PsychologyLocation[];
+  onSaveRemoteServices?: (services: PsychologyService[]) => boolean | Promise<boolean>;
+};
+
+export default function PublicBookingSettingsPanel({ remoteServices, remoteLocations, onSaveRemoteServices }: PublicBookingSettingsPanelProps = {}) {
+  if (onSaveRemoteServices && remoteServices && remoteLocations) {
+    return <RemotePublicBookingServicesPanel services={remoteServices} locations={remoteLocations} onSave={onSaveRemoteServices} />;
+  }
+  return <LocalPublicBookingSettingsPanel />;
 }
