@@ -42,6 +42,13 @@ function sanitizeStoredPhone(value: unknown): string {
   }
 }
 export type PsychologySessionStatus = 'agendada' | 'realizada' | 'falta' | 'cancelada';
+export const PSYCHOLOGY_FOLLOW_UP_STATUSES = ['ATIVO', 'PAUSADO', 'AGUARDANDO_RETORNO', 'ENCERRADO'] as const;
+export type PsychologyFollowUpStatus = typeof PSYCHOLOGY_FOLLOW_UP_STATUSES[number];
+export const DEFAULT_PSYCHOLOGY_FOLLOW_UP_STATUS: PsychologyFollowUpStatus = 'ATIVO';
+
+export function isPsychologyFollowUpStatus(value: unknown): value is PsychologyFollowUpStatus {
+  return typeof value === 'string' && (PSYCHOLOGY_FOLLOW_UP_STATUSES as readonly string[]).includes(value);
+}
 export type PsychologyCanonicalSessionStatus = 'CANCELLED' | 'LEGACY_ATTENDANCE_UNKNOWN' | 'SCHEDULED';
 export type PsychologyBookingOrigin = 'PATIENT_SELF_BOOKING' | 'PROFESSIONAL';
 export type PsychologyPersonalType = PersonalAppointmentType;
@@ -69,6 +76,8 @@ export interface PsychologyPatient {
   demographics?: PsychologyPatientDemographics;
   migrationReview?: PsychologyPatientMigrationReview;
   preferredModality: PsychologyModality;
+  /** Administrative continuity state; it is not a diagnosis or clinical outcome. */
+  acompanhamentoStatus?: PsychologyFollowUpStatus;
   administrativeNote?: string;
   administrativeNotes?: string;
   administrativeResponsible?: PsychologyAdministrativeResponsible;
@@ -232,8 +241,9 @@ export interface PsychologyPatientInput {
   /** @deprecated Compatibility input for pre-R2F3-E fixtures/imports. */
   birthDate?: string;
   phone: string;
-  email: string;
+  email?: string;
   preferredModality: PsychologyModality;
+  acompanhamentoStatus?: PsychologyFollowUpStatus;
   administrativeNote: string;
   active: boolean;
   administrativeResponsible?: PsychologyAdministrativeResponsible;
@@ -241,7 +251,7 @@ export interface PsychologyPatientInput {
 }
 
 export interface PsychologyNewPatientInput extends Omit<PsychologyPatientInput, 'dateOfBirth' | 'birthDate'> {
-  dateOfBirth: string;
+  dateOfBirth?: string;
 }
 
 export interface PsychologySessionInput {
@@ -380,6 +390,7 @@ export function normalizePsychologyStore(value: unknown, scope = createPsycholog
       ...item,
       dateOfBirth,
       birthDate: dateOfBirth || undefined,
+      acompanhamentoStatus: isPsychologyFollowUpStatus(item.acompanhamentoStatus) ? item.acompanhamentoStatus : DEFAULT_PSYCHOLOGY_FOLLOW_UP_STATUS,
       administrativeResponsible: responsible,
       administrativeNotes: item.administrativeNotes || item.administrativeNote || undefined,
       externalReferences: Array.isArray(item.externalReferences) ? item.externalReferences.filter(reference => reference && String(reference.source || '').trim() && String(reference.externalId || '').trim()).map(reference => ({ source: String(reference.source).trim(), externalId: String(reference.externalId).trim(), importedAt: reference.importedAt ? String(reference.importedAt) : undefined })) : undefined,
@@ -422,7 +433,7 @@ export function normalizePsychologyStore(value: unknown, scope = createPsycholog
 export function validatePsychologyPatient(input: PsychologyPatientInput): Partial<Record<keyof PsychologyPatientInput, string>> {
   const errors: Partial<Record<keyof PsychologyPatientInput, string>> = {};
   const dateOfBirth = String(input.dateOfBirth || input.birthDate || '').trim();
-  const validation = validatePsychologyPatientAdministrativeInput({ name: input.name, dateOfBirth, phone: input.phone, email: input.email, administrativeResponsible: input.administrativeResponsible }, civilDateFromDate(new Date()));
+  const validation = validatePsychologyPatientAdministrativeInput({ name: input.name, dateOfBirth, phone: input.phone, email: input.email || '', administrativeResponsible: input.administrativeResponsible }, civilDateFromDate(new Date()));
   Object.entries(validation).forEach(([field, message]) => {
     const outputField = field === 'dateOfBirth' && input.dateOfBirth === undefined && input.birthDate !== undefined ? 'birthDate' : field;
     (errors as Record<string, string>)[outputField] = message;
@@ -604,8 +615,11 @@ export function upsertPsychologyPatient(store: PsychologyStore, input: Psycholog
     dateOfBirth,
     birthDate: dateOfBirth || undefined,
     phone: sanitizeStoredPhone(input.phone),
-    email: input.email.trim() || undefined,
+    email: String(input.email || '').trim() || undefined,
     preferredModality: input.preferredModality,
+    acompanhamentoStatus: isPsychologyFollowUpStatus(input.acompanhamentoStatus)
+      ? input.acompanhamentoStatus
+      : existing?.acompanhamentoStatus || DEFAULT_PSYCHOLOGY_FOLLOW_UP_STATUS,
     administrativeNote: input.administrativeNote.trim() || undefined,
     administrativeNotes: input.administrativeNote.trim() || undefined,
     administrativeResponsible: responsible,

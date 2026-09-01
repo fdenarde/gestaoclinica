@@ -1,5 +1,6 @@
 import type { PsychologyAggregate } from './namespace';
 import type { PsychologyPersistenceScope } from './scope';
+import type { PsychologyCapabilities } from './capabilities';
 import type {
   PsychologyAttachmentRecord,
   PsychologyChargeRecord,
@@ -102,6 +103,7 @@ export interface PsychologyRepositoryBundle {
   readonly attachments: PsychologyAttachmentRepository;
   readonly settings: PsychologySettingsRepository;
   readonly backup?: PsychologyBackupReadBundle;
+  readonly getCapabilities?: () => PsychologyCapabilities | null;
 }
 
 export interface PsychologyMemorySeed {

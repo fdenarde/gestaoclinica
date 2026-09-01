@@ -12,6 +12,7 @@ import {
 import type { PsychologyPersistenceScope } from './scope';
 import type { ApiPsychologyRepositoryOptions } from './repositories/api';
 import type { PsychologyPatientDeletionResult } from './repositoryTypes';
+import { createClosedPsychologyCapabilities, normalizePsychologyCapabilities, type PsychologyCapabilities } from './capabilities';
 
 export interface PsychologyRemotePatientClientOptions {
   scope: PsychologyPersistenceScope;
@@ -52,6 +53,10 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
       settings: settings?.settings,
     }, createPsychologyScope(scope.professionalId));
     return next;
+  }
+
+  function getCapabilities(): PsychologyCapabilities {
+    return normalizePsychologyCapabilities(repositories.getCapabilities?.() || createClosedPsychologyCapabilities());
   }
 
   async function loadBackupSnapshot(): Promise<PsychologyStore> {
@@ -159,6 +164,7 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     scope,
     repositories,
     load,
+    getCapabilities,
     loadBackupSnapshot,
     updateSettings,
     updatePatient,

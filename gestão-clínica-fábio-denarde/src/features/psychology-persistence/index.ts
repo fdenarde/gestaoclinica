@@ -2,6 +2,7 @@ export * from './scope';
 export * from './namespace';
 export * from './types';
 export * from './repositoryTypes';
+export * from './capabilities';
 export * from './provider';
 export * from './remoteCanary';
 export * from './migration';

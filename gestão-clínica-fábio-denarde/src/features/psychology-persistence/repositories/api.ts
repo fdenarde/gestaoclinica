@@ -19,6 +19,7 @@ import type {
   PsychologyPaymentRecord,
 } from '../types';
 import type { PsychologyAggregate } from '../namespace';
+import { normalizePsychologyCapabilities, type PsychologyCapabilities } from '../capabilities';
 
 export interface ApiPsychologyRepositoryOptions {
   scope: PsychologyPersistenceScope;
@@ -117,6 +118,7 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const baseUrl = (options.baseUrl || '/api/psychology').replace(/\/$/, '');
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
+  let latestCapabilities: PsychologyCapabilities | null = null;
 
   async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string): Promise<T> {
     const token = await getToken();
@@ -132,6 +134,9 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
     });
     const payload = await readApiResponse<T>(response);
     adoptResponseScope(scope, payload);
+    if (payload && typeof payload === 'object' && 'capabilities' in payload) {
+      latestCapabilities = normalizePsychologyCapabilities((payload as T & { capabilities?: unknown }).capabilities);
+    }
     return payload;
   }
 
@@ -269,5 +274,6 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
     attachments: documentQueries(attachments) as never,
     settings,
     backup,
+    getCapabilities: () => latestCapabilities,
   } as PsychologyRepositoryBundle;
 }
