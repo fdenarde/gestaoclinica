@@ -18,6 +18,7 @@ import {
 import type { PsychologyPersistenceScope } from './scope';
 import type { ApiPsychologyRepositoryOptions } from './repositories/api';
 import type { PsychologyPatientDeletionResult } from './repositoryTypes';
+import { createClosedPsychologyCapabilities, normalizePsychologyCapabilities, type PsychologyCapabilities } from './capabilities';
 export interface PsychologyRemotePatientClientOptions {
   scope: PsychologyPersistenceScope;
   api?: Omit<ApiPsychologyRepositoryOptions, 'scope'>;
@@ -121,6 +122,10 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     };
   }
 
+  function getCapabilities(): PsychologyCapabilities {
+    return normalizePsychologyCapabilities(repositories.getCapabilities?.() || createClosedPsychologyCapabilities());
+  }
+
   async function loadBackupSnapshot(): Promise<PsychologyStore> {
     const backup = repositories.backup;
     if (!backup) throw new Error('O provider remoto não expõe a leitura estruturada necessária para o backup.');
@@ -191,6 +196,12 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     return savedPatient;
   }
 
+  async function updatePatientActive(patientId: string, active: boolean): Promise<PsychologyPatient> {
+    const saved = await repositories.patients.update(scope, patientId, { active });
+    if (!saved) throw new Error('O paciente não foi encontrado no provider remoto.');
+    return asPatient(saved);
+  }
+
   async function reactivatePatient(patientId: string): Promise<PsychologyPatient> {
     const saved = await repositories.patients.update(scope, patientId, { active: true });
     if (!saved) throw new Error('O paciente não foi encontrado no provider remoto.');
@@ -243,11 +254,13 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     scope,
     repositories,
     load,
+    getCapabilities,
     loadBackupSnapshot,
     updateSettings,
     updateService,
     updateServices,
     updatePatient,
+    updatePatientActive,
     reactivatePatient,
     updatePatientReview,
     deletePatient,

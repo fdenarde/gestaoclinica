@@ -17,9 +17,9 @@ export interface PsychologyPatientProfileCompleteness {
 
 export interface PsychologyPatientAdministrativeInput {
   name: string;
-  dateOfBirth: string;
+  dateOfBirth?: string;
   phone: string;
-  email: string;
+  email?: string;
   administrativeResponsible?: Partial<PsychologyAdministrativeResponsible>;
 }
 
@@ -79,9 +79,11 @@ export function profileCompleteness(input: {
 }, referenceCivilDate: string): PsychologyPatientProfileCompleteness {
   const missingFields: PsychologyPatientAdministrativeField[] = [];
   if (!String(input.name || '').trim()) missingFields.push('name');
-  if (String(input.dateOfBirth || '').trim() && !isValidCivilDate(String(input.dateOfBirth || ''))) missingFields.push('dateOfBirth');
+  const dateOfBirth = String(input.dateOfBirth || '').trim();
+  if (dateOfBirth && !isValidCivilDate(dateOfBirth)) missingFields.push('dateOfBirth');
   if (!isValidPhoneInput(input.phone)) missingFields.push('phone');
-  if (String(input.email || '').trim() && !/^\S+@\S+\.\S+$/.test(String(input.email || '').trim())) missingFields.push('email');
+  const email = String(input.email || '').trim();
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) missingFields.push('email');
   const responsibleRequired = false;
   const responsibleHasData = Boolean(input.administrativeResponsible && Object.values(input.administrativeResponsible).some(value => String(value || '').trim()));
   if (responsibleHasData) {
@@ -113,12 +115,14 @@ export function validateAdministrativeResponsible(value: Partial<PsychologyAdmin
 export function validatePsychologyPatientAdministrativeInput(input: PsychologyPatientAdministrativeInput, referenceCivilDate: string): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!String(input.name || '').trim()) errors.name = 'Informe o nome completo do paciente.';
-  if (String(input.dateOfBirth || '').trim()) {
-    const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
+  const dateOfBirth = String(input.dateOfBirth || '').trim();
+  if (dateOfBirth) {
+    const dateError = validateDateOfBirth(dateOfBirth, referenceCivilDate);
     if (dateError) errors.dateOfBirth = dateError;
   }
   if (!isValidPhoneInput(input.phone)) errors.phone = 'Informe um telefone válido.';
-  if (String(input.email || '').trim() && !/^\S+@\S+\.\S+$/.test(String(input.email || '').trim())) errors.email = 'Informe um e-mail válido.';
+  const email = String(input.email || '').trim();
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) errors.email = 'Informe um e-mail válido.';
   const responsibleHasData = Boolean(input.administrativeResponsible && Object.values(input.administrativeResponsible).some(value => String(value || '').trim()));
   if (responsibleHasData) {
     const responsibleErrors = validateAdministrativeResponsible(input.administrativeResponsible);

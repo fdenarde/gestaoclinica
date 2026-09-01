@@ -73,8 +73,8 @@ test('R2A1 oferece painel por abas para Sessão, Pessoal e Mentoria', () => {
   assert.match(domain + pilot, /'Mentoria'/);
 });
 
-test('R2A1 oferece Ajustes com perfil, agenda, serviços, locais, financeiro e cores', () => {
-  for (const label of ['Ajustes', 'Perfil profissional', 'Agenda', 'Atendimentos', 'Serviços', 'Financeiro', 'Cores']) {
+test('R2A1 oferece Ajustes com perfil, agenda, serviços, locais, financeiro, cores e lembretes', () => {
+  for (const label of ['Ajustes', 'Perfil profissional', 'Agenda', 'Atendimentos', 'Serviços', 'Financeiro', 'Cores', 'Lembretes']) {
     assert.match(pilot, new RegExp(label));
   }
   assert.match(domain + r2a, /Shopping Moxuara/);

@@ -18,6 +18,7 @@ import {
   updatePsychologySettings,
   upsertPsychologyPatient,
   upsertPsychologySession,
+  validatePsychologyPatient,
   validatePsychologySession,
 } from '../src/features/psychology-pilot/psychologyDomain';
 import { PSYCHOLOGY_SERVICE_CATALOG } from '../src/features/psychology-pilot/psychologyServiceCatalog';
@@ -40,7 +41,7 @@ function localRepository() {
   return createLocalPublicBookingRepository({ storage: createMemoryOnlineBookingStorage(), now: () => new Date('2026-08-18T12:00:00-03:00') });
 }
 
-test('R2F3-E data civil valida vazio, inválido, futuro, válido e bissexto', () => {
+test('R2F3-E data civil opcional preserva validação quando preenchida', () => {
   assert.equal(isValidCivilDate(''), false);
   assert.equal(isValidCivilDate('2026-02-29'), false);
   assert.equal(isValidCivilDate('2028-02-29'), true);
@@ -71,6 +72,16 @@ test('R2F3-E perfil legado permanece utilizável e incompleto sem inventar DOB',
   assert.equal(reloaded?.birthDate, undefined);
   assert.equal(getPsychologyPatientProfileCompleteness(reloaded!).complete, false);
   assert.equal(getPsychologyPatientProfileCompleteness(reloaded!).missingFields.includes('dateOfBirth'), false);
+});
+
+test('Etapa 2 contrato administrativo exige nome, telefone e modalidade; DOB/e-mail são opcionais', () => {
+  const input = { name: 'Paciente Mínimo Sintético', dateOfBirth: '', phone: '27999990014', email: '', preferredModality: 'online' as const, administrativeNote: '', active: true };
+  assert.deepEqual(validatePsychologyPatient(input), {});
+  const scope = createPsychologyScope('etapa2-contract');
+  const patient = upsertPsychologyPatient(createEmptyPsychologyStore(scope), input, 'patient-etapa2');
+  assert.equal(patient.patients[0].dateOfBirth, '');
+  assert.equal(patient.patients[0].email, undefined);
+  assert.equal(patient.patients[0].acompanhamentoStatus, 'ATIVO');
 });
 
 test('R2F3-E cadastro interno mantém tipo e contrato extensíveis para required condicional', () => {

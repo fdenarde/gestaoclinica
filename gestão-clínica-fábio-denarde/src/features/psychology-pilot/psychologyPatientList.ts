@@ -2,6 +2,7 @@ import { getPsychologyPatientSummary } from './psychologyPatientProfile';
 import { locationForSession, type PsychologyLocation } from './psychologyR2a';
 import type { PsychologyPatient, PsychologyStore } from './psychologyDomain';
 import { formatPsychologyPhoneDisplay } from './psychologyPhone';
+import type { PsychologyFollowUpStatus } from './psychologyDomain';
 
 export type PsychologyPatientStatusFilter = 'all' | 'active' | 'inactive' | 'review';
 export type PsychologyPatientLastSessionFilter = 'any' | 'recent' | 'oldest' | 'none' | '3m' | '6m' | '12m' | '18m' | '24m';
@@ -28,6 +29,7 @@ export interface PsychologyPatientListItem {
 export interface PsychologyPatientListFilters {
   query?: string;
   status?: PsychologyPatientStatusFilter;
+  followUpStatus?: PsychologyFollowUpStatus | 'all';
   lastSession?: PsychologyPatientLastSessionFilter;
   nextSession?: PsychologyPatientNextSessionFilter;
   review?: PsychologyPatientReviewFilter;
@@ -173,6 +175,7 @@ export function filterPsychologyPatientList(
   referenceDate = new Date(),
 ): PsychologyPatientListItem[] {
   const status = filters.status || 'all';
+  const followUpStatus = filters.followUpStatus || 'all';
   const lastSession = filters.lastSession || 'any';
   const nextSession = filters.nextSession || 'all';
   const review = filters.review || 'all';
@@ -182,6 +185,7 @@ export function filterPsychologyPatientList(
     if (status === 'active' && !row.patient.active) return false;
     if (status === 'inactive' && row.patient.active) return false;
     if (status === 'review' && !inReview) return false;
+    if (followUpStatus !== 'all' && (row.patient.acompanhamentoStatus || 'ATIVO') !== followUpStatus) return false;
     if (review === 'in-review' && !inReview) return false;
     if (review === 'out-of-review' && inReview) return false;
     if (nextSession === 'with' && row.nextSessionValue === null) return false;

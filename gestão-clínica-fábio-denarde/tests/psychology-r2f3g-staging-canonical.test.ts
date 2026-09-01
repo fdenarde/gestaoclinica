@@ -124,7 +124,32 @@ test('R2F3-G staging reconstrói catálogo canônico e grava Patient + Session a
   assert.equal((management.body.summary as Record<string, unknown>).locationName, 'R2F3-D Local A');
 });
 
-test('R2F3-G staging rejeita campos obrigatórios no servidor sem criar Patient parcial', async () => {
+test('R2F3-G staging aceita criação sem dateOfBirth quando os campos obrigatórios são válidos', async () => {
+  const database = new FakeDb();
+  const { handler } = stagingHandler(database);
+  const { settings, slot } = await settingsAndSlot(handler, 'ONLINE');
+  const response = await handler({ method: 'POST', query: { resource: 'create-booking' }, body: {
+    professionalSlug: settings.professionalSlug,
+    serviceId: settings.publishedServices[0].id,
+    modality: 'ONLINE',
+    date: slot.date,
+    time: slot.time,
+    name: 'Menor R2F3G Sintético',
+    phone: '5511999993002',
+    email: 'menor.r2f3g@example.invalid',
+  } });
+  assert.equal(response.status, 201);
+  const result = response.body.result as { appointment: { patientId: string } };
+  const patientPath = [...database.values.keys()].find(path => path.endsWith(`/patients/${result.appointment.patientId}`));
+  assert.ok(patientPath);
+  const patient = database.values.get(patientPath!) as Record<string, unknown>;
+  assert.equal(patient.name, 'Menor R2F3G Sintético');
+  assert.equal(patient.phone, '5511999993002');
+  assert.equal(patient.preferredModality, 'online');
+  assert.equal(patient.dateOfBirth, '');
+});
+
+test('R2F3-G staging rejeita campo canônico obrigatório ausente sem criar Patient parcial', async () => {
   const database = new FakeDb();
   const { handler } = stagingHandler(database);
   const { settings, slot } = await settingsAndSlot(handler, 'ONLINE');
@@ -135,9 +160,8 @@ test('R2F3-G staging rejeita campos obrigatórios no servidor sem criar Patient 
     modality: 'ONLINE',
     date: slot.date,
     time: slot.time,
-    name: 'Menor R2F3G Sintético',
-    phone: '5511999993002',
-    email: 'menor.r2f3g@example.invalid',
+    phone: '5511999993003',
+    email: 'required-field.r2f3g@example.invalid',
   } });
   assert.equal(response.status, 409);
   const afterPatients = [...database.values.keys()].filter(path => path.includes('/contexts/PSICOLOGIA/patients/')).length;

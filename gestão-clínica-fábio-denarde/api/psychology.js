@@ -8,6 +8,7 @@ import { buildScopedPsychologyBackup } from './_lib/psychologyBackup.js';
 import { readPsychologySettingsProjection, sanitizePsychologySettingsProjectionError } from './_lib/psychologySettingsProjection.js';
 import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
 import { normalizePhone } from '../shared/phoneNormalization.js';
+import { buildPsychologyCapabilities } from './_lib/psychologyCapabilities.js';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
@@ -360,6 +361,9 @@ function administrativePatientDto(value) {
     email: value.email || '',
     preferredModality: value.preferredModality,
     financialSettings: normalizePatientFinancialSettings(value.financialSettings),
+    acompanhamentoStatus: ['ATIVO', 'PAUSADO', 'AGUARDANDO_RETORNO', 'ENCERRADO'].includes(value.acompanhamentoStatus)
+      ? value.acompanhamentoStatus
+      : 'ATIVO',
     administrativeNote: value.administrativeNote || value.administrativeNotes || '',
     administrativeResponsible: normalizeAdministrativeResponsible(value.administrativeResponsible),
     externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
@@ -653,7 +657,7 @@ function preparePatient(body, runtimeScope, now) {
   assertScopePayloadDoesNotConflict(body, runtimeScope);
   const source = body.patient && typeof body.patient === 'object' ? body.patient : body;
   const name = normalize(source.name, 160);
-  const birthDate = normalize(source.birthDate, 32);
+  const birthDate = normalize(source.birthDate || source.dateOfBirth, 32);
   const phone = normalizePhoneForWrite(source.phone);
   const preferredModality = normalize(source.preferredModality, 32);
   if (birthDate && !/^\d{4}-\d{2}-\d{2}$/u.test(birthDate)) {
@@ -672,6 +676,9 @@ function preparePatient(body, runtimeScope, now) {
     email: normalize(source.email, 160) || '',
     preferredModality,
     financialSettings: normalizePatientFinancialSettings(source.financialSettings),
+    acompanhamentoStatus: ['ATIVO', 'PAUSADO', 'AGUARDANDO_RETORNO', 'ENCERRADO'].includes(source.acompanhamentoStatus)
+      ? source.acompanhamentoStatus
+      : 'ATIVO',
     administrativeNote: normalize(source.administrativeNote || source.administrativeNotes, 1000),
     administrativeResponsible: validateAdministrativeResponsibleForWrite(source.administrativeResponsible),
     externalReferences: Array.isArray(source.externalReferences) ? source.externalReferences.slice(0, 20) : [],
@@ -892,7 +899,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
         const items = id ? [await repository.patients.get(id)].filter(Boolean) : await repository.patients.list();
         auditHeaders(res, runtimeScope, 'read', 'patients');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
-        return res.status(200).json({ scope: scopeFields(runtimeScope), items: items.map(administrativePatientDto) });
+        return res.status(200).json({ scope: scopeFields(runtimeScope), capabilities: buildPsychologyCapabilities(runtimeScope), items: items.map(administrativePatientDto) });
       }
 
       if (resource === 'patients' && req.method === 'POST' && !id) {
@@ -934,7 +941,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
         const current = await repository.settings.get('settings');
         auditHeaders(res, runtimeScope, 'read', 'settings');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
-        return res.status(200).json({ scope: scopeFields(runtimeScope), settings: settingsDto(current, runtimeScope) });
+        return res.status(200).json({ scope: scopeFields(runtimeScope), capabilities: buildPsychologyCapabilities(runtimeScope), settings: settingsDto(current, runtimeScope) });
       }
 
       if (resource === 'settings' && req.method === 'PUT' && !id) {
@@ -953,7 +960,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
         const items = await repository.sessions.list();
         auditHeaders(res, runtimeScope, 'read', 'sessions');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
-        return res.status(200).json({ scope: scopeFields(runtimeScope), items: items.map(sessionDto) });
+        return res.status(200).json({ scope: scopeFields(runtimeScope), capabilities: buildPsychologyCapabilities(runtimeScope), items: items.map(sessionDto) });
       }
 
       if (resource === 'sessions' && req.method === 'POST' && !id) {
