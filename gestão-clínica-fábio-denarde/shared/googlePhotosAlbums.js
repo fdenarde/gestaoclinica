@@ -439,8 +439,6 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
       const sessionNumbers = sorted
         .map(session => Number(session.activitySessionNumber ?? session.packageNumber))
         .filter(value => Number.isFinite(value) && value > 0);
-      const numberLabel = formatSessionNumbers(sessionNumbers);
-      const doubleSessionGroup = sorted.length === 2;
       return createEmptyGooglePhotosAlbumCard({
         patientId,
         patientName,
@@ -450,9 +448,7 @@ export function buildGooglePhotosVirtualAlbumCards(rawSessions, {
         sessionIds,
         sessionTime: sorted[0]?.time || '',
         sessionNumbers,
-        title: doubleSessionGroup
-          ? `${INTERVENTION_ACTIVITY_RECORD_CATEGORY} - Sessão dupla`
-          : numberLabel ? `${INTERVENTION_ACTIVITY_RECORD_CATEGORY} - ${numberLabel}` : INTERVENTION_ACTIVITY_RECORD_CATEGORY,
+        title: INTERVENTION_ACTIVITY_RECORD_CATEGORY,
         category: INTERVENTION_ACTIVITY_RECORD_CATEGORY,
       });
     })
@@ -490,8 +486,6 @@ export function hasGooglePhotosAlbumEditorChanges(current = {}, baseline = {}) {
 export function getGooglePhotosAlbumDisplayTitle(album = {}) {
   const category = sanitizeText(album?.category, 120) || INTERVENTION_ACTIVITY_RECORD_CATEGORY;
   const title = sanitizeText(album?.title, 120) || category;
-  const sessionIds = normalizeGooglePhotosSessionIds(album?.sessionIds);
-  if (sessionIds.length < 2) return title;
 
   const generatedPrefixes = [
     category,
@@ -504,7 +498,7 @@ export function getGooglePhotosAlbumDisplayTitle(album = {}) {
     || title.toLocaleLowerCase('pt-BR').startsWith(`${String(prefix).toLocaleLowerCase('pt-BR')} - sessão`)
   ));
 
-  return isGeneratedSessionTitle ? `${category} - Sessão dupla` : title;
+  return isGeneratedSessionTitle ? category : title;
 }
 
 export function mergeGooglePhotosAlbumCards({

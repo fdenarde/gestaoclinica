@@ -246,7 +246,7 @@ test('sessões duplas usam IDs reais, agrupam automaticamente pares consecutivos
   ], { patientId: 'patient-1', packageNumber: 1, now: new Date('2026-06-19T20:00:00Z') });
   assert.equal(automatic.length, 1);
   assert.deepEqual(automatic[0].sessionIds, ['double-auto-a', 'double-auto-b']);
-  assert.match(automatic[0].title, /Sessão dupla/);
+  assert.equal(automatic[0].title, 'Atividade de Intervenção');
 
   const separated = buildGooglePhotosVirtualAlbumCards([
     makeSession('activity-a', '2026-06-18', 'Realizada', { time: '10:00' }),
@@ -347,7 +347,7 @@ test('atendente configurado para sessão dupla reconstrói todos os pares histó
     [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
   );
   assert.equal(cards.every(card => card.sessionIds.length === 2), true);
-  assert.equal(cards.every(card => /Sessão dupla/.test(card.title)), true);
+  assert.equal(cards.every(card => card.title === 'Atividade de Intervenção'), true);
 
   const professionalSource = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url), 'utf8');
   assert.match(professionalSource, /patientDoubleSession: Boolean\(selectedPatient\?\.doubleSession\)/);
@@ -378,12 +378,12 @@ test('regra histórica de sessão dupla não une atendimentos simples nem horár
   assert.equal(incompatibleCards.length, 2);
 });
 
-test('título gerado de card persistido com dois IDs é exibido como sessão dupla', () => {
+test('título gerado de card persistido com IDs vinculados é exibido sem redundância', () => {
   assert.equal(getGooglePhotosAlbumDisplayTitle({
     title: 'Atividade de Intervenção - Sessão 9',
     category: 'Atividade de Intervenção',
     sessionIds: ['celso-9', 'celso-10'],
-  }), 'Atividade de Intervenção - Sessão dupla');
+  }), 'Atividade de Intervenção');
 
   assert.equal(getGooglePhotosAlbumDisplayTitle({
     title: 'Jogo da memória',
