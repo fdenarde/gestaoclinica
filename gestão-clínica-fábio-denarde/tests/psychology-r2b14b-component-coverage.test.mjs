@@ -6,6 +6,8 @@ import TestRenderer, { act } from 'react-test-renderer';
 globalThis.window = {
   innerWidth: 1280,
   innerHeight: 900,
+  atob: (...args) => globalThis.atob(...args),
+  btoa: (...args) => globalThis.btoa(...args),
   addEventListener() {},
   removeEventListener() {},
   setInterval,

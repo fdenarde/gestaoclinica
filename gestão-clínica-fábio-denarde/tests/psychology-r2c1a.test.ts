@@ -76,17 +76,18 @@ test('cabeçalho e linhas compartilham exatamente grid, gaps e padding', () => {
   const gridDefinition = pilot.match(/const PATIENT_LIST_GRID = '([^']+)'/)?.[1];
   assert.ok(gridDefinition);
   assert.match(gridDefinition, /md:grid-cols-\[/);
-  assert.match(gridDefinition, /xl:grid-cols-\[/);
   assert.equal((pilot.match(/\$\{PATIENT_LIST_GRID\}/g) || []).length, 2);
   assert.equal((pilot.match(/\$\{PATIENT_LIST_PADDING\}/g) || []).length, 2);
-  assert.match(pilot, /text-center">Status/);
-  assert.match(pilot, /text-right">Ações/);
-  assert.match(pilot, /md:justify-end/);
+  assert.match(pilot, /label=\"Status\"/);
+  assert.match(pilot, /text-right">Ação/);
+  assert.match(pilot, /md:items-center/);
 });
 
 test('o cabeçalho profissional aparece', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
-  for (const label of ['PACIENTE', 'TELEFONE', 'E-MAIL', 'ÚLTIMA SESSÃO', 'PRÓXIMA SESSÃO', 'MODALIDADE \/ LOCAL', 'STATUS', 'AÇÕES']) assert.match(pilot, new RegExp(label, 'i'));
+  for (const label of ['PACIENTE', 'TELEFONE', 'MODALIDADE \/ LOCAL', 'STATUS', 'AÇÃO']) assert.match(pilot, new RegExp(label, 'i'));
+  const header = pilot.slice(pilot.indexOf('data-testid="psychology-patient-list-header"'), pilot.indexOf('</div>', pilot.indexOf('data-testid="psychology-patient-list-header"')));
+  for (const label of ['E-MAIL', 'CADASTRO', 'ÚLTIMA SESSÃO', 'PRÓXIMA SESSÃO']) assert.doesNotMatch(header, new RegExp(label, 'i'));
 });
 
 test('a ordem padrão é alfabética A–Z', () => {
@@ -142,7 +143,8 @@ test('paciente sem próxima sessão mostra Sem agendamento', () => {
 test('a busca continua contemplando nome, telefone, e-mail e status', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
   assert.match(pilot, /normalizePsychologyPhoneForSearch/);
-  assert.match(pilot, /Buscar paciente por nome, telefone, e-mail ou status/);
+  assert.match(pilot, /Buscar paciente por nome, telefone ou e-mail/);
+  assert.match(pilot, /statusFilter/);
 });
 
 test('resultado filtrado preserva ordem alfabética', () => {
@@ -154,7 +156,7 @@ test('resultado filtrado preserva ordem alfabética', () => {
 test('abrir ficha continua conectado à listagem', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
   assert.match(pilot, /aria-label=\{`Abrir ficha completa de \$\{row\.patient\.name\}`/);
-  assert.match(pilot, /onOpen=\{setPatientChart\}/);
+  assert.match(pilot, /onOpen=\{patient => \{/);
 });
 
 test('Editar continua conectado ao paciente correto', () => {
@@ -175,7 +177,7 @@ test('nenhum conteúdo clínico aparece na fonte da lista', () => {
 
 test('mobile usa composição compacta e não cria overflow horizontal global', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
-  assert.match(pilot, /grid-cols-\[minmax\(0,1fr\)_auto\]/);
+  assert.match(pilot, /grid-cols-\[auto_minmax\(0,1fr\)_auto\]/);
   assert.match(pilot, /overflow-x-hidden/);
-  assert.match(pilot, /md:hidden xl:block/);
+  assert.match(pilot, /md:hidden/);
 });

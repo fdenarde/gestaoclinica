@@ -10,6 +10,8 @@ let reloadClicks = 0;
 globalThis.window = {
   innerWidth: 1280,
   innerHeight: 900,
+  atob: (...args) => globalThis.atob(...args),
+  btoa: (...args) => globalThis.btoa(...args),
   addEventListener() {},
   removeEventListener() {},
   setInterval() { return 0; },
@@ -231,7 +233,7 @@ test('R2B15-B N02-N06 — shell navigation, mobile Mais and conditional actions 
   const rows = patientRows(store, [patient('active', 'Ativo')]);
   const preview = { patientDetailsById: new Map(), bundle: { patientCounts: { initiallyImportable: 1, activeByFutureEvidence: 1, inactiveReview: 0 } } };
   const previewRenderer = render(React.createElement(PatientsView, { rows, search: '', setSearch() {}, onNew() {}, onEdit() {}, onOpen() {}, onDelete() {}, onToggle: async () => true, preview }));
-  assert.equal(button(previewRenderer, 'Novo paciente', { exact: true }).props.disabled, true);
+  assert.equal(button(previewRenderer, 'Novo paciente', { exact: true }), undefined);
   assert.equal(previewRenderer.root.findAllByType('button').some(item => textContent(item).trim() === 'Editar'), false);
   act(() => { previewRenderer.unmount(); renderer.unmount(); });
 });
