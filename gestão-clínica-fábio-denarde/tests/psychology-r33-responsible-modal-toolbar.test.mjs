@@ -148,16 +148,17 @@ test('R33 toolbar real mostra bulk somente para 2 ou mais selecionados e confirm
 test('R33 header e linhas compartilham grid, e modalidade/status/ações permanecem em células próprias', async () => {
   const source = await readFile('src/features/psychology-pilot/PsychologyPilot.tsx', 'utf8');
   assert.equal((source.match(/\$\{PATIENT_LIST_GRID\}/g) || []).length, 2);
-  assert.match(source, /data-testid="psychology-patient-list-modality"[^>]*className="[^"]*xl:col-auto[^>]*xl:row-auto/);
-  assert.match(source, /data-testid="psychology-patient-list-status"[^>]*className="[^"]*items-center/);
-  assert.match(source, /data-testid="psychology-patient-list-actions"[^>]*className="[^"]*flex-nowrap/);
+  assert.match(source, /data-testid="psychology-patient-list-modality"[^>]*className="[^"]*md:col-auto[^>]*md:row-auto/);
+  assert.match(source, /data-testid="psychology-patient-list-status"[^>]*className="[^"]*md:items-center/);
+  assert.match(source, /data-testid="psychology-patient-list-actions"[^>]*className="[^"]*items-center/);
   const renderer = renderPatients();
   const header = renderer.root.findByProps({ 'data-testid': 'psychology-patient-list-header' });
   const row = renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-row' })[0];
-  assert.match(header.props.className, /xl:grid-cols-\[auto_minmax\(150px,1\.35fr\)/);
-  assert.match(row.props.className, /xl:grid-cols-\[auto_minmax\(150px,1\.35fr\)/);
+  assert.match(header.props.className, /md:grid-cols-\[auto_minmax\(220px,340px\)/);
+  assert.match(row.props.className, /md:grid-cols-\[auto_minmax\(220px,340px\)/);
   assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-modality' }).length, 5);
   assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-status' }).length, 5);
   assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-actions' }).length, 5);
+  assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-secondary-actions' }).length, 5);
   renderer.unmount();
 });
