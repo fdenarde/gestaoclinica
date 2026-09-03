@@ -154,8 +154,8 @@ test('R33 header e linhas compartilham grid, e modalidade/status/ações permane
   const renderer = renderPatients();
   const header = renderer.root.findByProps({ 'data-testid': 'psychology-patient-list-header' });
   const row = renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-row' })[0];
-  assert.match(header.props.className, /md:grid-cols-\[auto_minmax\(190px,1\.55fr\)/);
-  assert.match(row.props.className, /md:grid-cols-\[auto_minmax\(190px,1\.55fr\)/);
+  assert.match(header.props.className, /md:grid-cols-\[auto_minmax\(220px,340px\)/);
+  assert.match(row.props.className, /md:grid-cols-\[auto_minmax\(220px,340px\)/);
   assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-modality' }).length, 5);
   assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-status' }).length, 5);
   assert.equal(renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-actions' }).length, 5);

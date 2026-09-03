@@ -80,7 +80,9 @@ test('R32 lista e exclusão múltipla preservam colunas, alinhamento e confirma�
   assert.match(source, /Excluir selecionados \(\{selectedVisibleIds\.length\}\)/);
   assert.doesNotMatch(source, /reviewArea && <button[^>]*Excluir selecionados/s);
   assert.match(source, /Excluir definitivamente os \{selectedVisibleIds\.length\} pacientes selecionados\?/);
-  assert.match(source, /PATIENT_LIST_GRID = '[^']*md:grid-cols-\[auto_minmax\(190px,1\.55fr\)/);
+  const gridDefinition = source.match(/PATIENT_LIST_GRID = '([^']+)'/)?.[1] || '';
+  assert.match(gridDefinition, /md:grid-cols-\[auto_minmax\(220px,340px\)/);
+  assert.doesNotMatch(gridDefinition.split('md:grid-cols-')[1] || '', /fr/);
   assert.match(source, /data-testid="psychology-patient-list-header"/);
   assert.match(source, /Abrir ficha/);
   assert.match(source, /Editar/);

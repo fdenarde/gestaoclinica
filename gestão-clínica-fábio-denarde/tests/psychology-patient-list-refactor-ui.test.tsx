@@ -39,7 +39,7 @@ const rows = [
     modalityLocation: 'Presencial · Local Sintético',
   },
   {
-    patient: { id: 'ui-patient-2', name: 'Paciente Sintético Dois', active: false, inReview: false },
+    patient: { id: 'ui-patient-2', name: 'Paciente Sintético Dois', active: false, inReview: true },
     phone: '(27) 99999-0002',
     email: 'nao-exibir-2@example.test',
     createdAt: '02/01/2026',
@@ -93,6 +93,34 @@ test('a ação primária fica visível e as ações secundárias permanecem no m
     assert.equal(textContent(group).includes('Abrir ficha'), true);
   }
   renderer.unmount();
+});
+
+test('status mostra somente o badge principal e o filtro de acompanhamento permanece disponível', () => {
+  const renderer = renderPatients();
+  const statuses = renderer.root.findAllByProps({ 'data-testid': 'psychology-patient-list-status' });
+  assert.equal(statuses.length, 2);
+  assert.deepEqual(statuses.map(status => status.findAllByType('span').length), [1, 1]);
+  assert.deepEqual(new Set(statuses.map(textContent)), new Set(['Ativo', 'Inativo']));
+  for (const status of statuses) {
+    assert.doesNotMatch(textContent(status), /Acompanhamento ativo|Pausado|Aguardando retorno|Encerrado|Em revisão/);
+  }
+  const followUpFilter = renderer.root.findByProps({ 'data-testid': 'psychology-patient-filters' }).findAllByType('label').find(label => textContent(label).startsWith('Acompanhamento'));
+  assert.ok(followUpFilter);
+  renderer.unmount();
+});
+
+test('grade desktop usa trilhas controladas e inicia o agrupamento das colunas', async () => {
+  const source = await (await import('node:fs/promises')).readFile('src/features/psychology-pilot/PsychologyPilot.tsx', 'utf8');
+  const gridDefinition = source.match(/const PATIENT_LIST_GRID = '([^']+)'/)?.[1] || '';
+  assert.match(gridDefinition, /minmax\(220px,340px\)/);
+  assert.match(gridDefinition, /minmax\(112px,136px\)/);
+  assert.match(gridDefinition, /minmax\(170px,260px\)/);
+  assert.match(gridDefinition, /minmax\(78px,92px\)/);
+  assert.match(gridDefinition, /md:justify-start/);
+  const desktopGridDefinition = gridDefinition.split('md:grid-cols-')[1] || '';
+  assert.doesNotMatch(desktopGridDefinition, /fr/);
+  assert.match(desktopGridDefinition, /md:justify-start/);
+  assert.match(desktopGridDefinition, /md:gap-x-2\.5/);
 });
 
 test('filtros permanecem agrupados e a ficha preserva os dados removidos da lista', async () => {
