@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Copy,
   ExternalLink,
   FolderPlus,
   EyeOff,
@@ -48,10 +49,12 @@ import {
   saveActivitySessionNoMediaJustification,
 } from '../../lib/activityRecordsApi';
 import { buildActivityMediaPackageModel } from '../../lib/activityMediaPackages';
+import { copyTextToClipboard } from '../../lib/clipboard';
 import { buildEffectiveSessionHistory } from '../../lib/sessionSequence';
 import { safeFormatDate } from '../../lib/utils';
 import PatientPhoto from '../Common/PatientPhoto';
 import Modal from '../Common/Modal';
+import { showToast } from '../Common/Toast';
 import {
   ACTIVITY_NO_MEDIA_REASON_OPTIONS,
   getActivityJustificationReasonLabel,
@@ -70,6 +73,12 @@ import {
   buildProfessionalGalleryPatientCards,
   resolveProfessionalGalleryPatientIdentity,
 } from '../../../shared/galleryPatientCards.js';
+import {
+  buildAccumulatedActivitySummary,
+  getAccumulatedActivitySummaryLimitSessionId,
+  isAccumulatedActivitySummarySourceComplete,
+} from '../../../shared/activitySummary.js';
+import { buildActivityGalleryMediaPresentation } from '../../../shared/activityGalleryPresentation.js';
 
 interface Props {
   patients: Patient[];
@@ -165,6 +174,106 @@ function formatSessionNumbers(numbers: number[]): string {
   return `Sessões ${values.slice(0, -1).join(', ')} e ${values.at(-1)}`;
 }
 
+function formatSessionNumbersDescending(numbers: number[]): string {
+  const values = [...new Set((numbers || []).filter(value => Number.isFinite(value) && value > 0))].sort((a, b) => b - a);
+  if (values.length === 0) return '';
+  if (values.length === 1) return `Sessão ${values[0]}`;
+  return `Sessões ${values.slice(0, -1).join(', ')} e ${values.at(-1)}`;
+}
+
+function getPackageSessionNumber(session: Session | undefined): number {
+  if (!session) return 0;
+  const enriched = session as Session & {
+    activitySessionNumber?: number;
+    logicalSessionNumber?: number;
+    sessionNumber?: number;
+  };
+  const candidate = [
+    enriched.activitySessionNumber,
+    enriched.logicalSessionNumber,
+    enriched.sessionNumber,
+    enriched.packageNumber,
+  ].map(value => Math.floor(Number(value) || 0)).find(value => value >= 1 && value <= 10);
+  return candidate || 0;
+}
+
+function joinDisplayValues(values: string[]): string {
+  if (values.length <= 1) return values[0] || '';
+  if (values.length === 2) return `${values[0]} e ${values[1]}`;
+  return `${values.slice(0, -1).join(', ')} e ${values.at(-1)}`;
+}
+
+function resolveLinkedSessionDisplay(card: GooglePhotosAlbum, sessionId: string, sessions: Session[], index: number) {
+  const session = sessions.find(item => item.id === sessionId);
+  return {
+    session,
+    number: getPackageSessionNumber(session) || Number(card.sessionNumbers[index] || 0),
+    date: session?.date || card.activityDate || '',
+    time: session?.time || card.sessionTime || '',
+  };
+}
+
+function formatLinkedSessionSubtitle(card: GooglePhotosAlbum, sessions: Session[]): string {
+  const linked = card.sessionIds.map((sessionId, index) => resolveLinkedSessionDisplay(card, sessionId, sessions, index));
+  const numbers = linked.map(item => item.number).filter(number => number > 0);
+  const sessionLabel = formatSessionNumbersDescending(numbers.length > 0 ? numbers : card.sessionNumbers);
+  if (linked.length === 0) return sessionLabel;
+
+  const dates = [...new Set(linked.map(item => item.date).filter(Boolean))];
+  if (dates.length <= 1) {
+    const times = joinDisplayValues([...new Set(linked.map(item => item.time).filter(Boolean))].sort());
+    const date = dates[0] ? safeFormatDate(dates[0], 'dd/MM/yyyy') : '';
+    return `${sessionLabel}${date ? ` • ${date}` : ''}${times ? ` às ${times}` : ''}`;
+  }
+
+  const temporal = linked
+    .slice()
+    .sort((left, right) => right.number - left.number || `${right.date}T${right.time}`.localeCompare(`${left.date}T${left.time}`))
+    .map(item => `${item.date ? safeFormatDate(item.date, 'dd/MM/yyyy') : ''}${item.time ? ` às ${item.time}` : ''}`.trim())
+    .filter(Boolean)
+    .join(' · ');
+  return `${sessionLabel}${temporal ? ` • ${temporal}` : ''}`;
+}
+
+function formatLinkedSessionDescriptor(card: GooglePhotosAlbum, sessionId: string, sessions: Session[], index: number): string {
+  const linked = resolveLinkedSessionDisplay(card, sessionId, sessions, index);
+  const label = linked.number > 0 ? `Sessão ${linked.number}` : 'Sessão vinculada';
+  const temporal = `${linked.date ? safeFormatDate(linked.date, 'dd/MM/yyyy') : ''}${linked.time ? ` às ${linked.time}` : ''}`.trim();
+  return `${label}${temporal ? ` — ${temporal}` : ''}`;
+}
+
+type ActivityMediaPresentationEntry = {
+  sessionId: string;
+  sessionNumber: number;
+  date: string;
+  time: string;
+  descriptor: string;
+  state: string;
+  justification: ActivityGalleryStatusRecord['justification'];
+};
+
+function formatActivityMediaStatusLabel(
+  entry: ActivityMediaPresentationEntry,
+  activityStatusLoading: boolean,
+  plural: boolean,
+): string {
+  if (activityStatusLoading) return 'Consultando estado da mídia...';
+  if (entry.state === 'sent') return plural ? 'Mídia registrada para estas sessões.' : 'Mídia registrada para esta sessão.';
+  if (entry.state === 'excused' && entry.justification?.active) {
+    return `SEM MÍDIA · ${getActivityJustificationReasonLabel(entry.justification.reason)}`;
+  }
+  if (entry.state === 'overdue') return 'Mídia pendente em atraso.';
+  if (entry.state === 'waiting') return 'Mídia pendente dentro do prazo.';
+  return 'Sem registro de mídia.';
+}
+
+function formatActivityMediaActionLabel(entry: ActivityMediaPresentationEntry): string {
+  const sessionLabel = entry.sessionNumber > 0 ? `Sessão ${entry.sessionNumber}` : 'Sessão vinculada';
+  return entry.state === 'excused' && entry.justification?.active
+    ? `${sessionLabel} · Alterar motivo`
+    : `${sessionLabel} · Registrar sem mídia`;
+}
+
 function toPackageInput(card: GooglePhotosAlbum): GooglePhotosAlbumInput {
   return {
     id: card.id,
@@ -221,6 +330,8 @@ export default function ProfessionalGooglePhotosGallery({
   const [saving, setSaving] = useState(false);
   const [creatingCardIds, setCreatingCardIds] = useState<string[]>([]);
   const [quickCreateCardId, setQuickCreateCardId] = useState('');
+  const [copyingSummaryCardId, setCopyingSummaryCardId] = useState('');
+  const [cardsLoadedForPackage, setCardsLoadedForPackage] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [activityStatusBySession, setActivityStatusBySession] = useState<Record<string, ActivityGalleryStatusRecord>>({});
@@ -240,6 +351,7 @@ export default function ProfessionalGooglePhotosGallery({
   const permissionsRef = useRef(EMPTY_PERMISSIONS);
   const initialSessionHandledRef = useRef(false);
   const editorBaselineRef = useRef<Record<string, GooglePhotosAlbum>>({});
+  const copyingSummaryCardIdRef = useRef('');
 
   useEffect(() => {
     if (patients.length > 0) {
@@ -385,6 +497,19 @@ export default function ProfessionalGooglePhotosGallery({
       removedCardIds,
     }) as GooglePhotosAlbum[]
   ), [draftCards, persistedCards, removedCardIds, virtualCards]);
+
+  const summaryReadyByCard = useMemo(() => new Map(
+    allCards.map(card => [card.id, cardsLoadedForPackage && isAccumulatedActivitySummarySourceComplete({
+      patientId: selectedPatientId,
+      sessions: packageSessions,
+      albums: allCards,
+      packageNumber: currentPackageNumber,
+      throughSessionId: getAccumulatedActivitySummaryLimitSessionId({
+        card,
+        sessions: packageSessions,
+      }),
+    })]),
+  ), [allCards, cardsLoadedForPackage, currentPackageNumber, packageSessions, selectedPatientId]);
 
   const effectiveSessionHistory = useMemo(() => buildEffectiveSessionHistory(sessionSource, {
     patientId: selectedPatientId,
@@ -570,8 +695,10 @@ export default function ProfessionalGooglePhotosGallery({
   const loadCards = useCallback(async (force = false) => {
     if (!selectedPatientId || !currentPackageNumber) {
       setPersistedCards([]);
+      setCardsLoadedForPackage(false);
       return;
     }
+    setCardsLoadedForPackage(false);
     setLoading(true);
     setError('');
     try {
@@ -582,6 +709,7 @@ export default function ProfessionalGooglePhotosGallery({
         force,
       });
       setPersistedCards(result.albums);
+      setCardsLoadedForPackage(true);
       setPermissions(result.permissions);
       setOwnerUserId(result.ownerUserId || '');
       const confirmedSignature = JSON.stringify(result.albums
@@ -624,11 +752,61 @@ export default function ProfessionalGooglePhotosGallery({
     void loadCards();
   }, [loadCards]);
 
+  const copyAccumulatedSummary = async (card: GooglePhotosAlbum) => {
+    if (copyingSummaryCardId || copyingSummaryCardIdRef.current || !selectedPatientId) return;
+    const patientId = selectedPatientId;
+    copyingSummaryCardIdRef.current = card.id;
+    setCopyingSummaryCardId(card.id);
+    try {
+      const throughSessionId = getAccumulatedActivitySummaryLimitSessionId({
+        card,
+        sessions: packageSessions,
+      });
+      if (!throughSessionId) {
+        showToast('Não foi possível identificar a sessão selecionada.', 'error');
+        return;
+      }
+      if (!isAccumulatedActivitySummarySourceComplete({
+        patientId,
+        sessions: packageSessions,
+        albums: allCards,
+        packageNumber: currentPackageNumber,
+        throughSessionId,
+      })) {
+        showToast('O resumo ainda não está completo nesta galeria. Aguarde o carregamento dos cards.', 'error');
+        return;
+      }
+      const summary = buildAccumulatedActivitySummary({
+        patientId,
+        patientName: selectedPatientName,
+        sessions: packageSessions,
+        albums: allCards,
+        packageNumber: currentPackageNumber,
+        throughSessionId,
+      });
+      if (!summary) {
+        showToast('Nenhum link válido de atividade foi encontrado até esta sessão.', 'error');
+        return;
+      }
+      await copyTextToClipboard(summary);
+      showToast('Resumo copiado', 'success');
+    } catch (caughtError) {
+      console.error('Falha ao copiar resumo acumulado de atividades:', caughtError);
+      showToast('Não foi possível copiar o resumo. Tente novamente ou copie o texto manualmente.', 'error');
+    } finally {
+      if (copyingSummaryCardIdRef.current === card.id) {
+        copyingSummaryCardIdRef.current = '';
+        setCopyingSummaryCardId('');
+      }
+    }
+  };
+
   const selectPatient = (patientId: string) => {
     setSelectedPatientId(patientId);
     setSelectedPackageNumber(0);
     setQuickCreateCardId('');
     setPersistedCards([]);
+    setCardsLoadedForPackage(false);
     setDraftCards({});
     setRemovedCardIds([]);
     setEditingCardIds([]);
@@ -647,6 +825,7 @@ export default function ProfessionalGooglePhotosGallery({
     setSelectedPackageNumber(packageNumber);
     setQuickCreateCardId('');
     setPersistedCards([]);
+    setCardsLoadedForPackage(false);
     setDraftCards({});
     setRemovedCardIds([]);
     setEditingCardIds([]);
@@ -1234,11 +1413,7 @@ export default function ProfessionalGooglePhotosGallery({
               <div className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-sm font-bold text-clinic-text-muted">
                 Nenhuma sessão realizada ou em andamento está disponível para criar álbum neste pacote.
               </div>
-            ) : (
-              <div className="rounded-xl border border-status-green-text/20 bg-status-green-bg px-4 py-3 text-sm font-bold text-status-green-text">
-                Todos os cards disponíveis deste pacote já possuem link de álbum.
-              </div>
-            )}
+            ) : null}
           </div>
         </section>
       )}
@@ -1259,7 +1434,7 @@ export default function ProfessionalGooglePhotosGallery({
             <p className="text-xs text-clinic-text-muted">
               {loadingSessions
                 ? 'Carregando sessões autorizadas...'
-                : `${allCards.length} card(s) gerados, ${cardsWithLinksCount} com link salvo ou pendente.`}
+                : `${cardsWithLinksCount} de ${allCards.length} atividades com álbum vinculado.`}
               {hasLocalChanges ? ' Há alterações locais ainda não salvas.' : ''}
             </p>
           </div>
@@ -1319,10 +1494,73 @@ export default function ProfessionalGooglePhotosGallery({
               const cardHasInvalidLink = invalidCardIdSet.has(card.id);
               const editing = editingCardIds.includes(card.id);
               const creatingAlbum = creatingCardIds.includes(card.id);
-              const sessionLabel = formatSessionNumbers(card.sessionNumbers);
+              const summaryReady = summaryReadyByCard.get(card.id) === true;
               const publishedAtDisplay = isSafeIsoDate(card.publishedAt) ? isoToDisplayDate(card.publishedAt) : card.publishedAt || '';
               const observationExpanded = expandedObservationIds.includes(card.id);
               const datePickerId = `google-photos-published-at-${encodeURIComponent(card.id)}`;
+              const mediaEntries = card.sessionIds.map((sessionId, sessionIndex) => {
+                const activityStatus = getCardSessionActivityStatus(card, sessionId);
+                const justification = activityStatus.statusRecord?.justification || null;
+                const linked = resolveLinkedSessionDisplay(card, sessionId, packageSessions, sessionIndex);
+                return {
+                  sessionId,
+                  sessionNumber: linked.number,
+                  date: linked.date,
+                  time: linked.time,
+                  descriptor: formatLinkedSessionDescriptor(card, sessionId, packageSessions, sessionIndex),
+                  state: activityStatus.state,
+                  justification,
+                  justificationReason: justification?.active ? String(justification.reason) : '',
+                };
+              });
+              const mediaPresentation = buildActivityGalleryMediaPresentation(mediaEntries) as unknown as {
+                entries: ActivityMediaPresentationEntry[];
+                hasMultipleSessions: boolean;
+                canShareStatus: boolean;
+                canCompactSchedule: boolean;
+                sessionLabel: string;
+                commonDate: string;
+                chronologicalTimes: string;
+              };
+              const orderedMediaEntries = mediaPresentation.entries;
+              const renderMediaAction = (entry: ActivityMediaPresentationEntry) => {
+                if (entry.state === 'sent') return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => openNoMediaEditor(card, entry.sessionId)}
+                    disabled={noMediaBusy}
+                    aria-label={formatActivityMediaActionLabel(entry)}
+                    className="rounded-lg border border-purple-300 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase text-purple-900 disabled:opacity-50"
+                  >
+                    {formatActivityMediaActionLabel(entry)}
+                  </button>
+                );
+              };
+              const renderIndividualMediaEntry = (entry: ActivityMediaPresentationEntry) => (
+                <div key={entry.sessionId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-black text-purple-900">{entry.descriptor}</p>
+                    <p className={`font-bold ${entry.state === 'overdue' ? 'text-status-red-text' : entry.state === 'sent' ? 'text-status-green-text' : 'text-purple-900'}`}>
+                      {formatActivityMediaStatusLabel(entry, activityStatusLoading, false)}
+                    </p>
+                  </div>
+                  {renderMediaAction(entry)}
+                </div>
+              );
+              const renderMediaActions = (entries: ActivityMediaPresentationEntry[]) => {
+                const actionableEntries = entries.filter(entry => entry.state !== 'sent');
+                if (actionableEntries.length === 0) return null;
+                return (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {actionableEntries.map(entry => (
+                      <div key={entry.sessionId}>
+                        {renderMediaAction(entry)}
+                      </div>
+                    ))}
+                  </div>
+                );
+              };
               return (
                 <article id={`google-photos-card-${encodeURIComponent(card.id)}`} key={card.id} className={`rounded-2xl border p-3 shadow-sm sm:p-4 ${cardHasInvalidLink ? 'border-status-orange-text/40 bg-status-orange-bg/70 ring-2 ring-status-orange-text/15' : card.status === 'hidden' ? 'border-amber-300 bg-amber-50/70' : hasValidLink ? 'border-clinic-border bg-white' : 'border-dashed border-clinic-border bg-clinic-bg/70'}`}>
                   <div className="flex items-start justify-between gap-3">
@@ -1335,9 +1573,7 @@ export default function ProfessionalGooglePhotosGallery({
                         <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${card.visibleToGuardian ? 'bg-status-green-bg text-status-green-text' : 'bg-clinic-bg text-clinic-text-muted'}`}>{card.visibleToGuardian ? 'Visível ao responsável' : 'Somente equipe'}</span>
                       </div>
                       <h3 className="mt-3 break-words text-base font-bold text-clinic-text">{getAlbumDisplayTitle(card) || 'Atividade de Intervenção'}</h3>
-                      <p className="mt-1 text-xs font-bold text-clinic-primary">
-                        {card.sessionIds.length > 1 ? 'Sessão dupla • 2 sessões vinculadas - ' : sessionLabel ? `${sessionLabel} - ` : ''}{safeFormatDate(card.activityDate, 'dd/MM/yyyy')}{card.sessionTime ? ` às ${card.sessionTime}` : ''}
-                      </p>
+                      <p className="mt-1 text-xs font-bold text-clinic-primary">{formatLinkedSessionSubtitle(card, packageSessions)}</p>
                     </div>
                     <span className="rounded-xl bg-clinic-bg p-2 text-clinic-primary"><CalendarDays size={17} /></span>
                   </div>
@@ -1377,6 +1613,16 @@ export default function ProfessionalGooglePhotosGallery({
                         ) : null}
                       </>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => void copyAccumulatedSummary(card)}
+                      disabled={Boolean(copyingSummaryCardId) || loading || saving || !summaryReady}
+                      title={summaryReady ? 'Copiar resumo acumulado' : 'Resumo indisponível até os cards necessários terminarem de carregar'}
+                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-clinic-primary/25 bg-clinic-bg px-3 py-2.5 text-xs font-black text-clinic-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {copyingSummaryCardId === card.id ? <Loader2 size={15} className="animate-spin" /> : <Copy size={15} />}
+                      {copyingSummaryCardId === card.id ? 'Copiando resumo...' : loading ? 'Preparando resumo...' : summaryReady ? 'Copiar resumo até aqui' : 'Resumo indisponível'}
+                    </button>
                     {hasValidLink && permissions.canEdit && <button type="button" onClick={() => editing ? closeEditor(card.id) : openEditor(card)} className="rounded-xl border border-clinic-border bg-white p-2.5 text-clinic-primary" aria-label={editing ? 'Fechar edição' : 'Editar card'} title={editing ? 'Fechar edição' : 'Editar card'}>{editing ? <X size={16} /> : <Pencil size={16} />}</button>}
                     {hasValidLink && card.status === 'active' && permissions.canHide && <button type="button" onClick={() => updateCard(card, { status: 'hidden' })} className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-amber-800" aria-label="Ocultar card"><EyeOff size={16} /></button>}
                     {hasValidLink && card.status === 'hidden' && permissions.canReactivate && <button type="button" onClick={() => updateCard(card, { status: 'active' })} className="rounded-xl border border-status-green-text/20 bg-status-green-bg p-2.5 text-status-green-text" aria-label="Reativar card"><RotateCcw size={16} /></button>}
@@ -1385,30 +1631,35 @@ export default function ProfessionalGooglePhotosGallery({
 
                   {card.sessionIds.length > 0 && (
                     <div className="mt-3 space-y-2 rounded-xl border border-purple-200 bg-purple-50/60 p-2.5">
-                      <p className="text-[10px] font-black uppercase tracking-wide text-purple-900">Registro de mídia da sessão</p>
-                      {card.sessionIds.map(sessionId => {
-                        const activityStatus = getCardSessionActivityStatus(card, sessionId);
-                        const justification = activityStatus.statusRecord?.justification;
-                        if (activityStatus.state === 'sent') {
-                          return <p key={sessionId} className="text-xs font-bold text-status-green-text">Mídia registrada para esta sessão.</p>;
-                        }
-                        if (activityStatus.state === 'excused' && justification?.active) {
-                          return (
-                            <div key={sessionId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                              <span className="font-black text-purple-900">SEM MÍDIA · {getActivityJustificationReasonLabel(justification.reason)}</span>
-                              <button type="button" onClick={() => openNoMediaEditor(card, sessionId)} disabled={noMediaBusy} className="rounded-lg border border-purple-300 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase text-purple-900 disabled:opacity-50">Alterar motivo</button>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div key={sessionId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                            <span className={`font-bold ${activityStatus.state === 'overdue' ? 'text-status-red-text' : 'text-purple-900'}`}>
-                              {activityStatusLoading ? 'Consultando estado da mídia...' : activityStatus.state === 'overdue' ? 'Mídia pendente em atraso.' : activityStatus.state === 'waiting' ? 'Mídia pendente dentro do prazo.' : 'Sem registro de mídia.'}
-                            </span>
-                            <button type="button" onClick={() => openNoMediaEditor(card, sessionId)} disabled={noMediaBusy} className="rounded-lg border border-purple-300 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase text-purple-900 disabled:opacity-50">Registrar sessão sem mídia</button>
+                      <p className="text-[10px] font-black uppercase tracking-wide text-purple-900">{mediaPresentation.hasMultipleSessions ? 'Registro de mídia das sessões' : 'Registro de mídia da sessão'}</p>
+                      {mediaPresentation.canCompactSchedule ? (
+                        <>
+                          <div className="space-y-0.5 text-xs">
+                            <p className="font-black text-purple-900">{mediaPresentation.sessionLabel}{mediaPresentation.commonDate ? ` — ${safeFormatDate(mediaPresentation.commonDate, 'dd/MM/yyyy')}` : ''}</p>
+                            <p className={`font-bold ${orderedMediaEntries[0]?.state === 'overdue' ? 'text-status-red-text' : orderedMediaEntries[0]?.state === 'sent' ? 'text-status-green-text' : 'text-purple-900'}`}>
+                              {[mediaPresentation.chronologicalTimes, formatActivityMediaStatusLabel(orderedMediaEntries[0], activityStatusLoading, true)].filter(Boolean).join(' · ')}
+                            </p>
                           </div>
-                        );
-                      })}
+                          {renderMediaActions(orderedMediaEntries)}
+                        </>
+                      ) : mediaPresentation.canShareStatus ? (
+                        <>
+                          <div className="space-y-1 text-xs">
+                            <p className="font-black text-purple-900">{mediaPresentation.sessionLabel}</p>
+                            <div className="space-y-0.5 text-purple-900">
+                              {orderedMediaEntries.map(entry => <p key={entry.sessionId}>{entry.descriptor}</p>)}
+                            </div>
+                            <p className={`font-bold ${orderedMediaEntries[0]?.state === 'overdue' ? 'text-status-red-text' : orderedMediaEntries[0]?.state === 'sent' ? 'text-status-green-text' : 'text-purple-900'}`}>
+                              {formatActivityMediaStatusLabel(orderedMediaEntries[0], activityStatusLoading, true)}
+                            </p>
+                          </div>
+                          {renderMediaActions(orderedMediaEntries)}
+                        </>
+                      ) : (
+                        <div className="space-y-2">
+                          {orderedMediaEntries.map(renderIndividualMediaEntry)}
+                        </div>
+                      )}
                     </div>
                   )}
 
