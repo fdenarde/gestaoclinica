@@ -9,6 +9,7 @@ import { readPsychologySettingsProjection, sanitizePsychologySettingsProjectionE
 import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
 import { normalizePhone } from '../shared/phoneNormalization.js';
 import { buildPsychologyCapabilities } from './_lib/psychologyCapabilities.js';
+import { handleDoctoraliaStagingReadOnlyGateway } from './_lib/stagingReadOnlyGateway.js';
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:3000',
@@ -779,6 +780,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
   const auditLogger = dependencies.auditLogger || logPsychologyAuditEvent;
 
   return async function psychologyHandler(req, res) {
+    if (await handleDoctoraliaStagingReadOnlyGateway(req, res)) return;
     const requestId = createPsychologyRequestId(req);
     const idempotencyKey = requestIdempotencyKey(req);
     let runtimeScope;

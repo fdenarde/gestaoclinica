@@ -41,6 +41,7 @@ import {
   getDriveFileMetadata,
 } from './_lib/googleDrive.js';
 import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
+import { handleDoctoraliaStagingReadOnlyGateway } from './_lib/stagingReadOnlyGateway.js';
 
 const PRIMARY_ADMIN_EMAIL = 'fdenarde@gmail.com';
 const DEFAULT_PROFESSIONAL_NAME = 'Fábio Denarde';
@@ -5008,6 +5009,7 @@ function sendError(res, error) {
 
 export default async function handler(req, res) {
   setSecurityHeaders(req, res);
+  if (await handleDoctoraliaStagingReadOnlyGateway(req, res)) return;
   const rawAccessMode = String(req.query?.mode || req.query?.action || req.body?.action || req.method || 'unknown');
   const safeAccessModes = new Set(['monitoringPanel', 'adminResponsiblePreview', 'responsiblePortal', 'requests', 'professionalNotifications', 'canonicalProfessional', 'recordMonitoringAction']);
   const accessMode = safeAccessModes.has(rawAccessMode) ? rawAccessMode : (req.method === 'POST' ? 'write' : 'profile');
