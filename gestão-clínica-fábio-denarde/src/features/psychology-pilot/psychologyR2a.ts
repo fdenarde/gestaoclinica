@@ -165,10 +165,26 @@ export interface PsychologySessionRecordR2A {
   professionalId: string;
   context: typeof PSYCHOLOGY_CONTEXT;
   content: string;
+  /** Defaults to therapeutic follow-up for records created before the clinical chart. */
+  recordType?: PsychologyClinicalRecordType;
+  soap?: PsychologySoapRecord;
+  parentRecordType?: PsychologyParentRecordType;
   date?: string;
   authorProfessionalId: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export const PSYCHOLOGY_CLINICAL_RECORD_TYPES = ['THERAPEUTIC_FOLLOW_UP', 'SOAP', 'PARENT_ANAMNESIS_FEEDBACK'] as const;
+export type PsychologyClinicalRecordType = typeof PSYCHOLOGY_CLINICAL_RECORD_TYPES[number];
+export const PSYCHOLOGY_PARENT_RECORD_TYPES = ['ANAMNESIS', 'FEEDBACK', 'ANAMNESIS_AND_FEEDBACK'] as const;
+export type PsychologyParentRecordType = typeof PSYCHOLOGY_PARENT_RECORD_TYPES[number];
+
+export interface PsychologySoapRecord {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
 }
 
 /**
@@ -496,6 +512,10 @@ function normalizePsychologyServices(value: unknown, scope: PsychologyScope, def
     });
   const firstRawId = value.length === 1 && value[0] && typeof value[0] === 'object' ? String((value[0] as Partial<PsychologyService>).id || '') : '';
   const isLegacySingleServiceStore = firstRawId === 'psychology-service-psychotherapy';
+  // An explicit empty remote catalog means that the provider has no service rows yet;
+  // it must not make the internal appointment selector unusable. Keep valid remote
+  // entries authoritative, while using the scoped canonical catalog only for empty data.
+  if (normalized.length === 0) return defaults;
   return isLegacySingleServiceStore
     ? [...normalized, ...defaults.filter(service => !normalized.some(current => current.id === service.id))]
     : normalized;
@@ -613,7 +633,9 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
   const primaryIndex = Math.max(0, locations.findIndex(location => location.isPrimary && location.active));
   const stableLocations = locations.map((location, index) => ({ ...location, isPrimary: index === primaryIndex }));
   const rawServices = Array.isArray(input.services)
-    ? input.services.filter(item => item && item.context === scope.context && item.professionalId === scope.professionalId)
+    ? input.services.filter(item => item
+      && (item.context === undefined || item.context === scope.context)
+      && (item.professionalId === undefined || item.professionalId === scope.professionalId))
     : input.services;
   const services = normalizePsychologyServices(rawServices, scope, defaults.services, stableLocations.map(location => location.id), now);
   const rawProfile = (input.professionalProfile || {}) as Partial<PsychologyProfessionalPresentation>;

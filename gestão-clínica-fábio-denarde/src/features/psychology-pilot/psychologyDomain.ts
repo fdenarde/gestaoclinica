@@ -599,14 +599,16 @@ export function createPsychologyPayment(store: PsychologyStore, input: Psycholog
 export function upsertPsychologyPatient(store: PsychologyStore, input: PsychologyPatientInput, id?: string, now = new Date().toISOString()): PsychologyStore {
   const existing = id ? store.patients.find(patient => patient.id === id) : undefined;
   const dateOfBirth = String(input.dateOfBirth || input.birthDate || '').trim();
-  const responsible = input.administrativeResponsible
+  const responsibleInput = input.administrativeResponsible;
+  const hasResponsibleData = Boolean(responsibleInput && [responsibleInput.fullName, responsibleInput.relationship, responsibleInput.phone, responsibleInput.email].some(value => String(value || '').trim()));
+  const responsible = hasResponsibleData && responsibleInput
     ? {
-      fullName: input.administrativeResponsible.fullName.trim(),
-      relationship: input.administrativeResponsible.relationship.trim(),
-      phone: sanitizeStoredPhone(input.administrativeResponsible.phone),
-      email: input.administrativeResponsible.email.trim().toLocaleLowerCase(),
+      fullName: responsibleInput.fullName.trim(),
+      relationship: responsibleInput.relationship.trim(),
+      phone: sanitizeStoredPhone(responsibleInput.phone),
+      email: responsibleInput.email.trim().toLocaleLowerCase(),
     }
-    : undefined;
+    : existing?.administrativeResponsible;
   const patient: PsychologyPatient = {
     id: id || createId('patient'),
     professionalId: store.scope.professionalId,
@@ -842,7 +844,29 @@ export function parsePsychologyStore(raw: string | null, scope = createPsycholog
   }
 }
 
-export function isPsychologyPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
+export type PsychologyDevelopmentMode = 'pilot-local' | 'authenticated-remote';
+
+export type PsychologyRouteMode = 'normal' | 'pilot-local' | 'authenticated-remote';
+
+export function isPsychologyRoute(pathname: string): boolean {
+  return pathname.replace(/\/+$/, '') === '/psicologia';
+}
+
+export function isPsychologyLocalPilotRoute(pathname: string, search: string, isDev: boolean, hostname: string): boolean {
   if (!isDev || !['localhost', '127.0.0.1'].includes(hostname)) return false;
-  return pathname.replace(/\/+$/, '') === '/psicologia' || new URLSearchParams(search).get('psicologia') === '1';
+  return isPsychologyRoute(pathname) || new URLSearchParams(search).get('psicologia') === '1';
+}
+
+export function resolvePsychologyRouteMode(
+  pathname: string,
+  search: string,
+  isDev: boolean,
+  hostname: string,
+  developmentMode: PsychologyDevelopmentMode,
+): PsychologyRouteMode {
+  const psychologyRoute = isPsychologyRoute(pathname);
+  const psychologyLocalPilotRoute = isPsychologyLocalPilotRoute(pathname, search, isDev, hostname);
+  if (psychologyLocalPilotRoute && developmentMode === 'pilot-local') return 'pilot-local';
+  if (psychologyRoute || psychologyLocalPilotRoute) return 'authenticated-remote';
+  return 'normal';
 }

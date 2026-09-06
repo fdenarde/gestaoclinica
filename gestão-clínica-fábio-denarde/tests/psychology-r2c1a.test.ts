@@ -10,7 +10,7 @@ import {
   type PsychologyPatient,
   type PsychologyStore,
 } from '../src/features/psychology-pilot/psychologyDomain';
-import { getPsychologyPatientListViewModels, formatPsychologyPatientPhone } from '../src/features/psychology-pilot/psychologyPatientList';
+import { filterPsychologyPatientList, getPsychologyPatientListViewModels, formatPsychologyPatientPhone } from '../src/features/psychology-pilot/psychologyPatientList';
 
 const referenceDate = new Date('2026-08-13T10:00:00');
 const scope = createPsychologyScope('r2c1a-professional');
@@ -71,22 +71,67 @@ test('a listagem não usa os cards antigos', () => {
   assert.doesNotMatch(pilot, /psychology-patient-card/);
 });
 
-test('cabeçalho e linhas compartilham exatamente grid, gaps e padding', () => {
+test('cabeçalho e linhas compartilham o grid definitivo de cinco áreas e seleção no desktop', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
   const gridDefinition = pilot.match(/const PATIENT_LIST_GRID = '([^']+)'/)?.[1];
   assert.ok(gridDefinition);
-  assert.match(gridDefinition, /md:grid-cols-\[/);
-  assert.match(gridDefinition, /xl:grid-cols-\[/);
+  assert.match(gridDefinition, /md:grid-cols-\[2rem_minmax\(0,1\.25fr\)_minmax\(7\.5rem,\.75fr\)_minmax\(0,1\.5fr\)_5rem_minmax\(9\.5rem,\.85fr\)\]/);
+  assert.doesNotMatch(gridDefinition, /lg:grid-cols|xl:grid-cols/);
   assert.equal((pilot.match(/\$\{PATIENT_LIST_GRID\}/g) || []).length, 2);
   assert.equal((pilot.match(/\$\{PATIENT_LIST_PADDING\}/g) || []).length, 2);
+  assert.match(pilot, /data-desktop-columns="patient phone modality-location status action"/);
+  for (const column of ['patient', 'phone', 'modality-location', 'status', 'action']) assert.match(pilot, new RegExp(`data-desktop-column="${column}"`));
   assert.match(pilot, /SortHeader label="Status"/);
-  assert.match(pilot, /text-right">Ações/);
-  assert.match(pilot, /md:justify-end/);
+  assert.match(pilot, /whitespace-nowrap text-right md:col-start-6 md:row-start-1">Ação/);
 });
 
-test('o cabeçalho profissional aparece', () => {
+test('cabeçalho e linha fixam explicitamente as mesmas seis colunas desktop', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
-  for (const label of ['PACIENTE', 'TELEFONE', 'E-MAIL', 'ÚLTIMA SESSÃO', 'PRÓXIMA SESSÃO', 'MODALIDADE \/ LOCAL', 'STATUS', 'AÇÕES']) assert.match(pilot, new RegExp(label, 'i'));
+  const start = pilot.indexOf('data-testid="psychology-patient-list-header"');
+  const end = pilot.indexOf('</div>; })}</div>', start);
+  const listMarkup = pilot.slice(start, end);
+  for (let column = 1; column <= 6; column += 1) {
+    assert.equal((listMarkup.match(new RegExp(`md:col-start-${column}`, 'g')) || []).length, 2);
+  }
+  assert.equal((listMarkup.match(/md:row-start-1/g) || []).length, 12);
+  assert.doesNotMatch(listMarkup, /md:col-auto|md:row-auto/);
+});
+
+test('cada paciente ocupa uma única linha estrutural compacta no desktop', () => {
+  const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
+  const start = pilot.indexOf('function PatientsView(');
+  const end = pilot.indexOf('\nfunction psychologyLegendLabel', start);
+  const patientsView = pilot.slice(start, end);
+  const rowStart = patientsView.indexOf('data-testid="psychology-patient-list-row"');
+  const rowEnd = patientsView.indexOf('</div>; })}', rowStart);
+  const desktopRow = patientsView.slice(rowStart, rowEnd);
+  assert.match(desktopRow, /data-desktop-layout="single-line"/);
+  assert.match(desktopRow, /border-slate-100 py-4[^`]*md:py-2/);
+  assert.doesNotMatch(desktopRow, /md:row-start-[2-9]|md:col-span|position:absolute|\btransform\b|md:-m[trblxy]?-/);
+  assert.match(patientsView, /md:flex-nowrap/);
+  assert.match(desktopRow, /data-desktop-column="action" className="[^"]*whitespace-nowrap[^"]*md:flex-nowrap/);
+  assert.match(patientsView, /onClick=\{\(\) => onOpen\(row\.patient\)\}/);
+  assert.match(patientsView, /onClick=\{\(\) => onEdit\(row\.patient\)\}/);
+  assert.match(patientsView, /onClick=\{\(\) => onToggle\(row\.patient\)\}/);
+  assert.match(patientsView, /onClick=\{\(\) => onDelete\(row\.patient\)\}/);
+});
+
+test('o cabeçalho principal contém somente Paciente, Telefone, Modalidade/Local, Status e Ação', () => {
+  const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
+  const start = pilot.indexOf('data-testid="psychology-patient-list-header"');
+  const end = pilot.indexOf('<div>{filteredRows.map', start);
+  const header = pilot.slice(start, end);
+  for (const label of ['PACIENTE', 'TELEFONE', 'MODALIDADE \/ LOCAL', 'STATUS', 'AÇÃO']) assert.match(header, new RegExp(label, 'i'));
+  for (const removedLabel of ['E-MAIL', 'CADASTRO', 'ÚLTIMA SESSÃO', 'PRÓXIMA SESSÃO']) assert.doesNotMatch(header, new RegExp(removedLabel, 'i'));
+});
+
+test('nome e Modalidade/Local truncam em uma linha sem perder o conteúdo acessível', () => {
+  const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
+  assert.match(pilot, /title=\{row\.patient\.name\} className="block truncate whitespace-nowrap/);
+  assert.match(pilot, /data-desktop-column="modality-location" title=\{row\.modalityLocation\} className="[^"]*min-w-0 overflow-hidden text-ellipsis whitespace-nowrap/);
+  const longName = 'Paciente com nome sintético muito longo para a coluna principal da listagem';
+  const store = addPatient(fixture(), 'p-long-name', longName);
+  assert.equal(rows(store).find(row => row.patient.id === 'p-long-name')?.patient.name, longName);
 });
 
 test('a ordem padrão é alfabética A–Z', () => {
@@ -147,6 +192,23 @@ test('a busca contempla apenas nome, telefone e e-mail conforme a tela aprovada'
   assert.doesNotMatch(pilot, /Buscar paciente por nome, telefone, e-mail ou status/);
 });
 
+test('e-mail e filtros de sessões continuam funcionais sem colunas desktop próprias', () => {
+  const patientRows = rows();
+  assert.deepEqual(filterPsychologyPatientList(patientRows, { query: 'ana@example.com' }, referenceDate).map(row => row.patient.id), ['p-ana']);
+  assert.equal(filterPsychologyPatientList(patientRows, { lastSession: 'none' }, referenceDate).length, 4);
+  assert.equal(filterPsychologyPatientList(patientRows, { nextSession: 'with' }, referenceDate).length, 3);
+  assert.equal(filterPsychologyPatientList(patientRows, { nextSession: 'without' }, referenceDate).length, 2);
+});
+
+test('dados retirados da tabela permanecem íntegros no view model', () => {
+  const row = rows().find(item => item.patient.id === 'p-fabiano');
+  assert.equal(row?.email, 'fabiano@example.com');
+  assert.equal(row?.patient.createdAt, '2026-08-01T00:00:00.000Z');
+  assert.equal(row?.createdAt, '31/07/2026');
+  assert.equal(row?.lastSession, '12/08/2026');
+  assert.equal(row?.nextSession, '17/08/2026 · 14:00');
+});
+
 test('resultado filtrado preserva ordem alfabética', () => {
   const store = fixture();
   const filtered = store.patients.filter(patient => patient.name.toLocaleLowerCase().includes('a'));
@@ -164,6 +226,18 @@ test('Editar continua conectado ao paciente correto', () => {
   assert.match(pilot, /onClick=\{\(\) => onEdit\(row\.patient\)\}/);
 });
 
+test('menu de reticências expõe ações secundárias com teclado e preserva handlers', () => {
+  const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
+  assert.match(pilot, /aria-haspopup="dialog"/);
+  assert.match(pilot, /aria-expanded=\{actionMenuPatient\?\.id === row\.patient\.id\}/);
+  assert.match(pilot, />⋯<\/button>/);
+  assert.match(pilot, /data-testid="psychology-patient-actions-menu"/);
+  assert.match(pilot, /<button autoFocus type="button"/);
+  assert.match(pilot, /onEdit\(patient\)/);
+  assert.match(pilot, /onToggle\(patient\)/);
+  assert.match(pilot, /onDelete\(patient\)/);
+});
+
 test('Inativar e Ativar continuam disponíveis sem exclusão', () => {
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
   assert.match(pilot, /row\.patient\.active \? 'Inativar' : 'Ativar'/);
@@ -179,5 +253,6 @@ test('mobile usa composição compacta e não cria overflow horizontal global', 
   const pilot = readFileSync(resolve(process.cwd(), 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
   assert.match(pilot, /grid-cols-\[auto_minmax\(0,1fr\)_auto\]/);
   assert.match(pilot, /overflow-x-hidden/);
-  assert.match(pilot, /md:hidden xl:block/);
+  assert.match(pilot, /col-start-2 row-start-3[^>]*md:hidden/);
+  assert.match(pilot, /col-span-3 row-start-6[^>]*md:hidden/);
 });

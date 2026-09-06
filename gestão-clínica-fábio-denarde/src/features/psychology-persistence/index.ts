@@ -13,5 +13,6 @@ export * from './repositories/local';
 export * from './repositories/firestore';
 export * from './repositories/api';
 export * from './remotePatientClient';
+export * from './usePsychologyRemoteBootstrap';
 export * from './psychologyBackup';
 export * from './doctoraliaShadowImport';

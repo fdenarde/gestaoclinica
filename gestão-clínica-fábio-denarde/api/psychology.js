@@ -1,9 +1,13 @@
 import crypto from 'node:crypto';
-import { getAdminDb } from './_lib/firebaseAdmin.js';
+import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
 import { resolvePsychologyAccessContext } from './_lib/psychologyAccess.js';
+import { runPsychologyProviderReadiness } from './_lib/psychologyProviderReadiness.js';
+import { readPsychologySettingsProjection, sanitizePsychologySettingsProjectionError } from './_lib/psychologySettingsProjection.js';
 import { buildPsychologyAuditEvent, createPsychologyRequestId, logPsychologyAuditEvent } from './_lib/psychologyObservability.js';
 import { createPsychologyServerRepository } from './_lib/psychologyRepository.js';
 import { deletePsychologyPatientSafely } from './_lib/psychologyPatientDeletion.js';
+import { buildScopedPsychologyBackup } from './_lib/psychologyBackup.js';
+import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
 import { normalizePhone } from '../shared/phoneNormalization.js';
 import { buildPsychologyCapabilities } from './_lib/psychologyCapabilities.js';
 
@@ -30,6 +34,18 @@ function normalizePhoneForWrite(value) {
   } catch {
     throw apiError('psychology/phone-invalid', 'Informe um telefone válido.', 422);
   }
+}
+
+function normalizeAdministrativeResponsible(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value;
+  const normalized = {
+    fullName: normalize(source.fullName, 160),
+    relationship: normalize(source.relationship, 120),
+    phone: normalize(source.phone, 64),
+    email: normalize(source.email, 160).toLocaleLowerCase(),
+  };
+  return Object.values(normalized).some(Boolean) ? normalized : undefined;
 }
 
 function setSecurityHeaders(req, res) {
@@ -132,6 +148,7 @@ function administrativePatientDto(value) {
       ? value.acompanhamentoStatus
       : 'ATIVO',
     administrativeNote: value.administrativeNote || value.administrativeNotes || '',
+    administrativeResponsible: normalizeAdministrativeResponsible(value.administrativeResponsible),
     externalReferences: Array.isArray(value.externalReferences) ? value.externalReferences : [],
     inReview: value.inReview === true,
     reviewMarkedAt: value.reviewMarkedAt || undefined,
@@ -175,9 +192,105 @@ function clinicalSessionRecordDto(value) {
     sessionTime: value.sessionTime || undefined,
     date: value.date || undefined,
     authorProfessionalId: value.authorProfessionalId,
+    recordType: value.recordType || 'THERAPEUTIC_FOLLOW_UP',
+    ...(value.soap ? { soap: {
+      subjective: String(value.soap.subjective || ''),
+      objective: String(value.soap.objective || ''),
+      assessment: String(value.soap.assessment || ''),
+      plan: String(value.soap.plan || ''),
+    } } : {}),
+    ...(value.parentRecordType ? { parentRecordType: value.parentRecordType } : {}),
     content: value.content,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
+  };
+}
+
+const CLINICAL_RECORD_TYPES = new Set(['THERAPEUTIC_FOLLOW_UP', 'SOAP', 'PARENT_ANAMNESIS_FEEDBACK']);
+const PARENT_CLINICAL_RECORD_TYPES = new Set(['ANAMNESIS', 'FEEDBACK', 'ANAMNESIS_AND_FEEDBACK']);
+
+function clinicalText(value, maxLength = 50_000) {
+  return String(value || '').trim().slice(0, maxLength);
+}
+
+function validCivilDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const [year, month, day] = String(value).split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+}
+
+function patientIsMinor(patient, referenceDate) {
+  const dateOfBirth = String(patient?.dateOfBirth || patient?.birthDate || '');
+  if (!validCivilDate(dateOfBirth) || !validCivilDate(referenceDate)) return false;
+  const [birthYear, birthMonth, birthDay] = dateOfBirth.split('-').map(Number);
+  const [year, month, day] = referenceDate.split('-').map(Number);
+  const age = year - birthYear - (month < birthMonth || (month === birthMonth && day < birthDay) ? 1 : 0);
+  return age >= 0 && age < 18;
+}
+
+function clinicalSoap(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    subjective: clinicalText(source.subjective),
+    objective: clinicalText(source.objective),
+    assessment: clinicalText(source.assessment),
+    plan: clinicalText(source.plan),
+  };
+}
+
+async function prepareClinicalSessionRecord({ body, current, repository, runtimeScope, now }) {
+  const source = body?.item && typeof body.item === 'object' ? body.item : (body || {});
+  assertScopePayloadDoesNotConflict(source, runtimeScope);
+  if (source.authorProfessionalId && normalize(source.authorProfessionalId, 128) !== runtimeScope.professionalId) {
+    throw apiError('psychology/clinical-author-conflict', 'O autor do prontuário é definido pela identidade autenticada.', 422);
+  }
+  const recordType = current?.recordType || source.recordType || 'THERAPEUTIC_FOLLOW_UP';
+  if (!CLINICAL_RECORD_TYPES.has(recordType)) throw apiError('psychology/clinical-record-type', 'Tipo de prontuário inválido.', 422);
+  if (current && source.recordType && source.recordType !== (current.recordType || 'THERAPEUTIC_FOLLOW_UP')) {
+    throw apiError('psychology/clinical-record-type-immutable', 'O tipo do prontuário não pode ser alterado em uma edição.', 422);
+  }
+  const patientId = current?.patientId || normalize(source.patientId, 128);
+  if (!patientId) throw apiError('psychology/clinical-patient-required', 'Paciente é obrigatório para o prontuário.', 422);
+  if (current && source.patientId && source.patientId !== current.patientId) {
+    throw apiError('psychology/clinical-patient-immutable', 'O paciente do prontuário não pode ser alterado em uma edição.', 422);
+  }
+  const patient = await repository.patients.get(patientId);
+  if (!patient) throw apiError('psychology/clinical-patient-not-found', 'Paciente não encontrado neste escopo.', 404);
+  const date = String(source.date || current?.date || '').trim();
+  if (!validCivilDate(date)) throw apiError('psychology/clinical-date-invalid', 'Informe uma data válida para o prontuário.', 422);
+  const requestedSessionId = Object.prototype.hasOwnProperty.call(source, 'sessionId') ? normalize(source.sessionId, 128) : (current?.sessionId || '');
+  const session = requestedSessionId ? await repository.sessions.get(requestedSessionId) : null;
+  if (requestedSessionId && (!session || session.patientId !== patientId)) {
+    throw apiError('psychology/clinical-session-mismatch', 'A sessão vinculada deve pertencer ao mesmo paciente neste escopo.', 422);
+  }
+  const content = clinicalText(source.content !== undefined ? source.content : current?.content);
+  const soap = clinicalSoap(source.soap !== undefined ? source.soap : current?.soap);
+  const parentRecordType = source.parentRecordType !== undefined ? source.parentRecordType : current?.parentRecordType;
+  if (recordType === 'SOAP') {
+    if (!Object.values(soap).some(Boolean)) throw apiError('psychology/clinical-soap-required', 'Preencha ao menos um campo do Modelo SOAP.', 422);
+  } else if (!content) {
+    throw apiError('psychology/clinical-content-required', 'Informe o conteúdo clínico do prontuário.', 422);
+  }
+  if (recordType === 'PARENT_ANAMNESIS_FEEDBACK') {
+    if (!patientIsMinor(patient, date)) throw apiError('psychology/clinical-minor-required', 'Anamnese / Devolutiva é restrita a paciente menor ou adolescente.', 422);
+    if (!PARENT_CLINICAL_RECORD_TYPES.has(parentRecordType)) throw apiError('psychology/clinical-parent-type', 'Selecione o tipo de Anamnese / Devolutiva.', 422);
+  }
+  return {
+    id: current?.id || normalize(source.id, 128) || crypto.randomUUID(),
+    ...scopeFields(runtimeScope),
+    patientId,
+    sessionId: session?.id || undefined,
+    sessionDate: session?.date || date,
+    sessionTime: session?.time || '',
+    date,
+    authorProfessionalId: runtimeScope.professionalId,
+    recordType,
+    content: recordType === 'SOAP' ? '' : content,
+    ...(recordType === 'SOAP' ? { soap } : {}),
+    ...(recordType === 'PARENT_ANAMNESIS_FEEDBACK' ? { parentRecordType } : {}),
+    createdAt: current?.createdAt || now,
+    updatedAt: now,
   };
 }
 
@@ -307,6 +420,7 @@ function preparePatient(body, runtimeScope, now) {
       ? source.acompanhamentoStatus
       : 'ATIVO',
     administrativeNote: normalize(source.administrativeNote || source.administrativeNotes, 1000),
+    administrativeResponsible: normalizeAdministrativeResponsible(source.administrativeResponsible),
     externalReferences: Array.isArray(source.externalReferences) ? source.externalReferences.slice(0, 20) : [],
     inReview: source.inReview === true,
     reviewMarkedAt: source.inReview === true ? normalize(source.reviewMarkedAt, 64) || now : undefined,
@@ -399,6 +513,7 @@ function prepareSettings(body, runtimeScope, current, now) {
 export function createPsychologyApiHandler(dependencies = {}) {
   const getDb = dependencies.getDb || getAdminDb;
   const resolveAccess = dependencies.resolveAccess || resolvePsychologyAccessContext;
+  const readSettingsProjection = dependencies.readSettingsProjection || readPsychologySettingsProjection;
   const now = dependencies.now || (() => new Date().toISOString());
   const auditLogger = dependencies.auditLogger || logPsychologyAuditEvent;
 
@@ -409,6 +524,13 @@ export function createPsychologyApiHandler(dependencies = {}) {
     let operation = `${req.method || 'UNKNOWN'}:unknown`;
     setSecurityHeaders(req, res);
     res.setHeader('X-Request-Id', requestId);
+    attachFirestoreDiagnostics(res, {
+      endpoint: 'psychology',
+      logicalMode: 'psychology-api',
+      operations: 'patients,sessions,session-records,settings',
+      writeAttempted: ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method),
+      dedupeHit: false,
+    });
     if (req.method === 'OPTIONS') return res.status(204).end();
     if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
       return res.status(405).json({ error: { code: 'psychology/method-not-allowed', message: 'Método não permitido.' } });
@@ -420,9 +542,83 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
       const [resource, id] = routeParts(req);
       if (!resource) throw apiError('psychology/route-not-found', 'Rota Psicologia não encontrada.', 404);
+      if (resource === 'provider-readiness' && req.method === 'GET' && !id) {
+        await verifyFirebaseRequest(req);
+        const readiness = await runPsychologyProviderReadiness();
+        return res.status(readiness.ok ? 200 : 503).json(readiness);
+      }
+      if (resource === 'settings-readiness' && req.method === 'GET' && !id) {
+        const db = getDb();
+        const resolvedScope = await resolveAccess(req, {
+          db,
+          requiredAnyPermissions: ['agenda.own.view', 'settings.clinic.manage'],
+        });
+        try {
+          const readiness = await readSettingsProjection({ db, runtimeScope: resolvedScope });
+          auditHeaders(res, resolvedScope, 'read', 'settings-readiness');
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope: resolvedScope, operation: 'GET:settings-readiness', status: 'success', timestamp: now() }));
+          return res.status(200).json(readiness);
+        } catch (error) {
+          const sanitized = sanitizePsychologySettingsProjectionError(error);
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope: resolvedScope, operation: 'GET:settings-readiness', status: 'denied', timestamp: now(), code: sanitized.errorCode }));
+          return res.status(sanitized.httpStatus).json({ error: sanitized });
+        }
+      }
       operation = `${req.method}:${resource}`;
       const db = getDb();
       const body = parseBody(req);
+
+      if (resource === 'backup' && req.method === 'GET' && !id) {
+        runtimeScope = await resolveAccess(req, {
+          db,
+          requiredPermissions: ['patients.clinical_notes.view'],
+          ignoreRequestedProfessionalId: true,
+        });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const [patients, sessions, personalAppointments, sessionRecords, services, locations, charges, payments, expenses, packages, documents, attachments, settings] = await Promise.all([
+          repository.patients.list(),
+          repository.sessions.list(),
+          repository.personalAppointments.list(),
+          repository.sessionRecords.list(),
+          repository.services.list(),
+          repository.locations.list(),
+          repository.financial.listCharges(),
+          repository.financial.listPayments(),
+          repository.financial.listExpenses(),
+          repository.packages.list(),
+          repository.documents.list(),
+          repository.attachments.list(),
+          repository.settings.get('settings'),
+        ]);
+        const backup = buildScopedPsychologyBackup({
+          scope: runtimeScope,
+          generatedAt: now(),
+          records: {
+            patients,
+            sessions,
+            personalAppointments,
+            sessionRecords,
+            services,
+            locations,
+            charges,
+            payments,
+            expenses,
+            sessionPackages: packages,
+            documents,
+            attachments,
+            settings,
+          },
+        });
+        auditHeaders(res, runtimeScope, 'read', 'backup');
+        auditLogger(buildPsychologyAuditEvent({
+          requestId,
+          runtimeScope,
+          operation: 'backup:read',
+          status: 'success',
+          timestamp: now(),
+        }));
+        return res.status(200).json({ ...backup, scope: scopeFields(runtimeScope) });
+      }
 
       if (resource === 'patients' && req.method === 'GET') {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.list'] });
@@ -464,7 +660,10 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
 
       if (resource === 'settings' && req.method === 'GET' && !id) {
-        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.manage'] });
+        const runtimeScope = await resolveAccess(req, {
+          db,
+          requiredAnyPermissions: ['agenda.own.view', 'settings.clinic.manage'],
+        });
         const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
         const current = await repository.settings.get('settings');
         auditHeaders(res, runtimeScope, 'read', 'settings');
@@ -536,6 +735,30 @@ export function createPsychologyApiHandler(dependencies = {}) {
         auditHeaders(res, runtimeScope, 'read', 'sessionRecords');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(200).json({ scope: scopeFields(runtimeScope), items: items.map(clinicalSessionRecordDto) });
+      }
+
+      if (resource === 'session-records' && req.method === 'POST' && !id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.clinical_notes.view', 'patients.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const prepared = await prepareClinicalSessionRecord({ body, repository, runtimeScope, now: now() });
+        const existing = await repository.sessionRecords.get(prepared.id);
+        if (existing) throw apiError('psychology/clinical-record-exists', 'Use edição para um prontuário já existente.', 409);
+        const item = await repository.sessionRecords.upsert(prepared);
+        auditHeaders(res, runtimeScope, 'create', 'sessionRecords');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(201).json({ scope: scopeFields(runtimeScope), item: clinicalSessionRecordDto(item) });
+      }
+
+      if (resource === 'session-records' && req.method === 'PATCH' && id) {
+        const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.clinical_notes.view', 'patients.edit'] });
+        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const current = await repository.sessionRecords.get(id);
+        if (!current) throw apiError('psychology/clinical-record-not-found', 'Prontuário não encontrado neste escopo.', 404);
+        const prepared = await prepareClinicalSessionRecord({ body, current, repository, runtimeScope, now: now() });
+        const item = await repository.sessionRecords.upsert(prepared);
+        auditHeaders(res, runtimeScope, 'update', 'sessionRecords');
+        auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+        return res.status(200).json({ scope: scopeFields(runtimeScope), item: clinicalSessionRecordDto(item) });
       }
 
       const genericRoute = GENERIC_OPERATION_ROUTES[resource];

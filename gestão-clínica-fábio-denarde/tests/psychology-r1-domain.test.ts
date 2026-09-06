@@ -60,13 +60,11 @@ test('um profissional diferente não recebe pacientes ou sessões de outro escop
   assert.equal(isolated.sessions.length, 0);
 });
 
-test('cadastro valida o contrato administrativo canônico', () => {
+test('cadastro valida os campos obrigatórios do contrato administrativo canônico', () => {
   const errors = validatePsychologyPatient({ ...patientInput, name: '', birthDate: '', phone: '' });
   assert.deepEqual(errors, {
     name: 'Informe o nome completo do paciente.',
-    birthDate: 'Informe a data de nascimento.',
     phone: 'Informe um telefone válido.',
-    email: 'Informe um e-mail válido.',
   });
 });
 

@@ -186,6 +186,25 @@
 }
 
 @layer components {
+  /* Scoped identity for the authenticated Psychology entry flow. */
+  .auth-psychology-theme {
+    --color-clinic-bg: #F5F3FF;
+    --color-clinic-header: #4C1D95;
+    --color-clinic-nav-bg: #EDE9FE;
+    --color-clinic-primary: #6D28D9;
+    --color-clinic-primary-hover: #5B21B6;
+    --color-clinic-surface: #FFFFFF;
+    --color-clinic-border: #DDD6FE;
+    --color-clinic-border-dark: #C4B5FD;
+    --color-clinic-text: #2E1065;
+    --color-clinic-text-muted: #6B5B95;
+    --color-clinic-text-faint: #8B7BA8;
+    --logo-text: #FFFFFF;
+    --logo-subtitle: rgba(255, 255, 255, 0.9);
+    --logo-divider: rgba(255, 255, 255, 0.72);
+    --shadow-clinic: 0 4px 6px -1px rgba(76, 29, 149, 0.08), 0 2px 4px -1px rgba(76, 29, 149, 0.05);
+  }
+
   .clinic-card {
     @apply bg-clinic-surface rounded-xl border border-clinic-border shadow-clinic;
   }

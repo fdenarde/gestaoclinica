@@ -8,7 +8,7 @@ import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
 import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
-import { applyTheme, resolveTheme, storeTheme, type AppTheme } from './lib/theme';
+import { applyTheme, resolveTheme, storeTheme, type AppTheme, type VisualContext } from './lib/theme';
 import packageJson from '../package.json';
 
 import { auth, db, logout, handleFirestoreError, OperationType } from './firebase';
@@ -50,7 +50,10 @@ import {
   type NavigationMode,
 } from './lib/navigationPreferences';
 import PsychologyPilot from './features/psychology-pilot/PsychologyPilot';
-import { isPsychologyPilotRoute } from './features/psychology-pilot/psychologyDomain';
+import {
+  resolvePsychologyRouteMode,
+  type PsychologyDevelopmentMode,
+} from './features/psychology-pilot/psychologyDomain';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const Agenda = lazy(() => import('./components/Agenda'));
@@ -120,18 +123,24 @@ function ProfileChoiceScreen({
   profile,
   onChoose,
   onLogout,
+  visualContext,
 }: {
   profile: AccessProfile;
   onChoose: (role: AccessRole) => void;
   onLogout: () => void;
+  visualContext: VisualContext;
 }) {
   const roles = getActiveProfileRoles(profile);
+  const psychologyContext = visualContext === 'PSICOLOGIA';
   return (
-    <div className="flex min-h-screen items-center justify-center bg-clinic-bg p-4">
+    <div
+      className={`flex min-h-screen items-center justify-center bg-clinic-bg p-4 ${psychologyContext ? 'auth-psychology-theme' : ''}`}
+      data-auth-visual-context={visualContext}
+    >
       <section className="w-full max-w-3xl rounded-2xl border border-clinic-border bg-clinic-surface p-5 shadow-clinic sm:p-7">
         <BrandLogo
           variant="horizontal"
-          theme="health-balance"
+          theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined}
           name="Fábio Denarde"
           subtitle="Gestão Clínica e Acompanhamento"
           className="mb-6"
@@ -206,27 +215,36 @@ function formatAuditDuration(value?: number): string {
   return `${seconds}s`;
 }
 
+function getPsychologyDevelopmentMode(): PsychologyDevelopmentMode {
+  const configured = String(import.meta.env.VITE_PSYCHOLOGY_DEV_MODE || '').trim().toLowerCase();
+  return configured === 'pilot-local' ? 'pilot-local' : 'authenticated-remote';
+}
+
 export default function App() {
-  const psychologyPilotRoute = isPsychologyPilotRoute(
+  const psychologyRouteMode = resolvePsychologyRouteMode(
     window.location.pathname,
     window.location.search,
     Boolean(import.meta.env.DEV),
     window.location.hostname,
+    getPsychologyDevelopmentMode(),
   );
 
-  if (psychologyPilotRoute) return <PsychologyPilot />;
-  return <AuthenticatedApp />;
+  if (psychologyRouteMode === 'pilot-local') return <PsychologyPilot />;
+  return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyRouteMode === 'authenticated-remote'} />;
 }
 
-function AuthenticatedApp() {
+function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychologyAuthenticatedRoute?: boolean }) {
+  const visualContext: VisualContext = psychologyAuthenticatedRoute ? 'PSICOLOGIA' : 'DEFAULT';
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
-  const directAccessRole: AccessRequestRole | null = normalizedPath === '/responsavel'
-    ? 'responsible'
-    : normalizedPath === '/profissional'
-      ? 'professional'
-      : normalizedPath === '/monitoramento'
-        ? 'monitoring'
-        : null;
+  const directAccessRole: AccessRequestRole | null = psychologyAuthenticatedRoute
+    ? 'professional'
+    : normalizedPath === '/responsavel'
+      ? 'responsible'
+      : normalizedPath === '/profissional'
+        ? 'professional'
+        : normalizedPath === '/monitoramento'
+          ? 'monitoring'
+          : null;
   const publicRegistrationMatch = window.location.pathname.match(/^\/pre-cadastro\/([a-f0-9]{64})\/?$/i);
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -234,6 +252,7 @@ function AuthenticatedApp() {
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessError, setAccessError] = useState('');
   const [accessRetryKey, setAccessRetryKey] = useState(0);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [selectedAccessRole, setSelectedAccessRole] = useState<AccessRole | null>(directAccessRole);
   const [state, setState] = useState<AppState>(DEFAULT_STATE);
   const [dataLoading, setDataLoading] = useState(false);
@@ -263,6 +282,9 @@ function AuthenticatedApp() {
   const notificationLastLoadedAtRef = useRef(0);
   const notificationInFlightRef = useRef<Promise<boolean> | null>(null);
   const forceAccessTokenRefreshRef = useRef(false);
+  const authTransitionRef = useRef(0);
+  const logoutInProgressRef = useRef(false);
+  const accessProfileAbortRef = useRef<AbortController | null>(null);
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
   const whatsappOperationalReportState = useDailyWhatsappOperationalReport(
@@ -271,6 +293,28 @@ function AuthenticatedApp() {
       && accessProfile.role === 'admin',
   );
   const packageToleranceAlerts = useMemo(() => buildPackageToleranceAlerts(state), [state]);
+
+  const resetSessionScopedData = useCallback(() => {
+    clearAccessApiCaches();
+    setState(DEFAULT_STATE);
+    setNotifications([]);
+    setNotificationsOpen(false);
+    setNotificationCenterOpen(false);
+    setNotificationHasMore(false);
+    setSelectedPortalNotification(null);
+    setSelectedPatientId(null);
+    setSelectedPatientSubTab(null);
+    setSelectedGalleryPatientId(null);
+    setSelectedGallerySessionId(null);
+    setSelectedGalleryPackageNumber(null);
+    setUnregisteredActivities([]);
+    setUnregisteredActivitiesWarning('');
+    setActiveTab('dashboard');
+    loadedCollectionsRef.current.clear();
+    notificationCursorRef.current = null;
+    notificationOldestCursorRef.current = null;
+    notificationInFlightRef.current = null;
+  }, []);
 
   if (publicRegistrationMatch) {
     return <ExternalRegistrationPage token={publicRegistrationMatch[1]} />;
@@ -334,9 +378,20 @@ function AuthenticatedApp() {
   };
 
   useEffect(() => {
+    let previousAuthUid: string | null | undefined;
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      const currentAuthUid = currentUser?.uid ?? null;
+      if (previousAuthUid !== currentAuthUid) {
+        authTransitionRef.current += 1;
+      }
+      previousAuthUid = currentAuthUid;
       setUser(currentUser);
       if (!currentUser) {
+        logoutInProgressRef.current = false;
+        setIsLoggingOut(false);
+        accessProfileAbortRef.current?.abort();
+        accessProfileAbortRef.current = null;
+        resetSessionScopedData();
         setAccessProfile(null);
         setSelectedAccessRole(directAccessRole);
         setAccessLoading(false);
@@ -345,33 +400,45 @@ function AuthenticatedApp() {
       setAuthLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [directAccessRole, resetSessionScopedData]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || logoutInProgressRef.current) return;
     let cancelled = false;
+    const transition = authTransitionRef.current;
+    const userUid = user.uid;
+    accessProfileAbortRef.current?.abort();
+    const abortController = new AbortController();
+    accessProfileAbortRef.current = abortController;
 
     const forceRefreshToken = forceAccessTokenRefreshRef.current;
     forceAccessTokenRefreshRef.current = false;
 
     setAccessLoading(true);
     setAccessError('');
-    void getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole })
+    void getAccessProfile(user, { forceRefreshToken, activeRole: selectedAccessRole, signal: abortController.signal })
       .then(profile => {
-        if (!cancelled) setAccessProfile(profile);
+        if (!cancelled && !abortController.signal.aborted && !logoutInProgressRef.current && transition === authTransitionRef.current && auth.currentUser?.uid === userUid) {
+          setAccessProfile(profile);
+        }
       })
       .catch(error => {
-        if (!cancelled) {
+        if (!cancelled && !abortController.signal.aborted && !logoutInProgressRef.current && transition === authTransitionRef.current && auth.currentUser?.uid === userUid) {
           setAccessProfile(null);
           setAccessError(error instanceof Error ? error.message : 'Não foi possível validar seu acesso.');
         }
       })
       .finally(() => {
-        if (!cancelled) setAccessLoading(false);
+        if (!cancelled && !abortController.signal.aborted && !logoutInProgressRef.current && transition === authTransitionRef.current && auth.currentUser?.uid === userUid) {
+          setAccessLoading(false);
+        }
+        if (accessProfileAbortRef.current === abortController) accessProfileAbortRef.current = null;
       });
 
     return () => {
       cancelled = true;
+      abortController.abort();
+      if (accessProfileAbortRef.current === abortController) accessProfileAbortRef.current = null;
     };
   }, [accessRetryKey, selectedAccessRole, user]);
 
@@ -382,39 +449,31 @@ function AuthenticatedApp() {
   }, []);
 
   const handleAccessPortalLogout = useCallback(async () => {
+    logoutInProgressRef.current = true;
+    authTransitionRef.current += 1;
+    setIsLoggingOut(true);
+    accessProfileAbortRef.current?.abort();
+    accessProfileAbortRef.current = null;
     if (accessProfile?.role === 'monitoring') {
       clearMonitoringSessionId(user || undefined);
     }
-    await logout();
-    forceAccessTokenRefreshRef.current = false;
-    setUser(null);
-    setAccessProfile(null);
-    setSelectedAccessRole(directAccessRole);
-    setAccessLoading(false);
-    setAccessError('');
-  }, [accessProfile?.role, directAccessRole, user]);
-
-  const resetSessionScopedData = useCallback(() => {
-    clearAccessApiCaches();
-    setState(DEFAULT_STATE);
-    setNotifications([]);
-    setNotificationsOpen(false);
-    setNotificationCenterOpen(false);
-    setNotificationHasMore(false);
-    setSelectedPortalNotification(null);
-    setSelectedPatientId(null);
-    setSelectedPatientSubTab(null);
-    setSelectedGalleryPatientId(null);
-    setSelectedGallerySessionId(null);
-    setSelectedGalleryPackageNumber(null);
-    setUnregisteredActivities([]);
-    setUnregisteredActivitiesWarning('');
-    setActiveTab('dashboard');
-    loadedCollectionsRef.current.clear();
-    notificationCursorRef.current = null;
-    notificationOldestCursorRef.current = null;
-    notificationInFlightRef.current = null;
-  }, []);
+    try {
+      await logout();
+      forceAccessTokenRefreshRef.current = false;
+      resetSessionScopedData();
+      setUser(null);
+      setAccessProfile(null);
+      setSelectedAccessRole(directAccessRole);
+      setAccessLoading(false);
+      setAccessError('');
+      logoutInProgressRef.current = false;
+      setIsLoggingOut(false);
+    } catch (error) {
+      logoutInProgressRef.current = false;
+      setIsLoggingOut(false);
+      throw error;
+    }
+  }, [accessProfile?.role, directAccessRole, resetSessionScopedData, user]);
 
   const chooseAccessRole = useCallback((role: AccessRole) => {
     resetSessionScopedData();
@@ -577,7 +636,7 @@ function AuthenticatedApp() {
 
 
   useEffect(() => {
-    if (!user || !canAccessInternalSystem) return;
+    if (!user || psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     
     setDataLoading(true);
     loadedCollectionsRef.current.clear();
@@ -720,7 +779,7 @@ function AuthenticatedApp() {
       clearTimeout(fallbackTimer);
       unsubscribers.forEach(unsub => unsub());
     };
-  }, [canAccessInternalSystem, user]);
+  }, [canAccessInternalSystem, psychologyAuthenticatedRoute, user]);
 
   const updateState = async (newState: Partial<AppState>): Promise<boolean> => {
     if (!user || !canAccessInternalSystem) return false;
@@ -899,7 +958,10 @@ function AuthenticatedApp() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-clinic-bg">
+      <div
+        className={`min-h-screen flex items-center justify-center bg-clinic-bg ${visualContext === 'PSICOLOGIA' ? 'auth-psychology-theme' : ''}`}
+        data-auth-visual-context={visualContext}
+      >
         <Loader2 className="w-12 h-12 text-clinic-primary animate-spin" />
       </div>
     );
@@ -921,6 +983,7 @@ function AuthenticatedApp() {
         required
         onProfileUpdated={handlePasswordProfileUpdated}
         onLogout={handleAccessPortalLogout}
+        visualContext={visualContext}
       />
     );
   }
@@ -931,6 +994,7 @@ function AuthenticatedApp() {
         profile={accessProfile}
         onChoose={chooseAccessRole}
         onLogout={() => void handleAccessPortalLogout()}
+        visualContext={visualContext}
       />
     );
   }
@@ -954,6 +1018,7 @@ function AuthenticatedApp() {
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
+            visualContext={visualContext}
           />
         )}
       </>
@@ -972,6 +1037,7 @@ function AuthenticatedApp() {
             profile={accessProfile}
             onProfileUpdated={handlePasswordProfileUpdated}
             onLogout={handleAccessPortalLogout}
+            visualContext={visualContext}
           />
         )}
       </>
@@ -982,9 +1048,9 @@ function AuthenticatedApp() {
     return (
       <AccessPortal
         user={user}
-        profile={accessProfile}
-        profileLoading={accessLoading}
-        profileError={accessError}
+         profile={accessProfile}
+         profileLoading={Boolean(user) && accessLoading}
+         profileError={user ? accessError : ''}
         selectedLoginRole={selectedAccessRole && selectedAccessRole !== 'admin' ? selectedAccessRole as AccessRequestRole : null}
         accessRouteRole={directAccessRole}
         onSelectedLoginRoleChange={role => setSelectedAccessRole(directAccessRole || role)}
@@ -996,9 +1062,13 @@ function AuthenticatedApp() {
         onRetryProfile={handleRetryAccessProfile}
         onChooseAnotherRole={directAccessRole ? undefined : switchAccessRole}
         onLogout={handleAccessPortalLogout}
+        visualContext={visualContext}
+        isLoggingOut={isLoggingOut}
       />
     );
   }
+
+  if (psychologyAuthenticatedRoute) return <PsychologyPilot />;
 
   const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
     isPendingExternalRegistrationStatus(form.status)

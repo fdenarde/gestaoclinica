@@ -9,9 +9,14 @@ import {
   createPsychologyPersistenceProvider,
   type PsychologyPersistenceProvider,
 } from './provider';
+import {
+  allSettledWithConcurrency,
+  PSYCHOLOGY_BULK_DELETE_CONCURRENCY,
+} from './bulkDeleteConcurrency';
 import type { PsychologyPersistenceScope } from './scope';
 import type { ApiPsychologyRepositoryOptions } from './repositories/api';
 import type { PsychologyPatientDeletionResult } from './repositoryTypes';
+import type { PsychologyClinicalSessionRecord } from './types';
 import { createClosedPsychologyCapabilities, normalizePsychologyCapabilities, type PsychologyCapabilities } from './capabilities';
 
 export interface PsychologyRemotePatientClientOptions {
@@ -24,6 +29,23 @@ export interface PsychologyRemoteBulkDeletionResult {
   summary: { processed: number; deleted: number; preserved: number; failed: number };
   deletedIds: string[];
   preservedIds: string[];
+}
+
+export interface PsychologyRemoteBootstrapResult {
+  store: PsychologyStore | null;
+  error: string;
+}
+
+/** Converts every bootstrap outcome into a terminal UI state. */
+export async function resolvePsychologyRemoteBootstrap(load: () => Promise<PsychologyStore>): Promise<PsychologyRemoteBootstrapResult> {
+  try {
+    return { store: await load(), error: '' };
+  } catch (cause) {
+    return {
+      store: null,
+      error: cause instanceof Error ? cause.message : 'Provider remoto da Psicologia indisponível.',
+    };
+  }
 }
 
 function asPatient(value: unknown): PsychologyPatient {
@@ -129,6 +151,25 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     return asPatient(saved);
   }
 
+  async function loadClinicalRecords(): Promise<readonly PsychologyClinicalSessionRecord[]> {
+    return repositories.sessionRecords.list(scope);
+  }
+
+  async function saveClinicalRecord(record: PsychologyClinicalSessionRecord, isEdit: boolean): Promise<PsychologyClinicalSessionRecord> {
+    if (isEdit) {
+      const saved = await repositories.sessionRecords.update(scope, record.id, {
+        date: record.date,
+        sessionId: record.sessionId,
+        content: record.content,
+        soap: record.soap,
+        parentRecordType: record.parentRecordType,
+      });
+      if (!saved) throw new Error('Registro clínico não encontrado no provider remoto.');
+      return saved;
+    }
+    return repositories.sessionRecords.upsert(scope, record);
+  }
+
   async function deletePatient(patientId: string): Promise<PsychologyPatientDeletionResult> {
     const deleteSafely = repositories.patients.deleteSafely;
     if (deleteSafely) return deleteSafely(scope, patientId);
@@ -137,7 +178,8 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
   }
 
   async function deletePatients(patientIds: string[]): Promise<PsychologyRemoteBulkDeletionResult> {
-    const results = await Promise.allSettled(patientIds.map(id => deletePatient(id)));
+    const uniquePatientIds = [...new Set(patientIds.filter(Boolean))];
+    const results = await allSettledWithConcurrency(uniquePatientIds, PSYCHOLOGY_BULK_DELETE_CONCURRENCY, deletePatient);
     const deletedIds: string[] = [];
     const preservedIds: string[] = [];
     let failed = 0;
@@ -170,6 +212,8 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     updatePatient,
     updatePatientReview,
     updatePatientActive,
+    loadClinicalRecords,
+    saveClinicalRecord,
     deletePatient,
     deletePatients,
   };

@@ -155,18 +155,18 @@ test('R2 remoto 08 — proteção individual remota preserva pagamento concluíd
   ]);
   const deletedPatients: string[] = [];
   const repository = {
-    patients: { get: async () => patient, delete: async (id: string) => { deletedPatients.push(id); return { id }; } },
-    sessions: { list: async () => [...sessions.values()], delete: async (id: string) => { sessions.delete(id); return { id }; } },
-    sessionRecords: { list: async () => [...sessionRecords.values()], delete: async (id: string) => { sessionRecords.delete(id); return { id }; } },
+    patients: { get: async () => patient, deleteKnown: async (current: { id: string }) => { deletedPatients.push(current.id); return { id: current.id }; } },
+    sessions: { listByPatientId: async () => [...sessions.values()], deleteKnown: async (current: { id: string }) => { sessions.delete(current.id); return { id: current.id }; } },
+    sessionRecords: { listByPatientOrSessionIds: async () => [...sessionRecords.values()], deleteKnown: async (current: { id: string }) => { sessionRecords.delete(current.id); return { id: current.id }; } },
     financial: {
-      listCharges: async () => [...charges.values()],
-      listPayments: async () => [...payments.values()],
-      updateCharge: async (id: string, patch: Record<string, unknown>) => { charges.set(id, { ...charges.get(id), ...patch }); return charges.get(id); },
-      updatePayment: async (id: string, patch: Record<string, unknown>) => { payments.set(id, { ...payments.get(id), ...patch }); return payments.get(id); },
+      listChargesByPatientOrSessionIds: async () => [...charges.values()],
+      listPaymentsByPatientOrSessionOrChargeIds: async () => [...payments.values()],
+      updateChargeKnown: async (current: { id: string }, patch: Record<string, unknown>) => { charges.set(current.id, { ...charges.get(current.id), ...patch }); return charges.get(current.id); },
+      updatePaymentKnown: async (current: { id: string }, patch: Record<string, unknown>) => { payments.set(current.id, { ...payments.get(current.id), ...patch }); return payments.get(current.id); },
     },
-    packages: { list: async () => [], delete: async (id: string) => ({ id }) },
-    documents: { list: async () => [], delete: async (id: string) => ({ id }) },
-    attachments: { list: async () => [], delete: async (id: string) => ({ id }) },
+    packages: { listByPatientId: async () => [], deleteKnown: async (current: { id: string }) => ({ id: current.id }) },
+    documents: { listByPatientId: async () => [], deleteKnown: async (current: { id: string }) => ({ id: current.id }) },
+    attachments: { listByPatientOrSessionRecordIds: async () => [], deleteKnown: async (current: { id: string }) => ({ id: current.id }) },
   };
   const result = await deletePsychologyPatientSafely({ repository, patientId: 'patient-a', now });
   assert.deepEqual(result, { id: 'patient-a', deleted: true, preserved: true, active: false });

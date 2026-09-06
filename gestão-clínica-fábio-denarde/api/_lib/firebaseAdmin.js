@@ -24,7 +24,13 @@ function parseServiceAccountFromEnvironment() {
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
   if (json) {
     try {
-      const raw = JSON.parse(json);
+      let raw;
+      try {
+        raw = JSON.parse(json);
+      } catch {
+        // Some Vercel env pulls materialize the escaped private-key newlines.
+        raw = JSON.parse(json.replace(/\r?\n/g, '\\n'));
+      }
       return {
         projectId: raw.project_id || raw.projectId,
         clientEmail: raw.client_email || raw.clientEmail,

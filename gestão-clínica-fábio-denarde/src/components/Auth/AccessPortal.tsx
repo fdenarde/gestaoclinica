@@ -24,12 +24,13 @@ import {
   requestPasswordReset,
 } from '../../firebase';
 import { respondAdditionalAccessInformation, submitAccessRequest } from '../../lib/accessApi';
-import { applyTheme } from '../../lib/theme';
+import { applyTheme, type VisualContext } from '../../lib/theme';
 import { publicAccessIdentifier } from '../../../shared/accessCredentials.js';
 import type { AccessProfile, AccessRequestInput, AccessRequestRole } from '../../types/access';
 import BrandLogo from '../Common/BrandLogo';
 
 type PortalView = 'login' | 'request' | 'reset';
+export type AuthVisualContext = VisualContext;
 
 interface AccessPortalProps {
   user: User | null;
@@ -43,6 +44,8 @@ interface AccessPortalProps {
   onChooseAnotherRole?: () => void;
   onLogout?: () => Promise<void> | void;
   accessRouteRole?: AccessRequestRole | null;
+  visualContext?: AuthVisualContext;
+  isLoggingOut?: boolean;
 }
 
 const LOGIN_ROLE_OPTIONS: Array<{
@@ -162,6 +165,8 @@ export default function AccessPortal({
   onChooseAnotherRole,
   onLogout,
   accessRouteRole = null,
+  visualContext = 'DEFAULT',
+  isLoggingOut = false,
 }: AccessPortalProps) {
   const [view, setView] = useState<PortalView>(user ? 'request' : 'login');
   const [email, setEmail] = useState(user?.email || '');
@@ -180,6 +185,8 @@ export default function AccessPortal({
   const [requestSubmitted, setRequestSubmitted] = useState(false);
   const [informationResponse, setInformationResponse] = useState('');
   const directRoute = Boolean(accessRouteRole);
+  const psychologyAuthTheme = visualContext === 'PSICOLOGIA';
+  const psychologyEmailPasswordRoute = psychologyAuthTheme && accessRouteRole === 'professional';
   const effectiveLoginRole = accessRouteRole || selectedLoginRole;
   const directRouteCopy = accessRouteRole === 'responsible'
     ? { title: 'Acesso do Responsável', description: 'Entre para consultar os dados e materiais autorizados.' }
@@ -188,8 +195,8 @@ export default function AccessPortal({
       : { title: 'Acesso ao Monitoramento', description: 'Entre no painel de acompanhamento em modo somente leitura.' };
 
   useLayoutEffect(() => {
-    applyTheme('health-balance');
-  }, []);
+    applyTheme(psychologyAuthTheme ? 'current' : 'health-balance');
+  }, [psychologyAuthTheme]);
 
   useEffect(() => {
     if (accessRouteRole && selectedLoginRole !== accessRouteRole) {
@@ -230,6 +237,14 @@ export default function AccessPortal({
     void run(async () => {
       if (!effectiveLoginRole) {
         throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
+      }
+      if (psychologyEmailPasswordRoute) {
+        const normalizedEmail = loginIdentifier.trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+          throw new Error('Informe um e-mail válido.');
+        }
+        await loginWithEmail(normalizedEmail, password);
+        return;
       }
       await loginWithIdentifier(loginIdentifier, password);
     });
@@ -318,7 +333,9 @@ export default function AccessPortal({
   const handleLogout = () => {
     void run(async () => {
       await (onLogout ? onLogout() : logout());
+      clearFeedback();
       setView('login');
+      setLoginIdentifier('');
       setPassword('');
       setConfirmPassword('');
     });
@@ -363,6 +380,25 @@ export default function AccessPortal({
 
       {renderFeedback()}
 
+      {psychologyEmailPasswordRoute && (
+        <>
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            disabled={busy || !effectiveLoginRole}
+            className="flex w-full items-center justify-center gap-3 rounded-xl border border-clinic-border bg-white px-4 py-3.5 font-bold text-clinic-text shadow-sm transition hover:border-clinic-primary hover:bg-clinic-bg disabled:cursor-wait disabled:opacity-60"
+          >
+            <Mail size={19} className="text-clinic-primary" />
+            Entrar com Google
+          </button>
+          <div className="flex items-center gap-3 text-xs uppercase tracking-wider text-clinic-text-faint">
+            <span className="h-px flex-1 bg-clinic-border" />
+            ou entre com e-mail e senha
+            <span className="h-px flex-1 bg-clinic-border" />
+          </div>
+        </>
+      )}
+
       {!directRoute && <fieldset className="space-y-3">
         <legend className="text-xs font-bold uppercase tracking-wider text-clinic-text-muted">Entrar como</legend>
         <p className="text-xs leading-relaxed text-clinic-text-muted">
@@ -383,7 +419,7 @@ export default function AccessPortal({
                   onSelectedLoginRoleChange(option.role);
                 }}
                 className={`rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-clinic-primary/35 ${selected
-                  ? 'border-clinic-primary bg-status-green-bg shadow-sm'
+                  ? `border-clinic-primary ${psychologyAuthTheme ? 'bg-violet-50' : 'bg-status-green-bg'} shadow-sm`
                   : 'border-clinic-border bg-white hover:border-clinic-primary hover:bg-clinic-bg'}`}
               >
                 <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${selected
@@ -404,13 +440,13 @@ export default function AccessPortal({
       </fieldset>}
 
       <label className="block">
-        <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">E-mail ou nome de usuário</span>
+        <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-clinic-text-muted">{psychologyEmailPasswordRoute ? 'E-mail' : 'E-mail ou nome de usuário'}</span>
         <div className="relative">
           <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-clinic-text-faint" />
           <input
             className="clinic-input pl-11"
-            type="text"
-            autoComplete="username"
+            type={psychologyEmailPasswordRoute ? 'email' : 'text'}
+            autoComplete={psychologyEmailPasswordRoute ? 'email' : 'username'}
             value={loginIdentifier}
             onChange={event => setLoginIdentifier(event.target.value)}
             required
@@ -479,7 +515,7 @@ export default function AccessPortal({
           </button>
         </>
       )}
-      {directRoute && (
+      {directRoute && !psychologyAuthTheme && (
         <a href="/" className="block text-center text-sm font-semibold text-clinic-primary hover:underline">
           Voltar ao acesso geral
         </a>
@@ -729,7 +765,17 @@ export default function AccessPortal({
       if (directRoute) return renderLogin();
       return view === 'request' ? renderRequest() : view === 'reset' ? renderReset() : renderLogin();
     }
-    if (view === 'request' && !directRoute) return renderRequest();
+    if (isLoggingOut) {
+      return (
+        <div className="flex min-h-72 flex-col items-center justify-center gap-4 text-center" role="status" aria-live="polite">
+          <Loader2 className="h-10 w-10 animate-spin text-clinic-primary" />
+          <div>
+            <h1 className="text-2xl font-bold text-clinic-text">Encerrando sessão</h1>
+            <p className="mt-2 text-sm text-clinic-text-muted">Limpando a autenticação e retornando ao acesso com Google.</p>
+          </div>
+        </div>
+      );
+    }
     if (profileLoading) {
       return (
         <div className="flex min-h-72 flex-col items-center justify-center gap-4 text-center">
@@ -767,12 +813,16 @@ export default function AccessPortal({
         </div>
       );
     }
+    if (view === 'request' && !directRoute) return renderRequest();
     if (profile) return renderBlockedProfile();
     return renderRequest();
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-clinic-bg px-4 py-6 sm:px-6 lg:flex lg:items-center lg:py-10">
+    <div
+      className={`auth-portal relative min-h-screen overflow-hidden bg-clinic-bg px-4 py-6 sm:px-6 lg:flex lg:items-center lg:py-10 ${psychologyAuthTheme ? 'auth-psychology-theme' : ''}`}
+      data-auth-visual-context={visualContext}
+    >
       <div className="pointer-events-none absolute -left-32 -top-40 h-96 w-96 rounded-full bg-clinic-primary/10 blur-3xl" />
       <div className="pointer-events-none absolute -bottom-40 -right-24 h-[28rem] w-[28rem] rounded-full bg-clinic-header/10 blur-3xl" />
 

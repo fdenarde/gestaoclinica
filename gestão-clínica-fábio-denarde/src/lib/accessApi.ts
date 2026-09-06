@@ -35,16 +35,10 @@ const ACTIVITY_RECORDS_API_ENDPOINT =
     ? 'https://gestaoclinica-solucoes.vercel.app/api/activity-records'
     : '/api/activity-records';
 
-interface ApiErrorPayload {
-  error?: {
-    code?: string;
-    message?: string;
-  };
-}
-
 interface RequestOptions {
   forceRefreshToken?: boolean;
   activeRole?: AccessProfile['role'] | null;
+  signal?: AbortSignal;
 }
 
 interface AccessProfileResponse {
@@ -210,12 +204,14 @@ const ACCESS_PROFILE_QUOTA_BACKOFF_MS = 60 * 1000;
 const MONITORING_PANEL_CACHE_MS = 60 * 1000;
 const monitoringPanelCache = new Map<string, { value: MonitoringPanelData; expiresAt: number }>();
 const monitoringPanelRequests = new Map<string, Promise<MonitoringPanelData>>();
+const fallbackSessionIds = new Map<string, string>();
 
 export function clearAccessApiCaches(): void {
   accessProfileRequests.clear();
   accessProfileBackoffByUid.clear();
   monitoringPanelCache.clear();
   monitoringPanelRequests.clear();
+  fallbackSessionIds.clear();
 }
 
 function getResponsiblePortalSessionId(user?: User): string {
@@ -231,7 +227,11 @@ function getResponsiblePortalSessionId(user?: User): string {
     window.sessionStorage.setItem(storageKey, generated);
     return generated;
   } catch {
-    return `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    const existing = fallbackSessionIds.get(storageKey);
+    if (existing) return existing;
+    const generated = `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    fallbackSessionIds.set(storageKey, generated);
+    return generated;
   }
 }
 
@@ -254,7 +254,11 @@ function getMonitoringSessionId(user?: User): string {
     window.sessionStorage.setItem(storageKey, generated);
     return generated;
   } catch {
-    return `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    const existing = fallbackSessionIds.get(storageKey);
+    if (existing) return existing;
+    const generated = `${uid}-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    fallbackSessionIds.set(storageKey, generated);
+    return generated;
   }
 }
 
@@ -305,7 +309,7 @@ async function getToken(user?: User, forceRefreshToken = false): Promise<string>
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
-  let payload: T & ApiErrorPayload;
+  let payload: unknown;
   try {
     payload = await response.json();
   } catch {
@@ -313,13 +317,14 @@ async function readResponse<T>(response: Response): Promise<T> {
   }
 
   if (!response.ok) {
+    const errorPayload = isRecord(payload) && isRecord(payload.error) ? payload.error : {};
     throw createApiError(
-      payload.error?.code || 'access/request-failed',
-      payload.error?.message || 'Não foi possível concluir a solicitação.',
+      typeof errorPayload.code === 'string' ? errorPayload.code : 'access/request-failed',
+      typeof errorPayload.message === 'string' ? errorPayload.message : 'Não foi possível concluir a solicitação.',
     );
   }
 
-  return payload;
+  return payload as T;
 }
 
 async function request<T>(
@@ -339,6 +344,7 @@ async function request<T>(
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
       ...(method === 'GET' ? { cache: 'no-store' } : {}),
+      signal: options.signal,
     });
     return readResponse<T>(response);
   } catch (error) {

@@ -15,13 +15,26 @@ import {
   type UserCredential,
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import firebaseConfigFallback from '../firebase-applet-config.json';
 import {
   accessUsernameValidationError,
   isManagedAuthEmail,
   normalizeAccessUsername,
   usernameToManagedAuthEmail,
 } from '../shared/accessCredentials.js';
+
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+
+const firebaseConfig = {
+  ...firebaseConfigFallback,
+  apiKey: viteEnv.VITE_FIREBASE_API_KEY || firebaseConfigFallback.apiKey,
+  authDomain: viteEnv.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfigFallback.authDomain,
+  projectId: viteEnv.VITE_FIREBASE_PROJECT_ID || firebaseConfigFallback.projectId,
+  appId: viteEnv.VITE_FIREBASE_APP_ID || firebaseConfigFallback.appId,
+  storageBucket: viteEnv.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfigFallback.storageBucket,
+  messagingSenderId: viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfigFallback.messagingSenderId,
+  firestoreDatabaseId: viteEnv.VITE_FIREBASE_FIRESTORE_DATABASE_ID || firebaseConfigFallback.firestoreDatabaseId,
+};
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);

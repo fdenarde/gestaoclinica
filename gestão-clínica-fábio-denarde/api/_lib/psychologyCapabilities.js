@@ -52,7 +52,7 @@ export function buildPsychologyCapabilities(runtimeScope) {
       sessions: resource({ available: true, view: can('agenda.own.view'), load: 'bootstrap', source: 'psychology-api', reason: 'remote-ui-read-only-in-this-stage' }),
       services: resource({ available: true, view: can('agenda.own.view'), edit: can('agenda.edit', 'settings.clinic.manage'), load: 'bootstrap', source: 'psychology-api' }),
       locations: resource({ available: true, view: can('agenda.own.view'), edit: can('agenda.edit', 'settings.clinic.manage'), load: 'bootstrap', source: 'psychology-api' }),
-      clinicalNotes: unavailable('psychology-api', 'not-loaded-in-remote-bootstrap'),
+      clinicalNotes: resource({ available: can('patients.clinical_notes.view'), view: can('patients.clinical_notes.view'), create: can('patients.clinical_notes.view') && can('patients.edit'), edit: can('patients.clinical_notes.view') && can('patients.edit'), load: 'on-demand', source: 'psychology-api' }),
       personalAppointments: unavailable('psychology-api', 'not-loaded-in-remote-bootstrap'),
       finance: unavailable('psychology-api', 'not-loaded-in-remote-bootstrap'),
       packages: unavailable('psychology-api', 'not-loaded-in-remote-bootstrap'),

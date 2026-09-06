@@ -26,17 +26,25 @@ export interface ApiPsychologyRepositoryOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   getToken?: () => Promise<string>;
+  /** Bound every authenticated transport step so the UI can leave loading deterministically. */
+  requestTimeoutMs?: number;
 }
+
+export const DEFAULT_PSYCHOLOGY_API_TIMEOUT_MS = 15_000;
 
 export class ApiPsychologyError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly resource?: string;
+  readonly stage?: string;
 
-  constructor(code: string, message: string, status = 500) {
+  constructor(code: string, message: string, status = 500, details: { resource?: string; stage?: string } = {}) {
     super(message);
     this.name = 'ApiPsychologyError';
     this.code = code;
     this.status = status;
+    this.resource = details.resource;
+    this.stage = details.stage;
   }
 }
 
@@ -48,6 +56,36 @@ function defaultToken(): Promise<string> {
   const user = auth.currentUser;
   if (!user) throw new ApiPsychologyError('psychology/missing-auth-token', 'Sua sessão não foi identificada.', 401);
   return user.getIdToken();
+}
+
+function normalizeRequestTimeout(timeout: unknown): number {
+  const parsed = Number(timeout);
+  if (!Number.isFinite(parsed)) return DEFAULT_PSYCHOLOGY_API_TIMEOUT_MS;
+  return Math.max(1, Math.min(60_000, Math.floor(parsed)));
+}
+
+function timeoutError(resource: string, stage: string): ApiPsychologyError {
+  return new ApiPsychologyError(
+    'psychology/request-timeout',
+    `A fonte autenticada da Psicologia demorou além do limite no recurso ${resource}, etapa ${stage}. Tente novamente.`,
+    504,
+    { resource, stage },
+  );
+}
+
+async function withRequestTimeout<T>(promise: Promise<T>, timeoutMs: number, createTimeoutError: () => ApiPsychologyError, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiration = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(createTimeoutError());
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, expiration]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function clone<T>(value: T): T {
@@ -77,10 +115,10 @@ function adoptResponseScope(scope: PsychologyPersistenceScope, payload: unknown)
   scope.professionalId = responseScope.professionalId;
 }
 
-async function readApiResponse<T>(response: Response): Promise<T> {
+function parseApiResponse<T>(response: Response, responseBody: string): T {
   let payload: T & ApiErrorPayload;
   try {
-    payload = await response.json() as T & ApiErrorPayload;
+    payload = JSON.parse(responseBody) as T & ApiErrorPayload;
   } catch {
     throw new ApiPsychologyError('psychology/invalid-response', 'A API da Psicologia retornou uma resposta inválida.', response.status || 500);
   }
@@ -118,21 +156,52 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const baseUrl = (options.baseUrl || '/api/psychology').replace(/\/$/, '');
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
+  const requestTimeoutMs = normalizeRequestTimeout(options.requestTimeoutMs);
   let latestCapabilities: PsychologyCapabilities | null = null;
 
   async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string): Promise<T> {
-    const token = await getToken();
-    const response = await fetchImpl(`${baseUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      ...(method === 'GET' ? { cache: 'no-store' } : {}),
-    });
-    const payload = await readApiResponse<T>(response);
+    const abortController = typeof AbortController === 'undefined' ? undefined : new AbortController();
+    const resource = path.split('/').filter(Boolean)[0] || 'unknown';
+    const token = await withRequestTimeout(
+      Promise.resolve().then(() => getToken()),
+      requestTimeoutMs,
+      () => timeoutError(resource, 'token'),
+    );
+    let response: Response;
+    try {
+      response = await withRequestTimeout(
+        Promise.resolve().then(() => fetchImpl(`${baseUrl}${path}`, {
+          method,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
+            ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(method === 'GET' ? { cache: 'no-store' } : {}),
+          ...(abortController ? { signal: abortController.signal } : {}),
+        })),
+        requestTimeoutMs,
+        () => timeoutError(resource, 'transport'),
+        () => abortController?.abort(),
+      );
+    } catch (cause) {
+      if (cause instanceof ApiPsychologyError) throw cause;
+      throw new ApiPsychologyError('psychology/network-error', 'Não foi possível conectar à fonte autenticada da Psicologia.', 503);
+    }
+    let responseBody: string;
+    try {
+      responseBody = await withRequestTimeout(
+        Promise.resolve().then(() => response.text()),
+        requestTimeoutMs,
+        () => timeoutError(resource, 'response-body'),
+        () => abortController?.abort(),
+      );
+    } catch (cause) {
+      if (cause instanceof ApiPsychologyError) throw cause;
+      throw new ApiPsychologyError('psychology/invalid-response', 'A API da Psicologia retornou uma resposta inválida.', response.status || 500);
+    }
+    const payload = parseApiResponse<T>(response, responseBody);
     adoptResponseScope(scope, payload);
     if (payload && typeof payload === 'object' && 'capabilities' in payload) {
       latestCapabilities = normalizePsychologyCapabilities((payload as T & { capabilities?: unknown }).capabilities);

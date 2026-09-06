@@ -31,6 +31,8 @@ export const APP_THEMES = [
 
 export type AppTheme = (typeof APP_THEMES)[number]['id'];
 
+export type VisualContext = 'DEFAULT' | 'PSICOLOGIA';
+
 export const DEFAULT_APP_THEME: AppTheme = 'current';
 export const THEME_STORAGE_KEY = 'fabio_denarde_visual_theme';
 

@@ -32,7 +32,7 @@ test('Agenda da Psicologia usa a grade semanal do produto', () => {
 
 test('a grade reduz ruído e torna o horário livre clicável', () => {
   assert.match(pilot, /psychology-agenda-free-slot/);
-  assert.match(pilot, /aria-label=\{`Agendar neste horário/);
+  assert.match(pilot, /aria-label=\{`Agendar em \$\{cellLabel\}`\}/);
   assert.doesNotMatch(pilot, />\+ Agendar</);
   assert.doesNotMatch(pilot, />Horário livre</);
   assert.match(pilot, /SessionActionsDialog/);
@@ -44,7 +44,7 @@ test('a Agenda preserva rótulos semânticos e responde a telas menores', () => 
   for (const label of ['Presencial', 'Online', 'Pessoal', 'Mentoria', 'Consultório Externo']) assert.match(pilot, new RegExp(label));
   assert.match(agendaScale, /pixelsPerMinute = mobile[\s\S]*1\.2/);
   assert.match(pilot, /min-w-\[1080px\]/);
-  assert.match(pilot, /Dia selecionado/);
+  assert.match(pilot, /data-testid="psychology-agenda-mobile-sequence"/);
   assert.match(pilot, /Agenda Pessoal/);
 });
 
@@ -52,7 +52,7 @@ test('R1C mantém a grade limpa e concentra os horários na escala lateral', () 
   assert.match(pilot, /psychology-agenda-free-slot/);
   assert.match(pilot, /grid-cols-\[68px_repeat\(6,minmax\(150px,1fr\)\)\]/);
   assert.match(pilot, /grid-cols-\[68px_minmax\(0,1fr\)\]/);
-  assert.match(pilot, /aria-label=\{`Agendar neste horário/);
+  assert.match(pilot, /aria-label=\{`Agendar em \$\{cellLabel\}`\}/);
   assert.doesNotMatch(pilot, />Horário livre</);
   assert.doesNotMatch(pilot, />\+ Agendar</);
 });

@@ -12,53 +12,47 @@ export async function deletePsychologyPatientSafely({ repository, patientId, now
   const patient = await repository.patients.get(patientId);
   if (!patient) return { id: patientId, deleted: false, preserved: false, reason: 'Paciente não encontrado.' };
 
-  const [sessions, sessionRecords, charges, payments, packages, documents, attachments] = await Promise.all([
-    repository.sessions.list(),
-    repository.sessionRecords.list(),
-    repository.financial.listCharges(),
-    repository.financial.listPayments(),
-    repository.packages.list(),
-    repository.documents.list(),
-    repository.attachments.list(),
+  const sessions = await repository.sessions.listByPatientId(patientId);
+  const sessionIds = new Set(sessions.map(item => item.id));
+  const [sessionRecords, charges, packages, documents] = await Promise.all([
+    repository.sessionRecords.listByPatientOrSessionIds(patientId, [...sessionIds]),
+    repository.financial.listChargesByPatientOrSessionIds(patientId, [...sessionIds]),
+    repository.packages.listByPatientId(patientId),
+    repository.documents.listByPatientId(patientId),
   ]);
-  const sessionIds = new Set(sessions.filter(item => item.patientId === patientId).map(item => item.id));
-  const recordIds = new Set(sessionRecords
-    .filter(item => item.patientId === patientId || (item.sessionId && sessionIds.has(item.sessionId)))
-    .map(item => item.id));
-  const chargeIds = new Set(charges
-    .filter(item => item.patientId === patientId || (item.sessionId && sessionIds.has(item.sessionId)))
-    .map(item => item.id));
-  const relatedPayments = payments.filter(item => item.patientId === patientId
-    || (item.sessionId && sessionIds.has(item.sessionId))
-    || (item.chargeId && chargeIds.has(item.chargeId)));
+
+  const recordIds = new Set(sessionRecords.map(item => item.id));
+  const chargeIds = new Set(charges.map(item => item.id));
+  const [relatedPayments, attachments] = await Promise.all([
+    repository.financial.listPaymentsByPatientOrSessionOrChargeIds(patientId, [...sessionIds], [...chargeIds]),
+    repository.attachments.listByPatientOrSessionRecordIds(patientId, [...recordIds]),
+  ]);
   const preservedChargeIds = new Set(charges
     .filter(item => chargeIds.has(item.id))
     .filter(charge => relatedPayments.some(payment => payment.chargeId === charge.id && completedPayment(payment)))
     .map(item => item.id));
   const preservedPaymentIds = new Set(relatedPayments.filter(completedPayment).map(item => item.id));
 
-  await Promise.all(sessions.filter(item => sessionIds.has(item.id)).map(item => repository.sessions.delete(item.id)));
-  await Promise.all(sessionRecords.filter(item => recordIds.has(item.id)).map(item => repository.sessionRecords.delete(item.id)));
+  await Promise.all(sessions.map(item => repository.sessions.deleteKnown(item)));
+  await Promise.all(sessionRecords.map(item => repository.sessionRecords.deleteKnown(item)));
   await Promise.all(charges
-    .filter(item => chargeIds.has(item.id) && !preservedChargeIds.has(item.id))
-    .map(item => repository.financial.updateCharge(item.id, { status: 'cancelled', cancelledAt: now, cancellationReason: 'Paciente excluído' })));
-  await Promise.all(packages.filter(item => item.patientId === patientId).map(item => repository.packages.delete(item.id)));
-  await Promise.all(documents.filter(item => item.patientId === patientId).map(item => repository.documents.delete(item.id)));
-  await Promise.all(attachments
-    .filter(item => item.patientId === patientId || (item.sessionRecordId && recordIds.has(item.sessionRecordId)))
-    .map(item => repository.attachments.delete(item.id)));
+    .filter(item => !preservedChargeIds.has(item.id))
+    .map(item => repository.financial.updateChargeKnown(item, { status: 'cancelled', cancelledAt: now, cancellationReason: 'Paciente excluído' })));
+  await Promise.all(packages.map(item => repository.packages.deleteKnown(item)));
+  await Promise.all(documents.map(item => repository.documents.deleteKnown(item)));
+  await Promise.all(attachments.map(item => repository.attachments.deleteKnown(item)));
 
   for (const payment of relatedPayments) {
     if (preservedPaymentIds.has(payment.id)) {
-      await repository.financial.updatePayment(payment.id, { patientId: null, sessionId: undefined, chargeId: preservedChargeIds.has(payment.chargeId || '') ? payment.chargeId : null });
+      await repository.financial.updatePaymentKnown(payment, { patientId: null, sessionId: undefined, chargeId: preservedChargeIds.has(payment.chargeId || '') ? payment.chargeId : null });
     } else {
-      await repository.financial.updatePayment(payment.id, { status: 'voided', patientId: null, sessionId: undefined, voidedAt: now, voidReason: 'Paciente excluído' });
+      await repository.financial.updatePaymentKnown(payment, { status: 'voided', patientId: null, sessionId: undefined, voidedAt: now, voidReason: 'Paciente excluído' });
     }
   }
   for (const charge of charges.filter(item => preservedChargeIds.has(item.id))) {
-    await repository.financial.updateCharge(charge.id, { patientId: null, sessionId: undefined, packageId: undefined, description: 'Cobrança concluída — paciente excluído' });
+    await repository.financial.updateChargeKnown(charge, { patientId: null, sessionId: undefined, packageId: undefined, description: 'Cobrança concluída — paciente excluído' });
   }
-  const deletedPatient = await repository.patients.delete(patientId);
+  const deletedPatient = await repository.patients.deleteKnown(patient);
   return {
     id: deletedPatient?.id || patientId,
     deleted: Boolean(deletedPatient),
