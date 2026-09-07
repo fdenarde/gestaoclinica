@@ -32,6 +32,7 @@ import {
   type PsychologyPersonalInput,
   type PsychologyPersonalType,
   type PsychologySession,
+  type PsychologySessionRecord,
   type PsychologySessionInput,
   type PsychologySessionStatus,
   type PsychologyStore,
@@ -58,6 +59,8 @@ import PsychologyImportExport from '../psychology-import-export/PsychologyImport
 import type { PsychologyBackupGenerator } from '../psychology-import-export/PsychologyImportExport';
 import { requestAuthenticatedPsychologyBackup } from '../../lib/psychologyBackupApi';
 import PsychologyPatientChart from './PsychologyPatientChart';
+import PsychologyClinicalRecordDialog from './PsychologyClinicalRecordDialog';
+import { upsertPsychologyClinicalRecord, type PsychologyClinicalRecordDraft } from './psychologyClinicalRecords';
 import PsychologyFinanceView from './PsychologyFinanceView';
 import { psychologyCatalogEntry } from './psychologyServiceCatalog';
 import PsychologyReportsView from './PsychologyReportsView';
@@ -395,6 +398,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
   const [sessionActions, setSessionActions] = useState<PsychologySession | null>(null);
   const [newEventDialog, setNewEventDialog] = useState<NewEventDefaults | null>(null);
   const [patientChart, setPatientChart] = useState<PsychologyPatient | null>(null);
+  const [clinicalRecordPatient, setClinicalRecordPatient] = useState<PsychologyPatient | null>(null);
   const [patientChartInitialTab, setPatientChartInitialTab] = useState<'summary' | 'sessions' | 'finance'>('summary');
   const [patientDelete, setPatientDelete] = useState<PsychologyPatient | null>(null);
   const [cancelledPreviewRemoval, setCancelledPreviewRemoval] = useState<PsychologySession | null>(null);
@@ -921,6 +925,35 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     return true;
   };
 
+  const togglePatientActive = (patient: PsychologyPatient): boolean | Promise<boolean> => {
+    if (isPreview) {
+      setNotice('Dados da prévia Doctoralia são somente leitura.');
+      return false;
+    }
+    const currentPatient = store.patients.find(item => item.id === patient.id);
+    if (!currentPatient) return false;
+    const nextPatient = { ...currentPatient, active: !currentPatient.active, updatedAt: new Date().toISOString() };
+    if (remoteConfiguration.enabled) {
+      if (!remoteClient || remoteLoading || remoteError) {
+        setNotice('Aguarde o carregamento do provider remoto antes de atualizar o paciente.');
+        return false;
+      }
+      return remoteClient.updatePatient(nextPatient)
+        .then(savedPatient => {
+          setRemoteStore(current => current ? patientStoreWithUpdates(current, [savedPatient]) : current);
+          setNotice(savedPatient.active ? 'Paciente ativado no provider remoto.' : 'Paciente inativado no provider remoto.');
+          return true;
+        })
+        .catch(cause => {
+          setNotice(cause instanceof Error ? cause.message : 'Não foi possível atualizar o paciente no provider remoto.');
+          return false;
+        });
+    }
+    if (!updateStore({ ...store, patients: store.patients.map(item => item.id === currentPatient.id ? nextPatient : item) })) return false;
+    setNotice(nextPatient.active ? 'Paciente ativado no ambiente local.' : 'Paciente inativado no ambiente local.');
+    return true;
+  };
+
   const updatePatientReview = (patientIds: string[], inReview: boolean): boolean | Promise<boolean> => {
     if (isPreview) {
       setNotice('Dados da prévia Doctoralia são somente leitura.');
@@ -1178,6 +1211,29 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
     });
   };
 
+  const saveClinicalRecord = async (draft: PsychologyClinicalRecordDraft): Promise<PsychologySessionRecord | null> => {
+    try {
+      const nextStore = upsertPsychologyClinicalRecord(store, draft);
+      const record = draft.id
+        ? nextStore.sessionRecords.find(item => item.id === draft.id)
+        : nextStore.sessionRecords.find(item => !store.sessionRecords.some(previous => previous.id === item.id));
+      if (!record || !updateStore(nextStore)) return null;
+      setNotice('Prontuário salvo com proteção local.');
+      return record;
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : 'Não foi possível salvar o prontuário.');
+      return null;
+    }
+  };
+
+  const openClinicalRecord = (patient: PsychologyPatient) => {
+    if (isPreview) {
+      setNotice('Edição desabilitada nesta prévia.');
+      return;
+    }
+    setClinicalRecordPatient(patient);
+  };
+
   return (
     <div className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900" data-testid="psychology-pilot" data-remote-provider-status={remoteConfiguration.enabled ? remoteStatus : undefined}>
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-4 py-2.5 backdrop-blur sm:px-6 sm:py-3">
@@ -1216,7 +1272,7 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
           {notice && <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800" role="status">{notice}</div>}
 
            {page === 'day' && <DayView date={selectedDate} setDate={setSelectedDate} store={store} sessions={daySessions} settings={store.settings} onSchedule={() => openNewEvent()} onPersonal={() => openNewEvent(selectedDate, '09:00', 'personal')} onOpenFinance={(patientId) => { const patient = patientId ? store.patients.find(item => item.id === patientId && item.active === true) : undefined; if (!patient) { openPage('finance'); return; } setPatientChartInitialTab('finance'); setPatientChart(patient); }} onOpenSession={setSessionActions} />}
-             {page === 'patients' && remoteConfiguration.enabled && remoteStatus !== 'READY' ? <RemoteProviderState status={remoteStatus} onRetry={retryRemoteProvider} /> : page === 'patients' && <PatientsView rows={visiblePatients} search={search} searchKey={normalizedPatientSearch} setSearch={setSearch} onNew={() => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog(patient); }} onOpen={patient => { setPatientChartInitialTab('summary'); setPatientChart(patient); }} onOpenFinance={patient => { setPatientChartInitialTab('finance'); setPatientChart(patient); }} onDelete={requestPatientDelete} onSetReview={updatePatientReview} onBulkDelete={processBulkPatientDeletion} preview={doctoraliaPreview} />}
+             {page === 'patients' && remoteConfiguration.enabled && remoteStatus !== 'READY' ? <RemoteProviderState status={remoteStatus} onRetry={retryRemoteProvider} /> : page === 'patients' && <PatientsView rows={visiblePatients} search={search} searchKey={normalizedPatientSearch} setSearch={setSearch} onNew={() => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog('new'); }} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientDialog(patient); }} onOpen={setPatientChart} onOpenFinance={patient => { setPatientChartInitialTab('finance'); setPatientChart(patient); }} onOpenClinicalRecord={openClinicalRecord} onToggle={togglePatientActive} onDelete={requestPatientDelete} onSetReview={updatePatientReview} onBulkDelete={processBulkPatientDeletion} preview={doctoraliaPreview} />}
             {page === 'agenda' && <AgendaView sessions={visibleAgendaSessions} personalCommitments={agendaPersonalOccurrences} patientMap={patientMap} settings={store.settings} publicBookingSettings={publicBookingSettings || undefined} weekStart={agendaWeekStart} onPreviousWeek={() => setAgendaWeekStart(current => subWeeks(current, 1))} onNextWeek={() => setAgendaWeekStart(current => addWeeks(current, 1))} onToday={() => { setAgendaWeekStart(startOfWeek(new Date(), { weekStartsOn: 0 })); }} onNew={openNewEvent} onPublicBookingAction={action => { void applyPublicBookingQuickAction(action); }} onOpenSession={setSessionActions} onRemoveCancelled={doctoraliaPreview ? requestHideCancelledPreviewSession : undefined} onOpenPersonal={(item) => { setSelectedDate(item.date); setPage('personal'); }} />}
            {page === 'personal' && <PsychologyPersonalAgenda commitments={store.personalCommitments} scope={store.scope} onPersist={persistPersonalCommitments} />}
           {page === 'finance' && <PsychologyFinanceView store={store} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} onNotice={setNotice} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} remoteProviderStatus={remoteConfiguration.enabled ? remoteStatus : undefined} onRetryRemote={retryRemoteProvider} />}
@@ -1252,7 +1308,8 @@ export default function PsychologyPilot({ runtimeMode }: { runtimeMode: Psycholo
         </section>
       </div>}
 
-      {patientChart && <PsychologyPatientChart store={store} patientId={patientChart.id} initialTab={patientChartInitialTab} previewDetails={doctoraliaPreview?.patientDetailsById.get(patientChart.id)} previewClinicalBackground={doctoraliaPreview?.bundle.clinicalBackgrounds.find(item => item.externalPatientId === doctoraliaPreview.patientDetailsById.get(patientChart.id)?.externalPatientId)} readOnly={isPreview} onClose={() => setPatientChart(null)} onDelete={requestPatientDelete} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientChart(null); setPatientDialog(patient); }} onSchedule={(patient) => { if (isPreview) { setNotice('Novas sessões estão desabilitadas nesta prévia.'); return; } setPatientChart(null); setSessionPatientId(patient.id); setSessionDefaults({ date: today(), time: '09:00' }); setSessionDialog('new'); }} onOpenSession={setSessionActions} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} onNotice={setNotice} onStatus={updateSessionStatus} onRecord={setRecordDialog} />}
+      {patientChart && <PsychologyPatientChart store={store} patientId={patientChart.id} initialTab={patientChartInitialTab} previewDetails={doctoraliaPreview?.patientDetailsById.get(patientChart.id)} previewClinicalBackground={doctoraliaPreview?.bundle.clinicalBackgrounds.find(item => item.externalPatientId === doctoraliaPreview.patientDetailsById.get(patientChart.id)?.externalPatientId)} readOnly={isPreview} onClose={() => setPatientChart(null)} onDelete={requestPatientDelete} onEdit={(patient) => { if (isPreview) { setNotice('Edição desabilitada nesta prévia.'); return; } setPatientChart(null); setPatientDialog(patient); }} onSchedule={(patient) => { if (isPreview) { setNotice('Novas sessões estão desabilitadas nesta prévia.'); return; } setPatientChart(null); setSessionPatientId(patient.id); setSessionDefaults({ date: today(), time: '09:00' }); setSessionDialog('new'); }} onOpenSession={setSessionActions} onStoreChange={updateStore} onRemoteMutation={remoteConfiguration.enabled ? persistRemoteFinanceMutation : undefined} remoteWriteBlocked={remoteConfiguration.enabled && (remoteLoading || Boolean(remoteError) || !remoteStore)} onNotice={setNotice} onStatus={updateSessionStatus} onRecord={setRecordDialog} onOpenClinicalRecord={openClinicalRecord} />}
+      {clinicalRecordPatient && <PsychologyClinicalRecordDialog patient={clinicalRecordPatient} sessions={store.sessions} records={store.sessionRecords} authorName={runtimeIdentity.profile.displayName} settings={store.settings} readOnly={isPreview} onClose={() => setClinicalRecordPatient(null)} onSave={saveClinicalRecord} />}
       {previewEndConfirmation && <Dialog title="Encerrar prévia Doctoralia?" onClose={() => setPreviewEndConfirmation(false)}><p className="text-sm leading-relaxed text-slate-600">Os dados deixarão de aparecer temporariamente, mas os arquivos originais não serão alterados e a prévia poderá ser ativada novamente.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setPreviewEndConfirmation(false)} className={secondaryButton}>Cancelar</button><button type="button" onClick={() => { setPreviewEndConfirmation(false); endDoctoraliaPreview(); }} className="inline-flex items-center justify-center rounded-xl bg-amber-700 px-4 py-3 text-sm font-black text-white hover:bg-amber-800">Encerrar prévia</button></div></Dialog>}
       {cancelledPreviewRemoval && <Dialog title="Remover consulta cancelada da Agenda?" onClose={() => setCancelledPreviewRemoval(null)}><p className="text-sm leading-relaxed text-slate-600">Ela será apenas ocultada desta prévia. O backup da Doctoralia não será alterado.</p><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" onClick={() => setCancelledPreviewRemoval(null)} className={secondaryButton}>Cancelar</button><button type="button" onClick={confirmHideCancelledPreviewSession} className="inline-flex items-center justify-center rounded-xl bg-slate-800 px-4 py-3 text-sm font-black text-white hover:bg-slate-900">Remover da Agenda</button></div></Dialog>}
           {patientDialog && <PatientDialogR2F3E value={patientDialog === 'new' ? null : patientDialog} store={store} onClose={() => setPatientDialog(null)} onSave={savePatient} onReactivate={patientDialog === 'new' ? undefined : () => reactivatePatient(patientDialog)} />}
@@ -1399,8 +1456,82 @@ function PersonalCard({ commitment, settings }: { commitment: PsychologyPersonal
   return <article className="rounded-2xl border p-4" style={{ borderColor: color, backgroundColor: `${color}18` }} data-testid="psychology-personal-commitment" data-agenda-category={category}><div className="flex items-start gap-3"><div className="rounded-xl p-2.5 text-white" style={{ backgroundColor: color }}><Clock3 size={19} /></div><div><div className="flex flex-wrap items-center gap-2"><p className="text-lg font-black text-slate-900">{commitment.time} <span className="text-sm font-bold text-slate-500">· {commitment.durationMinutes} min</span></p><span className="rounded-full px-2.5 py-1 text-[11px] font-black text-white" style={{ backgroundColor: color }}>Agenda Pessoal</span></div><p className="mt-1 font-bold text-slate-900">{commitment.title || commitment.type}</p><p className="text-xs font-bold text-slate-500">{commitment.type}{commitment.recurrence && commitment.recurrence !== 'Não repetir' ? ` · ${commitment.recurrence}` : ''}{commitment.alarmEnabled ? ' · Alarme' : ''}</p>{commitment.note && <p className="mt-1 text-sm text-slate-700">{commitment.note}</p>}</div></div></article>;
 }
 
+type PatientColumnKey = 'patient' | 'phone' | 'modality';
+type PatientColumnWidths = Record<PatientColumnKey, number>;
+type PatientResizeState = { column: PatientColumnKey; startX: number; startWidth: number };
+
+const PATIENT_COLUMN_WIDTHS_STORAGE_KEY = 'psychology.patientTable.columnWidths';
+const PATIENT_COLUMN_DEFAULTS: PatientColumnWidths = { patient: 320, phone: 150, modality: 260 };
+const PATIENT_COLUMN_LIMITS: Record<PatientColumnKey, { min: number; max: number }> = {
+  patient: { min: 220, max: 520 },
+  phone: { min: 120, max: 260 },
+  modality: { min: 180, max: 420 },
+};
 const PATIENT_LIST_GRID = 'grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 md:grid-cols-[auto_minmax(220px,340px)_minmax(112px,136px)_minmax(170px,260px)_minmax(78px,92px)_max-content] md:justify-start md:gap-x-2.5 md:gap-y-0';
-const PATIENT_LIST_PADDING = 'px-3 sm:px-4';
+const PATIENT_LIST_DESKTOP_GRID = 'md:grid-cols-[2rem_minmax(0,var(--psychology-patient-width))_minmax(0,var(--psychology-phone-width))_minmax(0,var(--psychology-modality-width))_5rem_minmax(9.5rem,.85fr)] md:gap-x-4 md:gap-y-0';
+const PATIENT_LIST_PADDING = 'px-3 md:px-4';
+
+function clampPatientColumnWidth(column: PatientColumnKey, value: number): number {
+  const limits = PATIENT_COLUMN_LIMITS[column];
+  return Math.min(limits.max, Math.max(limits.min, Math.round(value)));
+}
+
+function readPatientColumnWidths(): PatientColumnWidths {
+  if (typeof window === 'undefined') return { ...PATIENT_COLUMN_DEFAULTS };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(PATIENT_COLUMN_WIDTHS_STORAGE_KEY) || '{}') as Partial<Record<PatientColumnKey, unknown>>;
+    return {
+      patient: clampPatientColumnWidth('patient', typeof parsed.patient === 'number' ? parsed.patient : PATIENT_COLUMN_DEFAULTS.patient),
+      phone: clampPatientColumnWidth('phone', typeof parsed.phone === 'number' ? parsed.phone : PATIENT_COLUMN_DEFAULTS.phone),
+      modality: clampPatientColumnWidth('modality', typeof parsed.modality === 'number' ? parsed.modality : PATIENT_COLUMN_DEFAULTS.modality),
+    };
+  } catch {
+    return { ...PATIENT_COLUMN_DEFAULTS };
+  }
+}
+
+function patientTableStyle(widths: PatientColumnWidths): React.CSSProperties {
+  return {
+    '--psychology-patient-width': `${widths.patient}px`,
+    '--psychology-phone-width': `${widths.phone}px`,
+    '--psychology-modality-width': `${widths.modality}px`,
+  } as React.CSSProperties;
+}
+
+function PatientResizeHandle({ column, width, onStart, onKeyboardResize }: { column: PatientColumnKey; width: number; onStart: (event: React.PointerEvent<HTMLButtonElement>, column: PatientColumnKey) => void; onKeyboardResize: (column: PatientColumnKey, delta: number) => void }) {
+  const labels: Record<PatientColumnKey, string> = { patient: 'Paciente', phone: 'Telefone', modality: 'Modalidade / local' };
+  return <button type="button" role="separator" aria-orientation="vertical" aria-label={`Redimensionar coluna ${labels[column]}`} aria-valuemin={PATIENT_COLUMN_LIMITS[column].min} aria-valuemax={PATIENT_COLUMN_LIMITS[column].max} aria-valuenow={width} data-testid={`psychology-patient-resize-${column}`} onPointerDown={event => onStart(event, column)} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onKeyboardResize(column, -16); } if (event.key === 'ArrowRight') { event.preventDefault(); onKeyboardResize(column, 16); } }} className="absolute inset-y-0 right-0 z-10 w-3 cursor-col-resize rounded-sm focus-visible:bg-violet-200 focus-visible:outline-none" />;
+}
+
+function PatientActionPopover({ patient, anchor, onClose, onEdit, onToggle, onDelete }: { patient: PsychologyPatient; anchor: HTMLElement; onClose: () => void; onEdit: (patient: PsychologyPatient) => void; onToggle: (patient: PsychologyPatient) => boolean | Promise<boolean>; onDelete: (patient: PsychologyPatient) => void }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ top: 8, left: 8 });
+  const reposition = () => {
+    const rect = anchor.getBoundingClientRect();
+    const width = 232;
+    const height = 174;
+    setPosition({ top: Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - height - 8)), left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)) });
+  };
+  useEffect(() => {
+    reposition();
+    const handleOutside = (event: PointerEvent) => { const target = event.target as Node; if (!menuRef.current?.contains(target) && !anchor.contains(target)) onClose(); };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
+      const items = menuRef.current ? [...menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')] : [];
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      if (event.key === 'ArrowDown' && items.length) { event.preventDefault(); items[(current + 1 + items.length) % items.length]?.focus(); }
+      if (event.key === 'ArrowUp' && items.length) { event.preventDefault(); items[(current - 1 + items.length) % items.length]?.focus(); }
+      if (event.key === 'Home' && items.length) { event.preventDefault(); items[0]?.focus(); }
+      if (event.key === 'End' && items.length) { event.preventDefault(); items[items.length - 1]?.focus(); }
+    };
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    document.addEventListener('pointerdown', handleOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => { window.removeEventListener('resize', reposition); window.removeEventListener('scroll', reposition, true); document.removeEventListener('pointerdown', handleOutside); document.removeEventListener('keydown', handleKeyDown); };
+  }, [anchor, onClose]);
+  return <div ref={menuRef} id="psychology-patient-actions-menu" data-testid="psychology-patient-actions-menu" role="menu" aria-label={`Ações secundárias de ${patient.name}`} style={{ position: 'fixed', top: position.top, left: position.left, width: 232 }} className="z-[220] rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl ring-1 ring-slate-950/5"><p className="truncate px-3 pb-2 pt-1 text-xs font-black text-slate-500">{patient.name}</p><button autoFocus type="button" role="menuitem" onClick={() => { onClose(); onEdit(patient); }} className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-black text-slate-700 hover:bg-violet-50 hover:text-violet-800 focus-visible:bg-violet-50 focus-visible:outline-none"><Pencil size={15} /> Editar</button><button type="button" role="menuitem" onClick={() => { onClose(); void onToggle(patient); }} className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-black text-slate-700 hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none">{patient.active ? 'Inativar' : 'Ativar'}</button><button type="button" role="menuitem" onClick={() => { onClose(); onDelete(patient); }} className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-black text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 focus-visible:outline-none"><Trash2 size={15} /> Excluir</button></div>;
+}
 type PsychologyPatientFollowUpFilter = 'all' | 'ATIVO' | 'PAUSADO' | 'AGUARDANDO_RETORNO' | 'ENCERRADO';
 
 function psychologyPatientFollowUpStatus(patient: PsychologyPatient): Exclude<PsychologyPatientFollowUpFilter, 'all'> {
@@ -1413,7 +1544,7 @@ function SortHeader({ label, sortKey, activeKey, direction, onSort, className = 
   return <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex items-center gap-1 text-left transition hover:text-violet-700 ${className}`} aria-label={`Ordenar por ${label}`} aria-sort={active ? direction === 'asc' ? 'ascending' : 'descending' : 'none'}>{label}{active ? direction === 'asc' ? <ChevronUp size={13} /> : <ChevronDown size={13} /> : <span className="text-slate-300">↕</span>}</button>;
 }
 
-function PatientsView({ rows, search, searchKey, setSearch, onNew, onEdit, onOpen, onOpenFinance, onDelete, onSetReview, onBulkDelete, preview }: { rows: PsychologyPatientListItem[]; search: string; searchKey: string; setSearch: (value: string) => void; onNew: () => void; onEdit: (patient: PsychologyPatient) => void; onOpen: (patient: PsychologyPatient) => void; onOpenFinance: (patient: PsychologyPatient) => void; onDelete: (patient: PsychologyPatient) => void; onSetReview: (patientIds: string[], inReview: boolean) => boolean | Promise<boolean>; onBulkDelete: (patientIds: string[]) => PsychologyBulkDeletionSummary | Promise<PsychologyBulkDeletionSummary>; preview?: PsychologyDoctoraliaPreview | null }) {
+function PatientsView({ rows, search, searchKey, setSearch, onNew, onEdit, onOpen, onOpenFinance, onOpenClinicalRecord, onDelete, onToggle, onSetReview, onBulkDelete, preview }: { rows: PsychologyPatientListItem[]; search: string; searchKey: string; setSearch: (value: string) => void; onNew: () => void; onEdit: (patient: PsychologyPatient) => void; onOpen: (patient: PsychologyPatient) => void; onOpenFinance: (patient: PsychologyPatient) => void; onOpenClinicalRecord?: (patient: PsychologyPatient) => void; onDelete: (patient: PsychologyPatient) => void; onToggle: (patient: PsychologyPatient) => boolean | Promise<boolean>; onSetReview: (patientIds: string[], inReview: boolean) => boolean | Promise<boolean>; onBulkDelete: (patientIds: string[]) => PsychologyBulkDeletionSummary | Promise<PsychologyBulkDeletionSummary>; preview?: PsychologyDoctoraliaPreview | null }) {
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive' | 'review'>('all');
   const [followUpStatusFilter, setFollowUpStatusFilter] = useState<PsychologyPatientFollowUpFilter>('all');
   const [lastSessionFilter, setLastSessionFilter] = useState<PsychologyPatientLastSessionFilter>('any');
@@ -1427,6 +1558,10 @@ function PatientsView({ rows, search, searchKey, setSearch, onNew, onEdit, onOpe
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [reviewProcessing, setReviewProcessing] = useState(false);
   const [bulkSummary, setBulkSummary] = useState<PsychologyBulkDeletionSummary | null>(null);
+  const [actionMenuPatient, setActionMenuPatient] = useState<PsychologyPatient | null>(null);
+  const [actionMenuAnchor, setActionMenuAnchor] = useState<HTMLElement | null>(null);
+  const [columnWidths, setColumnWidths] = useState<PatientColumnWidths>(readPatientColumnWidths);
+  const [resizeState, setResizeState] = useState<PatientResizeState | null>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const previewCounts = preview?.bundle.patientCounts;
   const referenceDate = useMemo(() => new Date(), []);
@@ -1457,6 +1592,19 @@ function PatientsView({ rows, search, searchKey, setSearch, onNew, onEdit, onOpe
     selectAllRef.current.indeterminate = selectedVisibleIds.length > 0 && !allVisibleSelected;
   }, [allVisibleSelected, selectedVisibleIds.length]);
 
+  useEffect(() => {
+    try { window.localStorage.setItem(PATIENT_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(columnWidths)); } catch { /* preferência visual opcional */ }
+  }, [columnWidths]);
+
+  useEffect(() => {
+    if (!resizeState) return;
+    const handleMove = (event: PointerEvent) => setColumnWidths(current => ({ ...current, [resizeState.column]: clampPatientColumnWidth(resizeState.column, resizeState.startWidth + event.clientX - resizeState.startX) }));
+    const handleUp = () => setResizeState(null);
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp, { once: true });
+    return () => { window.removeEventListener('pointermove', handleMove); window.removeEventListener('pointerup', handleUp); };
+  }, [resizeState]);
+
   const sortBy = (nextKey: PsychologyPatientListSortKey) => {
     const nextDirection = sortKey === nextKey ? (sortDirection === 'asc' ? 'desc' : 'asc') : nextKey === 'lastSession' || nextKey === 'nextSession' ? 'desc' : 'asc';
     setSortKey(nextKey);
@@ -1486,6 +1634,14 @@ function PatientsView({ rows, search, searchKey, setSearch, onNew, onEdit, onOpe
   });
 
   const clearSelection = () => setSelectedIds(new Set());
+  const closeActionMenu = () => { setActionMenuPatient(null); setActionMenuAnchor(null); };
+  const startColumnResize = (event: React.PointerEvent<HTMLButtonElement>, column: PatientColumnKey) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setResizeState({ column, startX: event.clientX, startWidth: columnWidths[column] });
+  };
+  const resizeColumnByKeyboard = (column: PatientColumnKey, delta: number) => setColumnWidths(current => ({ ...current, [column]: clampPatientColumnWidth(column, current[column] + delta) }));
+  const restoreColumnWidths = () => setColumnWidths({ ...PATIENT_COLUMN_DEFAULTS });
   const clearFilters = () => {
     setSearch('');
     setStatusFilter('all');
@@ -1526,37 +1682,38 @@ function PatientsView({ rows, search, searchKey, setSearch, onNew, onEdit, onOpe
     </div>
     <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm" data-testid="psychology-patient-filters">
       <div className="grid gap-2.5 lg:grid-cols-[minmax(220px,1.5fr)_repeat(4,minmax(135px,1fr))]">
-        <label className="relative block"><span className="sr-only">Buscar paciente por nome, telefone ou e-mail</span><Search size={17} className="absolute left-3 top-3.5 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar paciente por nome, telefone ou e-mail" className={`${inputClass} pl-10`} /></label>
+        <label className="relative block"><span className="sr-only">Buscar paciente por nome, telefone ou e-mail</span><Search size={17} className="absolute left-3 top-3.5 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar nome, telefone ou e-mail" className={`${inputClass} pl-10`} /></label>
         <label className="text-[11px] font-black uppercase tracking-wide text-slate-500">Acompanhamento<select value={followUpStatusFilter} onChange={event => setFollowUpStatusFilter(event.target.value as PsychologyPatientFollowUpFilter)} className={`${inputClass} mt-1 text-sm normal-case tracking-normal`}><option value="all">Todos</option><option value="ATIVO">Ativo</option><option value="PAUSADO">Pausado</option><option value="AGUARDANDO_RETORNO">Aguardando retorno</option><option value="ENCERRADO">Encerrado</option></select></label>
         <label className="text-[11px] font-black uppercase tracking-wide text-slate-500">Última sessão<select value={lastSessionFilter} onChange={event => changeLastSessionFilter(event.target.value as PsychologyPatientLastSessionFilter)} className={`${inputClass} mt-1 text-sm normal-case tracking-normal`}><option value="any">Qualquer período</option><option value="recent">Mais recente primeiro</option><option value="oldest">Mais antiga primeiro</option><option value="none">Sem sessão registrada</option><option value="3m">Sem atendimento há 3 meses</option><option value="6m">Sem atendimento há 6 meses</option><option value="12m">Sem atendimento há 12 meses</option><option value="18m">Sem atendimento há 18 meses</option><option value="24m">Sem atendimento há 24 meses</option></select></label>
         <label className="text-[11px] font-black uppercase tracking-wide text-slate-500">Próxima sessão<select value={nextSessionFilter} onChange={event => setNextSessionFilter(event.target.value as PsychologyPatientNextSessionFilter)} className={`${inputClass} mt-1 text-sm normal-case tracking-normal`}><option value="all">Todos</option><option value="with">Com próxima sessão</option><option value="without">Sem próxima sessão</option></select></label>
         <label className="text-[11px] font-black uppercase tracking-wide text-slate-500">Revisão<select value={reviewFilter} onChange={event => setReviewFilter(event.target.value as PsychologyPatientReviewFilter)} className={`${inputClass} mt-1 text-sm normal-case tracking-normal`}><option value="all">Todos</option><option value="in-review">Em revisão</option><option value="out-of-review">Fora da revisão</option></select></label>
       </div>
-      {hasListAdjustments && <div className="mt-2 flex justify-end"><button type="button" onClick={clearFilters} data-testid="psychology-patient-clear-filters" className="rounded-lg px-2 py-1 text-xs font-black text-violet-700 hover:bg-violet-50">Limpar filtros</button></div>}
+      <div className="mt-2 flex justify-end gap-2">{hasListAdjustments && <button type="button" onClick={clearFilters} data-testid="psychology-patient-clear-filters" className="rounded-lg px-2 py-1 text-xs font-black text-violet-700 hover:bg-violet-50">Limpar filtros</button>}<button type="button" onClick={restoreColumnWidths} data-testid="psychology-patient-reset-widths" className="rounded-lg px-2 py-1 text-xs font-black text-violet-700 hover:bg-violet-50">Restaurar larguras</button></div>
     </div>
      {selectedVisibleIds.length > 0 && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-200 bg-violet-50 px-3 py-3" data-testid="psychology-patient-selection-bar"><p className="text-sm font-black text-violet-950">{selectedVisibleIds.length} pacientes selecionados</p><div className="flex flex-wrap gap-2">{selectedVisibleIds.length >= 2 && <button type="button" data-testid="psychology-bulk-delete-button" onClick={() => setBulkConfirmationOpen(true)} disabled={Boolean(preview) || bulkProcessing || reviewProcessing} className="inline-flex items-center gap-2 rounded-xl bg-rose-700 px-3 py-2 text-xs font-black text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-50"><Trash2 size={14} /> Excluir selecionados ({selectedVisibleIds.length})</button>}<button type="button" onClick={() => void applyReview(!reviewArea)} disabled={Boolean(preview) || reviewProcessing || bulkProcessing} className={secondaryButton}>{reviewArea ? 'Retirar da revisão' : 'Mover para revisão'}</button><button type="button" onClick={clearSelection} className={secondaryButton}>Limpar seleção</button></div></div>}
-    {filteredRows.length === 0 ? <EmptyState title={hasFilters ? 'Nenhum paciente encontrado' : 'Nenhum paciente cadastrado'} text={hasFilters ? 'Ajuste a busca ou os filtros para ver outros pacientes.' : 'Cadastre somente as informações essenciais para começar.'} /> : <div data-testid="psychology-patient-list" className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div data-testid="psychology-patient-list-header" role="row" className={`hidden md:grid ${PATIENT_LIST_GRID} ${PATIENT_LIST_PADDING} border-b border-slate-200 py-3 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400`}>
-        <label className="flex items-center justify-center" aria-label="Selecionar todos os pacientes visíveis"><input ref={selectAllRef} type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} disabled={Boolean(preview)} className="h-4 w-4 rounded border-slate-300 text-violet-700" /></label><SortHeader label="Paciente" sortKey="name" activeKey={sortKey} direction={sortDirection} onSort={sortBy} /><span>Telefone</span><span>Modalidade / local</span><SortHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={sortBy} className="justify-center" /><span className="text-right">Ação</span>
+     {filteredRows.length === 0 ? <EmptyState title={hasFilters ? 'Nenhum paciente encontrado' : 'Nenhum paciente cadastrado'} text={hasFilters ? 'Ajuste a busca ou os filtros para ver outros pacientes.' : 'Cadastre somente as informações essenciais para começar.'} /> : <div data-testid="psychology-patient-list" className="w-full overflow-x-auto bg-white">
+      <div data-testid="psychology-patient-list-header" data-desktop-columns="patient phone modality-location status action" role="row" style={patientTableStyle(columnWidths)} className={`hidden md:grid ${PATIENT_LIST_GRID} ${PATIENT_LIST_DESKTOP_GRID} ${PATIENT_LIST_PADDING} md:min-w-[820px] border-b border-slate-200 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400`}>
+        <label className="flex items-center justify-center md:col-start-1 md:row-start-1" aria-label="Selecionar todos os pacientes visíveis"><input ref={selectAllRef} type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} disabled={Boolean(preview)} className="h-4 w-4 rounded border-slate-300 text-violet-700" /></label>
+        <div className="relative min-w-0 md:col-start-2 md:row-start-1"><SortHeader label="Paciente" sortKey="name" activeKey={sortKey} direction={sortDirection} onSort={sortBy} className="min-w-0 pr-2" /><PatientResizeHandle column="patient" width={columnWidths.patient} onStart={startColumnResize} onKeyboardResize={resizeColumnByKeyboard} /></div>
+        <div className="relative whitespace-nowrap md:col-start-3 md:row-start-1">Telefone<PatientResizeHandle column="phone" width={columnWidths.phone} onStart={startColumnResize} onKeyboardResize={resizeColumnByKeyboard} /></div>
+        <div className="relative min-w-0 whitespace-nowrap md:col-start-4 md:row-start-1">Modalidade / local<PatientResizeHandle column="modality" width={columnWidths.modality} onStart={startColumnResize} onKeyboardResize={resizeColumnByKeyboard} /></div>
+        <SortHeader label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={sortBy} className="justify-center md:col-start-5 md:row-start-1" />
+        <span className="whitespace-nowrap text-right md:col-start-6 md:row-start-1">Ação</span>
       </div>
-      <div>{filteredRows.map(row => { const rowInReview = isPsychologyPatientInReview(row); return <div key={row.patient.id} data-testid="psychology-patient-list-row" role="row" className={`group grid ${PATIENT_LIST_GRID} ${PATIENT_LIST_PADDING} border-b border-slate-100 py-2.5 transition-colors last:border-b-0 hover:bg-slate-50/70 ${rowInReview ? 'bg-amber-50/30' : ''}`}>
-        <label className="col-start-1 row-start-1 flex items-center justify-center md:col-auto md:row-auto" aria-label={`Selecionar ${row.patient.name}`}><input type="checkbox" checked={selectedIds.has(row.patient.id)} onChange={() => togglePatient(row.patient.id)} disabled={Boolean(preview)} className="h-4 w-4 rounded border-slate-300 text-violet-700" /></label>
-        <button type="button" onClick={() => onOpen(row.patient)} aria-label={`Abrir ficha completa de ${row.patient.name}`} title={row.patient.name} className="col-start-2 row-start-1 min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-500 md:col-auto md:row-auto md:truncate"><span className="block truncate text-sm font-black text-slate-900 md:text-[15px]">{row.patient.name}</span></button>
-        <div className="col-start-2 row-start-2 min-w-0 text-left text-sm text-slate-600 md:col-auto md:row-auto"><span className="mr-2 text-[10px] font-black uppercase tracking-wide text-slate-400 md:hidden">Telefone</span><span className="whitespace-nowrap">{row.phone}</span></div>
-        <div data-testid="psychology-patient-list-modality" className="col-start-2 row-start-3 min-w-0 text-left text-sm text-slate-600 md:col-auto md:row-auto"><span className="mr-2 text-[10px] font-black uppercase tracking-wide text-slate-400 md:hidden">Modalidade / local</span><span className="block max-w-full truncate" title={row.modalityLocation}>{row.modalityLocation}</span></div>
-        <div data-testid="psychology-patient-list-status" className="col-start-3 row-start-1 row-span-3 flex min-w-0 items-center justify-end self-start text-right md:col-auto md:row-auto md:items-center md:justify-center md:text-center"><span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-black ${row.patient.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{row.patient.active ? 'Ativo' : 'Inativo'}</span></div>
-        <div data-testid="psychology-patient-list-actions" className="col-span-3 row-start-4 flex min-w-0 items-center justify-end gap-1 whitespace-nowrap pt-1 text-right md:col-span-1 md:row-auto md:pt-0">
-          <button type="button" onClick={() => onOpen(row.patient)} className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-xs font-black text-violet-700 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><FileText size={14} /> Abrir ficha</button>
-          <details className="relative" data-testid="psychology-patient-secondary-actions">
-            <summary aria-label={`Mais ações para ${row.patient.name}`} title="Mais ações" className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><MoreHorizontal size={17} /></summary>
-            <div className="absolute right-0 top-full z-30 mt-1 w-44 rounded-xl border border-slate-200 bg-white p-1.5 text-left shadow-xl">
-              <button type="button" onClick={() => onOpenFinance(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-50"><WalletCards size={14} /> Financeiro</button>
-              {!preview && <><button type="button" onClick={() => onEdit(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-slate-600 hover:bg-slate-100"><Pencil size={14} /> Editar</button><button type="button" onClick={() => onDelete(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-slate-500 hover:bg-rose-50 hover:text-rose-700"><Trash2 size={14} /> Excluir</button></>}
-            </div>
-          </details>
-        </div>
+      <div>{filteredRows.map(row => { const rowInReview = isPsychologyPatientInReview(row); return <div key={row.patient.id} data-testid="psychology-patient-list-row" data-desktop-layout="single-line" role="row" style={patientTableStyle(columnWidths)} className={`group grid ${PATIENT_LIST_GRID} ${PATIENT_LIST_DESKTOP_GRID} ${PATIENT_LIST_PADDING} md:min-w-[820px] border-b border-slate-100 py-4 transition-colors last:border-b-0 hover:bg-slate-50/70 md:py-2 ${rowInReview ? 'bg-amber-50/30' : ''}`}>
+        <label className="col-start-1 row-start-1 flex items-center justify-center md:col-start-1 md:row-start-1" aria-label={`Selecionar ${row.patient.name}`}><input type="checkbox" checked={selectedIds.has(row.patient.id)} onChange={() => togglePatient(row.patient.id)} disabled={Boolean(preview)} className="h-4 w-4 rounded border-slate-300 text-violet-700" /></label>
+        <button type="button" data-desktop-column="patient" onClick={() => onOpen(row.patient)} aria-label={`Abrir ficha completa de ${row.patient.name}`} className="col-start-2 row-start-1 min-w-0 truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-500 md:col-start-2 md:row-start-1"><span title={row.patient.name} className="block truncate whitespace-nowrap text-sm font-black text-slate-900 md:text-base">{row.patient.name}</span></button>
+        <div data-desktop-column="phone" title={row.phone} className="col-start-2 row-start-2 min-w-0 overflow-hidden text-left text-sm text-slate-600 md:col-start-3 md:row-start-1"><span className="mr-2 text-[10px] font-black uppercase tracking-wide text-slate-400 md:hidden">Telefone</span><span className="block overflow-hidden text-ellipsis whitespace-nowrap">{row.phone}</span></div>
+        <div className="col-start-2 row-start-3 min-w-0 text-left text-sm text-slate-600 md:hidden"><span className="mr-2 text-[10px] font-black uppercase tracking-wide text-slate-400">Última</span><span className="whitespace-nowrap">{row.lastSession}</span></div>
+        <div className="col-start-2 row-start-4 min-w-0 text-left text-sm text-slate-700 md:hidden"><span className="mr-2 text-[10px] font-black uppercase tracking-wide text-slate-400">Próxima</span><span className="whitespace-nowrap">{row.nextSession}</span></div>
+        <div data-desktop-column="modality-location" title={row.modalityLocation} aria-label={row.modalityLocation} className="col-start-2 row-start-5 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-sm text-slate-600 md:col-start-4 md:row-start-1"><span className="mr-2 text-[10px] font-black uppercase tracking-wide text-slate-400 md:hidden">Modalidade</span><span>{row.modalityLocation}</span></div>
+        <div data-testid="psychology-patient-list-status" data-desktop-column="status" className={`col-start-3 row-start-1 flex flex-wrap items-center justify-end gap-1 self-start text-right md:col-start-5 md:row-start-1 md:flex-nowrap md:self-center md:justify-center`}><span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-black md:px-1.5 md:py-0.5 md:text-[10px] md:leading-4 ${row.patient.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{row.patient.active ? 'Ativo' : 'Inativo'}</span></div>
+        <div className="col-start-3 row-start-2 flex flex-wrap items-center justify-end gap-1 text-right md:hidden"><span className="inline-flex rounded-full bg-sky-50 px-2 py-1 text-[10px] font-black text-sky-700">{psychologyPatientFollowUpStatus(row.patient) === 'PAUSADO' ? 'Pausado' : psychologyPatientFollowUpStatus(row.patient) === 'AGUARDANDO_RETORNO' ? 'Aguardando retorno' : psychologyPatientFollowUpStatus(row.patient) === 'ENCERRADO' ? 'Encerrado' : 'Acompanhamento ativo'}</span>{rowInReview && <span className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">Em revisão</span>}</div>
+        <div className="col-span-3 row-start-6 flex flex-wrap justify-start gap-1.5 pt-2 text-right md:hidden"><button type="button" onClick={() => onOpen(row.patient)} className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-black whitespace-nowrap text-violet-700 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><FileText size={14} /> Abrir ficha</button><button type="button" onClick={() => onOpenClinicalRecord?.(row.patient)} disabled={!onOpenClinicalRecord} className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-black whitespace-nowrap text-violet-700 hover:bg-violet-50 disabled:opacity-50"><FileText size={14} /> Prontuário</button><button type="button" onClick={() => onOpenFinance(row.patient)} className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-black whitespace-nowrap text-emerald-700 hover:bg-emerald-50"><WalletCards size={14} /> Financeiro</button>{!preview && <><button type="button" onClick={() => onEdit(row.patient)} className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-black whitespace-nowrap text-slate-600 hover:bg-slate-100"><Pencil size={14} /> Editar</button><button type="button" onClick={() => onToggle(row.patient)} className="rounded-lg px-1.5 py-1 text-[11px] font-black whitespace-nowrap text-slate-500 hover:bg-slate-100">{row.patient.active ? 'Inativar' : 'Ativar'}</button><button type="button" onClick={() => onDelete(row.patient)} className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[11px] font-black whitespace-nowrap text-slate-400 hover:bg-rose-50 hover:text-rose-700"><Trash2 size={13} /> Excluir</button></>}</div>
+        <div data-testid="psychology-patient-list-actions" data-desktop-column="action" className="hidden min-w-0 items-center justify-end gap-1 whitespace-nowrap md:col-start-6 md:row-start-1 md:flex md:flex-nowrap"><button type="button" onClick={() => onOpen(row.patient)} className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg px-1.5 py-1 text-[11px] font-black text-violet-700 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><FileText size={14} /> Abrir ficha</button><details className="relative" data-testid="psychology-patient-secondary-actions"><summary aria-label={'Mais ações para ' + row.patient.name} aria-haspopup="menu" aria-expanded={actionMenuPatient?.id === row.patient.id} aria-controls="psychology-patient-actions-menu" title="Mais ações" className="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><button type="button" aria-label="Abrir menu de ações">⋯</button></summary><div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-slate-200 bg-white p-1.5 text-left shadow-xl"><button type="button" onClick={() => onOpenClinicalRecord?.(row.patient)} disabled={!onOpenClinicalRecord} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-violet-700 hover:bg-violet-50 disabled:opacity-50"><FileText size={14} /> Prontuário</button><button type="button" onClick={() => onOpenFinance(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-emerald-700 hover:bg-emerald-50"><WalletCards size={14} /> Financeiro</button>{!preview && <><button type="button" onClick={() => onEdit(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-slate-600 hover:bg-slate-100"><Pencil size={14} /> Editar</button><button type="button" onClick={() => onToggle(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-slate-500 hover:bg-slate-100">{row.patient.active ? 'Inativar' : 'Ativar'}</button><button type="button" onClick={() => onDelete(row.patient)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs font-black text-slate-500 hover:bg-rose-50 hover:text-rose-700"><Trash2 size={14} /> Excluir</button></>}</div></details></div>
       </div>; })}</div>
     </div>}
+    {actionMenuPatient && actionMenuAnchor && <PatientActionPopover patient={actionMenuPatient} anchor={actionMenuAnchor} onClose={closeActionMenu} onEdit={onEdit} onToggle={onToggle} onDelete={onDelete} />}
  {bulkConfirmationOpen && <Dialog title={`Excluir selecionados (${selectedVisibleIds.length})?`} onClose={() => { if (!bulkProcessing) { setBulkConfirmationOpen(false); setBulkConfirmationText(''); } }}><div className="space-y-4"><div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"><p className="font-black">Excluir definitivamente os {selectedVisibleIds.length} pacientes selecionados?</p><p className="mt-2 leading-relaxed">A ação é irreversível e excluirá os registros vinculados conforme a regra de cascata aprovada, incluindo sessões, registros, pacotes, documentos, anexos, cobranças e pagamentos.</p></div><label className="block text-sm font-black text-slate-700">Digite <span className="text-rose-700">EXCLUIR</span> para confirmar<input autoFocus value={bulkConfirmationText} onChange={event => setBulkConfirmationText(event.target.value)} className={`${inputClass} mt-2`} /></label><div className="flex flex-wrap justify-end gap-2"><button type="button" onClick={() => { setBulkConfirmationOpen(false); setBulkConfirmationText(''); }} disabled={bulkProcessing} className={secondaryButton}>Cancelar</button><button type="button" onClick={confirmBulkDelete} disabled={bulkConfirmationText.trim().toLocaleUpperCase() !== 'EXCLUIR' || bulkProcessing} className="inline-flex items-center gap-2 rounded-xl bg-rose-700 px-4 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{bulkProcessing ? 'Processando…' : 'Excluir selecionados'}</button></div></div></Dialog>}
     {bulkSummary && <Dialog title="Resultado da exclusão" onClose={() => setBulkSummary(null)}><div className="space-y-4"><p className="text-sm font-bold text-slate-700">{bulkSummary.processed} paciente(s) processado(s).</p><ul className="space-y-2 text-sm font-bold text-slate-700"><li>{bulkSummary.deleted} excluído(s) definitivamente.</li><li>{bulkSummary.failed} falha(s) no processamento.</li></ul><div className="flex justify-end"><button type="button" onClick={() => setBulkSummary(null)} className={primaryButton}>Fechar</button></div></div></Dialog>}
   </div>;

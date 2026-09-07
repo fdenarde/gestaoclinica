@@ -174,10 +174,26 @@ export interface PsychologySessionRecordR2A {
   professionalId: string;
   context: typeof PSYCHOLOGY_CONTEXT;
   content: string;
+  /** Defaults to therapeutic follow-up for records created before the clinical chart. */
+  recordType?: PsychologyClinicalRecordType;
+  soap?: PsychologySoapRecord;
+  parentRecordType?: PsychologyParentRecordType;
   date?: string;
   authorProfessionalId: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export const PSYCHOLOGY_CLINICAL_RECORD_TYPES = ['THERAPEUTIC_FOLLOW_UP', 'SOAP', 'PARENT_ANAMNESIS_FEEDBACK'] as const;
+export type PsychologyClinicalRecordType = typeof PSYCHOLOGY_CLINICAL_RECORD_TYPES[number];
+export const PSYCHOLOGY_PARENT_RECORD_TYPES = ['ANAMNESIS', 'FEEDBACK', 'ANAMNESIS_AND_FEEDBACK'] as const;
+export type PsychologyParentRecordType = typeof PSYCHOLOGY_PARENT_RECORD_TYPES[number];
+
+export interface PsychologySoapRecord {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
 }
 
 /**
