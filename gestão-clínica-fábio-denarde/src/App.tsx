@@ -38,7 +38,10 @@ import type {
 import { ACTIVITY_GALLERY_CHANGED_EVENT } from './lib/activityRecordsApi';
 import { GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT } from './lib/googlePhotosAlbumsApi';
 import { loadUnregisteredActivities } from './lib/unregisteredActivities';
+import { buildActivityRefreshSignature } from './lib/activityRefreshPlan';
+import { createActivityRefreshGate, type ActivityRefreshGate } from './lib/activityRefreshGate';
 import type { UnregisteredActivityGroup } from './types/unregisteredActivities';
+import { emitFirestoreMetric } from './lib/firestoreDiagnostics';
 import { buildPackageToleranceAlerts } from './lib/packageTolerance';
 import { useDailyWhatsappOperationalReport } from './lib/useDailyWhatsappOperationalReport';
 import SidebarNavigation, { type AppNavigationItem } from './components/Navigation/SidebarNavigation';
@@ -66,6 +69,7 @@ const PreRegistrations = lazy(() => import('./components/PreRegistrations'));
 const ProfessionalGooglePhotosGallery = lazy(() => import('./components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery'));
 const MonitoringPanel = lazy(() => import('./components/Monitoring/MonitoringPanel'));
 const WhatsappSimulationDashboard = lazy(() => import('./features/whatsapp-simulation/SimulationDashboard'));
+const PsychologyOperationalMonitoringPanel = lazy(() => import('./components/PsychologyOperationalMonitoringPanel'));
 
 const DEFAULT_SETTINGS: ClinicSettings = {
   name: 'Clinica Integra',
@@ -141,6 +145,7 @@ function ProfileChoiceScreen({
         <BrandLogo
           variant="horizontal"
           theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined}
+          visualContext={visualContext}
           name="Fábio Denarde"
           subtitle="Gestão Clínica e Acompanhamento"
           className="mb-6"
@@ -217,7 +222,7 @@ function formatAuditDuration(value?: number): string {
 
 function getPsychologyDevelopmentMode(): PsychologyDevelopmentMode {
   const configured = String(import.meta.env.VITE_PSYCHOLOGY_DEV_MODE || '').trim().toLowerCase();
-  return configured === 'pilot-local' ? 'pilot-local' : 'authenticated-remote';
+  return configured === 'authenticated-remote' ? 'authenticated-remote' : 'pilot-local';
 }
 
 export default function App() {
@@ -228,9 +233,10 @@ export default function App() {
     window.location.hostname,
     getPsychologyDevelopmentMode(),
   );
-
-  if (psychologyRouteMode === 'pilot-local') return <PsychologyPilot />;
-  return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyRouteMode === 'authenticated-remote'} />;
+  const psychologyPilotRoute = psychologyRouteMode === 'pilot-local';
+  const psychologyAuthenticatedRoute = psychologyRouteMode === 'authenticated-remote';
+  if (psychologyPilotRoute && !psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="pilot-local" />;
+  return <AuthenticatedApp psychologyAuthenticatedRoute={psychologyAuthenticatedRoute} />;
 }
 
 function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychologyAuthenticatedRoute?: boolean }) {
@@ -285,6 +291,10 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
   const authTransitionRef = useRef(0);
   const logoutInProgressRef = useRef(false);
   const accessProfileAbortRef = useRef<AbortController | null>(null);
+  const activityRefreshStateRef = useRef(state);
+  activityRefreshStateRef.current = state;
+  const activityRefreshGateRef = useRef<ActivityRefreshGate | null>(null);
+  if (!activityRefreshGateRef.current) activityRefreshGateRef.current = createActivityRefreshGate();
 
   const { activeAlarmId, activeAlarmLabel, stopAlarm } = useAlarms(state.personalAppointments || []);
   const whatsappOperationalReportState = useDailyWhatsappOperationalReport(
@@ -314,6 +324,31 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     notificationCursorRef.current = null;
     notificationOldestCursorRef.current = null;
     notificationInFlightRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    emitFirestoreMetric({ source: 'app-lifecycle', event: 'authenticated-app-mount' });
+    const emitLifecycleEvent = (event: string, fields: Record<string, string | boolean> = {}) => {
+      emitFirestoreMetric({ source: 'app-lifecycle', event, ...fields });
+    };
+    const handleVisibilityChange = () => emitLifecycleEvent('visibilitychange', { visibility: document.visibilityState });
+    const handleFocus = () => emitLifecycleEvent('focus');
+    const handleBlur = () => emitLifecycleEvent('blur');
+    const handleOnline = () => emitLifecycleEvent('online', { online: true });
+    const handleOffline = () => emitLifecycleEvent('offline', { online: false });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+       emitLifecycleEvent('authenticated-app-unmount');
+     };
   }, []);
 
   if (publicRegistrationMatch) {
@@ -359,6 +394,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
 
   const selectNavigationItem = (id: string) => {
     if (id === 'whatsapp' && !canAccessWhatsappSimulation) return;
+    if (id === 'psicologia-monitoramento' && accessProfile?.role !== 'admin') return;
     if (id === 'galeria-atividades') {
       setSelectedGalleryPatientId(null);
       setSelectedGallerySessionId(null);
@@ -379,7 +415,16 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
 
   useEffect(() => {
     let previousAuthUid: string | null | undefined;
+    let authReadyReported = false;
+    let previousAuthenticated = false;
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (!authReadyReported) {
+        emitFirestoreMetric({ source: 'app-lifecycle', event: 'auth-ready' });
+        authReadyReported = true;
+      } else if (previousAuthenticated !== Boolean(currentUser)) {
+        emitFirestoreMetric({ source: 'app-lifecycle', event: 'user-changed', userChanged: true });
+      }
+      previousAuthenticated = Boolean(currentUser);
       const currentAuthUid = currentUser?.uid ?? null;
       if (previousAuthUid !== currentAuthUid) {
         authTransitionRef.current += 1;
@@ -490,9 +535,10 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     setAccessProfile(current => current ? { ...current } : current);
   }, [directAccessRole, resetSessionScopedData]);
 
-  const canAccessInternalSystem =
-    accessProfile?.status === 'approved'
-    && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
+  const canAccessInternalSystem = (
+      accessProfile?.status === 'approved'
+    && (accessProfile.role === 'admin' || accessProfile.role === 'professional')
+  );
   const canAccessWhatsappSimulation =
     accessProfile?.status === 'approved'
     && (accessProfile.role === 'admin' || accessProfile.role === 'professional');
@@ -506,11 +552,18 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     accessProfile?.status === 'approved'
     && accessProfile.role === 'monitoring';
 
-  const refreshUnregisteredActivities = useCallback(async (force = false): Promise<void> => {
-    if (!canAccessInternalSystem) return;
+  const activityRefreshSignature = useMemo(
+    () => buildActivityRefreshSignature(state),
+    [state.settings?.activityMediaMonitoringStart, state.patients, state.sessions, state.payments],
+  );
+
+  useEffect(() => () => activityRefreshGateRef.current?.dispose(), []);
+
+  const runUnregisteredActivities = useCallback(async (force = false): Promise<void> => {
+    if (psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     setUnregisteredActivitiesLoading(true);
     try {
-      const result = await loadUnregisteredActivities(state, { force });
+      const result = await loadUnregisteredActivities(activityRefreshStateRef.current, { force });
       setUnregisteredActivities(result.groups);
       setUnregisteredActivitiesWarning(result.warning);
     } catch (error) {
@@ -519,10 +572,25 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     } finally {
       setUnregisteredActivitiesLoading(false);
     }
-  }, [canAccessInternalSystem, state]);
+  }, [canAccessInternalSystem, psychologyAuthenticatedRoute]);
+
+  const requestUnregisteredActivityRefresh = useCallback((force = false, delayMs = 900): Promise<void> => {
+    const gate = activityRefreshGateRef.current;
+    if (!gate) return Promise.resolve();
+    const task = () => runUnregisteredActivities(force);
+    if (delayMs === 0) {
+      return gate.runNow(buildActivityRefreshSignature(activityRefreshStateRef.current), task, force);
+    }
+    return gate.schedule(
+      () => buildActivityRefreshSignature(activityRefreshStateRef.current),
+      task,
+      delayMs,
+      force,
+    );
+  }, [runUnregisteredActivities]);
 
   useEffect(() => {
-    if (!canAccessInternalSystem) {
+    if (psychologyAuthenticatedRoute || !canAccessInternalSystem) {
       setUnregisteredActivities([]);
       setUnregisteredActivitiesWarning('');
       return;
@@ -530,28 +598,21 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     const coreCollectionsReady = ['settings', 'patients', 'sessions', 'payments']
       .every(collectionName => loadedCollectionsRef.current.has(collectionName));
     if (dataLoading || !coreCollectionsReady) return;
-    const timer = window.setTimeout(() => { void refreshUnregisteredActivities(false); }, 900);
-    return () => window.clearTimeout(timer);
-  }, [canAccessInternalSystem, dataLoading, refreshUnregisteredActivities]);
+    void requestUnregisteredActivityRefresh(false, 900);
+  }, [activityRefreshSignature, canAccessInternalSystem, dataLoading, psychologyAuthenticatedRoute, requestUnregisteredActivityRefresh]);
 
   useEffect(() => {
-    if (!canAccessInternalSystem) return;
-    let refreshTimer: number | null = null;
+    if (psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     const refresh = () => {
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshUnregisteredActivities(false);
-      }, 1200);
+      void requestUnregisteredActivityRefresh(true, 1200);
     };
     window.addEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
     window.addEventListener(GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT, refresh);
     return () => {
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       window.removeEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
       window.removeEventListener(GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT, refresh);
     };
-  }, [canAccessInternalSystem, refreshUnregisteredActivities]);
+  }, [canAccessInternalSystem, psychologyAuthenticatedRoute, requestUnregisteredActivityRefresh]);
 
   const refreshPortalNotifications = useCallback(async (options?: {
     initial?: boolean;
@@ -643,6 +704,33 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     
     // Subscribe to all collections
     const unsubscribers: (() => void)[] = [];
+    const listenerCollections = [
+      'settings',
+      'patients',
+      'sessions',
+      'payments',
+      'repositions',
+      'expenses',
+      'evolutions',
+      'agenda_pessoal',
+      'externalRegistrationForms',
+    ];
+    const traceSnapshot = (collectionName: string, snapshot: { size: number; docs: Array<{ metadata?: { hasPendingWrites?: boolean } }>; metadata?: { fromCache?: boolean; hasPendingWrites?: boolean }; docChanges: (options?: { includeMetadataChanges?: boolean }) => unknown[] }) => {
+      const documentChanges = snapshot.docChanges({ includeMetadataChanges: false }).length;
+      const metadataOnly = documentChanges === 0 && snapshot.size > 0;
+      emitFirestoreMetric({
+        source: 'app-listener',
+        collection: collectionName,
+        event: 'snapshot',
+        docs: snapshot.size,
+        documentChanges,
+        metadataOnly,
+        billedRead: !metadataOnly && (documentChanges > 0 || snapshot.size > 0),
+        fromCache: Boolean(snapshot.metadata?.fromCache),
+        hasPendingWrites: Boolean(snapshot.metadata?.hasPendingWrites || snapshot.docs.some(item => item.metadata?.hasPendingWrites)),
+      });
+    };
+    listenerCollections.forEach(collectionName => emitFirestoreMetric({ source: 'app-listener', collection: collectionName, event: 'attach' }));
     
     const userDocRef = doc(db, 'users', user.uid);
     let hasReceivedAuthoritativeSessionsSnapshot = false;
@@ -653,6 +741,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // settings
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'settings'), (snapshot) => {
+        traceSnapshot('settings', snapshot);
         let settings = DEFAULT_SETTINGS;
         snapshot.forEach(doc => {
           if (doc.id === 'config') {
@@ -670,6 +759,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // patients
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'patients'), (snapshot) => {
+        traceSnapshot('patients', snapshot);
         const patients = snapshot.docs.map(doc => doc.data() as Patient);
         markCollectionLoaded('patients');
         setState(prev => ({ ...prev, patients }));
@@ -679,6 +769,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // sessions
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'sessions'), { includeMetadataChanges: true }, (snapshot) => {
+        traceSnapshot('sessions', snapshot);
         const sessions = snapshot.docs.map(doc => doc.data() as Session);
         markCollectionLoaded('sessions');
         setState(prev => ({ ...prev, sessions }));
@@ -699,6 +790,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // payments
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'payments'), (snapshot) => {
+        traceSnapshot('payments', snapshot);
         const payments = snapshot.docs.map(doc => doc.data() as Payment);
         markCollectionLoaded('payments');
         setState(prev => ({ ...prev, payments }));
@@ -708,6 +800,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // repositions
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'repositions'), (snapshot) => {
+        traceSnapshot('repositions', snapshot);
         const repositions = snapshot.docs.map(doc => doc.data() as Reposition);
         markCollectionLoaded('repositions');
         setState(prev => ({ ...prev, repositions }));
@@ -717,6 +810,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // expenses
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'expenses'), (snapshot) => {
+        traceSnapshot('expenses', snapshot);
         const expenses = snapshot.docs.map(doc => doc.data() as Expense);
         markCollectionLoaded('expenses');
         setState(prev => ({ ...prev, expenses }));
@@ -726,6 +820,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // evolutions
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'evolutions'), (snapshot) => {
+        traceSnapshot('evolutions', snapshot);
         const evolutions = snapshot.docs.map(doc => doc.data() as Evolution);
         markCollectionLoaded('evolutions');
         setState(prev => ({ ...prev, evolutions }));
@@ -735,10 +830,11 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     // agenda_pessoal
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'agenda_pessoal'), (snapshot) => {
+        traceSnapshot('agenda_pessoal', snapshot);
         const personalAppointments = snapshot.docs.map(doc => {
           const data = doc.data();
           return {
-            id: data.id,
+            id: typeof data.id === 'string' && data.id.trim() ? data.id : doc.id,
             date: data.data || '',
             time: data.hora || '',
             type: data.tipo_compromisso || 'Outro',
@@ -764,6 +860,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
 
     unsubscribers.push(
       onSnapshot(query(collection(db, 'externalRegistrationForms'), where('ownerUserId', '==', user.uid)), (snapshot) => {
+        traceSnapshot('externalRegistrationForms', snapshot);
         const externalRegistrationForms = snapshot.docs.map(doc => doc.data() as ExternalRegistrationForm);
         markCollectionLoaded('externalRegistrationForms');
         setState(prev => ({ ...prev, externalRegistrationForms }));
@@ -778,11 +875,12 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     return () => {
       clearTimeout(fallbackTimer);
       unsubscribers.forEach(unsub => unsub());
+      listenerCollections.forEach(collectionName => emitFirestoreMetric({ source: 'app-listener', collection: collectionName, event: 'detach' }));
     };
   }, [canAccessInternalSystem, psychologyAuthenticatedRoute, user]);
 
   const updateState = async (newState: Partial<AppState>): Promise<boolean> => {
-    if (!user || !canAccessInternalSystem) return false;
+    if (!user || psychologyAuthenticatedRoute || !canAccessInternalSystem) return false;
     const userDocRef = doc(db, 'users', user.uid);
     const activityGalleryRelevantChange = Boolean(
       newState.settings
@@ -790,6 +888,12 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     );
     
     try {
+      // AuthenticatedApp is the legacy Neuro clinical AppState store. Its session
+      // writes must not depend on the separate canonical-professional lookup. The
+      // canonical persistence boundaries remain fail-closed downstream, while
+      // Psychology uses its own explicit scoped persistence route.
+      let stateToPersist = newState;
+
       let batch = writeBatch(db);
       let opCount = 0;
 
@@ -841,39 +945,39 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
         }
       };
 
-      if (newState.settings) {
+      if (stateToPersist.settings) {
         if (!loadedCollectionsRef.current.has('settings')) {
           throw new Error('Gravação bloqueada: as configurações ainda não concluíram o primeiro carregamento.');
         }
-        await addOp(b => b.set(doc(collection(userDocRef, 'settings'), 'config'), newState.settings!));
+        await addOp(b => b.set(doc(collection(userDocRef, 'settings'), 'config'), stateToPersist.settings!));
       }
       
-      if (newState.patients) {
-        await syncCollection('patients', state.patients, newState.patients, sanitizeForFirestore);
+      if (stateToPersist.patients) {
+        await syncCollection('patients', state.patients, stateToPersist.patients, sanitizeForFirestore);
       }
       
-      if (newState.sessions) {
-        await syncCollection('sessions', state.sessions, newState.sessions);
+      if (stateToPersist.sessions) {
+        await syncCollection('sessions', state.sessions, stateToPersist.sessions);
       }
       
-      if (newState.payments) {
-        await syncCollection('payments', state.payments, newState.payments);
+      if (stateToPersist.payments) {
+        await syncCollection('payments', state.payments, stateToPersist.payments);
       }
       
-      if (newState.repositions) {
-        await syncCollection('repositions', state.repositions, newState.repositions);
+      if (stateToPersist.repositions) {
+        await syncCollection('repositions', state.repositions, stateToPersist.repositions);
       }
       
-      if (newState.expenses) {
-        await syncCollection('expenses', state.expenses, newState.expenses);
+      if (stateToPersist.expenses) {
+        await syncCollection('expenses', state.expenses, stateToPersist.expenses);
       }
       
-      if (newState.evolutions) {
-        await syncCollection('evolutions', state.evolutions, newState.evolutions);
+      if (stateToPersist.evolutions) {
+        await syncCollection('evolutions', state.evolutions, stateToPersist.evolutions);
       }
 
-      if (newState.personalAppointments) {
-        await syncCollection('agenda_pessoal', state.personalAppointments, newState.personalAppointments, a => ({
+      if (stateToPersist.personalAppointments) {
+        await syncCollection('agenda_pessoal', state.personalAppointments, stateToPersist.personalAppointments, a => ({
             id: a.id,
             data: a.date,
             hora: a.time,
@@ -890,13 +994,13 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
           }));
       }
 
-      if (newState.externalRegistrationForms) {
+      if (stateToPersist.externalRegistrationForms) {
         if (!loadedCollectionsRef.current.has('externalRegistrationForms')) {
           throw new Error('Gravação bloqueada: os formulários externos ainda não concluíram o primeiro carregamento.');
         }
         const collectionName = 'externalRegistrationForms';
         const currentItems: ExternalRegistrationForm[] = state.externalRegistrationForms || [];
-        const nextItems: ExternalRegistrationForm[] = newState.externalRegistrationForms;
+        const nextItems: ExternalRegistrationForm[] = stateToPersist.externalRegistrationForms;
         const currentMap = new Map<string, ExternalRegistrationForm>(currentItems.map(item => [item.id, item]));
         const nextMap = new Map<string, ExternalRegistrationForm>(nextItems.map(item => [item.id, item]));
         const colRef = collection(db, collectionName);
@@ -916,7 +1020,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
 
       await commitBatch();
 
-      setState(previousState => ({ ...previousState, ...newState }));
+      setState(previousState => ({ ...previousState, ...stateToPersist }));
 
       if (activityGalleryRelevantChange && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {
@@ -939,7 +1043,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
       settings: { ...prev.settings, visualTheme },
     }));
 
-    if (!user || !canAccessInternalSystem || !loadedCollectionsRef.current.has('settings')) return false;
+    if (psychologyAuthenticatedRoute || !user || !canAccessInternalSystem || !loadedCollectionsRef.current.has('settings')) return false;
 
     try {
       const batch = writeBatch(db);
@@ -1068,7 +1172,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     );
   }
 
-  if (psychologyAuthenticatedRoute) return <PsychologyPilot />;
+  if (psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="authenticated-remote" />;
 
   const pendingExternalForms = (state.externalRegistrationForms || []).filter(form =>
     isPendingExternalRegistrationStatus(form.status)
@@ -1091,7 +1195,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     if (opening) {
       await Promise.all([
         canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false),
-        refreshUnregisteredActivities(true),
+        requestUnregisteredActivityRefresh(true, 0),
       ]);
     }
   };
@@ -1232,6 +1336,9 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
 
   const tabs: AppNavigationItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    ...(accessProfile?.role === 'admin'
+      ? [{ id: 'psicologia-monitoramento', label: 'Monitoramento Psicologia', icon: Monitor }]
+      : []),
     ...(canAccessWhatsappSimulation
       ? [
         { id: 'monitoramento', label: 'Visão do Monitoramento', icon: Monitor },
@@ -1259,6 +1366,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
           profile={accessProfile}
           onProfileUpdated={handlePasswordProfileUpdated}
           onLogout={handleAccessPortalLogout}
+          visualContext={visualContext}
         />
       )}
       {navigationMode === 'sidebar' && (
@@ -1401,7 +1509,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
                       <p className="mt-1 text-[11px] text-clinic-text-muted">{activityAttentionCount} atividade(s) não registrada(s) • {packageToleranceAttentionCount} pacote(s) em tolerância{canManagePortalNotifications ? ` • ${unreadPortalNotifications.length} não lida(s)` : ''}</p>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button type="button" onClick={() => void Promise.all([canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false), refreshUnregisteredActivities(true)])} disabled={notificationLoading || unregisteredActivitiesLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading || unregisteredActivitiesLoading ? 'animate-spin' : ''} /></button>
+                      <button type="button" onClick={() => void Promise.all([canManagePortalNotifications ? refreshPortalNotifications({ force: true }) : Promise.resolve(false), requestUnregisteredActivityRefresh(true, 0)])} disabled={notificationLoading || unregisteredActivitiesLoading} className="rounded-full bg-white p-2 text-clinic-primary disabled:opacity-50" aria-label="Atualizar notificações"><RefreshCw size={15} className={notificationLoading || unregisteredActivitiesLoading ? 'animate-spin' : ''} /></button>
                       <button type="button" onClick={() => setNotificationsOpen(false)} className="rounded-full bg-white p-2 text-clinic-text-muted" aria-label="Fechar notificações"><X size={15} /></button>
                     </div>
                   </div>
@@ -1628,7 +1736,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
                   unregisteredActivities={unregisteredActivities}
                   unregisteredActivitiesLoading={unregisteredActivitiesLoading}
                   unregisteredActivitiesWarning={unregisteredActivitiesWarning}
-                  onRefreshUnregisteredActivities={() => refreshUnregisteredActivities(true)}
+                  onRefreshUnregisteredActivities={() => requestUnregisteredActivityRefresh(true, 0)}
                   onRegisterUnregisteredActivity={activity => openActivityGallery(activity.patientId, activity.sessionIds[0] || null, activity.packageNumber)}
                   packageToleranceAlerts={packageToleranceAlerts}
                   onOpenFinance={() => setActiveTab('pagamentos')}
@@ -1642,6 +1750,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
                 />
               )}
               {activeTab === 'whatsapp' && canAccessWhatsappSimulation && <WhatsappSimulationDashboard embedded />}
+              {activeTab === 'psicologia-monitoramento' && accessProfile?.role === 'admin' && <PsychologyOperationalMonitoringPanel />}
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserRole={accessProfile?.role || 'professional'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}

@@ -25,6 +25,12 @@ const responseCacheMeta = new Map<string, {
   scope: 'manage' | 'portal';
 }>();
 const responseCacheIndex = new Map<string, string>();
+const responseInFlight = new Map<string, Promise<GooglePhotosAlbumsResponse>>();
+const responseInFlightMeta = new Map<string, {
+  patientId: string;
+  packageKey: string;
+  scope: 'manage' | 'portal';
+}>();
 export const GOOGLE_PHOTOS_ALBUMS_CHANGED_EVENT = 'googlePhotosAlbums:packageChanged';
 
 function createApiError(code: string, message: string): Error & { code: string } {
@@ -150,6 +156,8 @@ export function invalidateGooglePhotosAlbumsCache(options?: {
     responseCache.clear();
     responseCacheMeta.clear();
     responseCacheIndex.clear();
+    responseInFlight.clear();
+    responseInFlightMeta.clear();
     return;
   }
   const packageKey = options.packageKey || (options.packageNumber
@@ -168,6 +176,14 @@ export function invalidateGooglePhotosAlbumsCache(options?: {
     responseCacheMeta.delete(key);
     for (const [lookupKey, storageKey] of responseCacheIndex.entries()) {
       if (storageKey === key) responseCacheIndex.delete(lookupKey);
+    }
+  }
+  for (const [lookupKey, meta] of responseInFlightMeta.entries()) {
+    const packageMatches = !packageKey || meta.packageKey === packageKey;
+    const scopeMatches = !options.scope || meta.scope === options.scope;
+    if (meta.patientId === options.patientId && packageMatches && scopeMatches) {
+      responseInFlight.delete(lookupKey);
+      responseInFlightMeta.delete(lookupKey);
     }
   }
 }
@@ -193,6 +209,8 @@ export function resetGooglePhotosAlbumsCacheForTests(): void {
   responseCache.clear();
   responseCacheMeta.clear();
   responseCacheIndex.clear();
+  responseInFlight.clear();
+  responseInFlightMeta.clear();
 }
 
 export function getGooglePhotosAlbumsCachedPackageKeysForTests(): string[] {
@@ -227,14 +245,37 @@ export async function listGooglePhotosAlbums(options: {
   const cached = readCachedGooglePhotosAlbums(options.patientId, options.packageNumber, scope);
   if (!options.force && cached) return cached;
 
+  const cacheLookupKey = lookupCacheKey(options.patientId, options.packageNumber, scope);
+  const currentRequest = responseInFlight.get(cacheLookupKey);
+  if (currentRequest) return currentRequest;
+
   const params = new URLSearchParams({
     patientId: options.patientId,
     packageNumber: String(options.packageNumber),
     scope,
   });
-  const value = await request<GooglePhotosAlbumsResponse>('GET', `?${params.toString()}`);
-  storeGooglePhotosAlbumsCache({ patientId: options.patientId, packageNumber: options.packageNumber, scope }, value);
-  return value;
+  let requestPromise: Promise<GooglePhotosAlbumsResponse>;
+  requestPromise = request<GooglePhotosAlbumsResponse>('GET', `?${params.toString()}`)
+    .then(value => {
+      if (responseInFlight.get(cacheLookupKey) === requestPromise) {
+        storeGooglePhotosAlbumsCache({ patientId: options.patientId, packageNumber: options.packageNumber, scope }, value);
+      }
+      return value;
+    });
+  responseInFlight.set(cacheLookupKey, requestPromise);
+  responseInFlightMeta.set(cacheLookupKey, {
+    patientId: options.patientId,
+    packageKey: buildPackageKey({ patientId: options.patientId, packageNumber: options.packageNumber }),
+    scope,
+  });
+  try {
+    return await requestPromise;
+  } finally {
+    if (responseInFlight.get(cacheLookupKey) === requestPromise) {
+      responseInFlight.delete(cacheLookupKey);
+      responseInFlightMeta.delete(cacheLookupKey);
+    }
+  }
 }
 
 export async function saveGooglePhotosAlbumPackage(

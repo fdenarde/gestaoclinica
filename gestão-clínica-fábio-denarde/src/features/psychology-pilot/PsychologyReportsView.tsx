@@ -21,21 +21,11 @@ import {
 import { createPsychologyPeriod } from './psychologyFinancialLedger';
 import { downloadPsychologyReportCsv, downloadPsychologyReportPdf, type PsychologyFinanceExportView, type PsychologyReportExportPayload } from './psychologyReportExports';
 import { createPsychologyPersistenceScope, resolvePsychologyRuntimeIdentity } from '../psychology-persistence';
-import { formatPhoneDisplay } from '../../../shared/phoneNormalization.js';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 const primaryButton = 'inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-4 py-3 text-sm font-black text-white shadow-sm transition hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50';
 const secondaryButton = 'inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50';
 const inputClass = 'w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-900 outline-none transition focus:border-violet-600 focus:ring-2 focus:ring-violet-100';
-
-function reportPhoneLabel(value?: string): string {
-  const raw = String(value || '').trim();
-  if (!raw) return '—';
-  try {
-    return formatPhoneDisplay(raw);
-  } catch {
-    return raw;
-  }
-}
 
 const reportOptions: Array<{ id: PsychologyReportKind; label: string; description: string; icon: typeof FileText }> = [
   { id: 'sessions', label: 'Atendimentos e status', description: 'Compare sessões realizadas, faltas e cancelamentos.', icon: CheckCircle2 },
@@ -110,7 +100,7 @@ function AgendaPreview({ report }: { report: PsychologyAgendaReport }) {
 }
 
 function PatientsPreview({ report: sourceReport }: { report: PsychologyPatientsReport }) {
-  const report = { ...sourceReport, rows: sourceReport.rows.map(row => ({ ...row, patient: { ...row.patient, phone: reportPhoneLabel(row.patient.phone) } })) };
+  const report = { ...sourceReport, rows: sourceReport.rows.map(row => ({ ...row, patient: { ...row.patient, phone: formatPsychologyPhoneDisplay(row.patient.phone) } })) };
   return report.rows.length ? <div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[940px] text-left text-sm"><thead className="bg-slate-50 text-[11px] font-black uppercase tracking-wide text-slate-500"><tr>{['Paciente', 'Telefone', 'E-mail', 'Status', 'Última sessão', 'Próxima sessão', 'Modalidade', 'Pacote ativo'].map(label => <th key={label} className="px-4 py-3">{label}</th>)}</tr></thead><tbody>{report.rows.map(row => <tr key={row.patient.id} className="border-t border-slate-100"><td className="px-4 py-3 font-black">{row.patient.name}</td><td className="px-4 py-3 text-slate-600">{row.patient.phone || '—'}</td><td className="px-4 py-3 text-slate-600">{row.patient.email || '—'}</td><td className="px-4 py-3">{row.patient.active ? 'Ativo' : 'Inativo'}</td><td className="px-4 py-3 text-slate-600">{formatPsychologyReportDate(row.lastSessionDate)}</td><td className="px-4 py-3 text-slate-600">{formatPsychologyReportDateTime(row.nextSession?.date, row.nextSession?.time)}</td><td className="px-4 py-3">{row.preferredModalityLabel}</td><td className="px-4 py-3">{row.activePackageName || '—'}</td></tr>)}</tbody></table></div> : <EmptyState>Nenhum paciente corresponde aos filtros.</EmptyState>;
 }
 

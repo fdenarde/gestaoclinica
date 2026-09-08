@@ -43,6 +43,19 @@ test('Prontuário — UI mantém a ação junto da ficha e não referencia Porta
   assert.match(dialog, /overflow-hidden/);
 });
 
+test('Prontuário — UX mantém SOAP canônico, atalhos, estado e salvamento explícito', () => {
+  const dialog = readFileSync('src/features/psychology-pilot/PsychologyClinicalRecordDialog.tsx', 'utf8');
+  assert.match(dialog, /S — Sujeito/);
+  assert.match(dialog, /Salvar e fechar/);
+  assert.match(dialog, /Alterações não salvas/);
+  assert.match(dialog, /Existem alterações não salvas\. Deseja sair sem salvar\?/);
+  assert.match(dialog, /Inserir estrutura/);
+  for (const marker of ['Objetivo da sessão', 'Atividades realizadas', 'Resposta do paciente', 'Observações', 'Encaminhamentos']) assert.match(dialog, new RegExp(marker));
+  assert.match(dialog, /Última atualização/);
+  assert.match(dialog, /Visualizar/);
+  assert.doesNotMatch(dialog, /localStorage|sessionStorage/);
+});
+
 test('Prontuário — identificadores clínicos não atravessam as superfícies pública ou do responsável', () => {
   const publicSurfaces = [
     'src/components/Auth/ResponsiblePortal.tsx',

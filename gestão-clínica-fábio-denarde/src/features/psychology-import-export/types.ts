@@ -53,12 +53,6 @@ export interface NormalizedPatient {
   name: string;
   birthDate?: string;
   phone?: string;
-  /** Preserved source value for audit; never used as an integration recipient. */
-  rawImportedPhone?: string;
-  /** Human-readable value after import artifacts are removed. */
-  displayPhone?: string;
-  /** Digits-only value when the country code can be resolved. */
-  canonicalPhone?: string;
   email?: string;
   status?: string;
   source: ImportSource;

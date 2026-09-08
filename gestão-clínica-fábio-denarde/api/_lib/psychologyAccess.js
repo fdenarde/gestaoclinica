@@ -203,3 +203,107 @@ export async function resolvePsychologyAccessContext(req, options = {}) {
     accessContext: baseContext,
   });
 }
+
+function requestQueryValue(req, key) {
+  const direct = req?.query?.[key];
+  if (direct !== undefined && direct !== null) return normalize(direct, 160);
+  try {
+    return normalize(new URL(String(req?.url || ''), 'http://localhost').searchParams.get(key), 160);
+  } catch {
+    return '';
+  }
+}
+
+async function listPsychologyContextLinks(db, professionalId = '') {
+  const collection = db.collection('professionalContexts');
+  const query = typeof collection.where === 'function'
+    ? collection.where(professionalId ? 'professionalId' : 'context', '==', professionalId || PSYCHOLOGY_CONTEXT)
+    : collection;
+  const snapshot = await query.get();
+  return (snapshot.docs || [])
+    .map(documentSnapshot => ({ ...documentSnapshot.data(), documentId: documentSnapshot.id }))
+    .filter(link => link.active === true && normalize(link.context) === PSYCHOLOGY_CONTEXT)
+    .filter(link => !professionalId || normalize(link.professionalId, 128) === professionalId);
+}
+
+/**
+ * Resolves an administrator to one explicitly requested (or unambiguous)
+ * Psychology environment. No personal relationship or linked-patient rule is
+ * consulted here; the only authorization gate is the administrative role and
+ * the operational monitoring permission.
+ */
+export async function resolvePsychologyAdminMonitoringContext(req, options = {}) {
+  const db = options.db || getAdminDb();
+  const resolveBaseAccessContext = options.resolveBaseAccessContext || resolveAccessContext;
+  const baseContext = await resolveBaseAccessContext(req, {
+    allowedRoles: ['admin'],
+    requestedContext: 'admin',
+    requiredPermissions: ['monitoring.panel.view'],
+  });
+  if (baseContext?.role !== 'admin') {
+    throw psychologyError(
+      'psychology/monitoring-admin-required',
+      'O monitoramento operacional da Psicologia está disponível apenas para administradores.',
+      403,
+    );
+  }
+
+  const requestedProfessionalId = normalize(
+    options.professionalId || requestQueryValue(req, 'professionalId'),
+    128,
+  );
+  const links = await listPsychologyContextLinks(db, requestedProfessionalId);
+  const scopedLinks = [];
+  for (const link of links) {
+    const professionalId = normalize(link.professionalId, 128);
+    const tenantId = normalize(link.tenantId, 160);
+    if (!safeProfessionalId(professionalId) || !tenantId) continue;
+    try {
+      const binding = await resolvePsychologyWorkspaceTenantBinding({
+        db,
+        workspaceId: normalize(baseContext.workspaceId, 160),
+        tenantId,
+      });
+      scopedLinks.push({ ...link, professionalId, tenantId, binding });
+    } catch {
+      // A context from another tenant/workspace is not a candidate for this
+      // administrative support view.
+    }
+  }
+
+  const candidates = [...new Map(scopedLinks.map(link => [
+    `${link.professionalId}:${link.tenantId}`,
+    link,
+  ])).values()];
+  if (candidates.length === 0) {
+    throw psychologyError(
+      requestedProfessionalId ? 'psychology/monitoring-scope-not-found' : 'psychology/monitoring-scope-unavailable',
+      'O ambiente Psicologia solicitado não está disponível para monitoramento.',
+      403,
+    );
+  }
+  if (candidates.length > 1) {
+    throw psychologyError(
+      'psychology/monitoring-professional-required',
+      'Informe explicitamente o profissional da Psicologia a ser monitorado.',
+      409,
+    );
+  }
+
+  const candidate = candidates[0];
+  return Object.freeze({
+    authUid: normalize(baseContext.userId, 160),
+    workspaceId: candidate.binding.workspaceId,
+    tenantId: candidate.binding.tenantId,
+    professionalId: candidate.professionalId,
+    context: PSYCHOLOGY_CONTEXT,
+    role: 'admin',
+    permissions: Object.freeze(Object.entries(baseContext.permissions || {})
+      .filter(([, enabled]) => enabled === true)
+      .map(([permission]) => permission)),
+    actorName: baseContext.actorName || null,
+    bindingMode: candidate.binding.bindingMode,
+    bindingSource: candidate.binding.source,
+    accessContext: baseContext,
+  });
+}

@@ -1584,7 +1584,6 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       setSavingWhatsappBlock(false);
     }
   };
-
   const handleRepositionContactResult = async (repositionId: string, result: 'aceitou' | 'recusou') => {
     const updatedRepositions = state.repositions.map(reposition =>
       reposition.id === repositionId

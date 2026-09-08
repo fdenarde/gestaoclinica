@@ -94,6 +94,8 @@ export interface PsychologyCharge {
   canceledBy?: string;
   cancelledBy?: string;
   cancellationReason?: string;
+  reactivatedAt?: string;
+  reactivatedBy?: string;
   exemptionReason?: string;
 }
 
@@ -120,6 +122,8 @@ export interface PsychologyPayment {
   voidedAt?: string;
   voidedBy?: string;
   voidReason?: string;
+  reactivatedAt?: string;
+  reactivatedBy?: string;
 }
 
 export type PsychologyExpenseCategory = 'Aluguel' | 'Materiais' | 'Serviços' | 'Impostos/Taxas' | 'Marketing' | 'Capacitação' | 'Tecnologia' | 'Outros';
@@ -140,6 +144,8 @@ export interface PsychologyExpense {
   reversedAt?: string;
   reversedBy?: string;
   reversalReason?: string;
+  reactivatedAt?: string;
+  reactivatedBy?: string;
 }
 
 export interface PsychologySessionPackage {
@@ -154,6 +160,9 @@ export interface PsychologySessionPackage {
   endDate?: string;
   active: boolean;
   price?: number;
+  serviceId?: string;
+  pricePerSession?: number;
+  totalPrice?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -283,7 +292,7 @@ export const PSYCHOLOGY_COLOR_DEFAULTS: PsychologyColorRegistry = {
   ONLINE: '#16A34A',
   PRESENTIAL_PRIMARY: '#DC2626',
   PERSONAL: '#F97316',
-  MENTORING: '#7C3AED',
+  MENTORING: '#C8803E',
   EXTERNAL_OFFICE: '#EA580C',
 };
 
@@ -510,12 +519,9 @@ function normalizePsychologyServices(value: unknown, scope: PsychologyScope, def
         updatedAt: String(raw.updatedAt || now),
       } satisfies PsychologyService;
     });
+  if (normalized.length === 0) return defaults;
   const firstRawId = value.length === 1 && value[0] && typeof value[0] === 'object' ? String((value[0] as Partial<PsychologyService>).id || '') : '';
   const isLegacySingleServiceStore = firstRawId === 'psychology-service-psychotherapy';
-  // An explicit empty remote catalog means that the provider has no service rows yet;
-  // it must not make the internal appointment selector unusable. Keep valid remote
-  // entries authoritative, while using the scoped canonical catalog only for empty data.
-  if (normalized.length === 0) return defaults;
   return isLegacySingleServiceStore
     ? [...normalized, ...defaults.filter(service => !normalized.some(current => current.id === service.id))]
     : normalized;
@@ -659,6 +665,14 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
     crp: professionalRegistration,
     specialty: professionalTitle,
   };
+  const normalizedOnlineColor = normalizePsychologyColor(colors.ONLINE, defaults.colors.ONLINE);
+  const normalizedMentoringColor = normalizePsychologyColor(colors.MENTORING, defaults.colors.MENTORING);
+  // Older candidates accidentally persisted the Online token for Mentoria.
+  // Repair that known cross-category value at the normalization boundary so
+  // every agenda surface receives the same semantic token.
+  const mentoringColor = normalizedMentoringColor === normalizedOnlineColor
+    ? defaults.colors.MENTORING
+    : normalizedMentoringColor;
   return {
     ...defaults,
     ...input,
@@ -668,10 +682,10 @@ export function normalizePsychologySettings(value: unknown, scope: PsychologySco
     services,
     locations: stableLocations,
     colors: {
-      ONLINE: normalizePsychologyColor(colors.ONLINE, defaults.colors.ONLINE),
+      ONLINE: normalizedOnlineColor,
       PRESENTIAL_PRIMARY: normalizePsychologyColor(colors.PRESENTIAL_PRIMARY, defaults.colors.PRESENTIAL_PRIMARY),
       PERSONAL: normalizePsychologyColor(colors.PERSONAL, defaults.colors.PERSONAL),
-      MENTORING: normalizePsychologyColor(colors.MENTORING, defaults.colors.MENTORING),
+      MENTORING: mentoringColor,
       EXTERNAL_OFFICE: normalizePsychologyColor(colors.EXTERNAL_OFFICE, defaults.colors.EXTERNAL_OFFICE),
     },
     reminders: { ...defaults.reminders, ...(input.reminders || {}) },
@@ -685,7 +699,12 @@ export function agendaCategoryForSession(input: { modality: 'presencial' | 'onli
 }
 
 export function colorForAgendaCategory(colors: PsychologyColorRegistry, category: PsychologyAgendaCategory): string {
-  return normalizePsychologyColor(colors[category], PSYCHOLOGY_COLOR_DEFAULTS[category]);
+  const fallback = PSYCHOLOGY_COLOR_DEFAULTS[category];
+  const color = normalizePsychologyColor(colors[category], fallback);
+  return category === 'MENTORING'
+    && color === normalizePsychologyColor(colors.ONLINE, PSYCHOLOGY_COLOR_DEFAULTS.ONLINE)
+    ? fallback
+    : color;
 }
 
 export function locationForSession(settings: PsychologySettings, session: { modality: 'presencial' | 'online'; locationId?: string; locationType?: PsychologyLocationType }): PsychologyLocation | undefined {
@@ -736,6 +755,11 @@ function psychologyAgendaServiceKey(value: string | undefined): string {
 export function isPsychologyTherapyCoupleService(serviceName: string | undefined): boolean {
   const key = psychologyAgendaServiceKey(serviceName);
   return key === 'terapiadecasal' || key.startsWith('terapiadecasal');
+}
+
+export function isPsychologyMentoringService(serviceName: string | undefined): boolean {
+  const key = psychologyAgendaServiceKey(serviceName);
+  return key.includes('mentoria') || key.includes('mentoring');
 }
 
 function hexColor(value: string): [number, number, number] {
@@ -790,12 +814,15 @@ export function resolvePsychologyAgendaEventStyle(input: {
   cancelled?: boolean;
 }): PsychologyAgendaEventStyle {
   const therapyCouple = isPsychologyTherapyCoupleService(input.serviceName);
+  const mentoringService = isPsychologyMentoringService(input.serviceName);
   const category: PsychologyAgendaCategory = input.category || (input.source === 'PERSONAL_AGENDA'
     ? 'PERSONAL'
     : input.source === 'MENTORING'
       ? 'MENTORING'
+      : mentoringService
+        ? 'MENTORING'
       : agendaCategoryForSession({ modality: input.modality || 'presencial', locationType: input.location?.type }));
-  const baseColor = therapyCouple ? '#EAB308' : colorForAgendaCategory(input.colors, category);
+  const baseColor = therapyCouple && category !== 'MENTORING' ? '#EAB308' : colorForAgendaCategory(input.colors, category);
   const tokens = derivePsychologyAgendaColorTokens(baseColor);
   const cancelled = Boolean(input.cancelled);
   return {

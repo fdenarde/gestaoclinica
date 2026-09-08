@@ -18,6 +18,365 @@ function psychologyCatalogEntry(id) {
   return PSYCHOLOGY_SERVICE_CATALOG.find((service) => service.id === canonicalId);
 }
 
+// src/features/psychology-online-booking/bookingDomain.ts
+var LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID = "psychology-local-professional";
+var LOCAL_ONLINE_BOOKING_DEFAULT_SLUG = "leila-chaves";
+var DEFAULT_MANAGEMENT_TOKEN_TTL_DAYS = 180;
+var PUBLIC_BOOKING_START_GRID_MINUTES = 60;
+function normalizeProfessionalSlug(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
+function normalizeSourceChannel(value) {
+  const normalized = String(value || "").trim().toLocaleLowerCase();
+  return normalized === "google" || normalized === "whatsapp" || normalized === "site" || normalized === "direct" ? normalized : "direct";
+}
+function serviceAllowsModality(service, modality) {
+  if (modality === "ONLINE") return service.onlineEnabled ?? Boolean(service.modalities?.includes("ONLINE"));
+  return service.inPersonEnabled ?? Boolean(service.modalities?.includes("PRESENCIAL"));
+}
+function isValidGoogleMapsUrl(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return true;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === "https:" && (parsed.hostname === "www.google.com" || parsed.hostname === "google.com" || parsed.hostname === "maps.google.com" || parsed.hostname === "maps.app.goo.gl" || parsed.hostname === "goo.gl");
+  } catch {
+    return false;
+  }
+}
+function timeToMinutes(value) {
+  const match = /^(\d{2}):(\d{2})$/.exec(String(value || "").trim());
+  if (!match) return -1;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 ? hours * 60 + minutes : -1;
+}
+function minutesToTime(value) {
+  const safe = Math.max(0, Math.min(23 * 60 + 59, Math.round(value)));
+  return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
+}
+function isValidIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN((/* @__PURE__ */ new Date(`${value}T12:00:00`)).getTime());
+}
+function dateToLocalDateTime(date, time) {
+  if (!isValidIsoDate(date) || timeToMinutes(time) < 0) return null;
+  const parsed = /* @__PURE__ */ new Date(`${date}T${time}:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function formatDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function weekdayOf(date) {
+  return (/* @__PURE__ */ new Date(`${date}T12:00:00`)).getDay();
+}
+function overlaps(startTime, durationMinutes, block) {
+  const start = timeToMinutes(startTime);
+  const end = start + durationMinutes;
+  const blockStart = timeToMinutes(block.startTime);
+  const blockEnd = blockStart + Math.max(1, block.durationMinutes);
+  return start < blockEnd && blockStart < end;
+}
+function exceptionApplies(exception, modality, locationId) {
+  return (!exception.modality || exception.modality === modality) && (!exception.locationId || exception.locationId === locationId);
+}
+function exceptionRange(exception) {
+  const start = timeToMinutes(exception.startTime || "");
+  const end = timeToMinutes(exception.endTime || "");
+  return start >= 0 && end > start ? { start, end } : null;
+}
+function subtractBlockedPeriods(period, blocked) {
+  let remaining = [period];
+  blocked.forEach((block) => {
+    remaining = remaining.flatMap((item) => {
+      if (block.end <= item.start || block.start >= item.end) return [item];
+      const pieces = [];
+      if (item.start < block.start) pieces.push({ ...item, end: block.start });
+      if (block.end < item.end) pieces.push({ ...item, start: block.end });
+      return pieces.filter((piece) => piece.end > piece.start);
+    });
+  });
+  return remaining;
+}
+function effectivePublicPeriods(settings, date, modality, locationId) {
+  const exceptions = settings.publicBookingExceptions.filter((exception) => exception.civilDate === date && exceptionApplies(exception, modality, locationId));
+  if (exceptions.some((exception) => exception.type === "BLOCK_DAY")) return [];
+  const habitual = settings.publicBookingAvailability.filter((period) => period.enabled && period.dayOfWeek === weekdayOf(date) && period.modalities.includes(modality) && (modality === "ONLINE" || !period.locationIds?.length || Boolean(locationId && period.locationIds.includes(locationId)))).map((period) => ({ start: timeToMinutes(period.startTime), end: timeToMinutes(period.endTime), extra: false })).filter((period) => period.start >= 0 && period.end > period.start);
+  const extras = exceptions.filter((exception) => exception.type === "OPEN_PERIOD").map((exception) => exceptionRange(exception)).filter((range) => Boolean(range)).map((range) => ({ ...range, extra: true }));
+  const blocked = exceptions.filter((exception) => exception.type === "BLOCK_PERIOD").map((exception) => exceptionRange(exception)).filter((range) => Boolean(range));
+  return [...habitual, ...extras].flatMap((period) => subtractBlockedPeriods(period, blocked));
+}
+function getPublishedSlots(input) {
+  const { settings } = input;
+  const service = settings.publishedServices.find((item) => item.id === input.serviceId && item.active);
+  const location = input.modality === "PRESENCIAL" ? settings.locations.find((item) => item.id === input.locationId && item.active) : void 0;
+  if (!settings.active || !service || !serviceAllowsModality(service, input.modality) || !settings.publishedModalities.some((item) => item.id === input.modality && item.active)) return [];
+  if (input.modality === "PRESENCIAL" && (!location || !service.allowedLocationIds.includes(location.id))) return [];
+  if (!isValidIsoDate(input.fromDate) || !isValidIsoDate(input.throughDate)) return [];
+  const startDate = /* @__PURE__ */ new Date(`${input.fromDate}T12:00:00`);
+  const endDate = /* @__PURE__ */ new Date(`${input.throughDate}T12:00:00`);
+  if (startDate > endDate) return [];
+  const now = input.now || /* @__PURE__ */ new Date();
+  const earliest = new Date(now.getTime() + settings.minNoticeHours * 60 * 60 * 1e3);
+  const latest = new Date(now.getTime() + Math.min(90, settings.maxAdvanceDays) * 24 * 60 * 60 * 1e3);
+  const blocks = [...input.existingBlocks || [], ...input.holds || []];
+  const slots = [];
+  for (let cursor = new Date(startDate); cursor <= endDate; cursor.setDate(cursor.getDate() + 1)) {
+    const date = formatDateKey(cursor);
+    const dayStart = /* @__PURE__ */ new Date(`${date}T00:00:00`);
+    if (dayStart > latest) continue;
+    const publicPeriods = effectivePublicPeriods(settings, date, input.modality, input.locationId);
+    for (const period of publicPeriods) {
+      const firstPublicStart = Math.ceil(period.start / PUBLIC_BOOKING_START_GRID_MINUTES) * PUBLIC_BOOKING_START_GRID_MINUTES;
+      for (let minute = firstPublicStart; minute + service.durationMinutes <= period.end; minute += PUBLIC_BOOKING_START_GRID_MINUTES) {
+        const time = minutesToTime(minute);
+        const dateTime = dateToLocalDateTime(date, time);
+        if (!dateTime || dateTime < earliest || dateTime > latest) continue;
+        if (minute % PUBLIC_BOOKING_START_GRID_MINUTES !== 0) continue;
+        if (blocks.some((block) => block.date === date && overlaps(time, service.durationMinutes, block))) continue;
+        slots.push({ date, time, endTime: minutesToTime(minute + service.durationMinutes), durationMinutes: service.durationMinutes, serviceId: service.id, modality: input.modality, locationId: input.locationId });
+      }
+    }
+  }
+  return slots.filter((slot, index, all) => all.findIndex((item) => item.date === slot.date && item.time === slot.time && item.modality === slot.modality && item.locationId === slot.locationId) === index);
+}
+function createRandomBytes(size) {
+  const bytes = new Uint8Array(size);
+  if (!globalThis.crypto?.getRandomValues) throw new Error("Web Crypto indispon\xEDvel para gerar o link seguro.");
+  globalThis.crypto.getRandomValues(bytes);
+  return bytes;
+}
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  const encoded = typeof btoa === "function" ? btoa(binary) : "";
+  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function createManagementToken() {
+  return bytesToBase64Url(createRandomBytes(32));
+}
+function createMapsNavigationRef() {
+  return `maps_${bytesToBase64Url(createRandomBytes(32))}`;
+}
+async function hashManagementToken(token) {
+  if (!token || !globalThis.crypto?.subtle) throw new Error("Web Crypto indispon\xEDvel para validar o link seguro.");
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+async function hashMapsNavigationRef(ref) {
+  if (!ref || !globalThis.crypto?.subtle) throw new Error("Web Crypto indispon\xEDvel para validar a navega\xE7\xE3o do mapa.");
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(ref));
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+function getAppointmentManagementUrl(appointmentId, managementToken) {
+  if (!appointmentId || !managementToken) throw new Error("O link de gerenciamento exige appointmentId e token bruto tempor\xE1rio.");
+  const path = `/consulta/${encodeURIComponent(managementToken)}`;
+  return typeof window === "undefined" ? path : `${window.location.origin}${path}`;
+}
+function getMapsNavigationUrl(navigationRef) {
+  if (!navigationRef) throw new Error("A navega\xE7\xE3o do mapa exige uma capability v\xE1lida.");
+  const path = `/maps/${encodeURIComponent(navigationRef)}`;
+  return typeof window === "undefined" ? path : `${window.location.origin}${path}`;
+}
+function buildRescheduleRequestMessage(summary) {
+  const date = summary.date.split("-").reverse().join("/");
+  return `Ol\xE1, preciso reagendar meu atendimento com ${summary.professionalName}, atualmente marcado para ${date} \xE0s ${summary.time}. Poderia me informar outros hor\xE1rios dispon\xEDveis?`;
+}
+function buildAppointmentMessagingContext(summary) {
+  const base = {
+    appointmentModality: summary.modality,
+    professionalDisplayName: summary.professionalName,
+    date: summary.date,
+    time: summary.time
+  };
+  return summary.modality === "PRESENCIAL" ? { ...base, locationDisplayName: summary.locationName, locationFullAddress: summary.locationAddress, locationGoogleMapsUrl: summary.googleMapsUrl, mapsNavigationUrl: summary.mapsNavigationUrl } : base;
+}
+function buildWhatsAppRescheduleUrl(phoneE164, message) {
+  const phone = String(phoneE164 || "").replace(/\D/g, "");
+  if (phone.length < 8 || phone.length > 15) return null;
+  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+}
+function createDefaultPublicBookingSettings(now = /* @__PURE__ */ new Date()) {
+  const updatedAt = now.toISOString();
+  const weekdays = [1, 2, 3, 4, 5];
+  const weeklyAvailability = Array.from({ length: 7 }, (_, dayOfWeek) => ({
+    dayOfWeek,
+    enabled: weekdays.includes(dayOfWeek),
+    periods: weekdays.includes(dayOfWeek) ? [{ startTime: "09:00", endTime: "18:00" }] : []
+  }));
+  const locations = [{
+    id: "psychology-location-primary-office",
+    professionalId: LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID,
+    displayName: "Shopping Moxuara",
+    fullAddress: "",
+    city: "Cariacica",
+    state: "ES",
+    googleMapsUrl: "",
+    active: true,
+    sortOrder: 1
+  }, {
+    id: "psychology-location-external-office",
+    professionalId: LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID,
+    displayName: "SPAC \u2014 Centro de Sa\xFAde e Movimento",
+    fullAddress: "",
+    city: "Vila Velha",
+    state: "ES",
+    googleMapsUrl: "",
+    active: true,
+    sortOrder: 2
+  }];
+  const allowedLocationIds = locations.map((location) => location.id);
+  const services = PSYCHOLOGY_SERVICE_CATALOG.map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    durationMinutes: entry.defaultDurationMinutes,
+    active: true,
+    sortOrder: entry.sortOrder,
+    onlineEnabled: entry.modality !== "PRESENTIAL",
+    inPersonEnabled: entry.modality !== "ONLINE",
+    allowedLocationIds
+  }));
+  const publicBookingAvailability = weekdays.map((dayOfWeek) => ({
+    dayOfWeek,
+    enabled: true,
+    startTime: "10:00",
+    endTime: "17:00",
+    modalities: ["ONLINE", "PRESENCIAL"],
+    locationIds: allowedLocationIds
+  }));
+  return {
+    id: "online-booking",
+    context: "PSICOLOGIA",
+    professionalId: LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID,
+    professionalSlug: LOCAL_ONLINE_BOOKING_DEFAULT_SLUG,
+    professionalName: "Leila Chaves",
+    clinicDisplayName: "Gest\xE3o Cl\xEDnica",
+    timezone: "America/Sao_Paulo",
+    active: true,
+    maxAdvanceDays: 21,
+    minNoticeHours: 24,
+    cancellationEnabled: true,
+    cancellationCutoffHours: 16,
+    whatsappContactPhoneE164: "552799529638",
+    slotIntervalMinutes: 30,
+    weeklyAvailability,
+    publicBookingAvailability,
+    publicBookingExceptions: [],
+    publishedServices: services,
+    publishedModalities: [
+      { id: "ONLINE", label: "Online", active: true },
+      { id: "PRESENCIAL", label: "Presencial", active: true }
+    ],
+    locations,
+    updatedAt
+  };
+}
+function normalizePublicBookingSettings(value, now = /* @__PURE__ */ new Date()) {
+  const fallback = createDefaultPublicBookingSettings(now);
+  const input = value && typeof value === "object" ? value : {};
+  const professionalSlug = normalizeProfessionalSlug(String(input.professionalSlug || fallback.professionalSlug)) || fallback.professionalSlug;
+  const maxAdvanceDays = Math.max(1, Math.min(90, Number(input.maxAdvanceDays) || fallback.maxAdvanceDays));
+  const minNoticeHours = Math.max(0, Math.min(168, Number(input.minNoticeHours) || 0));
+  const cancellationCutoffHours = Math.max(0, Math.min(168, Number(input.cancellationCutoffHours) || 0));
+  const slotIntervalMinutes = Math.max(5, Math.min(180, Number(input.slotIntervalMinutes) || fallback.slotIntervalMinutes));
+  const rawServices = Array.isArray(input.publishedServices) ? input.publishedServices : [];
+  const migrateLegacyServices = rawServices.length === 1 && ["psychotherapy-individual", "psychology-service-psychotherapy"].includes(String(rawServices[0].id || "")) && !("onlineEnabled" in rawServices[0]);
+  const activeLocationIds = fallback.locations.map((location) => location.id);
+  const rawLocations = Array.isArray(input.locations) ? input.locations : [];
+  const migrateLegacyLocations = rawLocations.length === 1 && rawLocations[0].id === "consultorio-gestao-clinica" && !("fullAddress" in rawLocations[0]);
+  const legacyLocationIdMap = {
+    "location-shopping-moxuara": "psychology-location-primary-office",
+    "location-spac-centro-saude-movimento": "psychology-location-external-office"
+  };
+  const locations = (migrateLegacyLocations || !rawLocations.length ? fallback.locations : rawLocations.map((item, index) => ({
+    id: legacyLocationIdMap[String(item.id || "")] || String(item.id || `location-${index + 1}`),
+    professionalId: fallback.professionalId,
+    displayName: String(item.displayName || item.name || `Local ${index + 1}`).trim() || `Local ${index + 1}`,
+    fullAddress: String(item.fullAddress ?? item.address ?? "").trim(),
+    city: String(item.city || "").trim(),
+    state: String(item.state || "").trim().toUpperCase(),
+    googleMapsUrl: isValidGoogleMapsUrl(String(item.googleMapsUrl || "").trim()) ? String(item.googleMapsUrl || "").trim() : "",
+    active: item.active !== false,
+    sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index + 1
+  }))).sort((a, b) => a.sortOrder - b.sortOrder);
+  const locationIds = locations.map((location) => location.id);
+  const services = (migrateLegacyServices || !rawServices.length ? fallback.publishedServices : rawServices.map((item, index) => {
+    const legacyModalities = Array.isArray(item.modalities) ? item.modalities : [];
+    const id = canonicalPsychologyServiceId(item.id || `public-service-${index + 1}`);
+    const catalogEntry = psychologyCatalogEntry(id);
+    return {
+      id,
+      name: catalogEntry?.name || String(item.name || `Atendimento ${index + 1}`).trim() || `Atendimento ${index + 1}`,
+      durationMinutes: Math.max(5, Number(item.durationMinutes) || catalogEntry?.defaultDurationMinutes || 50),
+      active: item.active !== false,
+      sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index + 1,
+      onlineEnabled: item.onlineEnabled ?? legacyModalities.includes("ONLINE"),
+      inPersonEnabled: item.inPersonEnabled ?? legacyModalities.includes("PRESENCIAL"),
+      allowedLocationIds: Array.isArray(item.allowedLocationIds) && item.allowedLocationIds.length ? item.allowedLocationIds.map((id2) => legacyLocationIdMap[String(id2)] || String(id2)).filter((id2) => locationIds.includes(id2)).length ? item.allowedLocationIds.map((id2) => legacyLocationIdMap[String(id2)] || String(id2)).filter((id2) => locationIds.includes(id2)) : locationIds : locationIds
+    };
+  })).sort((a, b) => a.sortOrder - b.sortOrder);
+  const rawAvailability = Array.isArray(input.publicBookingAvailability) ? input.publicBookingAvailability : fallback.publicBookingAvailability;
+  const fallbackPublicModalities = fallback.publishedModalities.filter((item) => item.active).map((item) => item.id);
+  const publicBookingAvailability = rawAvailability.map((period) => ({
+    ...period,
+    modalities: Array.isArray(period.modalities) ? period.modalities : fallbackPublicModalities,
+    locationIds: period.locationIds?.some((id) => locationIds.includes(id)) ? period.locationIds.filter((id) => locationIds.includes(id)) : locationIds
+  }));
+  const rawExceptions = Array.isArray(input.publicBookingExceptions) ? input.publicBookingExceptions : [];
+  const publicBookingExceptions = rawExceptions.flatMap((item, index) => {
+    const type = item.type === "BLOCK_DAY" || item.type === "BLOCK_PERIOD" || item.type === "OPEN_PERIOD" ? item.type : null;
+    const civilDate = String(item.civilDate || "").trim();
+    const startTime = item.startTime ? String(item.startTime).trim() : void 0;
+    const endTime = item.endTime ? String(item.endTime).trim() : void 0;
+    const rangeIsValid = type === "BLOCK_DAY" || timeToMinutes(startTime || "") >= 0 && timeToMinutes(endTime || "") > timeToMinutes(startTime || "");
+    if (!type || !isValidIsoDate(civilDate) || !rangeIsValid) return [];
+    return [{
+      id: String(item.id || `public-exception-${index + 1}`),
+      professionalId: fallback.professionalId,
+      civilDate,
+      type,
+      startTime,
+      endTime,
+      modality: item.modality === "ONLINE" || item.modality === "PRESENCIAL" ? item.modality : void 0,
+      locationId: item.locationId && locationIds.includes(item.locationId) ? item.locationId : void 0,
+      note: String(item.note || "").trim() || void 0,
+      createdAt: String(item.createdAt || now.toISOString()),
+      updatedAt: String(item.updatedAt || now.toISOString())
+    }];
+  });
+  return {
+    ...fallback,
+    ...clone(input),
+    id: "online-booking",
+    context: "PSICOLOGIA",
+    professionalId: fallback.professionalId,
+    professionalSlug,
+    professionalName: String(input.professionalName || fallback.professionalName).trim() || fallback.professionalName,
+    clinicDisplayName: String(input.clinicDisplayName || fallback.clinicDisplayName).trim() || fallback.clinicDisplayName,
+    active: input.active !== false,
+    maxAdvanceDays,
+    minNoticeHours: Number.isFinite(Number(input.minNoticeHours)) ? Math.max(0, Math.min(168, Number(input.minNoticeHours))) : fallback.minNoticeHours,
+    cancellationEnabled: input.cancellationEnabled !== false,
+    cancellationCutoffHours: Number.isFinite(Number(input.cancellationCutoffHours)) ? cancellationCutoffHours : fallback.cancellationCutoffHours,
+    whatsappContactPhoneE164: String(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164) === "5527999990000" ? fallback.whatsappContactPhoneE164 : String(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164).replace(/\D/g, "").slice(0, 15),
+    slotIntervalMinutes,
+    weeklyAvailability: Array.isArray(input.weeklyAvailability) ? input.weeklyAvailability : fallback.weeklyAvailability,
+    publicBookingAvailability,
+    publicBookingExceptions,
+    publishedServices: services,
+    publishedModalities: Array.isArray(input.publishedModalities) ? input.publishedModalities : fallback.publishedModalities,
+    locations,
+    updatedAt: String(input.updatedAt || now.toISOString())
+  };
+}
+
 // shared/phoneNormalization.js
 var PHONE_APOSTROPHES = /['’]/gu;
 var PHONE_INVISIBLE = /[\u0000-\u001F\u007F\u00A0\u00AD\u061C\u1680\u180E\u2000-\u200D\u2028\u2029\u202F\u205F\u2060\u2066-\u2069\u3000\uFEFF]/gu;
@@ -317,389 +676,6 @@ function normalizePhone(value, { defaultCountryCode = null, requireCountryCode =
     metaRecipientId: countryCode ? canonicalPhone : null
   };
 }
-function normalizePhoneForIntegration(value, options = {}) {
-  const result = normalizePhone(value, { ...options, requireCountryCode: true });
-  if (result.canonicalPhone.length < 8 || result.canonicalPhone.length > 15) fail("INVALID_E164_LENGTH", "Telefone n\xE3o atende ao comprimento internacional.");
-  return result;
-}
-function buildWhatsappClickToChatUrl(value, { defaultCountryCode = "55", text = "" } = {}) {
-  try {
-    const normalized = normalizePhoneForIntegration(value, { defaultCountryCode });
-    const suffix = text ? `?text=${encodeURIComponent(text)}` : "";
-    return `https://wa.me/${normalized.canonicalPhone}${suffix}`;
-  } catch {
-    return null;
-  }
-}
-
-// src/features/psychology-online-booking/bookingDomain.ts
-var LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID = "psychology-local-professional";
-var LOCAL_ONLINE_BOOKING_DEFAULT_SLUG = "leila-chaves";
-var DEFAULT_MANAGEMENT_TOKEN_TTL_DAYS = 180;
-function normalizeProfessionalSlug(value) {
-  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-}
-function normalizeSourceChannel(value) {
-  const normalized = String(value || "").trim().toLocaleLowerCase();
-  return normalized === "google" || normalized === "whatsapp" || normalized === "site" || normalized === "direct" ? normalized : "direct";
-}
-function serviceAllowsModality(service, modality) {
-  if (modality === "ONLINE") return service.onlineEnabled ?? Boolean(service.modalities?.includes("ONLINE"));
-  return service.inPersonEnabled ?? Boolean(service.modalities?.includes("PRESENCIAL"));
-}
-function isValidGoogleMapsUrl(value) {
-  const candidate = String(value || "").trim();
-  if (!candidate) return true;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === "https:" && (parsed.hostname === "www.google.com" || parsed.hostname === "google.com" || parsed.hostname === "maps.google.com" || parsed.hostname === "maps.app.goo.gl" || parsed.hostname === "goo.gl");
-  } catch {
-    return false;
-  }
-}
-function timeToMinutes(value) {
-  const match = /^(\d{2}):(\d{2})$/.exec(String(value || "").trim());
-  if (!match) return -1;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59 ? hours * 60 + minutes : -1;
-}
-function minutesToTime(value) {
-  const safe = Math.max(0, Math.min(23 * 60 + 59, Math.round(value)));
-  return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
-}
-function isValidIsoDate(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN((/* @__PURE__ */ new Date(`${value}T12:00:00`)).getTime());
-}
-function dateToLocalDateTime(date, time) {
-  if (!isValidIsoDate(date) || timeToMinutes(time) < 0) return null;
-  const parsed = /* @__PURE__ */ new Date(`${date}T${time}:00`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-function formatDateKey(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-function weekdayOf(date) {
-  return (/* @__PURE__ */ new Date(`${date}T12:00:00`)).getDay();
-}
-function periodFits(startTime, durationMinutes, period) {
-  const start = timeToMinutes(startTime);
-  const periodStart = timeToMinutes(period.startTime);
-  const periodEnd = timeToMinutes(period.endTime);
-  return start >= periodStart && start + durationMinutes <= periodEnd;
-}
-function overlaps(startTime, durationMinutes, block) {
-  const start = timeToMinutes(startTime);
-  const end = start + durationMinutes;
-  const blockStart = timeToMinutes(block.startTime);
-  const blockEnd = blockStart + Math.max(1, block.durationMinutes);
-  return start < blockEnd && blockStart < end;
-}
-function validWeeklyPeriod(days, date, startTime, durationMinutes) {
-  const day = days.find((item) => item.enabled && item.dayOfWeek === weekdayOf(date));
-  return Boolean(day?.periods.some((period) => periodFits(startTime, durationMinutes, period)));
-}
-function exceptionApplies(exception, modality, locationId) {
-  return (!exception.modality || exception.modality === modality) && (!exception.locationId || exception.locationId === locationId);
-}
-function exceptionRange(exception) {
-  const start = timeToMinutes(exception.startTime || "");
-  const end = timeToMinutes(exception.endTime || "");
-  return start >= 0 && end > start ? { start, end } : null;
-}
-function subtractBlockedPeriods(period, blocked) {
-  let remaining = [period];
-  blocked.forEach((block) => {
-    remaining = remaining.flatMap((item) => {
-      if (block.end <= item.start || block.start >= item.end) return [item];
-      const pieces = [];
-      if (item.start < block.start) pieces.push({ ...item, end: block.start });
-      if (block.end < item.end) pieces.push({ ...item, start: block.end });
-      return pieces.filter((piece) => piece.end > piece.start);
-    });
-  });
-  return remaining;
-}
-function effectivePublicPeriods(settings, date, modality, locationId) {
-  const exceptions = settings.publicBookingExceptions.filter((exception) => exception.civilDate === date && exceptionApplies(exception, modality, locationId));
-  if (exceptions.some((exception) => exception.type === "BLOCK_DAY")) return [];
-  const habitual = settings.publicBookingAvailability.filter((period) => period.enabled && period.dayOfWeek === weekdayOf(date) && period.modalities.includes(modality) && (modality === "ONLINE" || !period.locationIds?.length || Boolean(locationId && period.locationIds.includes(locationId)))).map((period) => ({ start: timeToMinutes(period.startTime), end: timeToMinutes(period.endTime), extra: false })).filter((period) => period.start >= 0 && period.end > period.start);
-  const extras = exceptions.filter((exception) => exception.type === "OPEN_PERIOD").map((exception) => exceptionRange(exception)).filter((range) => Boolean(range)).map((range) => ({ ...range, extra: true }));
-  const blocked = exceptions.filter((exception) => exception.type === "BLOCK_PERIOD").map((exception) => exceptionRange(exception)).filter((range) => Boolean(range));
-  return [...habitual, ...extras].flatMap((period) => subtractBlockedPeriods(period, blocked));
-}
-function getPublishedSlots(input) {
-  const { settings } = input;
-  const service = settings.publishedServices.find((item) => item.id === input.serviceId && item.active);
-  const location = input.modality === "PRESENCIAL" ? settings.locations.find((item) => item.id === input.locationId && item.active) : void 0;
-  if (!settings.active || !service || !serviceAllowsModality(service, input.modality) || !settings.publishedModalities.some((item) => item.id === input.modality && item.active)) return [];
-  if (input.modality === "PRESENCIAL" && (!location || !service.allowedLocationIds.includes(location.id))) return [];
-  if (!isValidIsoDate(input.fromDate) || !isValidIsoDate(input.throughDate)) return [];
-  const startDate = /* @__PURE__ */ new Date(`${input.fromDate}T12:00:00`);
-  const endDate = /* @__PURE__ */ new Date(`${input.throughDate}T12:00:00`);
-  if (startDate > endDate) return [];
-  const now = input.now || /* @__PURE__ */ new Date();
-  const earliest = new Date(now.getTime() + settings.minNoticeHours * 60 * 60 * 1e3);
-  const latest = new Date(now.getTime() + Math.min(90, settings.maxAdvanceDays) * 24 * 60 * 60 * 1e3);
-  const blocks = [...input.existingBlocks || [], ...input.holds || []];
-  const slots = [];
-  for (let cursor = new Date(startDate); cursor <= endDate; cursor.setDate(cursor.getDate() + 1)) {
-    const date = formatDateKey(cursor);
-    const dayStart = /* @__PURE__ */ new Date(`${date}T00:00:00`);
-    if (dayStart > latest) continue;
-    const publicPeriods = effectivePublicPeriods(settings, date, input.modality, input.locationId);
-    for (const period of publicPeriods) {
-      for (let minute = period.start; minute + service.durationMinutes <= period.end; minute += Math.max(5, settings.slotIntervalMinutes)) {
-        const time = minutesToTime(minute);
-        const dateTime = dateToLocalDateTime(date, time);
-        if (!dateTime || dateTime < earliest || dateTime > latest) continue;
-        if (!period.extra && !validWeeklyPeriod(settings.weeklyAvailability, date, time, service.durationMinutes)) continue;
-        if (blocks.some((block) => block.date === date && overlaps(time, service.durationMinutes, block))) continue;
-        slots.push({ date, time, endTime: minutesToTime(minute + service.durationMinutes), durationMinutes: service.durationMinutes, serviceId: service.id, modality: input.modality, locationId: input.locationId });
-      }
-    }
-  }
-  return slots.filter((slot, index, all) => all.findIndex((item) => item.date === slot.date && item.time === slot.time && item.modality === slot.modality && item.locationId === slot.locationId) === index);
-}
-function createRandomBytes(size) {
-  const bytes = new Uint8Array(size);
-  if (!globalThis.crypto?.getRandomValues) throw new Error("Web Crypto indispon\xEDvel para gerar o link seguro.");
-  globalThis.crypto.getRandomValues(bytes);
-  return bytes;
-}
-function bytesToBase64Url(bytes) {
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  const encoded = typeof btoa === "function" ? btoa(binary) : "";
-  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-function createManagementToken() {
-  return bytesToBase64Url(createRandomBytes(32));
-}
-function createMapsNavigationRef() {
-  return `maps_${bytesToBase64Url(createRandomBytes(32))}`;
-}
-async function hashManagementToken(token) {
-  if (!token || !globalThis.crypto?.subtle) throw new Error("Web Crypto indispon\xEDvel para validar o link seguro.");
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
-}
-async function hashMapsNavigationRef(ref) {
-  if (!ref || !globalThis.crypto?.subtle) throw new Error("Web Crypto indispon\xEDvel para validar a navega\xE7\xE3o do mapa.");
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(ref));
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
-}
-function getAppointmentManagementUrl(appointmentId, managementToken) {
-  if (!appointmentId || !managementToken) throw new Error("O link de gerenciamento exige appointmentId e token bruto tempor\xE1rio.");
-  const path = `/consulta/${encodeURIComponent(managementToken)}`;
-  return typeof window === "undefined" ? path : `${window.location.origin}${path}`;
-}
-function getMapsNavigationUrl(navigationRef) {
-  if (!navigationRef) throw new Error("A navega\xE7\xE3o do mapa exige uma capability v\xE1lida.");
-  const path = `/maps/${encodeURIComponent(navigationRef)}`;
-  return typeof window === "undefined" ? path : `${window.location.origin}${path}`;
-}
-function buildRescheduleRequestMessage(summary) {
-  const date = summary.date.split("-").reverse().join("/");
-  return `Ol\xE1, preciso reagendar meu atendimento com ${summary.professionalName}, atualmente marcado para ${date} \xE0s ${summary.time}. Poderia me informar outros hor\xE1rios dispon\xEDveis?`;
-}
-function buildAppointmentMessagingContext(summary) {
-  const base = {
-    appointmentModality: summary.modality,
-    professionalDisplayName: summary.professionalName,
-    date: summary.date,
-    time: summary.time
-  };
-  return summary.modality === "PRESENCIAL" ? { ...base, locationDisplayName: summary.locationName, locationFullAddress: summary.locationAddress, locationGoogleMapsUrl: summary.googleMapsUrl, mapsNavigationUrl: summary.mapsNavigationUrl } : base;
-}
-function buildWhatsAppRescheduleUrl(phoneE164, message) {
-  return buildWhatsappClickToChatUrl(phoneE164, { text: message });
-}
-function createDefaultPublicBookingSettings(now = /* @__PURE__ */ new Date()) {
-  const updatedAt = now.toISOString();
-  const weekdays = [1, 2, 3, 4, 5];
-  const weeklyAvailability = Array.from({ length: 7 }, (_, dayOfWeek) => ({
-    dayOfWeek,
-    enabled: weekdays.includes(dayOfWeek),
-    periods: weekdays.includes(dayOfWeek) ? [{ startTime: "09:00", endTime: "18:00" }] : []
-  }));
-  const locations = [{
-    id: "psychology-location-primary-office",
-    professionalId: LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID,
-    displayName: "Shopping Moxuara",
-    fullAddress: "",
-    city: "Cariacica",
-    state: "ES",
-    googleMapsUrl: "",
-    active: true,
-    sortOrder: 1
-  }, {
-    id: "psychology-location-external-office",
-    professionalId: LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID,
-    displayName: "SPAC \u2014 Centro de Sa\xFAde e Movimento",
-    fullAddress: "",
-    city: "Vila Velha",
-    state: "ES",
-    googleMapsUrl: "",
-    active: true,
-    sortOrder: 2
-  }];
-  const allowedLocationIds = locations.map((location) => location.id);
-  const services = PSYCHOLOGY_SERVICE_CATALOG.map((entry) => ({
-    id: entry.id,
-    name: entry.name,
-    durationMinutes: entry.defaultDurationMinutes,
-    active: true,
-    sortOrder: entry.sortOrder,
-    onlineEnabled: entry.modality !== "PRESENTIAL",
-    inPersonEnabled: entry.modality !== "ONLINE",
-    allowedLocationIds
-  }));
-  const publicBookingAvailability = weekdays.map((dayOfWeek) => ({
-    dayOfWeek,
-    enabled: true,
-    startTime: "10:00",
-    endTime: "17:00",
-    modalities: ["ONLINE", "PRESENCIAL"],
-    locationIds: allowedLocationIds
-  }));
-  return {
-    id: "online-booking",
-    context: "PSICOLOGIA",
-    professionalId: LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID,
-    professionalSlug: LOCAL_ONLINE_BOOKING_DEFAULT_SLUG,
-    professionalName: "Leila Chaves",
-    clinicDisplayName: "Gest\xE3o Cl\xEDnica",
-    timezone: "America/Sao_Paulo",
-    active: true,
-    maxAdvanceDays: 21,
-    minNoticeHours: 24,
-    cancellationEnabled: true,
-    cancellationCutoffHours: 16,
-    whatsappContactPhoneE164: "552799529638",
-    slotIntervalMinutes: 30,
-    weeklyAvailability,
-    publicBookingAvailability,
-    publicBookingExceptions: [],
-    publishedServices: services,
-    publishedModalities: [
-      { id: "ONLINE", label: "Online", active: true },
-      { id: "PRESENCIAL", label: "Presencial", active: true }
-    ],
-    locations,
-    updatedAt
-  };
-}
-function normalizePublicBookingSettings(value, now = /* @__PURE__ */ new Date()) {
-  const fallback = createDefaultPublicBookingSettings(now);
-  const input = value && typeof value === "object" ? value : {};
-  const professionalSlug = normalizeProfessionalSlug(String(input.professionalSlug || fallback.professionalSlug)) || fallback.professionalSlug;
-  const maxAdvanceDays = Math.max(1, Math.min(90, Number(input.maxAdvanceDays) || fallback.maxAdvanceDays));
-  const minNoticeHours = Math.max(0, Math.min(168, Number(input.minNoticeHours) || 0));
-  const cancellationCutoffHours = Math.max(0, Math.min(168, Number(input.cancellationCutoffHours) || 0));
-  const slotIntervalMinutes = Math.max(5, Math.min(180, Number(input.slotIntervalMinutes) || fallback.slotIntervalMinutes));
-  const rawServices = Array.isArray(input.publishedServices) ? input.publishedServices : [];
-  const migrateLegacyServices = rawServices.length === 1 && ["psychotherapy-individual", "psychology-service-psychotherapy"].includes(String(rawServices[0].id || "")) && !("onlineEnabled" in rawServices[0]);
-  const activeLocationIds = fallback.locations.map((location) => location.id);
-  const rawLocations = Array.isArray(input.locations) ? input.locations : [];
-  const migrateLegacyLocations = rawLocations.length === 1 && rawLocations[0].id === "consultorio-gestao-clinica" && !("fullAddress" in rawLocations[0]);
-  const legacyLocationIdMap = {
-    "location-shopping-moxuara": "psychology-location-primary-office",
-    "location-spac-centro-saude-movimento": "psychology-location-external-office"
-  };
-  const locations = (migrateLegacyLocations || !rawLocations.length ? fallback.locations : rawLocations.map((item, index) => ({
-    id: legacyLocationIdMap[String(item.id || "")] || String(item.id || `location-${index + 1}`),
-    professionalId: fallback.professionalId,
-    displayName: String(item.displayName || item.name || `Local ${index + 1}`).trim() || `Local ${index + 1}`,
-    fullAddress: String(item.fullAddress ?? item.address ?? "").trim(),
-    city: String(item.city || "").trim(),
-    state: String(item.state || "").trim().toUpperCase(),
-    googleMapsUrl: isValidGoogleMapsUrl(String(item.googleMapsUrl || "").trim()) ? String(item.googleMapsUrl || "").trim() : "",
-    active: item.active !== false,
-    sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index + 1
-  }))).sort((a, b) => a.sortOrder - b.sortOrder);
-  const locationIds = locations.map((location) => location.id);
-  const services = (migrateLegacyServices || !rawServices.length ? fallback.publishedServices : rawServices.map((item, index) => {
-    const legacyModalities = Array.isArray(item.modalities) ? item.modalities : [];
-    const id = canonicalPsychologyServiceId(item.id || `public-service-${index + 1}`);
-    const catalogEntry = psychologyCatalogEntry(id);
-    return {
-      id,
-      name: catalogEntry?.name || String(item.name || `Atendimento ${index + 1}`).trim() || `Atendimento ${index + 1}`,
-      durationMinutes: Math.max(5, Number(item.durationMinutes) || catalogEntry?.defaultDurationMinutes || 50),
-      active: item.active !== false,
-      sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index + 1,
-      onlineEnabled: item.onlineEnabled ?? legacyModalities.includes("ONLINE"),
-      inPersonEnabled: item.inPersonEnabled ?? legacyModalities.includes("PRESENCIAL"),
-      allowedLocationIds: Array.isArray(item.allowedLocationIds) && item.allowedLocationIds.length ? item.allowedLocationIds.map((id2) => legacyLocationIdMap[String(id2)] || String(id2)).filter((id2) => locationIds.includes(id2)).length ? item.allowedLocationIds.map((id2) => legacyLocationIdMap[String(id2)] || String(id2)).filter((id2) => locationIds.includes(id2)) : locationIds : locationIds
-    };
-  })).sort((a, b) => a.sortOrder - b.sortOrder);
-  const rawAvailability = Array.isArray(input.publicBookingAvailability) ? input.publicBookingAvailability : fallback.publicBookingAvailability;
-  const publicBookingAvailability = rawAvailability.map((period) => ({
-    ...period,
-    locationIds: period.locationIds?.some((id) => locationIds.includes(id)) ? period.locationIds.filter((id) => locationIds.includes(id)) : locationIds
-  }));
-  const rawExceptions = Array.isArray(input.publicBookingExceptions) ? input.publicBookingExceptions : [];
-  const publicBookingExceptions = rawExceptions.flatMap((item, index) => {
-    const type = item.type === "BLOCK_DAY" || item.type === "BLOCK_PERIOD" || item.type === "OPEN_PERIOD" ? item.type : null;
-    const civilDate = String(item.civilDate || "").trim();
-    const startTime = item.startTime ? String(item.startTime).trim() : void 0;
-    const endTime = item.endTime ? String(item.endTime).trim() : void 0;
-    const rangeIsValid = type === "BLOCK_DAY" || timeToMinutes(startTime || "") >= 0 && timeToMinutes(endTime || "") > timeToMinutes(startTime || "");
-    if (!type || !isValidIsoDate(civilDate) || !rangeIsValid) return [];
-    return [{
-      id: String(item.id || `public-exception-${index + 1}`),
-      professionalId: fallback.professionalId,
-      civilDate,
-      type,
-      startTime,
-      endTime,
-      modality: item.modality === "ONLINE" || item.modality === "PRESENCIAL" ? item.modality : void 0,
-      locationId: item.locationId && locationIds.includes(item.locationId) ? item.locationId : void 0,
-      note: String(item.note || "").trim() || void 0,
-      createdAt: String(item.createdAt || now.toISOString()),
-      updatedAt: String(item.updatedAt || now.toISOString())
-    }];
-  });
-  return {
-    ...fallback,
-    ...clone(input),
-    id: "online-booking",
-    context: "PSICOLOGIA",
-    professionalId: fallback.professionalId,
-    professionalSlug,
-    professionalName: String(input.professionalName || fallback.professionalName).trim() || fallback.professionalName,
-    clinicDisplayName: String(input.clinicDisplayName || fallback.clinicDisplayName).trim() || fallback.clinicDisplayName,
-    active: input.active !== false,
-    maxAdvanceDays,
-    minNoticeHours: Number.isFinite(Number(input.minNoticeHours)) ? Math.max(0, Math.min(168, Number(input.minNoticeHours))) : fallback.minNoticeHours,
-    cancellationEnabled: input.cancellationEnabled !== false,
-    cancellationCutoffHours: Number.isFinite(Number(input.cancellationCutoffHours)) ? cancellationCutoffHours : fallback.cancellationCutoffHours,
-    whatsappContactPhoneE164: String(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164) === "5527999990000" ? fallback.whatsappContactPhoneE164 : (() => {
-      try {
-        return normalizePhoneForIntegration(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164).canonicalPhone;
-      } catch {
-        return fallback.whatsappContactPhoneE164;
-      }
-    })(),
-    slotIntervalMinutes,
-    weeklyAvailability: Array.isArray(input.weeklyAvailability) ? input.weeklyAvailability : fallback.weeklyAvailability,
-    publicBookingAvailability,
-    publicBookingExceptions,
-    publishedServices: services,
-    publishedModalities: Array.isArray(input.publishedModalities) ? input.publishedModalities : fallback.publishedModalities,
-    locations,
-    updatedAt: String(input.updatedAt || now.toISOString())
-  };
-}
 
 // src/lib/psychologyPatientAdministrative.ts
 function civilParts(value) {
@@ -722,18 +698,6 @@ function isValidCivilDate(value) {
   const parsed = new Date(year, month - 1, day);
   return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
 }
-function calculateAgeOnDate(dateOfBirth, referenceCivilDate) {
-  if (!isValidCivilDate(dateOfBirth) || !isValidCivilDate(referenceCivilDate)) return null;
-  const birth = civilParts(dateOfBirth);
-  const reference = civilParts(referenceCivilDate);
-  let age = reference[0] - birth[0];
-  if (reference[1] < birth[1] || reference[1] === birth[1] && reference[2] < birth[2]) age -= 1;
-  return age >= 0 ? age : null;
-}
-function requiresResponsible(dateOfBirth, appointmentCivilDate) {
-  const age = calculateAgeOnDate(dateOfBirth, appointmentCivilDate);
-  return age !== null && age < 18;
-}
 function validateDateOfBirth(dateOfBirth, referenceCivilDate) {
   if (!String(dateOfBirth || "").trim()) return "Informe a data de nascimento.";
   if (!isValidCivilDate(dateOfBirth)) return "Informe uma data de nascimento v\xE1lida.";
@@ -743,20 +707,23 @@ function validateDateOfBirth(dateOfBirth, referenceCivilDate) {
 }
 function validateAdministrativeResponsible(value) {
   const errors = {};
-  if (!String(value?.fullName || "").trim()) errors.fullName = "Informe o nome completo do respons\xE1vel.";
-  if (!String(value?.relationship || "").trim()) errors.relationship = "Informe o v\xEDnculo ou parentesco.";
-  if (!isValidPhoneInput(value?.phone)) errors.phone = "Informe um telefone v\xE1lido para o respons\xE1vel.";
-  if (!/^\S+@\S+\.\S+$/.test(String(value?.email || "").trim())) errors.email = "Informe um e-mail v\xE1lido para o respons\xE1vel.";
+  const phone = String(value?.phone || "").trim();
+  const email = String(value?.email || "").trim();
+  if (phone && !isValidPhoneInput(phone)) errors.phone = "Informe um telefone v\xE1lido para o respons\xE1vel.";
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) errors.email = "Informe um e-mail v\xE1lido para o respons\xE1vel.";
   return errors;
 }
 function validatePsychologyPatientAdministrativeInput(input, referenceCivilDate) {
   const errors = {};
   if (!String(input.name || "").trim()) errors.name = "Informe o nome completo do paciente.";
-  const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
-  if (dateError) errors.dateOfBirth = dateError;
+  if (String(input.dateOfBirth || "").trim()) {
+    const dateError = validateDateOfBirth(input.dateOfBirth, referenceCivilDate);
+    if (dateError) errors.dateOfBirth = dateError;
+  }
   if (!isValidPhoneInput(input.phone)) errors.phone = "Informe um telefone v\xE1lido.";
-  if (!/^\S+@\S+\.\S+$/.test(String(input.email || "").trim())) errors.email = "Informe um e-mail v\xE1lido.";
-  if (requiresResponsible(input.dateOfBirth, referenceCivilDate)) {
+  if (String(input.email || "").trim() && !/^\S+@\S+\.\S+$/.test(String(input.email || "").trim())) errors.email = "Informe um e-mail v\xE1lido.";
+  const responsibleHasData = Boolean(input.administrativeResponsible && Object.values(input.administrativeResponsible).some((value) => String(value || "").trim()));
+  if (responsibleHasData) {
     const responsibleErrors = validateAdministrativeResponsible(input.administrativeResponsible);
     Object.entries(responsibleErrors).forEach(([field, message]) => {
       errors[`administrativeResponsible.${field}`] = message;
@@ -774,13 +741,6 @@ function createId(prefix) {
 }
 function normalize(value, maxLength = 240) {
   return String(value || "").trim().replace(/\s+/g, " ").slice(0, maxLength);
-}
-function normalizeStoredPhone(value) {
-  try {
-    return normalizePhone(value).displayPhone;
-  } catch {
-    return "";
-  }
 }
 function normalizeEmail(value) {
   return String(value || "").trim().toLocaleLowerCase();
@@ -842,7 +802,7 @@ function responsibleForStorage(value) {
   return {
     fullName: normalize(responsible.fullName, 160),
     relationship: normalize(responsible.relationship, 80),
-    phone: normalizeStoredPhone(responsible.phone),
+    phone: normalize(responsible.phone, 32),
     email: normalizeEmail(String(responsible.email || ""))
   };
 }
@@ -856,7 +816,7 @@ function canonicalBookingRecord(appointment, input, now) {
     context: "PSICOLOGIA",
     name: normalize(input.name, 160),
     dateOfBirth: normalize(input.dateOfBirth, 32),
-    phone: normalizeStoredPhone(input.phone),
+    phone: normalize(input.phone, 32),
     email: normalizeEmail(input.email),
     preferredModality: modality,
     active: true,
@@ -932,7 +892,7 @@ function createServerPublicBookingRepository({ state, now: nowFactory = () => /*
       const candidate = getPublishedSlots({ settings, serviceId: input.serviceId, modality: input.modality, locationId: input.modality === "PRESENCIAL" ? input.locationId : void 0, fromDate: input.date, throughDate: input.date, now, existingBlocks: appointmentBlocks(state) }).find((slot) => slot.time === input.time);
       if (!candidate) return { conflict: true, message: "Este hor\xE1rio acabou de ser ocupado. Escolha outro hor\xE1rio." };
       const name = normalize(input.name, 160);
-      const phone = normalizeStoredPhone(input.phone);
+      const phone = normalize(input.phone, 32);
       const email = normalize(input.email, 160);
       const patientValidation = validatePsychologyPatientAdministrativeInput({
         name,
@@ -1117,9 +1077,12 @@ function createPublicBookingServerHandler(options) {
   };
 }
 export {
+  PSYCHOLOGY_SERVICE_CATALOG,
+  canonicalPsychologyServiceId,
   createDefaultPublicBookingSettings,
   createMemoryPublicBookingServerStore,
   createPublicBookingServerHandler,
   createServerPublicBookingRepository,
-  normalizePublicBookingSettings
+  normalizePublicBookingSettings,
+  psychologyCatalogEntry
 };

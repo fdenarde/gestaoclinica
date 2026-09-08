@@ -31,7 +31,6 @@ import type {
   RescheduleRequestResult,
 } from './types';
 import { validatePsychologyPatientAdministrativeInput } from '../../lib/psychologyPatientAdministrative';
-import { normalizePhone } from '../../../shared/phoneNormalization.js';
 
 export type PublicCapabilityType = 'MANAGEMENT' | 'MAPS_NAVIGATION';
 
@@ -138,12 +137,8 @@ function normalize(value: unknown, maxLength = 240): string {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
-function normalizeStoredPhone(value: unknown): string {
-  try {
-    return normalizePhone(value).displayPhone;
-  } catch {
-    return '';
-  }
+function normalizePhone(value: string): string {
+  return String(value || '').replace(/\D/g, '');
 }
 
 function normalizeEmail(value: string): string {
@@ -218,7 +213,7 @@ function responsibleForStorage(value: unknown): CanonicalPublicBookingPatient['a
   return {
     fullName: normalize(responsible.fullName, 160),
     relationship: normalize(responsible.relationship, 80),
-    phone: normalizeStoredPhone(responsible.phone),
+    phone: normalize(responsible.phone, 32),
     email: normalizeEmail(String(responsible.email || '')),
   };
 }
@@ -233,7 +228,7 @@ function canonicalBookingRecord(appointment: PublicAppointment, input: PublicBoo
     context: 'PSICOLOGIA',
     name: normalize(input.name, 160),
     dateOfBirth: normalize(input.dateOfBirth, 32),
-    phone: normalizeStoredPhone(input.phone),
+    phone: normalize(input.phone, 32),
     email: normalizeEmail(input.email),
     preferredModality: modality,
     active: true,
@@ -314,7 +309,7 @@ export function createServerPublicBookingRepository({ state, now: nowFactory = (
       const candidate = getPublishedSlots({ settings, serviceId: input.serviceId, modality: input.modality, locationId: input.modality === 'PRESENCIAL' ? input.locationId : undefined, fromDate: input.date, throughDate: input.date, now, existingBlocks: appointmentBlocks(state) }).find(slot => slot.time === input.time);
       if (!candidate) return { conflict: true, message: 'Este horário acabou de ser ocupado. Escolha outro horário.' };
       const name = normalize(input.name, 160);
-      const phone = normalizeStoredPhone(input.phone);
+      const phone = normalize(input.phone, 32);
       const email = normalize(input.email, 160);
       const patientValidation = validatePsychologyPatientAdministrativeInput({
         name,

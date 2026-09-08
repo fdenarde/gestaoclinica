@@ -1,4 +1,10 @@
-import { createDefaultPublicBookingSettings, normalizePublicBookingSettings } from './publicBookingServer.bundle.js';
+import {
+  createDefaultPublicBookingSettings,
+  normalizePublicBookingSettings,
+  PSYCHOLOGY_SERVICE_CATALOG,
+  canonicalPsychologyServiceId,
+  psychologyCatalogEntry,
+} from './publicBookingServer.bundle.js';
 import {
   getAdminDb,
   PUBLIC_BOOKING_FIREBASE_PROJECTS,
@@ -9,7 +15,6 @@ import {
   createPsychologyServerRepository,
   psychologyCollectionPath,
 } from './psychologyRepository.js';
-import { normalizePhoneForComparison } from '../../shared/phoneNormalization.js';
 
 const STAGING_PROJECT_ID = PUBLIC_BOOKING_FIREBASE_PROJECTS.staging;
 const PRODUCTION_PROJECT_ID = PUBLIC_BOOKING_FIREBASE_PROJECTS.production;
@@ -169,32 +174,6 @@ function canonicalRuntimeScope(scope) {
   };
 }
 
-function canonicalServiceFromPublic(service, scope, now) {
-  const online = Boolean(service.onlineEnabled);
-  const presencial = Boolean(service.inPersonEnabled);
-  return {
-    id: service.id,
-    workspaceId: scope.workspaceId,
-    professionalId: scope.professionalId,
-    tenantId: scope.tenantId,
-    context: CONTEXT,
-    name: service.name,
-    defaultDurationMinutes: service.durationMinutes,
-    defaultPrice: 0,
-    modality: online && presencial ? 'BOTH' : online ? 'ONLINE' : 'PRESENTIAL',
-    active: true,
-    publicBooking: {
-      active: service.active,
-      onlineEnabled: online,
-      inPersonEnabled: presencial,
-      allowedLocationIds: [...service.allowedLocationIds],
-      sortOrder: service.sortOrder,
-    },
-    createdAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-  };
-}
-
 function canonicalLocationFromPublic(location, scope, index, now) {
   return {
     id: location.id,
@@ -219,25 +198,88 @@ function canonicalLocationFromPublic(location, scope, index, now) {
   };
 }
 
-function projectSettingsFromCanonical(settings, services, locations, scope) {
-  const serviceById = new Map(services.map(service => [service.id, service]));
-  const locationById = new Map(locations.map(location => [location.id, location]));
-  const publishedServices = settings.publishedServices.map(publication => {
-    const source = serviceById.get(publication.id);
-    if (!source) return { ...publication, active: false };
-    const publicBooking = source.publicBooking || {};
+function canonicalServiceMap(services) {
+  const byId = new Map();
+  for (const service of services) {
+    const canonicalId = canonicalPsychologyServiceId(service?.id);
+    if (!psychologyCatalogEntry(canonicalId)) continue;
+    const current = byId.get(canonicalId);
+    const isExactCanonicalRecord = String(service?.id || '') === canonicalId;
+    if (!current || (String(current.id || '') !== canonicalId && isExactCanonicalRecord)) {
+      byId.set(canonicalId, { ...service, id: canonicalId });
+    }
+  }
+  return byId;
+}
+
+function reconcileCanonicalServices({ remoteServices, settings, locations, scope, now }) {
+  const configuredById = new Map(
+    settings.publishedServices.map(publication => [canonicalPsychologyServiceId(publication.id), publication]),
+  );
+  const remoteById = canonicalServiceMap(remoteServices);
+  const locationIds = locations.map(location => location.id);
+  const defaults = createDefaultPublicBookingSettings(now);
+  const defaultById = new Map(defaults.publishedServices.map(service => [service.id, service]));
+
+  return PSYCHOLOGY_SERVICE_CATALOG.map(entry => {
+    const remote = remoteById.get(entry.id);
+    if (remote) return remote;
+    const configured = configuredById.get(entry.id);
+    const fallback = defaultById.get(entry.id);
+    const publicBooking = {
+      active: configured?.active ?? fallback?.active ?? true,
+      onlineEnabled: configured?.onlineEnabled ?? fallback?.onlineEnabled ?? entry.modality !== 'PRESENTIAL',
+      inPersonEnabled: configured?.inPersonEnabled ?? fallback?.inPersonEnabled ?? entry.modality !== 'ONLINE',
+      allowedLocationIds: configured?.allowedLocationIds ?? locationIds,
+      sortOrder: configured?.sortOrder ?? fallback?.sortOrder ?? entry.sortOrder,
+    };
     return {
-      ...publication,
-      id: source.id,
-      name: source.name,
-      durationMinutes: source.defaultDurationMinutes,
-      active: publicBooking.active ?? publication.active,
-      onlineEnabled: publicBooking.onlineEnabled ?? publication.onlineEnabled,
-      inPersonEnabled: publicBooking.inPersonEnabled ?? publication.inPersonEnabled,
-      allowedLocationIds: [...(publicBooking.allowedLocationIds || publication.allowedLocationIds)].filter(id => locationById.has(id)),
-      sortOrder: publicBooking.sortOrder || publication.sortOrder,
+      id: entry.id,
+      workspaceId: scope.workspaceId,
+      tenantId: scope.tenantId,
+      professionalId: scope.professionalId,
+      context: CONTEXT,
+      name: entry.name,
+      defaultDurationMinutes: entry.defaultDurationMinutes,
+      defaultPrice: entry.defaultPrice,
+      modality: entry.modality,
+      active: configured?.active !== false,
+      publicBooking,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
     };
   });
+}
+
+function projectSettingsFromCanonical(settings, services, locations, scope) {
+  const locationById = new Map(locations.map(location => [location.id, location]));
+  const configuredById = new Map(settings.publishedServices.map(publication => [canonicalPsychologyServiceId(publication.id), publication]));
+  const canonicalIds = new Set();
+  const publishedServices = services
+    .filter(source => {
+      if (!source?.id || canonicalIds.has(source.id)) return false;
+      canonicalIds.add(source.id);
+      return true;
+    })
+    .map((source, index) => {
+      const publication = source.publicBooking || {};
+      const configured = configuredById.get(source.id);
+      const onlineEnabled = publication.onlineEnabled ?? configured?.onlineEnabled ?? source.modality !== 'PRESENTIAL';
+      const inPersonEnabled = publication.inPersonEnabled ?? configured?.inPersonEnabled ?? source.modality !== 'ONLINE';
+      return {
+        id: source.id,
+        name: source.name || psychologyCatalogEntry(source.id)?.name || 'Atendimento',
+        durationMinutes: Number(source.defaultDurationMinutes) || psychologyCatalogEntry(source.id)?.defaultDurationMinutes || 50,
+        active: source.active !== false && (publication.active ?? configured?.active ?? source.active !== false),
+        onlineEnabled,
+        inPersonEnabled,
+        allowedLocationIds: [...(publication.allowedLocationIds ?? configured?.allowedLocationIds ?? locations.map(location => location.id))].filter(id => locationById.has(id)),
+        sortOrder: publication.sortOrder ?? configured?.sortOrder ?? psychologyCatalogEntry(source.id)?.sortOrder ?? index + 1,
+      };
+    })
+    .concat(settings.publishedServices
+      .filter(publication => !canonicalIds.has(canonicalPsychologyServiceId(publication.id)))
+      .map(publication => ({ ...publication, active: false })));
   const projectedLocations = settings.locations.map(location => {
     const source = locationById.get(location.id);
     if (!source) return { ...location, active: false };
@@ -263,12 +305,8 @@ function projectSettingsFromCanonical(settings, services, locations, scope) {
   };
 }
 
-function normalizePhoneForIdentity(value) {
-  try {
-    return normalizePhoneForComparison(value);
-  } catch {
-    return '';
-  }
+function normalizePhone(value) {
+  return String(value || '').replace(/\D/g, '');
 }
 
 function normalizeEmail(value) {
@@ -313,20 +351,15 @@ export function createFirestorePublicBookingServerStore(options = {}) {
     });
 
   async function loadCanonicalCatalog(settings, now) {
-    let services = await canonicalRepository.services.list();
+    const remoteServices = await canonicalRepository.services.list();
     let locations = await canonicalRepository.locations.list();
-    if (!services.length) {
-      for (const service of settings.publishedServices) {
-        await canonicalRepository.services.upsert(canonicalServiceFromPublic(service, scope, now));
-      }
-      services = await canonicalRepository.services.list();
-    }
     if (!locations.length) {
       for (const [index, location] of settings.locations.entries()) {
         await canonicalRepository.locations.upsert(canonicalLocationFromPublic(location, scope, index, now));
       }
       locations = await canonicalRepository.locations.list();
     }
+    const services = reconcileCanonicalServices({ remoteServices, settings, locations, scope: canonicalRuntimeScope(scope), now });
     return { settings: projectSettingsFromCanonical(settings, services, locations, scope), services, locations };
   }
 
@@ -356,10 +389,10 @@ export function createFirestorePublicBookingServerStore(options = {}) {
 
   async function persistCanonicalBooking(state, record) {
     const existingPatients = await canonicalRepository.patients.list();
-    const incomingPhone = normalizePhoneForIdentity(record.patient.phone);
+    const incomingPhone = normalizePhone(record.patient.phone);
     const incomingEmail = normalizeEmail(record.patient.email);
     const incomingName = normalizeEmail(record.patient.name);
-    const existing = existingPatients.find(patient => normalizePhoneForIdentity(patient.phone) === incomingPhone
+    const existing = existingPatients.find(patient => normalizePhone(patient.phone) === incomingPhone
       && (normalizeEmail(patient.email) === incomingEmail || normalizeEmail(patient.name) === incomingName));
     const patientId = existing?.id || record.patient.id;
     const nowIso = nowFactory().toISOString();

@@ -21,7 +21,6 @@ function createEphemeralInstanceId() {
     return `api-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 }
-
 function sanitizeFields(fields = {}) {
   const sanitized = {};
   for (const [key, value] of Object.entries(fields || {})) {

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, PersonalAppointment, PersonalAppointmentType, AlarmAdvance } from '../types';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, List, LayoutGrid, FastForward, Bell, CheckCircle2, Edit2, Trash2, BookOpen } from 'lucide-react';
-import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, getDay, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, parseISO, isSameMonth, addMonths, subMonths } from 'date-fns';
+import { format, addDays, subDays, startOfWeek, addWeeks, subWeeks, isSameDay, startOfDay, endOfDay, startOfMonth, endOfMonth, eachDayOfInterval, addMonths, subMonths } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
 import { showToast } from './Common/Toast';
@@ -13,11 +13,11 @@ import { getPsychologyAgendaRowProgress, getPsychologyAgendaTimeProgress, isPsyc
 
 // Configuração visual por tipo
 const APPOINTMENT_CONFIG: Record<PersonalAppointmentType, { icon: string, bg: string, text: string }> = {
-  'Médico': { icon: '🏥', bg: 'bg-blue-100', text: 'text-blue-800' },
   'Compromisso pessoal': { icon: '🗓️', bg: 'bg-violet-100', text: 'text-violet-800' },
-  'Intervalo': { icon: '⏸️', bg: 'bg-slate-200', text: 'text-slate-800' },
   'Bloqueio de horário': { icon: '🔒', bg: 'bg-amber-100', text: 'text-amber-800' },
   'Mentoria': { icon: '🧭', bg: 'bg-purple-100', text: 'text-purple-800' },
+  'Médico': { icon: '🏥', bg: 'bg-blue-100', text: 'text-blue-800' },
+  'Intervalo': { icon: '⏸️', bg: 'bg-slate-200', text: 'text-slate-800' },
   'Estudar': { icon: '📚', bg: 'bg-indigo-100', text: 'text-indigo-800' },
   'Cortar cabelo': { icon: '✂️', bg: 'bg-stone-200', text: 'text-stone-800' },
   'Visitar família': { icon: '👨‍👩‍👧', bg: 'bg-rose-100', text: 'text-rose-800' },
@@ -91,6 +91,7 @@ function PsychologyPersonalWeeklyGrid({
   openEdit,
   toggleDone,
   handleDelete,
+  pendingMutationKey,
 }: {
   weekDays: Date[];
   occurrences: PersonalAppointmentOccurrence[];
@@ -98,6 +99,7 @@ function PsychologyPersonalWeeklyGrid({
   openEdit: (appointment: PersonalAppointment) => void;
   toggleDone: (id: string) => Promise<void>;
   handleDelete: (id: string) => Promise<void>;
+  pendingMutationKey: string | null;
 }) {
   const [agendaNow, setAgendaNow] = useState(() => new Date());
   useEffect(() => {
@@ -195,9 +197,9 @@ function PsychologyPersonalWeeklyGrid({
                               {app.title && app.type !== app.title && <p className={cn('mt-1 truncate text-[9px] font-bold opacity-75', config.text)}>{app.type}</p>}
                               {app.recurrence && app.recurrence !== 'Não repetir' && <span className="mt-1 inline-flex max-w-full truncate rounded bg-white/60 px-1 py-0.5 text-[8px] font-bold text-gray-600">🔄 {app.recurrence}</span>}
                               <div className="absolute right-1 top-1 z-10 flex items-center gap-0.5 rounded border border-black/10 bg-white/90 p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                                <button type="button" onClick={event => { event.stopPropagation(); void toggleDone(app.id); }} className="rounded p-1.5 text-green-600 hover:bg-green-50" title={app.isDone ? 'Reativar' : 'Marcar como concluído'} aria-label={app.isDone ? 'Reativar' : 'Marcar como concluído'}><CheckCircle2 size={13} /></button>
-                                <button type="button" onClick={event => { event.stopPropagation(); openEdit(app); }} className="rounded p-1.5 text-blue-600 hover:bg-blue-50" title="Editar" aria-label="Editar"><Edit2 size={13} /></button>
-                                <button type="button" onClick={event => { event.stopPropagation(); void handleDelete(app.id); }} className="rounded p-1.5 text-red-600 hover:bg-red-50" title="Excluir" aria-label="Excluir"><Trash2 size={13} /></button>
+                                <button type="button" disabled={Boolean(pendingMutationKey)} onClick={async event => { event.stopPropagation(); await toggleDone(app.id); }} className="rounded p-1.5 text-green-600 hover:bg-green-50 disabled:cursor-wait disabled:opacity-50" title={app.isDone ? 'Reativar' : 'Marcar como concluído'} aria-label={app.isDone ? 'Reativar' : 'Marcar como concluído'}><CheckCircle2 size={13} /></button>
+                                <button type="button" disabled={Boolean(pendingMutationKey)} onClick={event => { event.stopPropagation(); openEdit(app); }} className="rounded p-1.5 text-blue-600 hover:bg-blue-50 disabled:cursor-wait disabled:opacity-50" title="Editar" aria-label="Editar"><Edit2 size={13} /></button>
+                                <button type="button" disabled={Boolean(pendingMutationKey)} onClick={async event => { event.stopPropagation(); await handleDelete(app.id); }} className="rounded p-1.5 text-red-600 hover:bg-red-50 disabled:cursor-wait disabled:opacity-50" title="Excluir" aria-label="Excluir"><Trash2 size={13} /></button>
                               </div>
                             </article>
                           );
@@ -271,6 +273,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const [alarmFadeIn, setAlarmFadeIn] = useState(false);
   const [alarmSoundsList, setAlarmSoundsList] = useState<AlarmSoundMeta[]>(() => getDefaultSounds());
   const [isSaving, setIsSaving] = useState(false);
+  const [pendingMutationKey, setPendingMutationKey] = useState<string | null>(null);
   const mutationLocks = useRef(new Set<string>());
 
   useEffect(() => {
@@ -318,10 +321,10 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
   const handleSave = async () => {
     if (!formDate || !formTime || !type) return;
     if (isSaving) return;
-
     const mutationKey = `save:${selectedApptId || 'new'}:${formDate}:${formTime}:${formTitle.trim()}:${type}`;
     if (mutationLocks.current.has(mutationKey)) return;
     mutationLocks.current.add(mutationKey);
+    setPendingMutationKey(mutationKey);
     const currentList = state.personalAppointments || [];
     const newApp: PersonalAppointment = {
       id: selectedApptId || Math.random().toString(36).substr(2, 9),
@@ -363,6 +366,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     } finally {
       setIsSaving(false);
       mutationLocks.current.delete(mutationKey);
+      setPendingMutationKey(null);
     }
   };
 
@@ -371,6 +375,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     const mutationKey = `delete:${id}`;
     if (mutationLocks.current.has(mutationKey)) return;
     mutationLocks.current.add(mutationKey);
+    setPendingMutationKey(mutationKey);
 
     try {
       const updatedList = (state.personalAppointments || []).filter(a => a.id !== id);
@@ -385,6 +390,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       showToast('Erro ao excluir compromisso. Tente novamente.', 'error');
     } finally {
       mutationLocks.current.delete(mutationKey);
+      setPendingMutationKey(null);
     }
   };
 
@@ -394,6 +400,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     const mutationKey = `toggle:${id}:${currentAppointment.isDone ? 'done' : 'open'}`;
     if (mutationLocks.current.has(mutationKey)) return;
     mutationLocks.current.add(mutationKey);
+    setPendingMutationKey(mutationKey);
 
     const updatedList = (state.personalAppointments || []).map(a =>
       a.id === id ? { ...a, isDone: !a.isDone } : a
@@ -411,6 +418,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       showToast('Erro ao atualizar compromisso. Tente novamente.', 'error');
     } finally {
       mutationLocks.current.delete(mutationKey);
+      setPendingMutationKey(null);
     }
   };
 
@@ -422,10 +430,14 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
     return Array.from({ length: 7 }).map((_, i) => addDays(start, i));
   }, [currentDate]);
 
-  const monthDays = useMemo(() => {
+  const monthCells = useMemo<(Date | null)[]>(() => {
     const start = startOfMonth(currentDate);
     const end = endOfMonth(currentDate);
-    return eachDayOfInterval({ start, end });
+    const days = eachDayOfInterval({ start, end });
+    const leadingEmptyCells = Array.from({ length: start.getDay() }, () => null);
+    const usedCells = leadingEmptyCells.length + days.length;
+    const trailingEmptyCells = Array.from({ length: (7 - (usedCells % 7)) % 7 }, () => null);
+    return [...leadingEmptyCells, ...days, ...trailingEmptyCells];
   }, [currentDate]);
 
   const listDateRange = useMemo(() => {
@@ -551,6 +563,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
 
         <div className="flex items-center gap-2">
           <button
+            type="button"
+            onClick={() => openNew(new Date(), '08:00')}
+            className="px-3 py-1.5 text-xs font-black text-white bg-clinic-primary rounded-lg hover:bg-clinic-primary-hover transition-colors uppercase whitespace-nowrap"
+          >
+            + Novo Compromisso
+          </button>
+          <button
             onClick={() => setCurrentDate(new Date())}
             className="px-3 py-1.5 text-xs font-bold text-clinic-primary border border-clinic-primary/30 rounded-lg hover:bg-clinic-primary/5 transition-colors uppercase"
           >
@@ -579,6 +598,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
           openEdit={openEdit}
           toggleDone={toggleDone}
           handleDelete={handleDelete}
+          pendingMutationKey={pendingMutationKey}
         />
       )}
       {viewMode === 'semanal' && !isPsychology && (
@@ -611,7 +631,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                           const tooltipText = buildTooltip(app);
                           return (
                             <div
-                              key={app.id}
+                              key={occurrenceKey(app)}
                               title={tooltipText}
                               className={cn(
                                 "p-2 rounded-lg border relative group cursor-default transition-all",
@@ -652,13 +672,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                               )}
                               {/* Ações no Hover */}
                               <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 border border-black/10 shadow-md p-0.5 z-10">
-                                <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); showToast(app.isDone ? 'Compromisso reativado!' : 'Compromisso concluído!'); }} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
+                                <button onClick={async (e) => { e.stopPropagation(); await toggleDone(app.id); }} disabled={Boolean(pendingMutationKey)} className="p-1.5 hover:bg-green-50 text-green-600 rounded" title={app.isDone ? 'Reativar' : 'Marcar como concluído'}>
                                   <CheckCircle2 size={13} />
                                 </button>
                                 <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className="p-1.5 hover:bg-blue-50 text-blue-600 rounded" title="Editar">
                                   <Edit2 size={13} />
                                 </button>
-                                <button className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={e => { e.stopPropagation(); handleDelete(app.id); }}>
+                                <button disabled={Boolean(pendingMutationKey)} className="p-1.5 hover:bg-red-50 text-red-600 rounded" title="Excluir" onClick={async e => { e.stopPropagation(); await handleDelete(app.id); }}>
                                   <Trash2 size={13} />
                                 </button>
                               </div>
@@ -684,23 +704,55 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
             ))}
           </div>
           <div className="grid grid-cols-7">
-            {monthDays.map((day) => {
-              const isCurrentMonth = isSameMonth(day, currentDate);
+            {monthCells.map((day, index) => {
+              if (!day) {
+                return (
+                  <div
+                    key={`empty-${index}`}
+                    aria-hidden="true"
+                    className="min-h-[100px] border-b border-r border-clinic-border/50 bg-clinic-bg/40"
+                  />
+                );
+              }
+
               const isToday = isSameDay(day, new Date());
               const appts = getOccurrences(day, day);
 
               return (
-                <div key={day.toISOString()} onClick={() => openNew(day, "08:00")} className={cn("min-h-[100px] border-b border-r border-clinic-border/50 p-1 cursor-pointer hover:bg-gray-50", !isCurrentMonth ? "bg-gray-200 opacity-70" : '')}>
+                <div
+                  key={day.toISOString()}
+                  onClick={() => openNew(day, '08:00')}
+                  className="min-h-[100px] border-b border-r border-clinic-border/50 p-1 cursor-pointer hover:bg-gray-50"
+                >
                   <div className="flex justify-between items-start">
                     <span className={cn("text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full", isToday ? "bg-clinic-primary text-white" : "text-gray-500")}>
                       {format(day, 'd')}
                     </span>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
+                  <div className="mt-1 space-y-1">
                     {appts.map(app => {
                       const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                       return (
-                        <div key={app.id} className={cn("inline-block w-4 h-4 rounded-full", config.bg, "border border-black/10", app.isDone ? "opacity-30" : '')} />
+                        <button
+                          key={occurrenceKey(app)}
+                          type="button"
+                          title={buildTooltip(app)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEdit(app);
+                          }}
+                          className={cn(
+                            "w-full rounded-md border border-black/10 px-1.5 py-1 text-left shadow-sm transition hover:brightness-95",
+                            config.bg,
+                            app.isDone ? "opacity-40 grayscale" : "",
+                          )}
+                        >
+                          <div className="flex min-w-0 items-center gap-1">
+                            <span className={cn("shrink-0 text-[9px] font-black", config.text)}>{app.time}</span>
+                            <span className="shrink-0 text-[10px] leading-none">{config.icon}</span>
+                            <span className={cn("truncate text-[9px] font-bold", config.text)}>{app.type}</span>
+                          </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -749,7 +801,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                 listOccurrences.map(app => {
                   const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                   return (
-                    <div key={app.id} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
+                    <div key={occurrenceKey(app)} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5', app.isDone ? 'opacity-50 grayscale' : '')}>
                       <div className="flex items-center gap-4">
                         <div className="flex flex-col items-center min-w-[50px]">
                           <span className="text-[10px] font-bold uppercase text-gray-500">{format(app.occDate, 'dd/MM')}</span>
@@ -769,13 +821,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                         </div>
                       </div>
                       <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
-                        <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                        <button onClick={async (e) => { e.stopPropagation(); await toggleDone(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
                           <CheckCircle2 size={14} />
                         </button>
                         <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
                           <Edit2 size={14} />
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                        <button onClick={async (e) => { e.stopPropagation(); await handleDelete(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -798,7 +850,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       {/* View: Próximos */}
       {viewMode === 'proximos' && (
         <div className="bg-white rounded-2xl border border-clinic-border shadow-sm p-6 min-h-[400px]">
-          <h3 className="text-xl font-bold text-clinic-primary mb-6 flex items-center gap-2">
+          <h3 className={`${sectionHeadingClass} font-bold text-clinic-primary mb-6 flex items-center gap-2`}>
             <FastForward size={20} /> Próximos Compromissos
           </h3>
           <div className="space-y-4">
@@ -808,7 +860,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
               .map(app => {
                 const config = APPOINTMENT_CONFIG[app.type] || APPOINTMENT_CONFIG['Outro'];
                 return (
-                  <div key={`app-${app.id}`} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5')}>
+                  <div key={occurrenceKey(app)} className={cn('p-4 rounded-xl border flex items-center justify-between group', config.bg, 'border-black/5')}>
                     <div className='flex items-center gap-4'>
                       <div className='flex flex-col items-center justify-center bg-white/50 p-3 text-sm rounded-lg'>
                         <span className={cn('text-xs font-bold uppercase tracking-widest', config.text)}>{format(app.occDate, 'MMM', { locale: ptBR })}</span>
@@ -824,13 +876,13 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
                       </div>
                     </div>
                     <div className='flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity'>
-                      <button onClick={(e) => { e.stopPropagation(); toggleDone(app.id); }} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
+                      <button onClick={async (e) => { e.stopPropagation(); await toggleDone(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-green-500 text-white rounded-lg shadow-sm hover:bg-green-600'>
                         <CheckCircle2 size={14} />
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); openEdit(app); }} className='p-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600'>
                         <Edit2 size={14} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); handleDelete(app.id); }} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
+                      <button onClick={async (e) => { e.stopPropagation(); await handleDelete(app.id); }} disabled={Boolean(pendingMutationKey)} className='p-2 bg-red-500 text-white rounded-lg shadow-sm hover:bg-red-600'>
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -842,7 +894,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
       )}
 
       {/* Modal Nova/Editar Sessão Pessoal */}
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={selectedApptId ? 'Editar Compromisso' : 'Novo Compromisso'}>
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} closeDisabled={isSaving} title={selectedApptId ? 'Editar Compromisso' : 'Novo Compromisso'}>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -1025,7 +1077,7 @@ export default function PersonalAgenda({ state, onUpdate, activeAlarmId, activeA
              </div>
           )}
           <div className="pt-2">
-            <button onClick={() => void handleSave()} disabled={isSaving} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98] disabled:cursor-wait disabled:opacity-60">
+            <button onClick={handleSave} disabled={isSaving} className="w-full py-3 bg-clinic-primary text-white font-bold rounded-xl hover:bg-clinic-primary-hover transition-all shadow-md active:scale-[0.98] disabled:cursor-wait disabled:opacity-60">
               {isSaving ? 'Salvando...' : selectedApptId ? 'Atualizar Compromisso' : 'Salvar Compromisso'}
             </button>
           </div>

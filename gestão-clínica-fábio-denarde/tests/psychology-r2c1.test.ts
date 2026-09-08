@@ -42,7 +42,7 @@ test('R2C1 paciente 02 — profissional é preservado', () => assert.equal(getPs
 test('R2C1 paciente 03 — contexto é Psicologia', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.context, 'PSICOLOGIA'));
 test('R2C1 paciente 04 — nome é administrativo', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.name, patientInput.name));
 test('R2C1 paciente 05 — nascimento é preservado', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.birthDate, '1990-05-10'));
-test('R2C1 paciente 06 — telefone é preservado', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.phone, patientInput.phone));
+test('R2C1 paciente 06 — telefone é preservado no canonical interno', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.phone, '5527999991111'));
 test('R2C1 paciente 07 — e-mail é preservado', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.email, patientInput.email));
 test('R2C1 paciente 08 — status ativo é preservado', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.active, true));
 test('R2C1 paciente 09 — modalidade é preservada', () => assert.equal(getPsychologyPatientData(fixture(), 'patient-r2c1')?.patient.preferredModality, 'online'));
@@ -110,7 +110,7 @@ test('R2C1 documentos 54 — documentos clínicos não entram no resumo', () => 
 const chartUi = readFileSync('src/features/psychology-pilot/PsychologyPatientChart.tsx', 'utf8');
 const pilotUi = readFileSync('src/features/psychology-pilot/PsychologyPilot.tsx', 'utf8');
 const domainUi = readFileSync('src/features/psychology-pilot/psychologyDomain.ts', 'utf8');
-test('R2C1 UI 55 — seis abas existem', () => { for (const label of ['Resumo', 'Sessões', 'Registros', 'Financeiro', 'Pacotes', 'Documentos e anexos']) assert.match(chartUi, new RegExp(label)); });
+test('R2C1 UI 55 — ficha normal expõe somente abas operacionais prontas', () => { for (const label of ['Resumo', 'Sessões']) assert.match(chartUi, new RegExp(label)); const start = chartUi.indexOf('return <div className="fixed inset-0 z-[220]'); const visibleChart = chartUi.slice(start, chartUi.indexOf('</main>', start)); for (const label of ['Registros', 'Financeiro', 'Pacotes', 'Documentos e anexos']) assert.doesNotMatch(visibleChart, new RegExp(label)); });
 test('R2C1 UI 56 — cabeçalho é compacto', () => assert.match(chartUi, /Editar paciente/));
 test('R2C1 UI 57 — ação Agendar sessão existe', () => assert.match(chartUi, /Agendar sessão/));
 test('R2C1 UI 58 — ficha usa Patient, não Atendente', () => { assert.match(chartUi, /patientId/); assert.doesNotMatch(chartUi, /Atendente/); });

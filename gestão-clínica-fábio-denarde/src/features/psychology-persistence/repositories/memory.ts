@@ -140,7 +140,7 @@ function createGenericRepository<K extends PsychologyAggregate>(
     onChange?.(state);
     return read(value);
   };
-  const del = async (requestedScope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null> => {
+  const remove = async (requestedScope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null> => {
     assertRepositoryScope(scope, requestedScope);
     const current = map.get(id);
     if (!current || current.workspaceId !== scope.workspaceId || current.professionalId !== scope.professionalId || current.context !== scope.context) return null;
@@ -148,7 +148,7 @@ function createGenericRepository<K extends PsychologyAggregate>(
     onChange?.(state);
     return { id };
   };
-  return { aggregate, scope, list, get, upsert, update, delete: del };
+  return { aggregate, scope, list, get, upsert, update, delete: remove };
 }
 
 function createFinancialRepository(
@@ -166,6 +166,7 @@ function createFinancialRepository(
     getCharge: charges.get,
     upsertCharge: charges.upsert,
     updateCharge: charges.update,
+    deleteCharge: charges.delete,
     listPayments: payments.list,
     getPayment: payments.get,
     createPayment: async (requestedScope, entity) => {
@@ -177,10 +178,12 @@ function createFinancialRepository(
       return payments.upsert(requestedScope, entity);
     },
     updatePayment: payments.update,
+    deletePayment: payments.delete,
     listExpenses: expenses.list,
     getExpense: expenses.get,
     upsertExpense: expenses.upsert,
     updateExpense: expenses.update,
+    deleteExpense: expenses.delete,
   };
 }
 

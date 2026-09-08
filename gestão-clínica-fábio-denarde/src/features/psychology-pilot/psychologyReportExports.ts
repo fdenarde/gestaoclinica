@@ -17,19 +17,9 @@ import {
   type PsychologySessionsReport,
 } from './psychologyReports';
 import { isPsychologyPaymentActive } from './psychologyFinancialLedger';
-import { formatPhoneDisplay } from '../../../shared/phoneNormalization.js';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 export type PsychologyFinanceExportView = 'summary' | 'charges' | 'payments' | 'expenses';
-
-function reportPhoneLabel(value?: string): string {
-  const raw = String(value || '').trim();
-  if (!raw) return '—';
-  try {
-    return formatPhoneDisplay(raw);
-  } catch {
-    return raw;
-  }
-}
 
 export interface PsychologyReportExportMeta {
   professionalName: string;
@@ -202,7 +192,8 @@ function buildAgendaPdf(doc: jsPDF, startY: number, report: PsychologyAgendaRepo
   table(doc, summaryY + 4, ['Dimensão', 'Item', 'Sessões', 'Duração'], distributionRows);
 }
 
-function buildPatientsPdf(doc: jsPDF, startY: number, report: PsychologyPatientsReport): void {
+function buildPatientsPdf(doc: jsPDF, startY: number, sourceReport: PsychologyPatientsReport): void {
+  const report = { ...sourceReport, rows: sourceReport.rows.map(row => ({ ...row, patient: { ...row.patient, phone: formatPsychologyPhoneDisplay(row.patient.phone) } })) };
   const summaryY = addSummary(doc, startY, [
     ['Ativos', String(report.active)],
     ['Inativos', String(report.inactive)],
@@ -210,7 +201,7 @@ function buildPatientsPdf(doc: jsPDF, startY: number, report: PsychologyPatients
     ['Sem próxima sessão', String(report.withoutNext)],
     ['Com pacote ativo', String(report.withPackage)],
   ]);
-  table(doc, summaryY + 4, ['Paciente', 'Telefone', 'E-mail', 'Status', 'Última sessão', 'Próxima sessão', 'Modalidade', 'Pacote ativo'], report.rows.map(row => [row.patient.name, reportPhoneLabel(row.patient.phone), row.patient.email || '—', row.patient.active ? 'Ativo' : 'Inativo', formatPsychologyReportDate(row.lastSessionDate), formatPsychologyReportDateTime(row.nextSession?.date, row.nextSession?.time), row.preferredModalityLabel, row.activePackageName || '—']));
+  table(doc, summaryY + 4, ['Paciente', 'Telefone', 'E-mail', 'Status', 'Última sessão', 'Próxima sessão', 'Modalidade', 'Pacote ativo'], report.rows.map(row => [row.patient.name, row.patient.phone || '—', row.patient.email || '—', row.patient.active ? 'Ativo' : 'Inativo', formatPsychologyReportDate(row.lastSessionDate), formatPsychologyReportDateTime(row.nextSession?.date, row.nextSession?.time), row.preferredModalityLabel, row.activePackageName || '—']));
 }
 
 export function buildPsychologyReportPdf(payload: PsychologyReportExportPayload): jsPDF {
@@ -248,9 +239,10 @@ export function buildPsychologyReportCsv(payload: PsychologyReportExportPayload)
     const data = [...report.byDay.map(item => ({ Dimensão: 'Dia', Item: item.label, Sessões: String(item.count), Duração: `${(item.minutes / 60).toFixed(2).replace('.', ',')} h` })), ...report.byModality.map(item => ({ Dimensão: 'Modalidade', Item: item.label, Sessões: String(item.count), Duração: `${(item.minutes / 60).toFixed(2).replace('.', ',')} h` })), ...report.byLocation.map(item => ({ Dimensão: 'Local', Item: item.label, Sessões: String(item.count), Duração: `${(item.minutes / 60).toFixed(2).replace('.', ',')} h` }))];
     return csvContent(fields, data);
   }
-  const report = payload.report as PsychologyPatientsReport;
+  const sourceReport = payload.report as PsychologyPatientsReport;
+  const report = { ...sourceReport, rows: sourceReport.rows.map(row => ({ ...row, patient: { ...row.patient, phone: formatPsychologyPhoneDisplay(row.patient.phone) } })) };
   const fields = ['Paciente', 'Telefone', 'E-mail', 'Status', 'Última sessão', 'Próxima sessão', 'Modalidade', 'Pacote ativo'];
-  return csvContent(fields, report.rows.map(row => ({ Paciente: row.patient.name, Telefone: reportPhoneLabel(row.patient.phone), 'E-mail': row.patient.email || '—', Status: row.patient.active ? 'Ativo' : 'Inativo', 'Última sessão': formatPsychologyReportDate(row.lastSessionDate), 'Próxima sessão': formatPsychologyReportDateTime(row.nextSession?.date, row.nextSession?.time), Modalidade: row.preferredModalityLabel, 'Pacote ativo': row.activePackageName || '—' })));
+  return csvContent(fields, report.rows.map(row => ({ Paciente: row.patient.name, Telefone: row.patient.phone || '—', 'E-mail': row.patient.email || '—', Status: row.patient.active ? 'Ativo' : 'Inativo', 'Última sessão': formatPsychologyReportDate(row.lastSessionDate), 'Próxima sessão': formatPsychologyReportDateTime(row.nextSession?.date, row.nextSession?.time), Modalidade: row.preferredModalityLabel, 'Pacote ativo': row.activePackageName || '—' })));
 }
 
 function downloadText(content: string, filename: string, mimeType: string): void {

@@ -18,7 +18,6 @@ import {
   updatePsychologySettings,
   upsertPsychologyPatient,
   upsertPsychologySession,
-  validatePsychologyPatient,
   validatePsychologySession,
 } from '../src/features/psychology-pilot/psychologyDomain';
 import { PSYCHOLOGY_SERVICE_CATALOG } from '../src/features/psychology-pilot/psychologyServiceCatalog';
@@ -41,7 +40,7 @@ function localRepository() {
   return createLocalPublicBookingRepository({ storage: createMemoryOnlineBookingStorage(), now: () => new Date('2026-08-18T12:00:00-03:00') });
 }
 
-test('R2F3-E data civil opcional preserva validação quando preenchida', () => {
+test('R2F3-E data civil valida vazio, inválido, futuro, válido e bissexto', () => {
   assert.equal(isValidCivilDate(''), false);
   assert.equal(isValidCivilDate('2026-02-29'), false);
   assert.equal(isValidCivilDate('2028-02-29'), true);
@@ -56,14 +55,11 @@ test('R2F3-E limite civil de 18 anos não depende de timezone', () => {
   assert.equal(requiresResponsible('2008-08-18', referenceDate), false);
 });
 
-test('R2F3-E responsável Psychology-specific exige os quatro campos quando aplicável', () => {
-  const fields = ['fullName', 'relationship', 'phone', 'email'] as const;
-  for (const field of fields) {
-    const responsible = { ...minorPatient.administrativeResponsible, [field]: '' };
-    const errors = validatePsychologyPatientAdministrativeInput({ ...minorPatient, administrativeResponsible: responsible }, appointmentDate);
-    assert.ok(errors[`administrativeResponsible.${field}`], `campo ausente: ${field}`);
-  }
-  assert.deepEqual(validatePsychologyPatientAdministrativeInput(minorPatient, appointmentDate), {});
+test('R2F3-E responsável Psychology-specific é totalmente opcional e valida somente valores preenchidos', () => {
+  const optional = { ...minorPatient, administrativeResponsible: { fullName: 'Responsável sintético', relationship: 'Mãe', phone: '', email: '' } };
+  assert.deepEqual(validatePsychologyPatientAdministrativeInput(optional, appointmentDate), {});
+  assert.match(validatePsychologyPatientAdministrativeInput({ ...minorPatient, administrativeResponsible: { ...optional.administrativeResponsible, phone: '123' } }, appointmentDate)['administrativeResponsible.phone'], /telefone válido/);
+  assert.match(validatePsychologyPatientAdministrativeInput({ ...minorPatient, administrativeResponsible: { ...optional.administrativeResponsible, email: 'invalido' } }, appointmentDate)['administrativeResponsible.email'], /e-mail válido/);
 });
 
 test('R2F3-E perfil legado permanece utilizável e incompleto sem inventar DOB', () => {
@@ -77,20 +73,10 @@ test('R2F3-E perfil legado permanece utilizável e incompleto sem inventar DOB',
   assert.equal(getPsychologyPatientProfileCompleteness(reloaded!).missingFields.includes('dateOfBirth'), false);
 });
 
-test('Etapa 2 contrato administrativo exige nome, telefone e modalidade; DOB/e-mail são opcionais', () => {
-  const input = { name: 'Paciente Mínimo Sintético', dateOfBirth: '', phone: '27999990014', email: '', preferredModality: 'online' as const, administrativeNote: '', active: true };
-  assert.deepEqual(validatePsychologyPatient(input), {});
-  const scope = createPsychologyScope('etapa2-contract');
-  const patient = upsertPsychologyPatient(createEmptyPsychologyStore(scope), input, 'patient-etapa2');
-  assert.equal(patient.patients[0].dateOfBirth, '');
-  assert.equal(patient.patients[0].email, undefined);
-  assert.equal(patient.patients[0].acompanhamentoStatus, 'ATIVO');
-});
-
 test('R2F3-E cadastro interno mantém tipo e contrato extensíveis para required condicional', () => {
   const complete = profileCompleteness({ ...minorPatient }, appointmentDate);
   const adult = profileCompleteness(adultPatient, appointmentDate);
-  assert.equal(complete.requiresResponsible, true);
+  assert.equal(complete.requiresResponsible, false);
   assert.equal(complete.complete, true);
   assert.equal(adult.requiresResponsible, false);
   assert.equal(adult.complete, true);
@@ -116,18 +102,17 @@ test('R2F3-E booking local sincroniza Patient, Session e reload com DOB/respons�
   assert.equal(reloaded.patients.find(item => item.id === patient?.id)?.dateOfBirth, minorPatient.dateOfBirth);
 });
 
-test('R2F3-E validação local impede Patient órfão quando payload do menor é incompleto', async () => {
+test('R2F3-E validação local aceita menor sem responsável', async () => {
   const storage = createMemoryOnlineBookingStorage();
   const repo = createLocalPublicBookingRepository({ storage, now: () => new Date('2026-08-18T12:00:00-03:00') });
   const settings = await repo.getSettings();
   const slots = await repo.listPublishedSlots({ professionalSlug: settings!.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: appointmentDate, throughDate: appointmentDate });
   const result = await repo.createBooking({ ...minorPatient, administrativeResponsible: undefined, professionalSlug: settings!.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', date: slots[0].date, time: slots[0].time });
-  assert.equal('conflict' in result, true);
-  assert.equal(storage.values[`${LOCAL_ONLINE_BOOKING_STORAGE_KEY}`], undefined);
-  assert.equal(Object.keys(storage.values).some(key => key.startsWith('psychology-pilot:')), false);
+  assert.equal('conflict' in result, false);
+  assert.ok(storage.values[`${LOCAL_ONLINE_BOOKING_STORAGE_KEY}`]);
 });
 
-test('R2F3-E servidor rejeita bypass sem responsável e aceita payload completo', async () => {
+test('R2F3-E servidor aceita menor sem responsável e payload completo', async () => {
   const now = new Date('2026-08-18T12:00:00-03:00');
   const store = createMemoryPublicBookingServerStore(createDefaultPublicBookingSettings(now), now);
   const handler = createPublicBookingServerHandler({ store, now: () => now });
@@ -135,8 +120,10 @@ test('R2F3-E servidor rejeita bypass sem responsável e aceita payload completo'
   const slots = await handler({ method: 'GET', query: { resource: 'slots', professionalSlug: settings.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: appointmentDate, throughDate: appointmentDate } });
   const slot = (slots.body.slots as Array<{ date: string; time: string }>)[0];
   const incomplete = await handler({ method: 'POST', query: { resource: 'create-booking' }, body: { ...minorPatient, administrativeResponsible: undefined, professionalSlug: settings.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', date: slot.date, time: slot.time } });
-  assert.equal(incomplete.status, 409);
-  const complete = await handler({ method: 'POST', query: { resource: 'create-booking' }, body: { ...minorPatient, professionalSlug: settings.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', date: slot.date, time: slot.time } });
+  assert.equal(incomplete.status, 201);
+  const completeStore = createMemoryPublicBookingServerStore(createDefaultPublicBookingSettings(now), now);
+  const completeHandler = createPublicBookingServerHandler({ store: completeStore, now: () => now });
+  const complete = await completeHandler({ method: 'POST', query: { resource: 'create-booking' }, body: { ...minorPatient, professionalSlug: settings.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', date: slot.date, time: slot.time } });
   assert.equal(complete.status, 201);
   const stateJson = JSON.stringify(store.getState());
   assert.equal(stateJson.includes('dateOfBirth'), false);

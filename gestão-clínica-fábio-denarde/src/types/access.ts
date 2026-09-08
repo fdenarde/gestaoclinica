@@ -53,6 +53,8 @@ export type AccessPermissionKey =
   | 'finance.manage'
   | 'reports.view'
   | 'reports.export'
+  | 'settings.clinic.view'
+  | 'settings.clinic.edit'
   | 'settings.clinic.manage'
   | 'settings.firebase.manage'
   | 'settings.whatsapp.manage'

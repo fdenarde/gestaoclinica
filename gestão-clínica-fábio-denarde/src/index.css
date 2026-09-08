@@ -186,7 +186,7 @@
 }
 
 @layer components {
-  /* Scoped identity for the authenticated Psychology entry flow. */
+  /* The shared Auth surface receives the Psychology identity only through the route context. */
   .auth-psychology-theme {
     --color-clinic-bg: #F5F3FF;
     --color-clinic-header: #4C1D95;

@@ -78,8 +78,13 @@ test('R2B13X — contratos de lock e delete estão presentes nas superfícies op
   const pilot = await readFile('src/features/psychology-pilot/PsychologyPilot.tsx', 'utf8');
   const agenda = await readFile('src/components/PersonalAgenda.tsx', 'utf8');
   const api = await readFile('src/features/psychology-persistence/repositories/api.ts', 'utf8');
+  const psychologyApi = await readFile('api/psychology.js', 'utf8');
+  const serverRepository = await readFile('api/_lib/psychologyRepository.js', 'utf8');
   assert.match(pilot, /submitLock/);
   assert.match(pilot, /persistedMutationLocks/);
   assert.match(agenda, /mutationLocks/);
   assert.match(api, /async delete\(requestedScope, id\)/);
+  assert.match(api, /X-Idempotency-Key/);
+  assert.match(psychologyApi, /requestIdempotencyKey/);
+  assert.match(serverRepository, /idempotencyKey/);
 });

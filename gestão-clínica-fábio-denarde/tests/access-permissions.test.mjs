@@ -53,6 +53,8 @@ test('profissional aprovado recebe workspace canônico, pacientes vinculados e p
   assert.equal(context.legacyStorageOwnerId, 'professional-uid');
   assert.deepEqual(context.allowedPatientIds, ['patient-1', 'patient-2']);
   assert.equal(context.permissions['patients.photo.upload'], true);
+  assert.equal(context.permissions['settings.clinic.view'], true);
+  assert.equal(context.permissions['settings.clinic.manage'], false);
   assert.equal(context.permissions['finance.global.view'], false);
 });
 
@@ -99,6 +101,24 @@ test('contexto Monitoramento não herda escrita do papel Profissional', () => {
   assert.equal(context.permissions['patients.edit'], false);
   assert.equal(context.permissions['media.image.upload'], false);
   assert.equal(context.permissions['monitoring.media.download'], false);
+  assert.equal(context.permissions['settings.clinic.view'], false);
+  assert.equal(context.permissions['settings.clinic.manage'], false);
+});
+
+test('perfil Responsável permanece isolado da leitura e gestão de configurações clínicas', () => {
+  const context = buildEffectiveAccessContext({
+    decodedToken: { uid: 'responsible-uid', email: 'responsible@example.com' },
+    profile: {
+      role: 'responsible',
+      status: 'approved',
+      workspaceId: 'clinic-workspace',
+      linkedPatientIds: ['patient-1'],
+    },
+    primaryAdminEmail: PRIMARY_ADMIN_EMAIL,
+    primaryAdminWorkspaceId: 'clinic-workspace',
+  });
+  assert.equal(context.permissions['settings.clinic.view'], false);
+  assert.equal(context.permissions['settings.clinic.manage'], false);
 });
 
 test('contexto adicional não autorizado não pode ser ativado', () => {
@@ -166,6 +186,8 @@ test('administrador principal permanece aprovado sem depender de documento de pe
   assert.equal(context.role, 'admin');
   assert.equal(context.workspaceId, 'admin-uid');
   assert.equal(context.permissions['access.permissions.manage'], true);
+  assert.equal(context.permissions['settings.clinic.view'], true);
+  assert.equal(context.permissions['settings.clinic.manage'], true);
 });
 
 test('asserts negam papel, permissão e atendente fora do vínculo', () => {
@@ -173,6 +195,10 @@ test('asserts negam papel, permissão e atendente fora do vínculo', () => {
   assert.doesNotThrow(() => assertAllowedRole(context, ['professional']));
   assert.throws(() => assertAllowedRole(context, ['admin']), error => error.code === 'access/role-denied');
   assert.doesNotThrow(() => assertAccessPermission(context, 'patients.photo.view'));
+  assert.throws(
+    () => assertAccessPermission(context, 'settings.clinic.manage'),
+    error => error.code === 'access/permission-denied',
+  );
   assert.throws(
     () => assertAccessPermission(context, 'settings.firebase.manage'),
     error => error.code === 'access/permission-denied',

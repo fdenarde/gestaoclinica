@@ -1,6 +1,5 @@
 import type { PsychologyAggregate } from './namespace';
 import type { PsychologyPersistenceScope } from './scope';
-import type { PsychologyCapabilities } from './capabilities';
 import type {
   PsychologyAttachmentRecord,
   PsychologyChargeRecord,
@@ -30,13 +29,12 @@ export interface PsychologyRepository<T extends { id: string }> {
 export interface PsychologyPatientDeletionResult {
   id: string;
   deleted: boolean;
-  preserved: boolean;
-  active?: boolean;
+  preserved?: boolean;
   reason?: string;
 }
 
 export interface PsychologyPatientRepository extends PsychologyRepository<PsychologyPatientRecord> {
-  /** Optional remote-only contract that applies the validated individual protection rule. */
+  deleteWithResult?: (scope: PsychologyPersistenceScope, id: string) => Promise<PsychologyPatientDeletionResult>;
   deleteSafely?: (scope: PsychologyPersistenceScope, id: string) => Promise<PsychologyPatientDeletionResult>;
 }
 export interface PsychologySessionRepository extends PsychologyRepository<PsychologySessionRecordEntity> {}
@@ -47,33 +45,6 @@ export interface PsychologyLocationRepository extends PsychologyRepository<Psych
 export interface PsychologyPackageRepository extends PsychologyRepository<PsychologyPackageRecord> {}
 export interface PsychologySettingsRepository extends PsychologyRepository<PsychologySettingsRecord> {}
 
-export interface PsychologyFinancialRepository {
-  readonly scope: PsychologyPersistenceScope;
-  listCharges(scope: PsychologyPersistenceScope): Promise<readonly PsychologyChargeRecord[]>;
-  getCharge(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyChargeRecord | null>;
-  upsertCharge(scope: PsychologyPersistenceScope, entity: PsychologyChargeRecord): Promise<PsychologyChargeRecord>;
-  updateCharge(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyChargeRecord>): Promise<PsychologyChargeRecord | null>;
-  listPayments(scope: PsychologyPersistenceScope): Promise<readonly PsychologyPaymentRecord[]>;
-  getPayment(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyPaymentRecord | null>;
-  createPayment(scope: PsychologyPersistenceScope, entity: PsychologyPaymentRecord): Promise<PsychologyPaymentRecord>;
-  updatePayment(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyPaymentRecord>): Promise<PsychologyPaymentRecord | null>;
-  listExpenses(scope: PsychologyPersistenceScope): Promise<readonly PsychologyExpenseRecord[]>;
-  getExpense(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyExpenseRecord | null>;
-  upsertExpense(scope: PsychologyPersistenceScope, entity: PsychologyExpenseRecord): Promise<PsychologyExpenseRecord>;
-  updateExpense(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyExpenseRecord>): Promise<PsychologyExpenseRecord | null>;
-}
-
-export interface PsychologyDocumentRepository extends PsychologyRepository<PsychologyDocumentRecord> {
-  listAdministrative(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyDocumentRecord[]>;
-  listClinical(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyDocumentRecord[]>;
-}
-
-export interface PsychologyAttachmentRepository extends PsychologyRepository<PsychologyAttachmentRecord> {
-  listAdministrative(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyAttachmentRecord[]>;
-  listClinical(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyAttachmentRecord[]>;
-}
-
-/** Read-only aggregate access reserved for an explicit backup/export snapshot. */
 export interface PsychologyBackupReadBundle {
   readonly patients: PsychologyPatientRepository;
   readonly sessions: PsychologySessionRepository;
@@ -87,6 +58,35 @@ export interface PsychologyBackupReadBundle {
   readonly listCharges: (scope: PsychologyPersistenceScope) => Promise<readonly PsychologyChargeRecord[]>;
   readonly listPayments: (scope: PsychologyPersistenceScope) => Promise<readonly PsychologyPaymentRecord[]>;
   readonly listExpenses: (scope: PsychologyPersistenceScope) => Promise<readonly PsychologyExpenseRecord[]>;
+}
+
+export interface PsychologyFinancialRepository {
+  readonly scope: PsychologyPersistenceScope;
+  listCharges(scope: PsychologyPersistenceScope): Promise<readonly PsychologyChargeRecord[]>;
+  getCharge(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyChargeRecord | null>;
+  upsertCharge(scope: PsychologyPersistenceScope, entity: PsychologyChargeRecord): Promise<PsychologyChargeRecord>;
+  updateCharge(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyChargeRecord>): Promise<PsychologyChargeRecord | null>;
+  deleteCharge(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
+  listPayments(scope: PsychologyPersistenceScope): Promise<readonly PsychologyPaymentRecord[]>;
+  getPayment(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyPaymentRecord | null>;
+  createPayment(scope: PsychologyPersistenceScope, entity: PsychologyPaymentRecord): Promise<PsychologyPaymentRecord>;
+  updatePayment(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyPaymentRecord>): Promise<PsychologyPaymentRecord | null>;
+  deletePayment(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
+  listExpenses(scope: PsychologyPersistenceScope): Promise<readonly PsychologyExpenseRecord[]>;
+  getExpense(scope: PsychologyPersistenceScope, id: string): Promise<PsychologyExpenseRecord | null>;
+  upsertExpense(scope: PsychologyPersistenceScope, entity: PsychologyExpenseRecord): Promise<PsychologyExpenseRecord>;
+  updateExpense(scope: PsychologyPersistenceScope, id: string, patch: Partial<PsychologyExpenseRecord>): Promise<PsychologyExpenseRecord | null>;
+  deleteExpense(scope: PsychologyPersistenceScope, id: string): Promise<{ id: string } | null>;
+}
+
+export interface PsychologyDocumentRepository extends PsychologyRepository<PsychologyDocumentRecord> {
+  listAdministrative(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyDocumentRecord[]>;
+  listClinical(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyDocumentRecord[]>;
+}
+
+export interface PsychologyAttachmentRepository extends PsychologyRepository<PsychologyAttachmentRecord> {
+  listAdministrative(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyAttachmentRecord[]>;
+  listClinical(scope: PsychologyPersistenceScope, patientId?: string): Promise<readonly PsychologyAttachmentRecord[]>;
 }
 
 export interface PsychologyRepositoryBundle {
@@ -103,7 +103,6 @@ export interface PsychologyRepositoryBundle {
   readonly attachments: PsychologyAttachmentRepository;
   readonly settings: PsychologySettingsRepository;
   readonly backup?: PsychologyBackupReadBundle;
-  readonly getCapabilities?: () => PsychologyCapabilities | null;
 }
 
 export interface PsychologyMemorySeed {

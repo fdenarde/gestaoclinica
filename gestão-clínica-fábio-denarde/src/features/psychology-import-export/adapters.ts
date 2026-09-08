@@ -1,6 +1,6 @@
 import type { PsychologyStore } from '../psychology-pilot/psychologyDomain';
 import { csvHasPatientShape, parseCsvText, getCsvValue } from './csv';
-import { createEmptyImportBundle, makeAnalysis, previewImport, normalizeCsvRows, normalizeImportedPhoneFields } from './normalize';
+import { createEmptyImportBundle, makeAnalysis, previewImport, normalizeCsvRows } from './normalize';
 import { extractStoredZip } from './zip';
 import { analyzeDoctoraliaFiles, emptyDoctoraliaAnalysis, recognizeDoctoraliaAppointmentsCsv, recognizeDoctoraliaPatientsCsv } from './doctoralia';
 import {
@@ -67,7 +67,7 @@ function normalizeBackup(input: ImportFileInput): PsychologyImportBundle {
   const clinicalRecords = jsonSection<Array<Record<string, unknown>>>(files, 'clinical/session-records.json', []);
   const documents = jsonSection<Array<Record<string, unknown>>>(files, 'documents/manifest.json', []);
   const attachments = jsonSection<Array<Record<string, unknown>>>(files, 'attachments/manifest.json', []);
-  bundle.patients = patients.map(item => ({ externalId: String(item.id || ''), name: String(item.name || ''), birthDate: item.birthDate ? String(item.birthDate) : undefined, ...normalizeImportedPhoneFields(item.phone ? String(item.phone) : undefined), email: item.email ? String(item.email) : undefined, status: item.active === false ? 'inactive' : 'active', source: bundle.metadata.source, sourceRecordId: String(item.id || '') }));
+  bundle.patients = patients.map(item => ({ externalId: String(item.id || ''), name: String(item.name || ''), birthDate: item.birthDate ? String(item.birthDate) : undefined, phone: item.phone ? String(item.phone) : undefined, email: item.email ? String(item.email) : undefined, status: item.active === false ? 'inactive' : 'active', source: bundle.metadata.source, sourceRecordId: String(item.id || '') }));
   bundle.appointments = appointments.map(item => ({ externalId: String(item.id || ''), patientExternalId: item.patientId ? String(item.patientId) : undefined, date: String(item.date || ''), startTime: String(item.time || ''), durationMinutes: Number(item.durationMinutes || 50), status: item.status ? String(item.status) : undefined, modality: item.modality ? String(item.modality) : undefined, locationText: item.locationId ? String(item.locationId) : undefined, notes: item.administrativeNote ? String(item.administrativeNote) : undefined, source: bundle.metadata.source, sourceRecordId: String(item.id || '') }));
   bundle.personalAppointments = personalAppointments.map(item => ({ externalId: String(item.id || ''), date: String(item.date || ''), startTime: String(item.time || ''), durationMinutes: Number(item.durationMinutes || 30), title: String(item.title || item.type || 'Compromisso pessoal'), notes: item.note ? String(item.note) : undefined, source: bundle.metadata.source, sourceRecordId: String(item.id || '') }));
   bundle.services = services.map(item => ({ externalId: String(item.id || ''), name: String(item.name || ''), durationMinutes: Number(item.defaultDurationMinutes || 0) || undefined, price: Number(item.defaultPrice || 0) || undefined, source: bundle.metadata.source, sourceRecordId: String(item.id || '') }));

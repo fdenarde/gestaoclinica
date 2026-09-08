@@ -1,5 +1,6 @@
 import type { User } from 'firebase/auth';
 import { auth } from '../firebase';
+import { emitFirestoreMetric } from './firestoreDiagnostics';
 import type {
   AccessProfile,
   AccessRequestInput,
@@ -300,6 +301,44 @@ function createApiError(code: string, message: string): Error & { code: string }
   return Object.assign(new Error(message), { code });
 }
 
+function accessTelemetryFields(method: 'GET' | 'POST', body: unknown, query: string) {
+  const action = isRecord(body) && typeof body.action === 'string' ? body.action : '';
+  const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
+  const mode = params.get('mode') || '';
+  const operationText = `${mode} ${action}`.toLowerCase();
+  const knownModes = new Set(['monitoringPanel', 'adminResponsiblePreview', 'responsiblePortal', 'requests', 'professionalNotifications', 'canonicalProfessional']);
+  const knownActions = new Set(['recordMonitoringAction', 'getResponsibleFileUrl', 'getAdminResponsiblePreviewFileUrl', 'markProfessionalNotificationsRead', 'manageProfessionalNotifications']);
+  const safeLogicalMode = knownModes.has(mode)
+    ? mode
+    : knownActions.has(action)
+      ? action
+      : method.toLowerCase();
+  const logicalOperation = operationText.includes('monitor')
+    ? 'monitoring_access'
+    : operationText.includes('notification')
+      ? 'notification'
+      : operationText.includes('photo') || operationText.includes('document') || operationText.includes('file')
+        ? 'gallery_access'
+        : 'portal_access';
+  return {
+    source: 'access-frontend',
+    endpoint: 'access',
+    logicalOperation,
+    logicalMode: safeLogicalMode,
+    dedupeHit: false,
+    writeAttempted: method !== 'GET',
+  } as const;
+}
+
+function accessResponseMetricFields(value: unknown) {
+  if (!isRecord(value)) return {};
+  return {
+    patientsReturned: Array.isArray(value.patients) ? value.patients.length : undefined,
+    sessionsReturned: Array.isArray(value.sessions) ? value.sessions.length : undefined,
+    countOperations: isRecord(value.querySummary) ? Object.keys(value.querySummary).length : undefined,
+  };
+}
+
 async function getToken(user?: User, forceRefreshToken = false): Promise<string> {
   const currentUser = user || auth.currentUser;
   if (!currentUser) {
@@ -334,6 +373,10 @@ async function request<T>(
   query = '',
   options: RequestOptions = {},
 ): Promise<T> {
+  const telemetry = accessTelemetryFields(method, body, query);
+  const startedAt = Date.now();
+  emitFirestoreMetric({ ...telemetry, event: 'request-start' });
+  let responseStatus: number | 'error' = 'error';
   try {
     const authenticatedUser = user === undefined ? auth.currentUser : user;
     const response = await fetch(`${API_ENDPOINT}${query}`, {
@@ -346,8 +389,25 @@ async function request<T>(
       ...(method === 'GET' ? { cache: 'no-store' } : {}),
       signal: options.signal,
     });
-    return readResponse<T>(response);
+    responseStatus = response.status;
+    const value = await readResponse<T>(response);
+    emitFirestoreMetric({
+      ...telemetry,
+      ...accessResponseMetricFields(value),
+      event: 'request-finish',
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      writeCompleted: method !== 'GET' ? response.ok : undefined,
+    });
+    return value;
   } catch (error) {
+    emitFirestoreMetric({
+      ...telemetry,
+      event: 'request-finish',
+      status: responseStatus,
+      durationMs: Date.now() - startedAt,
+      writeCompleted: method !== 'GET' ? false : undefined,
+    });
     if ((error as { code?: string } | null)?.code) throw error;
     throw createApiError(
       'access/network-error',
@@ -408,8 +468,8 @@ export async function submitAccessRequest(
   return request<AccessRequestResponse>('POST', { action: 'requestAccess', ...input }, user);
 }
 
-export async function listAccessRequests(): Promise<AccessRequestRecord[]> {
-  const result = await request<AccessRequestsResponse>('GET', undefined, undefined, '?mode=requests');
+export async function listAccessRequests(user?: User): Promise<AccessRequestRecord[]> {
+  const result = await request<AccessRequestsResponse>('GET', undefined, user, '?mode=requests');
   return result.requests;
 }
 
@@ -630,10 +690,18 @@ export async function getMonitoringPanelData(options: {
     options.weekStart || '',
     options.weekEnd || '',
   ].join(':');
+  const logicalMode = options.adminPreview ? 'admin-preview' : 'monitoring';
   const cached = monitoringPanelCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  if (cached && cached.expiresAt > Date.now()) {
+    emitFirestoreMetric({ source: 'monitoring-frontend', endpoint: 'access', logicalMode, event: 'cache-lookup', cache: 'hit', cacheHit: true });
+    return cached.value;
+  }
+  emitFirestoreMetric({ source: 'monitoring-frontend', endpoint: 'access', logicalMode, event: 'cache-lookup', cache: 'miss', cacheHit: false });
   const existing = monitoringPanelRequests.get(cacheKey);
-  if (existing) return existing;
+  if (existing) {
+    emitFirestoreMetric({ source: 'monitoring-frontend', endpoint: 'access', logicalMode, event: 'in-flight-dedupe', inFlightDedupe: true });
+    return existing;
+  }
 
   const params = new URLSearchParams({ mode: 'monitoringPanel' });
   if (options.adminPreview) params.set('adminPreview', '1');

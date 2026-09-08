@@ -21,19 +21,17 @@ test('R2F3-G3 cria bottom navigation mobile com três áreas principais e Mais',
   assert.match(component, /<span>Mais<\/span>/);
 });
 
-test('R2F3-G3 mantém as quatro áreas secundárias acessíveis pelo menu Mais', () => {
+test('R2F3-G3 mantém somente áreas operacionais prontas no menu Mais', () => {
   assert.match(component, /\['personal', 'Agenda Pessoal', WalletCards\]/);
-  assert.match(component, /\['finance', 'Financeiro', DollarSign\]/);
-  assert.match(component, /\['reports', 'Relatórios', FileText\]/);
   assert.match(component, /\['settings', 'Ajustes', Pencil\]/);
+  assert.doesNotMatch(component, /\['finance', 'Financeiro'/);
+  assert.doesNotMatch(component, /\['reports', 'Relatórios'/);
   assert.match(component, /aria-haspopup="dialog"/);
   assert.match(component, /aria-label="Mais opções da Psicologia"/);
 });
 
 test('R2F3-G3 compacta header e badge no mobile sem remover a identidade desktop', () => {
   assert.match(component, /data-testid="psychology-environment-badge"/);
-  assert.match(component, /<span className="sm:hidden">PILOTO<\/span>/);
-  assert.match(component, /<span className="hidden sm:inline">Piloto local<\/span>/);
   assert.match(component, /<span className="sm:hidden">Psicologia<\/span>/);
   assert.match(component, /<span className="hidden truncate sm:inline">\{runtimeIdentity.profile.displayName/);
 });

@@ -7,14 +7,15 @@ const root = resolve(process.cwd());
 const pilot = await readFile(resolve(root, 'src/features/psychology-pilot/PsychologyPilot.tsx'), 'utf8');
 const online = await readFile(resolve(root, 'src/features/psychology-online-booking/PublicBookingSettingsPanel.tsx'), 'utf8');
 
-test('Ajustes tem cinco abas e renderiza somente o painel ativo', () => {
-  for (const tab of ['Perfil', 'Atendimentos', 'Agenda', 'Agendamento Online', 'Aparência e Sistema']) assert.match(pilot, new RegExp(tab));
+test('Ajustes mantém somente as quatro áreas operacionais prontas', () => {
+  for (const tab of ['Perfil', 'Atendimentos', 'Agenda', 'Aparência e Sistema']) assert.match(pilot, new RegExp(tab));
   assert.match(pilot, /psychology-settings-tabs/);
   assert.match(pilot, /role="tab"/);
   assert.match(pilot, /activeTab === 'profile'/);
   assert.match(pilot, /activeTab === 'attendance'/);
   assert.match(pilot, /activeTab === 'agenda'/);
-  assert.match(pilot, /activeTab === 'online'/);
+  assert.doesNotMatch(pilot, /activeTab === 'online'/);
+  assert.doesNotMatch(pilot, /activeTab === 'messages'/);
   assert.match(pilot, /activeTab === 'system'/);
 });
 
@@ -22,7 +23,7 @@ test('Ajustes aplica o padrão visual centralizado e responsivo aprovado em Mens
   assert.match(pilot, /function SettingsPageHeader/);
   assert.match(pilot, /data-testid="psychology-settings-page-header"/);
   assert.match(pilot, /text-center/);
-  assert.match(pilot, /flex min-w-max gap-1\.5 sm:grid sm:min-w-0 sm:grid-cols-3 xl:grid-cols-6/);
+  assert.match(pilot, /flex min-w-max gap-1\.5 sm:grid sm:min-w-0 sm:grid-cols-3/);
   assert.match(pilot, /max-w-\[96rem\]/);
   assert.match(online, /Ajustes · Psicologia/);
   assert.match(online, /flex flex-col justify-between gap-3 sm:flex-row sm:items-start/);

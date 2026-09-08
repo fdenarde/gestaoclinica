@@ -4,7 +4,9 @@ import driveHandler from './api/drive.js';
 import activityRecordsHandler from './api/activity-records.js';
 import activityUploadChunkHandler from './api/activity-upload-chunk.js';
 import accessHandler from './api/access.js';
+import psychologyHandler from './api/psychology.js';
 import googlePhotosAlbumsHandler from './api/google-photos-albums.js';
+import { logSanitizedAccessAudit } from './api/_lib/sanitizedAccessAudit.js';
 
 const app = express();
 const port = Number(process.env.DRIVE_API_PORT || 3002);
@@ -24,6 +26,7 @@ app.get('/api/health', (_req, res) => {
 app.all('/api/drive', driveHandler);
 app.all('/api/activity-records', activityRecordsHandler);
 app.all('/api/access', accessHandler);
+app.all(/^\/api\/psychology(?:\/.*)?$/, psychologyHandler);
 app.all('/api/google-photos-albums', googlePhotosAlbumsHandler);
 
 app.use('/api', (req, res) => {
@@ -35,8 +38,14 @@ app.use('/api', (req, res) => {
   });
 });
 
-app.use((error, _req, res, _next) => {
-  console.error('[API LOCAL]', error?.stack || error?.message || error);
+app.use((error, req, res, _next) => {
+  logSanitizedAccessAudit(req, {
+    endpoint: req.path || '/api',
+    auditPrefix: '[API LOCAL AUDIT]',
+    statusHttp: 500,
+    technicalCode: 'local-api/internal-error',
+    requestAccessScreenCause: 'ACCESS_API_TECHNICAL_FAILURE',
+  });
   if (res.headersSent) return;
   res.status(500).json({
     error: {

@@ -1,5 +1,4 @@
 import type { PsychologyStore } from '../psychology-pilot/psychologyDomain';
-import { normalizePhone } from '../../../shared/phoneNormalization.js';
 import { getCsvValue, isValidIsoDate, normalizeCsvHeader, normalizeTimeValue, parseDateValue, parseNumberValue, type CsvRow } from './csv';
 import {
   SOURCE_LABELS,
@@ -19,7 +18,6 @@ import {
   type NormalizedDocument,
   type NormalizedPayment,
   type NormalizedPersonalAppointment,
-  type NormalizedPatient,
   type NormalizedService,
   type PsychologyImportBundle,
 } from './types';
@@ -43,23 +41,6 @@ export function createEmptyImportBundle(source: ImportSource, fileName?: string,
 
 function sourceId(row: CsvRow, fallback: string): string {
   return getCsvValue(row, 'externalId', 'external_id', 'id_externo', 'id', 'codigo', 'código') || fallback;
-}
-
-export function normalizeImportedPhoneFields(value: string | undefined): Pick<NormalizedPatient, 'phone' | 'rawImportedPhone' | 'displayPhone' | 'canonicalPhone'> {
-  const rawImportedPhone = value || '';
-  if (!rawImportedPhone) return { phone: undefined, rawImportedPhone: undefined, displayPhone: undefined, canonicalPhone: undefined };
-  try {
-    const normalized = normalizePhone(rawImportedPhone);
-    return {
-      phone: normalized.displayPhone,
-      rawImportedPhone: normalized.rawImportedPhone,
-      displayPhone: normalized.displayPhone,
-      canonicalPhone: normalized.canonicalPhone,
-    };
-  } catch {
-    // The preview remains inspectable, but an invalid value has no canonical form.
-    return { phone: rawImportedPhone.trim(), rawImportedPhone, displayPhone: rawImportedPhone.trim(), canonicalPhone: undefined };
-  }
 }
 
 function entityOf(row: CsvRow): string {
@@ -155,7 +136,7 @@ function pushRowRecord(row: CsvRow, rowIndex: number, bundle: PsychologyImportBu
     bundle.conflicts.push({ type: 'unsupported_record', severity: 'conflict', sourceRecordId: recordId, message: 'Registro sem entidade reconhecida nem nome de paciente.' });
     return;
   }
-  bundle.patients.push({ externalId: getCsvValue(row, 'patientExternalId', 'patient_id', 'id_paciente', 'externalId', 'external_id', 'id') || undefined, name, birthDate: parseDateValue(getCsvValue(row, 'birthDate', 'dataNascimento', 'data de nascimento', 'nascimento')), ...normalizeImportedPhoneFields(getCsvValue(row, 'phone', 'telefone', 'celular') || undefined), email: getCsvValue(row, 'email', 'e-mail') || undefined, status: getCsvValue(row, 'status', 'situacao', 'situação') || undefined, source: bundle.metadata.source, sourceRecordId: recordId });
+  bundle.patients.push({ externalId: getCsvValue(row, 'patientExternalId', 'patient_id', 'id_paciente', 'externalId', 'external_id', 'id') || undefined, name, birthDate: parseDateValue(getCsvValue(row, 'birthDate', 'dataNascimento', 'data de nascimento', 'nascimento')), phone: getCsvValue(row, 'phone', 'telefone', 'celular') || undefined, email: getCsvValue(row, 'email', 'e-mail') || undefined, status: getCsvValue(row, 'status', 'situacao', 'situação') || undefined, source: bundle.metadata.source, sourceRecordId: recordId });
 }
 
 export function normalizeCsvRows(rows: CsvRow[], input: ImportFileInput): PsychologyImportBundle {

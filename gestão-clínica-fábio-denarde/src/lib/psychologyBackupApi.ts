@@ -4,7 +4,6 @@ import type { PsychologyBackupJsonResult } from '../features/psychology-import-e
 interface BackupApiErrorPayload {
   error?: { code?: string; message?: string };
 }
-
 export class PsychologyBackupApiError extends Error {
   readonly code: string;
   readonly status: number;

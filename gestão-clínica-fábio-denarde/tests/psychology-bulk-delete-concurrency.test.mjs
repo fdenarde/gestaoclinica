@@ -19,7 +19,6 @@ test('R2 bulk 01 — concorrência máxima é limitada e a ordem dos resultados 
   assert.equal(maximum, PSYCHOLOGY_BULK_DELETE_CONCURRENCY);
   assert.deepEqual(results.map(result => result.status === 'fulfilled' ? result.value : null), ['p1', 'p2', 'p3', 'p4', 'p5']);
 });
-
 test('R2 bulk 02 — falha individual não gera retry e não interrompe os demais', async () => {
   const calls = [];
   const results = await allSettledWithConcurrency(['p1', 'p2', 'p3'], 2, async id => {

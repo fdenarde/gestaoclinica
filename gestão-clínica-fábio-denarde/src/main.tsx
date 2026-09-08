@@ -41,7 +41,6 @@ function BootstrapStatus({ state }: { state: 'loading' | 'error' }) {
     </main>
   );
 }
-
 const root = document.getElementById('root')!;
 const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/';
 const publicBookingMatch = /^\/agendar\/([^/]+)$/.exec(normalizedPath);

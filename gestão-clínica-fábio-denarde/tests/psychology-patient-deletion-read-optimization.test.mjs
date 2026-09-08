@@ -149,7 +149,7 @@ test('R2 leitura 01 — exclusão usa somente consultas seletivas e não chama c
 
   const result = await deletePsychologyPatientSafely({ repository, patientId: 'patient-a', now });
 
-  assert.deepEqual(result, { id: 'patient-a', deleted: true, preserved: true, active: false });
+  assert.deepEqual(result, { id: 'patient-a', deleted: true });
   assert.deepEqual(db.calls.collectionGets, []);
   assert.equal(db.calls.documentGets.length, 1);
   assert.equal(db.calls.queries.length, 12);
@@ -177,8 +177,8 @@ test('R2 leitura 01 — exclusão usa somente consultas seletivas e não chama c
   assert.equal(db.collections.get('sessionRecords').has('record-linked'), false);
   assert.equal(db.collections.get('attachments').has('attachment-linked'), false);
   assert.equal(db.collections.get('attachments').has('attachment-b'), true);
-  assert.equal(db.collections.get('payments').has('payment-a'), true);
-  assert.equal(db.collections.get('payments').get('payment-a').patientId, null);
+  assert.equal(db.collections.get('payments').has('payment-a'), false);
+  assert.equal(db.collections.get('payments').has('payment-linked'), false);
   assert.equal(db.collections.get('payments').get('payment-b').patientId, 'patient-b');
 });
 

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getAuth } from 'firebase-admin/auth';
 import { resolveAccessContext } from './_lib/accessContext.js';
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebaseAdmin.js';
+import { attachFirestoreDiagnostics } from './_lib/firestoreDiagnostics.js';
 import {
   createSignedActivityUrl,
   deleteActivityPhotoFromDrive,
@@ -373,6 +374,15 @@ async function resolveResponsibleMediaContext(req, patientId) {
 
 export default async function handler(req, res) {
   setSecurityHeaders(req, res);
+  const activityMode = req.query?.mode === 'file' ? 'file' : (req.method === 'POST' ? 'action' : 'read');
+  attachFirestoreDiagnostics(res, {
+    endpoint: 'activity-records',
+    logicalMode: activityMode,
+    logicalOperation: 'gallery_access',
+    operations: 'activity-records',
+    writeAttempted: req.method === 'POST',
+    dedupeHit: false,
+  });
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {

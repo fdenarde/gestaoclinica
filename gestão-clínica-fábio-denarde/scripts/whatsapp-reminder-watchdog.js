@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { JsonReminderLedger, buildWhatsappHealthSnapshot, createMemoryReminderLedger, detectMissedRoutineCheckpoints, resolveWhatsappOperationMode } from '../src/lib/whatsappReminderOperations.js';
+import { JsonReminderLedger, buildWhatsappHealthSnapshot, classifyMissedRoutineForAlert, createMemoryReminderLedger, detectMissedRoutineCheckpoints, isWatchdogStartupGraceActive, resolveWhatsappOperationMode } from '../src/lib/whatsappReminderOperations.js';
 import { parseAndSanitizePm2Json, readPm2JsonUtf8 } from './read-pm2-whatsapp-state.js';
 
 const PROCESS_NAME = 'RoboClinicaWatchdog';
@@ -13,8 +13,29 @@ const mode = resolveWhatsappOperationMode();
 const isSelfCheck = process.argv.includes('--self-check');
 const ledger = isSelfCheck ? createMemoryReminderLedger() : new JsonReminderLedger();
 
+function safeLedgerCall(label, operation, fallback = null) {
+  try {
+    return operation();
+  } catch (error) {
+    console.error(`[${PROCESS_NAME}] falha não fatal no ledger (${label}):`, error?.message || error);
+    return fallback;
+  }
+}
+
+function recordIncident(incident) {
+  return safeLedgerCall('append-incident', () => ledger.appendIncident(incident));
+}
+
+function reconcileTechnicalAlerts(options) {
+  return safeLedgerCall(
+    'reconcile-technical-alerts',
+    () => ledger.reconcileTechnicalAlerts(options),
+    { queued: [], suppressed: [], resolved: [] },
+  );
+}
+
 function recordHeartbeat(extra = {}) {
-  ledger.appendHeartbeat({
+  return safeLedgerCall('heartbeat', () => ledger.appendHeartbeat({
     process: PROCESS_NAME,
     pid: process.pid,
     mode,
@@ -22,11 +43,11 @@ function recordHeartbeat(extra = {}) {
     whatsappReady: false,
     scriptPath: path.resolve('scripts/whatsapp-reminder-watchdog.js'),
     ...extra,
-  });
+  }));
 }
 
 function latestHeartbeat(processName) {
-  const heartbeats = ledger.read().heartbeats || [];
+  const heartbeats = safeLedgerCall('read-heartbeats', () => ledger.read().heartbeats || [], []);
   return heartbeats
     .filter(heartbeat => heartbeat.process === processName)
     .sort((a, b) => String(b.recordedAt || '').localeCompare(String(a.recordedAt || '')))[0] || null;
@@ -87,13 +108,16 @@ async function runWatchdogCheck() {
   if (!health.checks.scriptPathMatches) incidents.push({ type: 'script-path-mismatch', severity: 'critical', message: `Script path incorreto: ${health.actualScriptPath}` });
   if (!heartbeatFresh(senderHeartbeat)) incidents.push({ type: 'sender-heartbeat-stale', severity: 'high', message: 'Heartbeat do remetente vencido ou ausente.' });
   if (!heartbeatFresh(schedulerHeartbeat)) incidents.push({ type: 'scheduler-heartbeat-stale', severity: 'high', message: 'Heartbeat do scheduler vencido ou ausente.' });
-  if (!heartbeatFresh(watchdogHeartbeat)) incidents.push({ type: 'watchdog-heartbeat-stale', severity: 'medium', message: 'Heartbeat do watchdog ainda não estabilizado.' });
+  const watchdogStartupGrace = isWatchdogStartupGraceActive({ startedAt: watchdogHeartbeat?.recordedAt, now: new Date() });
+  if (!watchdogStartupGrace && !heartbeatFresh(watchdogHeartbeat)) incidents.push({ type: 'watchdog-heartbeat-stale', severity: 'medium', message: 'Heartbeat do watchdog ainda não estabilizado.' });
 
   for (const incident of detectMissedRoutineCheckpoints({ ledger, lookbackDays: 2 })) {
-    incidents.push({ ...incident, severity: incident.severity || 'high' });
+    const classified = classifyMissedRoutineForAlert({ ledger, incident });
+    if (classified.notifyAdmin === false) continue;
+    incidents.push({ ...(classified.incident || incident), severity: classified.incident?.severity || incident.severity || 'high' });
   }
 
-  const data = ledger.read();
+  const data = safeLedgerCall('read-watchdog-ledger', () => ledger.read(), { reminders: {}, checkpoints: {} });
   for (const reminder of Object.values(data.reminders || {})) {
     if (reminder.status === 'attempting' && reminder.updatedAt && Date.now() - new Date(reminder.updatedAt).getTime() > HEARTBEAT_MAX_AGE_MS) {
       incidents.push({
@@ -104,7 +128,7 @@ async function runWatchdogCheck() {
     }
   }
 
-  const technicalAlertResult = ledger.reconcileTechnicalAlerts({
+  const technicalAlertResult = reconcileTechnicalAlerts({
     scope: 'watchdog-health',
     incidents: incidents.map(incident => ({
       ...incident,
@@ -114,7 +138,7 @@ async function runWatchdogCheck() {
   });
 
   for (const queued of technicalAlertResult.queued) {
-    ledger.appendIncident({
+    recordIncident({
       ...queued.incident,
       process: PROCESS_NAME,
       host: os.hostname(),
@@ -127,12 +151,12 @@ async function runWatchdogCheck() {
     console.log(`[${PROCESS_NAME}] alerta técnico resolvido: ${resolved.state.type}.`);
   }
 
-  ledger.upsertCheckpoint(`watchdog:last-check:${process.pid}`, {
+  safeLedgerCall('upsert-watchdog-checkpoint', () => ledger.upsertCheckpoint(`watchdog:last-check:${process.pid}`, {
     routine: 'WATCHDOG',
     status: incidents.length > 0 ? 'attention' : 'healthy',
     checkedAt: new Date().toISOString(),
     incidentCount: incidents.length,
-  });
+  }));
 
   return { health, incidents };
 }
@@ -183,13 +207,13 @@ if (isSelfCheck) {
 
 recordHeartbeat({ event: 'startup' });
 runWatchdogCheck().catch(error => {
-  ledger.appendIncident({
+  recordIncident({
     type: 'watchdog-check-error',
     severity: 'high',
     process: PROCESS_NAME,
     message: error?.message || String(error),
   });
-  ledger.reconcileTechnicalAlerts({
+  reconcileTechnicalAlerts({
     scope: 'watchdog-runtime',
     incidents: [{
       type: 'watchdog-check-error',
@@ -203,13 +227,13 @@ runWatchdogCheck().catch(error => {
 setInterval(recordHeartbeat, HEARTBEAT_INTERVAL_MS).unref();
 setInterval(() => {
   runWatchdogCheck().catch(error => {
-    ledger.appendIncident({
+    recordIncident({
       type: 'watchdog-check-error',
       severity: 'high',
       process: PROCESS_NAME,
       message: error?.message || String(error),
     });
-    ledger.reconcileTechnicalAlerts({
+    reconcileTechnicalAlerts({
       scope: 'watchdog-runtime',
       incidents: [{
         type: 'watchdog-check-error',

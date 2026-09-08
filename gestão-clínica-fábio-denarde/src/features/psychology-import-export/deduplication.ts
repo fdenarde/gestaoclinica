@@ -3,12 +3,8 @@ import type { DeduplicationResult, DeduplicationSignal, ImportConflict, ImportWa
 import { normalizePhoneForComparison } from '../../../shared/phoneNormalization.js';
 
 function comparable(value: string | undefined): string {
-  if (!value) return '';
-  try {
-    return normalizePhoneForComparison(value, { defaultCountryCode: '55' });
-  } catch {
-    return '';
-  }
+  const raw = (value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().replace(/\D/g, '').trim();
+  try { return normalizePhoneForComparison(value || '', { defaultCountryCode: '55' }); } catch { return raw; }
 }
 
 function textComparable(value: string | undefined): string {

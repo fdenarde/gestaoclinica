@@ -1,7 +1,7 @@
 import { getPsychologyPatientSummary } from './psychologyPatientProfile';
 import { locationForSession, type PsychologyLocation } from './psychologyR2a';
-import type { PsychologyFollowUpStatus, PsychologyPatient, PsychologyStore } from './psychologyDomain';
-import { formatPhoneDisplay } from '../../../shared/phoneNormalization.js';
+import type { PsychologyPatient, PsychologyStore } from './psychologyDomain';
+import { formatPsychologyPhoneDisplay } from './psychologyPhone';
 
 export type PsychologyPatientStatusFilter = 'all' | 'active' | 'inactive' | 'review';
 export type PsychologyPatientLastSessionFilter = 'any' | 'recent' | 'oldest' | 'none' | '3m' | '6m' | '12m' | '18m' | '24m';
@@ -28,7 +28,6 @@ export interface PsychologyPatientListItem {
 export interface PsychologyPatientListFilters {
   query?: string;
   status?: PsychologyPatientStatusFilter;
-  followUpStatus?: PsychologyFollowUpStatus | 'all';
   lastSession?: PsychologyPatientLastSessionFilter;
   nextSession?: PsychologyPatientNextSessionFilter;
   review?: PsychologyPatientReviewFilter;
@@ -76,10 +75,7 @@ export function formatPsychologyPatientPhone(value?: string | null): string {
   const raw = String(value ?? '').trim();
   if (!raw) return '—';
   try {
-    // The shared formatter keeps +55 for technical/general displays. The
-    // Psychology patient list is a Brazilian professional-facing surface, so
-    // remove only that visual country prefix; stored/integration values stay untouched.
-    return formatPhoneDisplay(raw).replace(/^\+55\s*/u, '');
+    return formatPsychologyPhoneDisplay(raw);
   } catch {
     return raw;
   }
@@ -177,7 +173,6 @@ export function filterPsychologyPatientList(
   referenceDate = new Date(),
 ): PsychologyPatientListItem[] {
   const status = filters.status || 'all';
-  const followUpStatus = filters.followUpStatus || 'all';
   const lastSession = filters.lastSession || 'any';
   const nextSession = filters.nextSession || 'all';
   const review = filters.review || 'all';
@@ -187,7 +182,6 @@ export function filterPsychologyPatientList(
     if (status === 'active' && !row.patient.active) return false;
     if (status === 'inactive' && row.patient.active) return false;
     if (status === 'review' && !inReview) return false;
-    if (followUpStatus !== 'all' && (row.patient.acompanhamentoStatus || 'ATIVO') !== followUpStatus) return false;
     if (review === 'in-review' && !inReview) return false;
     if (review === 'out-of-review' && inReview) return false;
     if (nextSession === 'with' && row.nextSessionValue === null) return false;

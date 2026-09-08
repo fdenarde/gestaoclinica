@@ -1,27 +1,42 @@
 import cron from 'node-cron';
 import path from 'node:path';
-import { JsonReminderLedger, ROUTINE_DEFINITIONS, createMemoryReminderLedger, createRoutineCheckpointId, createRoutineWindow, detectMissedRoutineCheckpoints, formatLocalDateStr, isGlobalActivationLocked, resolveWhatsappOperationMode, WHATSAPP_OPERATION_MODES } from '../src/lib/whatsappReminderOperations.js';
+import { DEFAULT_SCHEDULER_RECOVERY_DELAY_MS, JsonReminderLedger, ROUTINE_DEFINITIONS, createMemoryReminderLedger, createRoutineCheckpointId, createRoutineWindow, detectMissedRoutineCheckpoints, findRecoverableRoutineCheckpoints, formatLocalDateStr, isGlobalActivationLocked, resolveWhatsappOperationMode, WHATSAPP_OPERATION_MODES } from '../src/lib/whatsappReminderOperations.js';
 
 const PROCESS_NAME = 'RoboClinicaScheduler';
 const TIMEZONE = 'America/Sao_Paulo';
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WHATSAPP_HEARTBEAT_INTERVAL_MS || 5 * 60 * 1000);
+const RECOVERY_INTERVAL_MS = Number(process.env.WHATSAPP_SCHEDULER_RECOVERY_INTERVAL_MS || 60 * 1000);
+const RECOVERY_DELAY_MS = Number(process.env.WHATSAPP_SCHEDULER_RECOVERY_DELAY_MS || DEFAULT_SCHEDULER_RECOVERY_DELAY_MS);
 const mode = resolveWhatsappOperationMode();
 const isSelfCheck = process.argv.includes('--self-check');
 const ledger = isSelfCheck ? createMemoryReminderLedger() : new JsonReminderLedger();
 
+function safeLedgerCall(label, operation, fallback = null) {
+  try {
+    return operation();
+  } catch (error) {
+    console.error(`[${PROCESS_NAME}] falha não fatal no ledger (${label}):`, error?.message || error);
+    return fallback;
+  }
+}
+
+function recordIncident(incident) {
+  return safeLedgerCall('append-incident', () => ledger.appendIncident(incident));
+}
+
 function reconcileSchedulerAlert(scope, incidents = []) {
-  return ledger.reconcileTechnicalAlerts({
+  return safeLedgerCall('reconcile-technical-alerts', () => ledger.reconcileTechnicalAlerts({
     scope,
     incidents: incidents.map(incident => ({
       ...incident,
       process: PROCESS_NAME,
     })),
     now: new Date(),
-  });
+  }), { queued: [], suppressed: [], resolved: [] });
 }
 
 function recordHeartbeat(extra = {}) {
-  ledger.appendHeartbeat({
+  return safeLedgerCall('heartbeat', () => ledger.appendHeartbeat({
     process: PROCESS_NAME,
     pid: process.pid,
     mode,
@@ -29,10 +44,10 @@ function recordHeartbeat(extra = {}) {
     whatsappReady: false,
     scriptPath: path.resolve('scripts/whatsapp-reminder-scheduler.js'),
     ...extra,
-  });
+  }));
 }
 
-function queueRoutine(routine, now = new Date()) {
+function queueRoutine(routine, now = new Date(), { source = 'scheduler', recoveredAt = '' } = {}) {
   if (isGlobalActivationLocked()) {
     console.log(`[${PROCESS_NAME}] trava global ativa; rotina ${routine} não será enfileirada.`);
     return null;
@@ -57,6 +72,8 @@ function queueRoutine(routine, now = new Date()) {
       expectedWindowEnd: window.end,
       status: 'skipped',
       blockedReason: `modo operacional ${mode}: enfileiramento real bloqueado`,
+      source,
+      recoveredAt: recoveredAt || undefined,
     });
   }
 
@@ -70,9 +87,12 @@ function queueRoutine(routine, now = new Date()) {
     confirmedCount: 0,
     blockedCount: 0,
     failedCount: 0,
-    source: 'scheduler',
+    source,
   });
-  console.log(`[${PROCESS_NAME}] rotina ${routine} enfileirada para ${dateStr} ${window.scheduledTime}.`);
+  const suffix = source === 'scheduler-safe-window-recovery'
+    ? ' por recuperação dentro da janela segura'
+    : '';
+  console.log(`[${PROCESS_NAME}] rotina ${routine} enfileirada para ${dateStr} ${window.scheduledTime}${suffix}.`);
   return queued;
 }
 
@@ -95,6 +115,7 @@ function queuePreventivePreview(routine, now = new Date()) {
       date: dateStr,
       routine,
       scheduledAt: window.start,
+      expectedWindowEnd: window.end,
       status: 'skipped',
       blockedReason: `modo operacional ${mode}: prévia administrativa real bloqueada`,
       source: PROCESS_NAME,
@@ -106,6 +127,7 @@ function queuePreventivePreview(routine, now = new Date()) {
     date: dateStr,
     routine,
     scheduledAt: window.start,
+    expectedWindowEnd: window.end,
     source: PROCESS_NAME,
   });
 }
@@ -119,7 +141,7 @@ function registerRoutineCron(routine) {
       queueRoutine(routine, new Date());
       reconcileSchedulerAlert(`scheduler-routine:${routine}`, []);
     } catch (error) {
-      ledger.appendIncident({
+      recordIncident({
         type: 'scheduler-error',
         severity: 'high',
         process: PROCESS_NAME,
@@ -145,7 +167,7 @@ function registerRoutineCron(routine) {
       queuePreventivePreview(routine, new Date());
       reconcileSchedulerAlert(`scheduler-preview:${routine}`, []);
     } catch (error) {
-      ledger.appendIncident({
+      recordIncident({
         type: 'scheduler-preview-error',
         severity: 'high',
         process: PROCESS_NAME,
@@ -167,13 +189,58 @@ function registerRoutineCron(routine) {
 
 function recordStartupMissedRoutines() {
   for (const incident of detectMissedRoutineCheckpoints({ ledger, lookbackDays: 2 })) {
-    ledger.appendIncident({
+    recordIncident({
       ...incident,
       process: PROCESS_NAME,
       message: `${incident.message} Catch-up automático bloqueado.`,
     });
     console.error(`[${PROCESS_NAME}] ${incident.message} Catch-up automático bloqueado.`);
   }
+}
+
+function recoverRoutinesWithinSafeWindow(now = new Date()) {
+  if (isGlobalActivationLocked()) return [];
+
+  const candidates = safeLedgerCall(
+    'safe-window-recovery-scan',
+    () => findRecoverableRoutineCheckpoints({
+      ledger,
+      now,
+      recoveryDelayMs: RECOVERY_DELAY_MS,
+    }),
+    [],
+  ) || [];
+
+  const recovered = [];
+  for (const candidate of candidates) {
+    try {
+      const queued = queueRoutine(candidate.routine, now, {
+        source: 'scheduler-safe-window-recovery',
+        recoveredAt: now.toISOString(),
+      });
+      if (queued?.status === 'queued') recovered.push(queued);
+    } catch (error) {
+      recordIncident({
+        type: 'scheduler-recovery-error',
+        severity: 'high',
+        process: PROCESS_NAME,
+        routine: candidate.routine,
+        date: candidate.date,
+        message: error?.message || String(error),
+      });
+      reconcileSchedulerAlert(`scheduler-recovery:${candidate.routine}`, [{
+        type: 'scheduler-runtime-error',
+        severity: 'high',
+        routine: candidate.routine,
+        date: candidate.date,
+        stateCode: 'safe-window-recovery-error',
+        message: 'Falha ao recuperar uma rotina dentro da janela segura.',
+      }]);
+      console.error(`[${PROCESS_NAME}] erro na recuperação segura de ${candidate.routine}:`, error);
+    }
+  }
+
+  return recovered;
 }
 
 if (isSelfCheck) {
@@ -202,4 +269,6 @@ if (isSelfCheck) {
 recordStartupMissedRoutines();
 for (const routine of Object.keys(ROUTINE_DEFINITIONS)) registerRoutineCron(routine);
 recordHeartbeat({ event: 'startup' });
+recoverRoutinesWithinSafeWindow(new Date());
 setInterval(recordHeartbeat, HEARTBEAT_INTERVAL_MS).unref();
+setInterval(() => recoverRoutinesWithinSafeWindow(new Date()), RECOVERY_INTERVAL_MS).unref();

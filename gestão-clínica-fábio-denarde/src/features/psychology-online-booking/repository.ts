@@ -44,7 +44,6 @@ import {
   type PsychologyStore,
 } from '../psychology-pilot/psychologyDomain';
 import { validatePsychologyPatientAdministrativeInput } from '../../lib/psychologyPatientAdministrative';
-import { normalizePhone, normalizePhoneForComparison } from '../../../shared/phoneNormalization.js';
 
 export interface OnlineBookingStorageLike {
   getItem(key: string): string | null;
@@ -87,6 +86,10 @@ function readState(storage: OnlineBookingStorageLike, now: Date): LocalOnlineBoo
 
 function writeState(storage: OnlineBookingStorageLike, state: LocalOnlineBookingState): void {
   storage.setItem(LOCAL_ONLINE_BOOKING_STORAGE_KEY, JSON.stringify(state));
+}
+
+function normalizePhone(value: string): string {
+  return String(value || '').replace(/\D/g, '');
 }
 
 function normalizeEmail(value: string): string {
@@ -341,12 +344,7 @@ export function createLocalPublicBookingRepository({ storage, now: nowFactory = 
       }).find(slot => slot.time === input.time);
       if (!candidate) return { conflict: true, message: 'Este horário acabou de ser ocupado. Escolha outro horário.' };
       const name = input.name.trim();
-      let phone = '';
-      try {
-        phone = normalizePhone(input.phone).displayPhone;
-      } catch {
-        return { conflict: true, message: 'Informe um telefone válido.' };
-      }
+      const phone = input.phone.trim();
       const email = input.email.trim();
       const patientValidation = validatePsychologyPatientAdministrativeInput({
         name,
@@ -358,14 +356,7 @@ export function createLocalPublicBookingRepository({ storage, now: nowFactory = 
       if (Object.keys(patientValidation).length > 0) return { conflict: true, message: Object.values(patientValidation)[0] || 'Confira os dados administrativos.' };
       const nowIso = now.toISOString();
       const existingStore = readCanonicalLocalStore(storage);
-      const existingPatient = existingStore.patients.find(patient => {
-        try {
-          return normalizePhoneForComparison(patient.phone) === normalizePhoneForComparison(phone)
-            && (normalizeEmail(patient.email || '') === normalizeEmail(email) || patient.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
-        } catch {
-          return false;
-        }
-      });
+      const existingPatient = existingStore.patients.find(patient => normalizePhone(patient.phone) === normalizePhone(phone) && (normalizeEmail(patient.email || '') === normalizeEmail(email) || patient.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase()));
       const patientStore = upsertPsychologyPatient(existingStore, {
         name,
         dateOfBirth: input.dateOfBirth,

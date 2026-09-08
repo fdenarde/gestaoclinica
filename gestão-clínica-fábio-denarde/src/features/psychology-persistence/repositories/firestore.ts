@@ -85,7 +85,7 @@ function createRemoteRepository<K extends PsychologyAggregate>(
       assertSamePsychologyPersistenceScope(scope, requestedScope);
       const current = await client.get<RecordType>(buildPsychologyDocumentPath(scope, aggregate, id));
       if (!current || current.workspaceId !== scope.workspaceId || current.professionalId !== scope.professionalId || current.context !== scope.context) return null;
-      if (!client.delete) throw new Error('Cliente Firestore emulator não fornece exclusão de documentos.');
+      if (!client.delete) throw new Error('O client Firestore injetado não implementa delete.');
       await client.delete(buildPsychologyDocumentPath(scope, aggregate, id));
       return { id };
     },
@@ -110,6 +110,7 @@ function createFinancialRepository(scope: PsychologyPersistenceScope, client: Fi
     getCharge: charges.get,
     upsertCharge: charges.upsert,
     updateCharge: charges.update,
+    deleteCharge: charges.delete,
     listPayments: payments.list,
     getPayment: payments.get,
     createPayment: async (requestedScope, entity) => {
@@ -121,10 +122,12 @@ function createFinancialRepository(scope: PsychologyPersistenceScope, client: Fi
       return payments.upsert(requestedScope, entity);
     },
     updatePayment: payments.update,
+    deletePayment: payments.delete,
     listExpenses: expenses.list,
     getExpense: expenses.get,
     upsertExpense: expenses.upsert,
     updateExpense: expenses.update,
+    deleteExpense: expenses.delete,
   };
 }
 

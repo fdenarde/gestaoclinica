@@ -214,7 +214,7 @@ export default function PasswordSecurityPanel({
         data-auth-visual-context={visualContext}
       >
         <section className="w-full max-w-xl rounded-3xl border border-clinic-border bg-clinic-surface p-6 shadow-2xl sm:p-8">
-          <BrandLogo variant="horizontal" theme="health-balance" name="Denarde Soluções" subtitle="Segurança da conta" />
+          <BrandLogo variant="horizontal" visualContext={visualContext} theme={visualContext === 'DEFAULT' ? 'health-balance' : undefined} name="Denarde Soluções" subtitle="Segurança da conta" />
           <div className="mt-7">
             <p className="text-xs font-black uppercase tracking-[0.16em] text-clinic-primary">Primeiro acesso</p>
             <h1 className="mt-2 text-3xl font-black text-clinic-text">Crie sua senha particular</h1>

@@ -142,9 +142,6 @@ export function createFirebaseFirestoreEmulatorClient(options: FirebaseFirestore
       const document = await request<FirestoreDocument>('PATCH', documentPath, { fields: encodeFields(value) });
       return { id: documentId(document), ...decodeDocument(document) } as T;
     },
-    delete: async (documentPath: string) => {
-      await request<void>('DELETE', documentPath);
-    },
   };
 }
 

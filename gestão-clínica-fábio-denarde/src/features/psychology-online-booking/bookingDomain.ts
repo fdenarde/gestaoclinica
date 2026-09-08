@@ -15,12 +15,12 @@ import type {
   PublicAppointmentSummary,
 } from './types';
 import { PSYCHOLOGY_SERVICE_CATALOG, canonicalPsychologyServiceId, psychologyCatalogEntry } from '../psychology-pilot/psychologyServiceCatalog';
-import { buildWhatsappClickToChatUrl, normalizePhone, normalizePhoneForIntegration } from '../../lib/whatsappPhone.js';
 
 export const LOCAL_ONLINE_BOOKING_STORAGE_KEY = 'gestao-clinica:psychology-r2e1:online-booking:v1';
 export const LOCAL_ONLINE_BOOKING_PROFESSIONAL_ID = 'psychology-local-professional';
 export const LOCAL_ONLINE_BOOKING_DEFAULT_SLUG = 'leila-chaves';
 export const DEFAULT_MANAGEMENT_TOKEN_TTL_DAYS = 180;
+export const PUBLIC_BOOKING_START_GRID_MINUTES = 60;
 
 const WEEKDAY_LABELS: Record<number, string> = {
   0: 'Domingo',
@@ -121,24 +121,12 @@ function weekdayOf(date: string): number {
   return new Date(`${date}T12:00:00`).getDay();
 }
 
-function periodFits(startTime: string, durationMinutes: number, period: { startTime: string; endTime: string }): boolean {
-  const start = timeToMinutes(startTime);
-  const periodStart = timeToMinutes(period.startTime);
-  const periodEnd = timeToMinutes(period.endTime);
-  return start >= periodStart && start + durationMinutes <= periodEnd;
-}
-
 function overlaps(startTime: string, durationMinutes: number, block: BookingBlock): boolean {
   const start = timeToMinutes(startTime);
   const end = start + durationMinutes;
   const blockStart = timeToMinutes(block.startTime);
   const blockEnd = blockStart + Math.max(1, block.durationMinutes);
   return start < blockEnd && blockStart < end;
-}
-
-function validWeeklyPeriod(days: readonly PublicBookingDayAvailability[], date: string, startTime: string, durationMinutes: number): boolean {
-  const day = days.find(item => item.enabled && item.dayOfWeek === weekdayOf(date));
-  return Boolean(day?.periods.some(period => periodFits(startTime, durationMinutes, period)));
 }
 
 function exceptionApplies(exception: PublicBookingException, modality: PublicBookingModality, locationId?: string): boolean {
@@ -278,11 +266,12 @@ export function getPublishedSlots(input: {
     if (dayStart > latest) continue;
     const publicPeriods = effectivePublicPeriods(settings, date, input.modality, input.locationId);
     for (const period of publicPeriods) {
-      for (let minute = period.start; minute + service.durationMinutes <= period.end; minute += Math.max(5, settings.slotIntervalMinutes)) {
+      const firstPublicStart = Math.ceil(period.start / PUBLIC_BOOKING_START_GRID_MINUTES) * PUBLIC_BOOKING_START_GRID_MINUTES;
+      for (let minute = firstPublicStart; minute + service.durationMinutes <= period.end; minute += PUBLIC_BOOKING_START_GRID_MINUTES) {
         const time = minutesToTime(minute);
         const dateTime = dateToLocalDateTime(date, time);
         if (!dateTime || dateTime < earliest || dateTime > latest) continue;
-        if (!period.extra && !validWeeklyPeriod(settings.weeklyAvailability, date, time, service.durationMinutes)) continue;
+        if (minute % PUBLIC_BOOKING_START_GRID_MINUTES !== 0) continue;
         if (blocks.some(block => block.date === date && overlaps(time, service.durationMinutes, block))) continue;
         slots.push({ date, time, endTime: minutesToTime(minute + service.durationMinutes), durationMinutes: service.durationMinutes, serviceId: service.id, modality: input.modality, locationId: input.locationId });
       }
@@ -356,15 +345,9 @@ export function buildAppointmentMessagingContext(summary: Pick<PublicAppointment
 }
 
 export function buildWhatsAppRescheduleUrl(phoneE164: string, message: string): string | null {
-  return buildWhatsappClickToChatUrl(phoneE164, { text: message });
-}
-
-function normalizeStoredPhone(value: unknown): string {
-  try {
-    return normalizePhone(value).displayPhone;
-  } catch {
-    return '';
-  }
+  const phone = String(phoneE164 || '').replace(/\D/g, '');
+  if (phone.length < 8 || phone.length > 15) return null;
+  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
 }
 
 export function createDefaultPublicBookingSettings(now = new Date()): PublicBookingSettings {
@@ -492,8 +475,10 @@ export function normalizePublicBookingSettings(value: unknown, now = new Date())
     } satisfies PublicBookingService;
   })).sort((a, b) => a.sortOrder - b.sortOrder);
   const rawAvailability = Array.isArray(input.publicBookingAvailability) ? input.publicBookingAvailability as PublicBookingAvailabilityPeriod[] : fallback.publicBookingAvailability;
+  const fallbackPublicModalities = fallback.publishedModalities.filter(item => item.active).map(item => item.id);
   const publicBookingAvailability = rawAvailability.map(period => ({
     ...period,
+    modalities: Array.isArray(period.modalities) ? period.modalities : fallbackPublicModalities,
     locationIds: period.locationIds?.some(id => locationIds.includes(id)) ? period.locationIds.filter(id => locationIds.includes(id)) : locationIds,
   }));
   const rawExceptions = Array.isArray(input.publicBookingExceptions) ? input.publicBookingExceptions as Array<Partial<PublicBookingException>> : [];
@@ -534,13 +519,7 @@ export function normalizePublicBookingSettings(value: unknown, now = new Date())
     cancellationCutoffHours: Number.isFinite(Number(input.cancellationCutoffHours)) ? cancellationCutoffHours : fallback.cancellationCutoffHours,
     whatsappContactPhoneE164: String(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164) === '5527999990000'
       ? fallback.whatsappContactPhoneE164
-      : (() => {
-        try {
-          return normalizePhoneForIntegration(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164).canonicalPhone;
-        } catch {
-          return fallback.whatsappContactPhoneE164;
-        }
-      })(),
+      : String(input.whatsappContactPhoneE164 || fallback.whatsappContactPhoneE164).replace(/\D/g, '').slice(0, 15),
     slotIntervalMinutes,
     weeklyAvailability: Array.isArray(input.weeklyAvailability) ? input.weeklyAvailability as PublicBookingDayAvailability[] : fallback.weeklyAvailability,
     publicBookingAvailability,

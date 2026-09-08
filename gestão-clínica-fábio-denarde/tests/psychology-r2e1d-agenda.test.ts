@@ -98,7 +98,7 @@ test('auditoria R2E1G: bloqueio, dia inteiro e OPEN_PERIOD persistem após refre
   const daySlots = await afterSecondRefresh.listPublishedSlots({ professionalSlug: base.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: '2026-08-19', throughDate: '2026-08-19' });
   const openSlots = await afterSecondRefresh.listPublishedSlots({ professionalSlug: base.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: '2026-08-22', throughDate: '2026-08-22' });
   assert.equal(daySlots.length, 0);
-  assert.deepEqual(openSlots.map(slot => slot.time), ['09:00', '09:30', '10:00', '10:30', '11:00']);
+  assert.deepEqual(openSlots.map(slot => slot.time), ['09:00', '10:00', '11:00']);
 
   await afterSecondRefresh.updateSettings({ publicBookingExceptions: [] });
   const restored = await createLocalPublicBookingRepository({ storage, now: () => new Date(now) }).getSettings();

@@ -11,9 +11,15 @@ const agendaScale = await readFile(resolve(root, 'src/features/psychology-pilot/
 const psychologyPersonalAgenda = await readFile(resolve(root, 'src/features/psychology-pilot/PsychologyPersonalAgenda.tsx'), 'utf8');
 const app = await readFile(resolve(root, 'src/App.tsx'), 'utf8');
 
-test('entrada local do piloto é limitada a desenvolvimento em localhost', () => {
-  assert.match(domain, /if \(!isDev \|\| !\['localhost', '127\.0\.0\.1'\]\.includes\(hostname\)\) return false/);
-  assert.match(app, /<PsychologyPilot \/>/);
+test('rota privada da Psicologia reconhece produção, mas mantém o guard autenticado', () => {
+  assert.ok(domain.includes("pathname.replace(/\\/+$/, '') === '/psicologia'"));
+  assert.match(domain, /export function resolvePsychologyRouteMode/);
+  assert.match(domain, /if \(psychologyRoute \|\| psychologyLocalPilotRoute\) return 'authenticated-remote'/);
+  const guardIndex = app.indexOf('if (!user || !canAccessInternalSystem)');
+  const pilotIndex = app.indexOf('if (psychologyAuthenticatedRoute) return <PsychologyPilot runtimeMode="authenticated-remote" />;');
+  assert.ok(guardIndex >= 0, 'o guard de acesso interno continua presente');
+  assert.ok(pilotIndex > guardIndex, 'PsychologyPilot somente renderiza depois do guard');
+  assert.doesNotMatch(app, /if \(psychologyPilotRoute\) return <PsychologyPilot \/>;\s*return <AuthenticatedApp/);
 });
 
 test('Psicologia oferece Meu Dia, Pacientes, Agenda e Agenda Pessoal', () => {
@@ -32,7 +38,7 @@ test('Agenda da Psicologia usa a grade semanal do produto', () => {
 
 test('a grade reduz ruído e torna o horário livre clicável', () => {
   assert.match(pilot, /psychology-agenda-free-slot/);
-  assert.match(pilot, /aria-label=\{`Agendar em \$\{cellLabel\}`\}/);
+  assert.match(pilot, /aria-label=\{`Agendar neste horário/);
   assert.doesNotMatch(pilot, />\+ Agendar</);
   assert.doesNotMatch(pilot, />Horário livre</);
   assert.match(pilot, /SessionActionsDialog/);
@@ -44,7 +50,7 @@ test('a Agenda preserva rótulos semânticos e responde a telas menores', () => 
   for (const label of ['Presencial', 'Online', 'Pessoal', 'Mentoria', 'Consultório Externo']) assert.match(pilot, new RegExp(label));
   assert.match(agendaScale, /pixelsPerMinute = mobile[\s\S]*1\.2/);
   assert.match(pilot, /min-w-\[1080px\]/);
-  assert.match(pilot, /data-testid="psychology-agenda-mobile-sequence"/);
+  assert.match(pilot, /Dia selecionado/);
   assert.match(pilot, /Agenda Pessoal/);
 });
 
@@ -52,7 +58,7 @@ test('R1C mantém a grade limpa e concentra os horários na escala lateral', () 
   assert.match(pilot, /psychology-agenda-free-slot/);
   assert.match(pilot, /grid-cols-\[68px_repeat\(6,minmax\(150px,1fr\)\)\]/);
   assert.match(pilot, /grid-cols-\[68px_minmax\(0,1fr\)\]/);
-  assert.match(pilot, /aria-label=\{`Agendar em \$\{cellLabel\}`\}/);
+  assert.match(pilot, /aria-label=\{`Agendar neste horário/);
   assert.doesNotMatch(pilot, />Horário livre</);
   assert.doesNotMatch(pilot, />\+ Agendar</);
 });
@@ -67,8 +73,8 @@ test('R2A1 oferece painel por abas para Sessão, Pessoal e Mentoria', () => {
   assert.match(domain + pilot, /'Mentoria'/);
 });
 
-test('R2A1 oferece Ajustes com perfil, agenda, serviços, locais, financeiro, cores e lembretes', () => {
-  for (const label of ['Ajustes', 'Perfil profissional', 'Agenda', 'Atendimentos', 'Serviços', 'Financeiro', 'Cores', 'Lembretes']) {
+test('R2A1 oferece Ajustes com perfil, agenda, serviços, locais, financeiro e cores', () => {
+  for (const label of ['Ajustes', 'Perfil profissional', 'Agenda', 'Atendimentos', 'Serviços', 'Financeiro', 'Cores']) {
     assert.match(pilot, new RegExp(label));
   }
   assert.match(domain + r2a, /Shopping Moxuara/);

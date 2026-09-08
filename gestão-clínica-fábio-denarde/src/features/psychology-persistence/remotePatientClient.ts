@@ -4,6 +4,8 @@ import {
   type PsychologyPatient,
   type PsychologyStore,
 } from '../psychology-pilot/psychologyDomain';
+import { canonicalPsychologyServiceId } from '../psychology-pilot/psychologyServiceCatalog';
+import { createDefaultPsychologyServices, type PsychologyService } from '../psychology-pilot/psychologyR2a';
 import { normalizePsychologySettings, type PsychologySettings } from '../psychology-pilot/psychologyR2a';
 import {
   createPsychologyPersistenceProvider,
@@ -16,9 +18,6 @@ import {
 import type { PsychologyPersistenceScope } from './scope';
 import type { ApiPsychologyRepositoryOptions } from './repositories/api';
 import type { PsychologyPatientDeletionResult } from './repositoryTypes';
-import type { PsychologyClinicalSessionRecord } from './types';
-import { createClosedPsychologyCapabilities, normalizePsychologyCapabilities, type PsychologyCapabilities } from './capabilities';
-
 export interface PsychologyRemotePatientClientOptions {
   scope: PsychologyPersistenceScope;
   api?: Omit<ApiPsychologyRepositoryOptions, 'scope'>;
@@ -29,6 +28,7 @@ export interface PsychologyRemoteBulkDeletionResult {
   summary: { processed: number; deleted: number; preserved: number; failed: number };
   deletedIds: string[];
   preservedIds: string[];
+  failedIds: string[];
 }
 
 export interface PsychologyRemoteBootstrapResult {
@@ -52,6 +52,46 @@ function asPatient(value: unknown): PsychologyPatient {
   return value as PsychologyPatient;
 }
 
+function asService(value: unknown): PsychologyService {
+  return value as PsychologyService;
+}
+
+function effectiveRemoteServices(remoteServices: readonly PsychologyService[], scope: PsychologyPersistenceScope, locationIds: string[], now: string): PsychologyService[] {
+  const defaults = createDefaultPsychologyServices(createPsychologyScope(scope.professionalId), now)
+    .map(service => ({
+      ...service,
+      publicBooking: service.publicBooking
+        ? { ...service.publicBooking, allowedLocationIds: [...locationIds] }
+        : service.publicBooking,
+    }));
+  const remoteById = new Map<string, PsychologyService>();
+  remoteServices.forEach(service => {
+    const canonicalId = canonicalPsychologyServiceId(service.id);
+    const current = remoteById.get(canonicalId);
+    if (!current || service.id === canonicalId) remoteById.set(canonicalId, { ...service, id: canonicalId });
+  });
+  const merged = defaults.map(fallback => {
+    const remote = remoteById.get(fallback.id);
+    if (!remote) return fallback;
+    return {
+      ...fallback,
+      ...remote,
+      id: fallback.id,
+      professionalId: scope.professionalId,
+      context: 'PSICOLOGIA' as const,
+      publicBooking: remote.publicBooking
+        ? {
+          ...fallback.publicBooking,
+          ...remote.publicBooking,
+          allowedLocationIds: remote.publicBooking.allowedLocationIds ?? fallback.publicBooking?.allowedLocationIds ?? [],
+        }
+        : fallback.publicBooking,
+    };
+  });
+  const canonicalIds = new Set(defaults.map(service => service.id));
+  return [...merged, ...remoteServices.filter(service => !canonicalIds.has(canonicalPsychologyServiceId(service.id)))];
+}
+
 export function createPsychologyRemotePatientClient(options: PsychologyRemotePatientClientOptions) {
   const now = options.now || (() => new Date().toISOString());
   const provider: PsychologyPersistenceProvider = createPsychologyPersistenceProvider({
@@ -64,21 +104,39 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
   const repositories = provider.repositories;
 
   async function load(): Promise<PsychologyStore> {
-    const [patients, sessions, settings] = await Promise.all([
+    const [patients, sessions, personalAppointments, charges, payments, expenses, packages, services, locations, settings] = await Promise.all([
       repositories.patients.list(scope),
       repositories.sessions.list(scope),
+      repositories.personalAppointments.list(scope),
+      repositories.financial.listCharges(scope),
+      repositories.financial.listPayments(scope),
+      repositories.financial.listExpenses(scope),
+      repositories.packages.list(scope),
+      repositories.services.list(scope),
+      repositories.locations.list(scope),
       repositories.settings.get(scope, 'settings'),
     ]);
+    const effectiveLocations = [...locations];
+    const effectiveServices = effectiveRemoteServices(services, scope, effectiveLocations.map(location => location.id), now());
+    const psychologyScope = createPsychologyScope(scope.professionalId);
     const next = normalizePsychologyStore({
       patients,
       sessions,
-      settings: settings?.settings,
-    }, createPsychologyScope(scope.professionalId));
-    return next;
-  }
-
-  function getCapabilities(): PsychologyCapabilities {
-    return normalizePsychologyCapabilities(repositories.getCapabilities?.() || createClosedPsychologyCapabilities());
+      personalCommitments: personalAppointments,
+      charges,
+      payments,
+      expenses,
+      sessionPackages: packages,
+      services: effectiveServices,
+      locations: effectiveLocations,
+      settings: { ...(settings?.settings || {}), services: effectiveServices, locations: effectiveLocations },
+    }, psychologyScope);
+    return {
+      ...next,
+      services: effectiveServices,
+      locations: effectiveLocations,
+      settings: { ...next.settings, services: effectiveServices, locations: effectiveLocations },
+    };
   }
 
   async function loadBackupSnapshot(): Promise<PsychologyStore> {
@@ -122,6 +180,22 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     return normalizePsychologySettings(saved.settings, createPsychologyScope(scope.professionalId), now());
   }
 
+  async function updateService(service: PsychologyService): Promise<PsychologyService> {
+    const saved = await repositories.services.upsert(scope, {
+      ...service,
+      workspaceId: scope.workspaceId,
+      professionalId: scope.professionalId,
+      context: scope.context,
+      ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
+      updatedAt: now(),
+    });
+    return asService(saved);
+  }
+
+  async function updateServices(services: PsychologyService[]): Promise<PsychologyService[]> {
+    return Promise.all(services.map(updateService));
+  }
+
   async function updatePatient(patient: PsychologyPatient): Promise<PsychologyPatient> {
     const saved = await repositories.patients.upsert(scope, {
       ...patient,
@@ -135,6 +209,12 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     return savedPatient;
   }
 
+  async function reactivatePatient(patientId: string): Promise<PsychologyPatient> {
+    const saved = await repositories.patients.update(scope, patientId, { active: true });
+    if (!saved) throw new Error('O paciente não foi encontrado no provider remoto.');
+    return asPatient(saved);
+  }
+
   async function updatePatientReview(patientIds: string[], inReview: boolean): Promise<PsychologyPatient[]> {
     const markedAt = now();
     const saved = await Promise.all(patientIds.map(id => repositories.patients.update(scope, id, {
@@ -145,36 +225,11 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     return saved.filter(Boolean).map(asPatient);
   }
 
-  async function updatePatientActive(patientId: string, active: boolean): Promise<PsychologyPatient> {
-    const saved = await repositories.patients.update(scope, patientId, { active });
-    if (!saved) throw new Error('Paciente não encontrado no provider remoto.');
-    return asPatient(saved);
-  }
-
-  async function loadClinicalRecords(): Promise<readonly PsychologyClinicalSessionRecord[]> {
-    return repositories.sessionRecords.list(scope);
-  }
-
-  async function saveClinicalRecord(record: PsychologyClinicalSessionRecord, isEdit: boolean): Promise<PsychologyClinicalSessionRecord> {
-    if (isEdit) {
-      const saved = await repositories.sessionRecords.update(scope, record.id, {
-        date: record.date,
-        sessionId: record.sessionId,
-        content: record.content,
-        soap: record.soap,
-        parentRecordType: record.parentRecordType,
-      });
-      if (!saved) throw new Error('Registro clínico não encontrado no provider remoto.');
-      return saved;
-    }
-    return repositories.sessionRecords.upsert(scope, record);
-  }
-
   async function deletePatient(patientId: string): Promise<PsychologyPatientDeletionResult> {
-    const deleteSafely = repositories.patients.deleteSafely;
-    if (deleteSafely) return deleteSafely(scope, patientId);
+    const deleteWithResult = repositories.patients.deleteWithResult || repositories.patients.deleteSafely;
+    if (deleteWithResult) return deleteWithResult(scope, patientId);
     const deleted = await repositories.patients.delete(scope, patientId);
-    return { id: patientId, deleted: Boolean(deleted), preserved: false };
+    return { id: patientId, deleted: Boolean(deleted) };
   }
 
   async function deletePatients(patientIds: string[]): Promise<PsychologyRemoteBulkDeletionResult> {
@@ -182,22 +237,26 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     const results = await allSettledWithConcurrency(uniquePatientIds, PSYCHOLOGY_BULK_DELETE_CONCURRENCY, deletePatient);
     const deletedIds: string[] = [];
     const preservedIds: string[] = [];
+    const failedIds: string[] = [];
     let failed = 0;
-    results.forEach(result => {
+    results.forEach((result, index) => {
       if (result.status === 'rejected') {
         failed += 1;
+        failedIds.push(uniquePatientIds[index]);
       } else if (result.value.deleted) {
         deletedIds.push(result.value.id);
       } else if (result.value.preserved) {
         preservedIds.push(result.value.id);
       } else {
         failed += 1;
+        failedIds.push(uniquePatientIds[index]);
       }
     });
     return {
-      summary: { processed: patientIds.length, deleted: deletedIds.length, preserved: preservedIds.length, failed },
+      summary: { processed: uniquePatientIds.length, deleted: deletedIds.length, preserved: preservedIds.length, failed },
       deletedIds,
       preservedIds,
+      failedIds,
     };
   }
 
@@ -206,14 +265,13 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
     scope,
     repositories,
     load,
-    getCapabilities,
     loadBackupSnapshot,
     updateSettings,
+    updateService,
+    updateServices,
     updatePatient,
+    reactivatePatient,
     updatePatientReview,
-    updatePatientActive,
-    loadClinicalRecords,
-    saveClinicalRecord,
     deletePatient,
     deletePatients,
   };
@@ -221,10 +279,30 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
 
 export function patientStoreWithUpdates(store: PsychologyStore, patients: PsychologyPatient[]): PsychologyStore {
   const updates = new Map(patients.map(patient => [patient.id, patient]));
-  return { ...store, patients: store.patients.map(patient => updates.get(patient.id) || patient) };
+  const existingIds = new Set(store.patients.map(patient => patient.id));
+  return {
+    ...store,
+    patients: [
+      ...store.patients.map(patient => updates.get(patient.id) || patient),
+      ...patients.filter(patient => !existingIds.has(patient.id)),
+    ],
+  };
 }
 
 export function patientStoreWithoutIds(store: PsychologyStore, ids: readonly string[]): PsychologyStore {
   const removed = new Set(ids);
-  return { ...store, patients: store.patients.filter(patient => !removed.has(patient.id)) };
+  return {
+    ...store,
+    patients: store.patients.filter(patient => !removed.has(patient.id)),
+    // The server cascade removes these records remotely. Keep the in-memory
+    // provider consistent immediately as well, so a successful deletion never
+    // leaves an orphan session visible until the next authenticated load.
+    sessions: store.sessions.filter(session => !removed.has(session.patientId)),
+    sessionRecords: store.sessionRecords.filter(record => !record.patientId || !removed.has(record.patientId)),
+    charges: store.charges.filter(charge => !charge.patientId || !removed.has(charge.patientId)),
+    payments: store.payments.filter(payment => !payment.patientId || !removed.has(payment.patientId)),
+    sessionPackages: store.sessionPackages.filter(item => !removed.has(item.patientId)),
+    documents: store.documents.filter(document => !document.patientId || !removed.has(document.patientId)),
+    attachments: store.attachments.filter(attachment => !attachment.patientId || !removed.has(attachment.patientId)),
+  };
 }

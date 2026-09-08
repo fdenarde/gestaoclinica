@@ -108,7 +108,7 @@ test('resolve endereço e Google Maps do repository de locais nas leituras poste
 test('separa weeklyAvailability de publicBookingAvailability', () => {
   const settings = createDefaultPublicBookingSettings(now);
   const slots = getPublishedSlots({ settings, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: day, throughDate: day, now });
-  assert.deepEqual(slots.map(item => item.time), ['10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00']);
+  assert.deepEqual(slots.map(item => item.time), ['10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00']);
   assert.ok(slots.every(item => item.endTime <= '17:00'));
 });
 
@@ -134,7 +134,7 @@ test('libera horário extra em sábado fechado, respeitando duração e interval
   const saturday = '2026-08-22';
   const settings = { ...createDefaultPublicBookingSettings(now), publicBookingExceptions: [exception('OPEN_PERIOD', saturday, '09:00', '12:00')] };
   const slots = getPublishedSlots({ settings, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: saturday, throughDate: saturday, now });
-  assert.deepEqual(slots.map(item => item.time), ['09:00', '09:30', '10:00', '10:30', '11:00']);
+  assert.deepEqual(slots.map(item => item.time), ['09:00', '10:00', '11:00']);
 });
 
 test('programação extra continua sujeita à antecedência mínima e máxima', () => {
@@ -173,7 +173,7 @@ test('usar programação habitual remove apenas as exceções da data', async ()
   assert.equal((await repo.listPublishedSlots({ professionalSlug: settings.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: day, throughDate: day })).length, 0);
   const restored = await repo.updateSettings({ publicBookingExceptions: settings.publicBookingExceptions.filter(item => item.civilDate !== day) });
   const slots = await repo.listPublishedSlots({ professionalSlug: restored.professionalSlug, serviceId: 'psychotherapy-individual', modality: 'ONLINE', fromDate: day, throughDate: day });
-  assert.deepEqual(slots.map(item => item.time), ['10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00']);
+  assert.deepEqual(slots.map(item => item.time), ['10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00']);
 });
 
 test('bloqueio de data não cancela nem move sessão existente e mantém o slot ocupado', async () => {

@@ -87,10 +87,10 @@ class FakeDb {
 
 const NOW = '2026-08-14T18:00:00.000Z';
 const WORKSPACE = 'tenant-synthetic-a';
-const scopeA = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-a', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.edit', 'patients.delete', 'patients.clinical_notes.view', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-a' };
+const scopeA = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-a', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.edit', 'patients.delete', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-a' };
 const scopeB = { workspaceId: WORKSPACE, tenantId: WORKSPACE, professionalId: 'professional-b', context: 'PSICOLOGIA', role: 'professional', permissions: ['patients.list', 'patients.create', 'patients.edit', 'patients.delete', 'settings.clinic.manage', 'agenda.own.view', 'agenda.edit'], authUid: 'auth-b' };
 const baseByToken = {
-  a: { userId: 'auth-a', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional A', permissions: { 'patients.list': true, 'patients.create': true, 'patients.edit': true, 'patients.delete': true, 'patients.clinical_notes.view': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
+  a: { userId: 'auth-a', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional A', permissions: { 'patients.list': true, 'patients.create': true, 'patients.edit': true, 'patients.delete': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
   b: { userId: 'auth-b', workspaceId: WORKSPACE, role: 'professional', actorName: 'Profissional B', permissions: { 'patients.list': true, 'patients.create': true, 'patients.edit': true, 'patients.delete': true, 'settings.clinic.manage': true, 'agenda.own.view': true, 'agenda.edit': true } },
   finance: { userId: 'auth-finance', workspaceId: WORKSPACE, role: 'admin', actorName: 'Financeiro', permissions: { 'finance.manage': true } },
   clinical: { userId: 'auth-clinical', workspaceId: WORKSPACE, role: 'professional', actorName: 'Clínico', permissions: { 'patients.clinical_notes.view': true, 'patients.list': true } },
@@ -152,8 +152,8 @@ function responseCapture() {
   };
 }
 
-async function call(handler, method, url, token, body, extraHeaders = {}) {
-  const req = { method, url, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...extraHeaders }, body, query: {} };
+async function call(handler, method, url, token, body) {
+  const req = { method, url, headers: token ? { authorization: `Bearer ${token}` } : {}, body, query: {} };
   const res = responseCapture();
   await handler(req, res);
   return res;
@@ -238,44 +238,6 @@ test('R2D2D API — 401, 403, settings imutáveis e profile editável', async ()
   assert.equal(technicalUpdate.statusCode, 422);
 });
 
-test('R2B13X API — mesma operação não grava duas vezes e controles operacionais têm CRUD', async () => {
-  const db = createDb();
-  const handler = createHandler(db);
-  const idempotencyKey = { 'x-idempotency-key': 'patients:synthetic-one:2026-08-14T18:00:00.000Z' };
-  const payload = { id: 'patient-r2b13x-one', name: 'Paciente Operacional Sintético', birthDate: '2000-01-01', phone: '27999990001', preferredModality: 'online' };
-  const first = await call(handler, 'POST', '/api/psychology/patients', 'a', payload, idempotencyKey);
-  const path = `workspaces/${WORKSPACE}/professionals/professional-a/contexts/PSICOLOGIA/patients/patient-r2b13x-one`;
-  const firstRequestId = db.value(path).audit.requestId;
-  const second = await call(handler, 'POST', '/api/psychology/patients', 'a', payload, idempotencyKey);
-  assert.equal(first.statusCode, 201);
-  assert.equal(second.statusCode, 201);
-  assert.equal(db.value(path).audit.requestId, firstRequestId);
-  const deletedPatient = await call(handler, 'DELETE', '/api/psychology/patients/patient-r2b13x-one', 'a');
-  assert.equal(deletedPatient.statusCode, 200);
-  assert.equal(db.value(path), undefined);
-
-  const service = { id: 'service-r2b13x', name: 'Serviço operacional sintético', defaultDurationMinutes: 50, defaultPrice: 0, modality: 'BOTH', active: true, createdAt: NOW, updatedAt: NOW };
-  const createdService = await call(handler, 'POST', '/api/psychology/services', 'a', service);
-  assert.equal(createdService.statusCode, 201);
-  const listedService = await call(handler, 'GET', '/api/psychology/services', 'a');
-  assert.deepEqual(listedService.body.items.map(item => item.id), ['service-r2b13x']);
-  const updatedService = await call(handler, 'PATCH', '/api/psychology/services/service-r2b13x', 'a', { name: 'Serviço operacional atualizado' });
-  assert.equal(updatedService.statusCode, 200);
-  const deletedService = await call(handler, 'DELETE', '/api/psychology/services/service-r2b13x', 'a');
-  assert.equal(deletedService.statusCode, 200);
-  assert.deepEqual((await call(handler, 'GET', '/api/psychology/services', 'a')).body.items, []);
-
-  const location = { id: 'location-r2b13x', type: 'PRIMARY_OFFICE', displayName: 'Local operacional sintético', address: '', active: true, isPrimary: true, color: '#6D28D9', createdAt: NOW, updatedAt: NOW };
-  const personal = { id: 'personal-r2b13x', date: '2026-08-14', time: '12:00', durationMinutes: 30, type: 'Compromisso pessoal', title: 'Compromisso operacional sintético', note: '', recurrence: 'Não repetir', alarmEnabled: false, isDone: false, createdAt: NOW, updatedAt: NOW };
-  for (const [resource, item] of [['locations', location], ['personal-appointments', personal]]) {
-    const created = await call(handler, 'POST', `/api/psychology/${resource}`, 'a', item);
-    assert.equal(created.statusCode, 201);
-    assert.equal((await call(handler, 'GET', `/api/psychology/${resource}`, 'a')).body.items.length, 1);
-    assert.equal((await call(handler, 'DELETE', `/api/psychology/${resource}/${item.id}`, 'a')).statusCode, 200);
-    assert.deepEqual((await call(handler, 'GET', `/api/psychology/${resource}`, 'a')).body.items, []);
-  }
-});
-
 test('R2D2D API — sessions administrativas não vazam clínico e session-records têm permissão separada', async () => {
   const db = createDb();
   const handler = createHandler(db);
@@ -287,33 +249,6 @@ test('R2D2D API — sessions administrativas não vazam clínico e session-recor
   const clinical = await call(handler, 'GET', '/api/psychology/session-records', 'clinical');
   assert.equal(clinical.statusCode, 200);
   assert.equal(clinical.body.items[0].content, 'REGISTRO CLÍNICO SINTÉTICO');
-});
-
-test('Prontuário clínico API — SOAP e devolutiva preservam escopo, paciente, sessão e auditoria', async () => {
-  const db = createDb();
-  const handler = createHandler(db);
-  const beforeSession = structuredClone(db.value(`workspaces/${WORKSPACE}/professionals/professional-a/contexts/PSICOLOGIA/sessions/session-a`));
-  const created = await call(handler, 'POST', '/api/psychology/session-records', 'a', {
-    id: 'clinical-soap-synthetic', patientId: 'patient-a', date: '2026-08-14', sessionId: 'session-a', recordType: 'SOAP',
-    soap: { subjective: 'relato sintético', objective: 'observação sintética', assessment: '', plan: 'plano sintético' },
-  });
-  assert.equal(created.statusCode, 201);
-  assert.equal(created.body.item.professionalId, 'professional-a');
-  assert.equal(created.body.item.authorProfessionalId, 'professional-a');
-  assert.equal(created.body.item.sessionId, 'session-a');
-  assert.deepEqual(created.body.item.soap, { subjective: 'relato sintético', objective: 'observação sintética', assessment: '', plan: 'plano sintético' });
-  assert.deepEqual(db.value(`workspaces/${WORKSPACE}/professionals/professional-a/contexts/PSICOLOGIA/sessions/session-a`), beforeSession);
-  const malformedEdit = await call(handler, 'PATCH', '/api/psychology/session-records/clinical-soap-synthetic', 'a', { patientId: 'patient-b', content: 'tentativa sintética' });
-  assert.equal(malformedEdit.statusCode, 422);
-  const clinicalOnly = await call(handler, 'POST', '/api/psychology/session-records', 'clinical', { patientId: 'patient-a', date: '2026-08-14', content: 'não deve gravar' });
-  assert.equal(clinicalOnly.statusCode, 403);
-  const adultParentRecord = await call(handler, 'POST', '/api/psychology/session-records', 'a', { patientId: 'patient-a', date: '2026-08-14', recordType: 'PARENT_ANAMNESIS_FEEDBACK', parentRecordType: 'FEEDBACK', content: 'teste sintético' });
-  assert.equal(adultParentRecord.statusCode, 422);
-  db.store.set(`workspaces/${WORKSPACE}/professionals/professional-a/contexts/PSICOLOGIA/patients/patient-minor`, { ...patient(scopeA, 'patient-minor', 'Paciente Menor Sintético'), birthDate: '2012-08-10' });
-  const minorParentRecord = await call(handler, 'POST', '/api/psychology/session-records', 'a', { patientId: 'patient-minor', date: '2026-08-14', recordType: 'PARENT_ANAMNESIS_FEEDBACK', parentRecordType: 'ANAMNESIS_AND_FEEDBACK', content: 'registro sintético para responsável' });
-  assert.equal(minorParentRecord.statusCode, 201);
-  const crossScope = await call(handler, 'GET', '/api/psychology/session-records', 'b');
-  assert.equal(crossScope.statusCode, 403);
 });
 
 test('R2D2G-B API — POST session é canônico, sem Financeiro/efeitos externos, e DELETE é por escopo', async () => {
@@ -417,7 +352,7 @@ test('R2D2D canary local — create/read próprio, cross-access e clinical isola
 
 test('R2D2E observability — evento mínimo não contém dado clínico ou do paciente', () => {
   const event = buildPsychologyAuditEvent({ requestId: 'r2d2e-synthetic', runtimeScope: scopeA, operation: 'POST:patients', status: 'success', timestamp: NOW });
-  assert.deepEqual(Object.keys(event).sort(), ['actorUid', 'context', 'operation', 'professionalId', 'requestId', 'status', 'timestamp', 'workspaceId'].sort());
+  assert.deepEqual(Object.keys(event).sort(), ['actorUidHash', 'context', 'operation', 'requestId', 'status', 'timestamp'].sort());
   assert.equal(JSON.stringify(event).includes('Paciente Sintético'), false);
   assert.equal(JSON.stringify(event).includes('phone'), false);
   assert.equal(JSON.stringify(event).includes('content'), false);
@@ -426,12 +361,13 @@ test('R2D2E observability — evento mínimo não contém dado clínico ou do pa
 test('R1 responsável — API, reload e edição parcial preservam os quatro campos sem misturar escopos', async () => {
   const db = createDb();
   const handler = createHandler(db);
-  const responsible = {
+  const responsibleInput = {
     fullName: 'Marina Sintética',
     relationship: 'Mãe',
-    phone: '(27) 98888-1111',
+    phone: '27988881111',
     email: 'responsavel@synthetic.test',
   };
+  const responsible = { ...responsibleInput, phone: '5527988881111' };
   const patientId = 'patient-responsible-r1';
   const created = await call(handler, 'POST', '/api/psychology/patients', 'a', {
     id: patientId,
@@ -440,7 +376,7 @@ test('R1 responsável — API, reload e edição parcial preservam os quatro cam
     phone: '27999990010',
     email: 'menor@synthetic.test',
     preferredModality: 'online',
-    administrativeResponsible: responsible,
+    administrativeResponsible: responsibleInput,
   });
   assert.equal(created.statusCode, 201);
   assert.deepEqual(created.body.patient.administrativeResponsible, responsible);
