@@ -9,10 +9,7 @@ import {
   Loader2,
   LockKeyhole,
   Mail,
-  Monitor,
   ShieldCheck,
-  UserRound,
-  UsersRound,
   UserPlus,
 } from 'lucide-react';
 import {
@@ -47,32 +44,6 @@ interface AccessPortalProps {
   visualContext?: AuthVisualContext;
   isLoggingOut?: boolean;
 }
-
-const LOGIN_ROLE_OPTIONS: Array<{
-  role: AccessRequestRole;
-  label: string;
-  description: string;
-  icon: typeof UserRound;
-}> = [
-  {
-    role: 'professional',
-    label: 'Profissional',
-    description: 'Agenda, atendentes e gestão clínica profissional.',
-    icon: UserRound,
-  },
-  {
-    role: 'monitoring',
-    label: 'Monitoramento',
-    description: 'Painel de acompanhamento em modo somente leitura.',
-    icon: Monitor,
-  },
-  {
-    role: 'responsible',
-    label: 'Responsável',
-    description: 'Portal do Responsável e materiais autorizados.',
-    icon: UsersRound,
-  },
-];
 
 const EMPTY_REQUEST: AccessRequestInput = {
   displayName: '',
@@ -235,7 +206,7 @@ export default function AccessPortal({
   const handleEmailLogin = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
-      if (!effectiveLoginRole) {
+      if (directRoute && !effectiveLoginRole) {
         throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
       }
       await loginWithIdentifier(loginIdentifier, password);
@@ -244,7 +215,7 @@ export default function AccessPortal({
 
   const handleGoogleLogin = () => {
     void run(async () => {
-      if (!effectiveLoginRole) {
+      if (directRoute && !effectiveLoginRole) {
         throw new Error('Escolha se deseja entrar como Profissional, Monitoramento ou Responsável.');
       }
       await loginWithGoogle();
@@ -372,46 +343,6 @@ export default function AccessPortal({
 
       {renderFeedback()}
 
-      {!directRoute && <fieldset className="space-y-3">
-        <legend className="text-xs font-bold uppercase tracking-wider text-clinic-text-muted">Entrar como</legend>
-        <p className="text-xs leading-relaxed text-clinic-text-muted">
-          Escolha o perfil que deseja usar nesta entrada. A autorização será confirmada depois do login.
-        </p>
-        <div className="grid gap-3 sm:grid-cols-3">
-          {LOGIN_ROLE_OPTIONS.map(option => {
-            const Icon = option.icon;
-            const selected = selectedLoginRole === option.role;
-            return (
-              <button
-                key={option.role}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => {
-                  clearFeedback();
-                  onSelectedLoginRoleChange(option.role);
-                }}
-                className={`rounded-xl border p-3 text-left transition focus:outline-none focus:ring-2 focus:ring-clinic-primary/35 ${selected
-                  ? `border-clinic-primary ${psychologyAuthTheme ? 'bg-violet-50' : 'bg-status-green-bg'} shadow-sm`
-                  : 'border-clinic-border bg-white hover:border-clinic-primary hover:bg-clinic-bg'}`}
-              >
-                <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${selected
-                  ? 'bg-clinic-primary text-white'
-                  : 'bg-clinic-bg text-clinic-primary'}`}
-                >
-                  <Icon size={18} />
-                </span>
-                <span className="mt-3 block text-sm font-black text-clinic-text">{option.label}</span>
-                <span className="mt-1 block text-[11px] leading-relaxed text-clinic-text-muted">{option.description}</span>
-              </button>
-            );
-          })}
-        </div>
-        {!selectedLoginRole && (
-          <p className="text-xs font-semibold text-status-orange-text">Nenhum modo de entrada selecionado.</p>
-        )}
-      </fieldset>}
-
       {!psychologyGoogleOnly && (
         <>
           <label className="block">
@@ -468,7 +399,7 @@ export default function AccessPortal({
       {!psychologyGoogleOnly && (
         <button
           type="submit"
-          disabled={busy || !effectiveLoginRole}
+          disabled={busy || (directRoute && !effectiveLoginRole)}
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60"
         >
           {busy ? <Loader2 size={19} className="animate-spin" /> : <LockKeyhole size={19} />}
@@ -488,7 +419,7 @@ export default function AccessPortal({
           <button
             type="button"
             onClick={handleGoogleLogin}
-            disabled={busy || !effectiveLoginRole}
+            disabled={busy || (directRoute && !effectiveLoginRole)}
             data-testid={psychologyGoogleOnly ? 'psychology-google-login' : undefined}
             className={psychologyGoogleOnly
               ? 'flex w-full items-center justify-center gap-3 rounded-xl bg-clinic-primary px-4 py-3.5 font-bold text-white shadow-md transition hover:bg-clinic-primary-hover disabled:cursor-wait disabled:opacity-60'

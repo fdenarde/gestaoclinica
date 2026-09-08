@@ -60,8 +60,6 @@ test('Auth funcional permanece compartilhado e protegido', () => {
     'await loginWithGoogle()',
     'Esqueci minha senha',
     'Criar acesso',
-    'Entrar como',
-    'role="radio"',
   ]) assert.match(authSource, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(appSource, /if \(!user \|\| !canAccessInternalSystem\)/);
   assert.match(appSource, /if \(psychologyPilotRoute && !psychologyAuthenticatedRoute\) return <PsychologyPilot runtimeMode="pilot-local" \/>;/);

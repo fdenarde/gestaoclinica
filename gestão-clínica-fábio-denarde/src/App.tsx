@@ -1092,7 +1092,14 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     );
   }
 
-  if (user && !directAccessRole && accessProfile && activeProfileRoles.length > 0 && !selectedAccessRole) {
+  if (
+    user
+    && !directAccessRole
+    && accessProfile
+    && activeProfileRoles.length > 1
+    && accessProfile.role !== 'admin'
+    && !selectedAccessRole
+  ) {
     return (
       <ProfileChoiceScreen
         profile={accessProfile}

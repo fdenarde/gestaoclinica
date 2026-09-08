@@ -10,25 +10,17 @@ const accessApiSource = fs.readFileSync('src/lib/accessApi.ts', 'utf8');
 const accessServerSource = fs.readFileSync('api/access.js', 'utf8');
 const viteSource = fs.readFileSync('vite.config.ts', 'utf8');
 
-test('tela real de login exige escolha explícita entre Profissional, Monitoramento e Responsável', () => {
-  assert.match(accessPortalSource, /Entrar como/);
-  assert.match(accessPortalSource, /role: 'professional'/);
-  assert.match(accessPortalSource, /role: 'monitoring'/);
-  assert.match(accessPortalSource, /role: 'responsible'/);
+test('login geral preserva a entrada direta e não exige seletor de perfil antes da autenticação', () => {
+  assert.doesNotMatch(accessPortalSource, /Nenhum modo de entrada selecionado/);
   assert.match(accessPortalSource, /selectedLoginRole: AccessRequestRole \| null/);
-  assert.match(accessPortalSource, /role="radio"/);
-  assert.match(accessPortalSource, /aria-checked=\{selected\}/);
-  assert.match(accessPortalSource, /Nenhum modo de entrada selecionado/);
-  assert.match(accessPortalSource, /disabled=\{busy \|\| !effectiveLoginRole\}/);
+  assert.match(accessPortalSource, /disabled=\{busy \|\| \(directRoute && !effectiveLoginRole\)\}/);
 });
 
-test('login por usuário, e-mail e Google bloqueiam autenticação sem modo escolhido', () => {
-  const requiredMessage = /Escolha se deseja entrar como Profissional, Monitoramento ou Responsável\./;
-  assert.match(accessPortalSource, /const handleEmailLogin[\s\S]*if \(!effectiveLoginRole\)[\s\S]*throw new Error/);
-  assert.match(accessPortalSource, /const handleGoogleLogin[\s\S]*if \(!effectiveLoginRole\)[\s\S]*throw new Error/);
-  assert.match(accessPortalSource, requiredMessage);
-  assert.match(accessPortalSource, /await loginWithIdentifier\(loginIdentifier, password\)/);
-  assert.match(accessPortalSource, /await loginWithGoogle\(\)/);
+test('login por usuário, e-mail e Google autentica antes da resolução de perfil no acesso geral', () => {
+  assert.match(accessPortalSource, /const handleEmailLogin[\s\S]*loginWithIdentifier\(loginIdentifier, password\)/);
+  assert.match(accessPortalSource, /const handleGoogleLogin[\s\S]*loginWithGoogle\(\)/);
+  assert.match(accessPortalSource, /if \(directRoute && !effectiveLoginRole\)[\s\S]*throw new Error/);
+  assert.doesNotMatch(accessPortalSource, /if \(!effectiveLoginRole\)[\s\S]*throw new Error/);
 });
 
 test('cadastro reutiliza conta Auth existente e cria somente nova solicitação de perfil', () => {
@@ -44,7 +36,7 @@ test('cadastro reutiliza conta Auth existente e cria somente nova solicitação 
 test('perfil escolhido no login é enviado ao backend e controla o roteamento', () => {
   assert.match(appSource, /selectedLoginRole=\{selectedAccessRole/);
   assert.match(appSource, /onSelectedLoginRoleChange=\{role => setSelectedAccessRole\(directAccessRole \|\| role\)\}/);
-  assert.match(appSource, /getAccessProfile\(user, \{ forceRefreshToken, activeRole: selectedAccessRole \}\)/);
+  assert.match(appSource, /getAccessProfile\(user, \{ forceRefreshToken, activeRole: selectedAccessRole, signal: abortController\.signal \}\)/);
   assert.match(accessApiSource, /\?activeRole=\$\{encodeURIComponent\(options\.activeRole\)\}/);
   assert.match(accessServerSource, /assertSelectedProfileIsActive\(sourceProfile, activeRole\)/);
   assert.match(accessServerSource, /access\/profile-not-configured/);
@@ -121,7 +113,7 @@ test('troca de perfil limpa dados da sessão e não exige nova autenticação', 
   assert.match(appSource, /clearAccessApiCaches\(\)/);
   assert.match(appSource, /const switchAccessRole = useCallback\(\(\) => \{/);
   assert.match(appSource, /setSelectedAccessRole\(null\)/);
-  assert.match(appSource, /activeProfileRoles\.length > 0 && !selectedAccessRole/);
+  assert.match(appSource, /activeProfileRoles\.length > 1[\s\S]*accessProfile\.role !== 'admin'[\s\S]*!selectedAccessRole/);
   assert.match(appSource, /Trocar perfil/);
 });
 
