@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { AppState, NoReplacementReasonCode, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Images } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Images, ShieldOff } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
@@ -12,8 +12,17 @@ import { showToast } from './Common/Toast';
 import { cn, getStatusColor, safeFormatDate, normalizeStr, isValidTime, normalizeTime, addOneHour, getSessionsForDate, getWhatsappReminderPlan, ProcessedSession } from '../lib/utils';
 import { getSessionCycleLabel, getSessionCycleNumber, getSessionLogicalPosition, getSessionPresentationStatus, isCompletedClinicalSession, mergeSessionSequenceSource, sessionAllowsActivity } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda, removeSessionFromAgenda } from '../../shared/sessionRemoval.js';
-import { rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
+import { findSessionConflict, rescheduleSessionInAgenda } from '../../shared/sessionScheduling.js';
 import { getSaoPauloDateKey } from '../../shared/clinicalDate.js';
+import {
+  getWhatsappAutomationBlockedLabels,
+  getWhatsappAutomationBlockLabel,
+  getWhatsappSilenceLocalValue,
+  getWhatsappSilenceState,
+  buildWhatsappSilenceUntil,
+  formatWhatsappSilenceUntil,
+  normalizeWhatsappAutomationControl,
+} from '../../shared/whatsappSessionAutomation.js';
 
 const getHourBase = (timeStr: string): string => {
   if (!timeStr) return '';
@@ -270,9 +279,10 @@ interface AgendaProps {
   onNavigateToPatient?: (id: string) => void;
   onNavigateToPatientGallery?: (id: string, sessionId?: string) => void;
   currentUserName: string;
+  currentUserRole: string;
 }
 
-export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigateToPatientGallery, currentUserName }: AgendaProps) {
+export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigateToPatientGallery, currentUserName, currentUserRole }: AgendaProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
@@ -292,6 +302,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
+  const [whatsappSilenceDraft, setWhatsappSilenceDraft] = useState<{
+    scope: 'session' | 'patient';
+    duration: 'session' | '1h' | 'hours' | 'endOfDay' | '1d' | 'days' | '1w' | 'weeks' | 'custom' | 'manual';
+    quantity: number;
+    customUntil: string;
+    reasonCode: 'feriado' | 'recesso' | 'solicitacao_responsavel' | 'ausencia_temporaria' | 'ajuste_administrativo' | 'outro' | '';
+    reasonText: string;
+  }>({ scope: 'session', duration: 'session', quantity: 1, customUntil: '', reasonCode: '', reasonText: '' });
+  const [savingWhatsappBlock, setSavingWhatsappBlock] = useState(false);
   const [rescheduleModal, setRescheduleModal] = useState<{
     session: ProcessedSession;
     date: string;
@@ -354,7 +373,17 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const patient = actionSession ? state.patients.find(p => p.id === actionSession.patientId) : null;
     setActionGeneralNotesDraft(patient?.clinicalNotes || '');
     setIsEditingActionGeneralNotes(false);
-  }, [actionSession?.id, actionSession?.patientId, state.patients]);
+    const silence = getWhatsappSilenceState(actionSession, patient);
+    const control = silence.control || normalizeWhatsappAutomationControl(actionSession?.whatsappAutomationControl);
+    setWhatsappSilenceDraft({
+      scope: silence.source === 'patient' || control?.scope === 'patient' || control?.scope === 'patient_date' ? 'patient' : 'session',
+      duration: silence.until ? 'custom' : (silence.source ? 'manual' : 'session'),
+      quantity: 1,
+      customUntil: getWhatsappSilenceLocalValue(silence.until),
+      reasonCode: (control?.reasonCode || '') as 'feriado' | 'recesso' | 'solicitacao_responsavel' | 'ausencia_temporaria' | 'ajuste_administrativo' | 'outro' | '',
+      reasonText: control?.reasonText || '',
+    });
+  }, [actionSession?.id, actionSession?.patientId, actionSession?.whatsappAutomationControl, state.patients]);
 
   useEffect(() => {
     for (const key of virtualActionLocksRef.current) {
@@ -426,15 +455,22 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const holiday = state.settings.holidays?.find(h => h.date === selectedSlot.date);
     if (holiday) warnings.push(`Data fechada por feriado/recesso: ${holiday.name}.`);
 
-    const occupied = state.sessions.find(s =>
-      s.date === selectedSlot.date &&
-      normalizeTime(s.time) === normalizedTime &&
-      !s.isBlocked &&
-      s.status !== SessionStatus.CANCELADA
-    );
-    if (occupied) {
-      const occupiedPatient = state.patients.find(p => p.id === occupied.patientId);
-      warnings.push(`Horário já ocupado por ${occupiedPatient?.name || 'outro registro'}.`);
+    const candidate = {
+      date: selectedSlot.date,
+      time: normalizedTime,
+      type: isBlockMode ? SessionType.SIMPLES : sessionType,
+      status: SessionStatus.AGENDADA,
+    } as Session;
+    const destinationSessions = getSessionsForDate({
+      dateStr: selectedSlot.date,
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings,
+    });
+    const conflict = findSessionConflict(destinationSessions, candidate);
+    if (conflict) {
+      const occupiedPatient = state.patients.find(p => p.id === conflict.patientId);
+      warnings.push(`Conflito de intervalo com ${conflict.isBlocked ? 'um bloqueio' : (occupiedPatient?.name || 'outro registro')}.`);
     }
 
     if (patientId) {
@@ -805,7 +841,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     const { session, date, time } = rescheduleModal;
     const normalizedTime = normalizeTime(time);
     if (!date || !isValidTime(normalizedTime)) {
-      showToast('Informe uma data e um horário válidos para o reagendamento.', 'error');
+      showToast('Informe uma data e um horário válidos no formato HH:mm para o reagendamento.', 'error');
       return;
     }
 
@@ -831,12 +867,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       sessions: state.sessions,
       settings: state.settings,
     });
-    const conflict = destinationSessions.find(item => (
-      normalizeTime(item.time) === normalizedTime
-      && item.id !== session.id
-      && item.status !== SessionStatus.CANCELADA
-      && !isSessionRemovedFromAgenda(item)
-    ));
+    const conflict = findSessionConflict(destinationSessions, {
+      ...session,
+      date,
+      time: normalizedTime,
+    }, { ignoreSessionId: session.id });
     if (conflict) {
       const conflictPatient = state.patients.find(item => item.id === conflict.patientId);
       showToast(
@@ -963,7 +998,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       return;
     }
     if (!isValidTime(repoTime)) {
-      showToast('Por favor, insira um horário válido no formato HH:00 ou HH:30 (ex: 17:30).', 'error');
+      showToast('Por favor, insira um horário válido no formato HH:mm (ex: 17:17).', 'error');
       return;
     }
     const normalizedRepoTime = normalizeTime(repoTime);
@@ -972,12 +1007,22 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       id: Math.random().toString(36).substr(2, 9),
       patientId: patient.id,
       date: repoDate,
-      time: repoTime,
+      time: normalizedRepoTime,
       type: originalSession?.type || SessionType.SIMPLES,
       status: SessionStatus.AGENDADA,
       notes: `Reposição referente à falta do dia ${originalSession ? format(new Date(originalSession.date + 'T12:00:00'), 'dd/MM/yyyy') : '--'}`,
       packageNumber: originalSession?.packageNumber || 0,
     };
+    const repositionConflict = findSessionConflict(getSessionsForDate({
+      dateStr: repoDate,
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings,
+    }), newSession);
+    if (repositionConflict) {
+      showToast('O horário da reposição conflita com outra sessão ou bloqueio.', 'error');
+      return;
+    }
     const updatedRepositions = state.repositions.map(r =>
       r.id === reposition.id ? { ...r, status: 'Agendada' as const } : r
     );
@@ -1025,7 +1070,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     if (!selectedSlot || scheduleSaveLockRef.current) return;
 
     if (!isValidTime(selectedSlot.time)) {
-      showToast('Por favor, insira um horário de atendimento válido no formato HH:00 ou HH:30 (ex: 17:30).', 'error');
+      showToast('Por favor, insira um horário válido no formato HH:mm (ex: 17:17).', 'error');
       return;
     }
     const normalizedTime = normalizeTime(selectedSlot.time);
@@ -1040,7 +1085,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         id: Math.random().toString(36).substr(2, 9),
         patientId: '__BLOCKED__',
         date: selectedSlot.date,
-        time: selectedSlot.time,
+        time: normalizedTime,
         type: SessionType.SIMPLES,
         status: SessionStatus.AGENDADA,
         notes: '',
@@ -1048,6 +1093,16 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         isBlocked: true,
         blockName: notes.trim(),
       };
+      const blockedConflict = findSessionConflict(getSessionsForDate({
+        dateStr: selectedSlot.date,
+        patients: state.patients,
+        sessions: state.sessions,
+        settings: state.settings,
+      }), blockedSession);
+      if (blockedConflict) {
+        showToast('O bloqueio conflita com outra sessão ou bloqueio no mesmo intervalo.', 'error');
+        return;
+      }
       scheduleSaveLockRef.current = true;
       setIsSavingSchedule(true);
       try {
@@ -1076,15 +1131,24 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       return;
     }
 
-    const occupiedSession = state.sessions.find(s =>
-      s.date === selectedSlot.date &&
-      normalizeTime(s.time) === normalizedTime &&
-      !s.isBlocked &&
-      s.status !== SessionStatus.CANCELADA
-    );
+    const candidateSession: Session = {
+      id: 'new-session-conflict-check',
+      patientId,
+      date: selectedSlot.date,
+      time: normalizedTime,
+      type: sessionType,
+      status: SessionStatus.AGENDADA,
+      packageNumber: null,
+    };
+    const occupiedSession = findSessionConflict(getSessionsForDate({
+      dateStr: selectedSlot.date,
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings,
+    }), candidateSession);
     if (occupiedSession) {
       const occupiedPatient = state.patients.find(p => p.id === occupiedSession.patientId);
-      showToast(`Horário já ocupado por ${occupiedPatient?.name || 'outro registro'}.`, 'error');
+      showToast(`Conflito de intervalo com ${occupiedSession.isBlocked ? 'um bloqueio' : (occupiedPatient?.name || 'outro registro')}.`, 'error');
       return;
     }
 
@@ -1416,6 +1480,111 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     return details.join('\n');
   };
 
+  const canManageWhatsappAutomation = currentUserRole === 'admin' || currentUserRole === 'professional';
+  const canManagePatientWhatsappSilence = currentUserRole === 'admin';
+
+  const getWhatsappScopeSessions = (session: ProcessedSession): ProcessedSession[] => {
+    const dateSessions = getSessionsForDate({
+      dateStr: session.date,
+      patients: state.patients,
+      sessions: state.sessions,
+      settings: state.settings,
+    });
+    return dateSessions.filter(item => (
+      !item.isBlocked
+      && item.patientId === session.patientId
+      && item.date === session.date
+    ));
+  };
+
+  const persistWhatsappAutomationControl = async (session: ProcessedSession, { clear = false } = {}) => {
+    if (!canManageWhatsappAutomation || savingWhatsappBlock) return;
+    const patient = state.patients.find(item => item.id === session.patientId);
+    if (!patient) return;
+    if (whatsappSilenceDraft.scope === 'patient' && !canManagePatientWhatsappSilence) {
+      showToast('Somente administradores podem silenciar todas as sessões de um atendente.', 'error');
+      return;
+    }
+
+    const silenceUntil = clear || whatsappSilenceDraft.duration === 'session'
+      ? ''
+      : buildWhatsappSilenceUntil({
+          duration: whatsappSilenceDraft.duration,
+          quantity: whatsappSilenceDraft.quantity,
+          customUntil: whatsappSilenceDraft.customUntil,
+        });
+    if (!clear && whatsappSilenceDraft.scope === 'patient' && whatsappSilenceDraft.duration !== 'manual' && !silenceUntil) {
+      showToast('Informe um término válido para o silêncio temporário.', 'error');
+      return;
+    }
+    if (clear && whatsappSilenceDraft.scope === 'patient' && !window.confirm('Desbloquear agora os lembretes do WhatsApp para todas as sessões deste atendente?')) return;
+
+    setSavingWhatsappBlock(true);
+    try {
+      const control = clear ? null : {
+        version: 1 as const,
+        blockAll: true,
+        blockedReminderTypes: [],
+        scope: whatsappSilenceDraft.scope,
+        startsAt: new Date().toISOString(),
+        ...(silenceUntil ? { silenceUntil } : {}),
+        ...(whatsappSilenceDraft.reasonCode ? { reasonCode: whatsappSilenceDraft.reasonCode } : {}),
+        ...(whatsappSilenceDraft.reasonCode === 'outro' && whatsappSilenceDraft.reasonText.trim() ? { reasonText: whatsappSilenceDraft.reasonText.trim().slice(0, 180) } : {}),
+        updatedAt: new Date().toISOString(),
+        updatedBy: currentUserName,
+        updatedByRole: currentUserRole,
+      };
+
+      let updatedSessions = state.sessions;
+      let updatedPatients = state.patients;
+      if (whatsappSilenceDraft.scope === 'patient') {
+        updatedPatients = state.patients.map(item => {
+          if (item.id !== patient.id) return item;
+          const next = { ...item };
+          if (control) next.whatsappAutomationControl = control;
+          else delete next.whatsappAutomationControl;
+          return next;
+        });
+      } else {
+        const occurrenceKey = `${session.patientId}|${session.date}|${normalizeTime(session.time)}`;
+        let matched = false;
+        updatedSessions = state.sessions.map(item => {
+          const itemKey = `${item.patientId}|${item.date}|${normalizeTime(item.time)}`;
+          if (item.id !== session.id && itemKey !== occurrenceKey) return item;
+          matched = true;
+          const next = { ...item };
+          if (control) next.whatsappAutomationControl = control;
+          else delete next.whatsappAutomationControl;
+          return next;
+        });
+        if (!matched && !clear) {
+          const materialized: Session = {
+            ...session,
+            id: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2),
+            time: normalizeTime(session.time),
+            isFixedSchedule: true,
+            source: 'fixed',
+          };
+          delete (materialized as ProcessedSession).isVirtual;
+          delete (materialized as ProcessedSession).isValid;
+          delete (materialized as ProcessedSession).blockedReason;
+          if (control) materialized.whatsappAutomationControl = control;
+          updatedSessions = [...updatedSessions, materialized];
+        }
+      }
+
+      const persisted = await onUpdate({ sessions: updatedSessions, patients: updatedPatients });
+      if (persisted !== true) throw new Error('A persistência retornou false.');
+      showToast(control ? 'Silêncio do WhatsApp atualizado.' : 'Lembretes do WhatsApp reativados.');
+      setActionSession(null);
+    } catch (error) {
+      console.error('Falha ao atualizar silêncio do WhatsApp:', error);
+      showToast('Não foi possível atualizar o silêncio das mensagens.', 'error');
+    } finally {
+      setSavingWhatsappBlock(false);
+    }
+  };
+
   const handleRepositionContactResult = async (repositionId: string, result: 'aceitou' | 'recusou') => {
     const updatedRepositions = state.repositions.map(reposition =>
       reposition.id === repositionId
@@ -1620,6 +1789,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                                     {statusLabel}
                                   </span>
                                 </div>
+                                {getWhatsappAutomationBlockLabel(session, patient) && (
+                                  <span className="mt-1 inline-flex w-fit items-center gap-1 rounded-full bg-rose-100 px-1.5 py-0.5 text-[8px] font-black uppercase text-rose-700" title="Lembretes do WhatsApp silenciados">
+                                    🔕 {getWhatsappAutomationBlockLabel(session, patient)}
+                                  </span>
+                                )}
 
                                 {/* Patient name or block name */}
                                 <div className="flex flex-col mt-0.5">
@@ -1720,6 +1894,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         const patient = state.patients.find(p => p.id === actionSession.patientId);
         const statusLabel = getStatusLabel(actionSession);
         const actions = getSessionActions(actionSession);
+        const whatsappSilence = getWhatsappSilenceState(actionSession, patient);
+        const whatsappBlockLabel = getWhatsappAutomationBlockLabel(actionSession, patient);
 
         return (
           <Modal
@@ -1884,6 +2060,93 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                 </div>
               )}
 
+              {patient && canManageWhatsappAutomation && !actionSession.isBlocked && (
+                <section className="rounded-2xl border border-rose-200 bg-rose-50/45 p-4">
+                  <div className="flex items-start gap-3">
+                    <span className="rounded-xl bg-white p-2 text-rose-700"><ShieldOff size={18} /></span>
+                    <div>
+                      <h3 className="text-sm font-black text-clinic-text">Mensagens automáticas do WhatsApp</h3>
+                      <p className="mt-1 text-xs text-clinic-text-muted">Mensagens já enviadas e o histórico serão preservados. O silêncio apenas suprime novas janelas de lembrete.</p>
+                      <p className="mt-1 text-[10px] text-clinic-text-faint">Abrange Lembrete da véspera, lembretes do mesmo dia e Novas tentativas e reenvios. O antigo escopo “Todas as sessões desta data” foi substituído pelo atendente inteiro com prazo.</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs text-rose-700">
+                    <p className="font-black">{whatsappSilence.active ? '🔕 WhatsApp silenciado' : (whatsappBlockLabel || '🔔 Mensagens ativas')}</p>
+                    {whatsappSilence.active && <p className="mt-1">{whatsappSilence.until ? `Silenciado até ${formatWhatsappSilenceUntil(whatsappSilence.until)}` : 'Até desbloqueio manual'}</p>}
+                    {!whatsappSilence.active && whatsappBlockLabel && <p className="mt-1">{getWhatsappAutomationBlockedLabels(actionSession, patient).join(' • ')}</p>}
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <label className="flex items-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold">
+                      <input type="radio" name="whatsapp-silence-scope" checked={whatsappSilenceDraft.scope === 'session'} onChange={() => setWhatsappSilenceDraft(current => ({ ...current, scope: 'session', duration: 'session' }))} />
+                      Somente esta sessão
+                    </label>
+                    <label className={cn("flex items-center gap-2 rounded-xl border bg-white px-3 py-2.5 text-xs font-bold", canManagePatientWhatsappSilence ? 'border-clinic-border' : 'border-gray-200 opacity-50')}>
+                      <input type="radio" name="whatsapp-silence-scope" checked={whatsappSilenceDraft.scope === 'patient'} disabled={!canManagePatientWhatsappSilence} onChange={() => setWhatsappSilenceDraft(current => ({ ...current, scope: 'patient', duration: current.duration === 'session' ? '1h' : current.duration }))} />
+                      Todas as sessões deste atendente
+                    </label>
+                  </div>
+                  {whatsappSilenceDraft.scope === 'patient' && (
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">
+                        Duração
+                        <select value={whatsappSilenceDraft.duration} onChange={event => setWhatsappSilenceDraft(current => ({ ...current, duration: event.target.value as typeof current.duration }))} className="rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold normal-case tracking-normal text-clinic-text">
+                          <option value="1h">1 hora</option>
+                          <option value="hours">X horas</option>
+                          <option value="endOfDay">Até o final do dia</option>
+                          <option value="1d">1 dia</option>
+                          <option value="days">X dias</option>
+                          <option value="1w">1 semana</option>
+                          <option value="weeks">X semanas</option>
+                          <option value="custom">Até data e horário personalizados</option>
+                          <option value="manual">Até desbloqueio manual</option>
+                        </select>
+                      </label>
+                      {['hours', 'days', 'weeks'].includes(whatsappSilenceDraft.duration) && (
+                        <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">
+                          Quantidade
+                          <input type="number" min={1} max={52} value={whatsappSilenceDraft.quantity} onChange={event => setWhatsappSilenceDraft(current => ({ ...current, quantity: Math.max(1, Number(event.target.value) || 1) }))} className="rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold text-clinic-text" />
+                        </label>
+                      )}
+                      {whatsappSilenceDraft.duration === 'custom' && (
+                        <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-clinic-text-faint sm:col-span-2">
+                          Até
+                          <input type="datetime-local" value={whatsappSilenceDraft.customUntil} onChange={event => setWhatsappSilenceDraft(current => ({ ...current, customUntil: event.target.value }))} className="rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold text-clinic-text" />
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">
+                      Motivo (opcional)
+                      <select value={whatsappSilenceDraft.reasonCode} onChange={event => setWhatsappSilenceDraft(current => ({ ...current, reasonCode: event.target.value as typeof current.reasonCode }))} className="rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold normal-case tracking-normal text-clinic-text">
+                        <option value="">Sem motivo informado</option>
+                        <option value="feriado">Feriado</option>
+                        <option value="recesso">Recesso</option>
+                        <option value="solicitacao_responsavel">Solicitação do responsável</option>
+                        <option value="ausencia_temporaria">Ausência temporária</option>
+                        <option value="ajuste_administrativo">Ajuste administrativo</option>
+                        <option value="outro">Outro</option>
+                      </select>
+                    </label>
+                    {whatsappSilenceDraft.reasonCode === 'outro' && (
+                      <label className="flex flex-col gap-1 text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">
+                        Detalhe
+                        <input value={whatsappSilenceDraft.reasonText} maxLength={180} onChange={event => setWhatsappSilenceDraft(current => ({ ...current, reasonText: event.target.value }))} className="rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-bold text-clinic-text" />
+                      </label>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void persistWhatsappAutomationControl(actionSession)}
+                    disabled={savingWhatsappBlock}
+                    className="mt-3 w-full rounded-xl bg-rose-700 px-4 py-2.5 text-xs font-black uppercase text-white disabled:opacity-50"
+                  >
+                    {savingWhatsappBlock ? 'Salvando...' : whatsappSilence.active ? 'Alterar período' : 'Silenciar mensagens'}
+                  </button>
+                  {whatsappSilence.active && <button type="button" onClick={() => void persistWhatsappAutomationControl(actionSession, { clear: true })} disabled={savingWhatsappBlock} className="mt-2 w-full rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-black uppercase text-emerald-700 disabled:opacity-50">Desbloquear agora</button>}
+                </section>
+              )}
+
               {patient && onNavigateToPatientGallery && sessionAllowsActivity(actionSession) && (
                 <button
                   type="button"
@@ -2028,7 +2291,6 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         const reschedulePatient = state.patients.find(item => item.id === rescheduleModal.session.patientId);
         const sequenceSource = mergeSessionSequenceSource(agendaSequenceSource, [rescheduleModal.session]);
         const logicalSessionNumber = getSessionCycleNumber(sequenceSource, rescheduleModal.session);
-        const usesConfiguredTime = rescheduleAvailableTimes.includes(rescheduleModal.time);
 
         return (
           <Modal
@@ -2068,39 +2330,17 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
                 <label className="flex flex-col gap-1">
                   <span className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Novo horário</span>
-                  <select
-                    value={usesConfiguredTime ? rescheduleModal.time : 'custom'}
-                    onChange={event => {
-                      const nextTime = event.target.value === 'custom'
-                        ? (usesConfiguredTime ? `${rescheduleModal.time.split(':')[0]}:30` : rescheduleModal.time)
-                        : event.target.value;
-                      setRescheduleModal(current => current ? { ...current, time: nextTime } : current);
-                    }}
-                    disabled={isRescheduling || rescheduleAvailableTimes.length === 0}
-                    className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-60"
-                  >
-                    {rescheduleAvailableTimes.map(availableTime => (
-                      <option key={availableTime} value={availableTime}>{availableTime}</option>
-                    ))}
-                    <option value="custom">Outro horário...</option>
-                  </select>
-                </label>
-              </div>
-
-              {!usesConfiguredTime && (
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Horário personalizado</span>
                   <input
-                    type="text"
-                    inputMode="numeric"
+                    type="time"
+                    step={60}
                     value={rescheduleModal.time}
                     onChange={event => setRescheduleModal(current => current ? { ...current, time: event.target.value } : current)}
-                    placeholder="Ex.: 17:30"
-                    disabled={isRescheduling}
+                    disabled={isRescheduling || rescheduleAvailableTimes.length === 0}
                     className="w-full rounded-xl border border-clinic-border bg-clinic-bg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-clinic-primary disabled:opacity-60"
                   />
+                  <span className="text-[10px] text-clinic-text-muted">Precisão de 1 minuto — qualquer horário válido em HH:mm.</span>
                 </label>
-              )}
+              </div>
 
               {rescheduleAvailableTimes.length === 0 && (
                 <p className="rounded-xl border border-status-red-text/20 bg-status-red-bg p-3 text-xs font-bold text-status-red-text">
@@ -2329,20 +2569,14 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs font-bold text-clinic-text-faint uppercase">Horário do atendimento</label>
-                  <select
-                    value={AVAILABLE_TIMES.includes(selectedSlot.time) ? selectedSlot.time : 'custom'}
-                    onChange={e => {
-                      if (e.target.value === 'custom') {
-                        setSelectedSlot(prev => prev ? { ...prev, time: getHourBase(prev.time).split(':')[0] + ':30' } : null);
-                      } else {
-                        setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null);
-                      }
-                    }}
+                  <input
+                    type="time"
+                    step={60}
+                    value={selectedSlot.time}
+                    onChange={e => setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null)}
                     className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border focus:ring-2 focus:ring-clinic-primary outline-none transition-all text-sm w-full font-medium"
-                  >
-                    {AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
-                    <option value="custom">Outro horário...</option>
-                  </select>
+                  />
+                  <span className="text-[10px] text-clinic-text-muted">Precisão de 1 minuto — qualquer horário válido em HH:mm.</span>
                 </div>
                 {!isBlockMode && (
                   <div className="flex flex-col gap-1">
@@ -2358,16 +2592,6 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   </div>
                 )}
               </div>
-            )}
-
-            {selectedSlot && !AVAILABLE_TIMES.includes(selectedSlot.time) && (
-              <input
-                type="text"
-                placeholder="Ex: 17:30"
-                value={selectedSlot.time}
-                onChange={e => setSelectedSlot(prev => prev ? { ...prev, time: e.target.value } : null)}
-                className="px-4 py-3 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full"
-              />
             )}
 
             {getSchedulingWarnings().length > 0 && (
@@ -2592,31 +2816,15 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                   Horário
                   {repoAvailableTimes.length === 0 && <span className="text-status-red-text ml-2 normal-case font-normal">(dia sem horários disponíveis)</span>}
                 </label>
-                <select
-                  className="w-full bg-clinic-bg border border-clinic-border rounded-xl p-3 text-sm focus:ring-2 focus:ring-clinic-primary outline-none transition-all"
-                  value={repoAvailableTimes.includes(repoTime) || AVAILABLE_TIMES.includes(repoTime) ? repoTime : 'custom'}
-                  onChange={e => {
-                    if (e.target.value === 'custom') {
-                      setRepoTime('17:30');
-                    } else {
-                      setRepoTime(e.target.value);
-                    }
-                  }}
-                >
-                  <option value="">Selecione o horário...</option>
-                  {repoAvailableTimes.map(t => <option key={t} value={t}>{t}</option>)}
-                  {repoAvailableTimes.length === 0 && AVAILABLE_TIMES.map(t => <option key={t} value={t}>{t}</option>)}
-                  <option value="custom">Outro horário...</option>
-                </select>
-                {repoTime && !repoAvailableTimes.includes(repoTime) && !AVAILABLE_TIMES.includes(repoTime) && (
-                  <input
-                    type="text"
-                    placeholder="Ex: 17:30"
-                    value={repoTime}
-                    onChange={e => setRepoTime(e.target.value)}
-                    className="px-4 py-3 mt-2 bg-clinic-bg rounded-xl border border-clinic-border outline-none focus:ring-2 focus:ring-clinic-primary transition-all text-sm w-full"
-                  />
-                )}
+                <input
+                  type="time"
+                  step={60}
+                  value={repoTime}
+                  onChange={e => setRepoTime(e.target.value)}
+                  disabled={repoAvailableTimes.length === 0}
+                  className="w-full bg-clinic-bg border border-clinic-border rounded-xl p-3 text-sm focus:ring-2 focus:ring-clinic-primary outline-none transition-all disabled:opacity-60"
+                />
+                <span className="text-[10px] text-clinic-text-muted">Precisão de 1 minuto — qualquer horário válido em HH:mm.</span>
               </div>
             </div>
 

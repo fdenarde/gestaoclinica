@@ -29,6 +29,60 @@ export function normalizeAgendaTime(value = '') {
   return `${match[1].padStart(2, '0')}:${match[2]}`;
 }
 
+const SESSION_DURATION_BY_TYPE = new Map([
+  ['Sessão simples (50 min)', 50],
+  ['Sessão dupla (2 × 50 min)', 100],
+]);
+
+export function timeToMinutes(value = '') {
+  const normalized = normalizeAgendaTime(value);
+  const match = normalized.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+export function getSessionDurationMinutes(session = {}) {
+  const explicit = Number(session.durationMinutes);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return SESSION_DURATION_BY_TYPE.get(String(session.type || '')) || 50;
+}
+
+export function getSessionInterval(session = {}) {
+  const start = timeToMinutes(session.time);
+  if (start === null) return null;
+  return {
+    start,
+    end: start + getSessionDurationMinutes(session),
+  };
+}
+
+export function sessionIntervalsOverlap(left = {}, right = {}) {
+  const leftInterval = getSessionInterval(left);
+  const rightInterval = getSessionInterval(right);
+  if (!leftInterval || !rightInterval) return false;
+  return leftInterval.start < rightInterval.end && rightInterval.start < leftInterval.end;
+}
+
+export function isSessionConflictCandidate(session = {}) {
+  return session.removedFromAgenda !== true
+    && String(session.status || '') !== 'Cancelada';
+}
+
+export function findSessionConflict(sessions = [], candidate = {}, { ignoreSessionId = '' } = {}) {
+  const normalizedCandidateDate = String(candidate.date || '').trim();
+  const normalizedIgnoreId = String(ignoreSessionId || candidate.id || '').trim();
+  return (Array.isArray(sessions) ? sessions : []).find(session => (
+    session
+    && String(session.date || '').trim() === normalizedCandidateDate
+    && String(session.id || '').trim() !== normalizedIgnoreId
+    && isSessionConflictCandidate(session)
+    && sessionIntervalsOverlap(candidate, session)
+  )) || null;
+}
+
 export function getSessionSequenceSortKey(session = {}) {
   return `${String(session.date || '')}T${normalizeAgendaTime(session.time)}|${String(session.id || '')}`;
 }

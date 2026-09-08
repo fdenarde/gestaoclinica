@@ -4,6 +4,8 @@ import path from 'node:path';
 import { getFirestore } from 'firebase-admin/firestore';
 import { formatLocalDateStr, getWhatsappReminderPlan } from './whatsappReminderPlan.js';
 import { loadWhatsappReminderSuppressions } from './whatsappReminderSuppressionStore.js';
+import { emitFirestoreMetric } from '../../api/_lib/firestoreDiagnostics.js';
+import { getSaoPauloDateKey } from '../../shared/clinicalDate.js';
 
 export const FIRESTORE_DATABASE_ID = 'ai-studio-587970e5-0653-44a5-93a3-be1a74301eda';
 
@@ -26,9 +28,22 @@ export function initializeFirebaseAdmin({
 }
 
 export function getTargetDateForRoutine({ runDate = new Date(), tipo }) {
-  const date = new Date(runDate);
-  if (tipo === 'AMANHA') date.setDate(date.getDate() + 1);
-  return formatLocalDateStr(date);
+  const date = new Date(`${getSaoPauloDateKey(runDate)}T12:00:00Z`);
+  if (tipo === 'AMANHA') date.setUTCDate(date.getUTCDate() + 1);
+  return getSaoPauloDateKey(date);
+}
+
+function normalizeInvocationReason(value) {
+  return ['routine', 'admin-preview', 'recovery'].includes(value) ? value : 'unknown';
+}
+
+function countPlanReminders(plan) {
+  if (Array.isArray(plan)) return plan.length;
+  if (!plan || typeof plan !== 'object') return 0;
+  for (const key of ['reminders', 'messages', 'items']) {
+    if (Array.isArray(plan[key])) return plan[key].length;
+  }
+  return 0;
 }
 
 export async function buildReminderPlanContexts({
@@ -36,36 +51,78 @@ export async function buildReminderPlanContexts({
   tipo,
   now = new Date(),
   suppressions = loadWhatsappReminderSuppressions(),
+  invocationReason = 'unknown',
 } = {}) {
   const contexts = [];
   const runDateStr = formatLocalDateStr(now);
   const targetDateStr = getTargetDateForRoutine({ runDate: now, tipo });
-  const settingsConfigSnapshot = await db.collectionGroup('settings').get();
+  const safeInvocationReason = normalizeInvocationReason(invocationReason);
+  const safeRoutine = ['HOJE_MANHA', 'AMANHA', 'HOJE_TARDE'].includes(tipo) ? tipo : 'unknown';
+  const startedAt = Date.now();
+  let configSnapshotCount = 0;
+  let patientsRead = 0;
+  let sessionsRead = 0;
+  let reminders = 0;
+  let status = 'error';
+  emitFirestoreMetric({
+    source: 'whatsapp-runtime',
+    operation: 'buildReminderPlanContexts',
+    event: 'start',
+    routine: safeRoutine,
+    invocationReason: safeInvocationReason,
+  });
 
-  for (const configDoc of settingsConfigSnapshot.docs) {
-    const userId = configDoc.ref.parent.parent.id;
-    const settingsSnapshot = await db.doc(`users/${userId}/settings/config`).get();
-    const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
+  try {
+    const settingsConfigSnapshot = await db.collectionGroup('settings').get();
+    configSnapshotCount = settingsConfigSnapshot.docs.length;
 
-    const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
-    const patients = patientsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    for (const configDoc of settingsConfigSnapshot.docs) {
+      const userId = configDoc.ref.parent.parent.id;
+      const settingsSnapshot = configDoc.id === 'config'
+        ? configDoc
+        : await db.doc(`users/${userId}/settings/config`).get();
+      const settings = settingsSnapshot.exists ? settingsSnapshot.data() : {};
 
-    const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
-      .where('date', '==', targetDateStr)
-      .get();
-    const sessions = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const patientsSnapshot = await db.collection(`users/${userId}/patients`).get();
+      const patients = patientsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      patientsRead += patients.length;
 
-    const plan = getWhatsappReminderPlan({
-      runDateStr,
-      tipo,
-      patients,
-      sessions,
-      settings,
-      suppressions,
+      const sessionsSnapshot = await db.collection(`users/${userId}/sessions`)
+        .where('date', '==', targetDateStr)
+        .get();
+      const sessions = sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      sessionsRead += sessions.length;
+
+      const plan = getWhatsappReminderPlan({
+        runDateStr,
+        tipo,
+        patients,
+        sessions,
+        settings,
+        suppressions,
+        now,
+      });
+      reminders += countPlanReminders(plan);
+
+      contexts.push({ userId, settings, plan, runDateStr, targetDateStr });
+    }
+
+    status = 'success';
+    return contexts;
+  } finally {
+    emitFirestoreMetric({
+      source: 'whatsapp-runtime',
+      operation: 'buildReminderPlanContexts',
+      event: 'finish',
+      routine: safeRoutine,
+      invocationReason: safeInvocationReason,
+      configSnapshots: configSnapshotCount,
+      accounts: contexts.length,
+      patientsRead,
+      sessionsRead,
+      reminders,
+      durationMs: Date.now() - startedAt,
+      status,
     });
-
-    contexts.push({ userId, settings, plan, runDateStr, targetDateStr });
   }
-
-  return contexts;
 }

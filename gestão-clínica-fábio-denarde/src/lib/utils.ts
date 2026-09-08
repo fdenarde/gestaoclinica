@@ -3,6 +3,7 @@ import { twMerge } from 'tailwind-merge';
 import { format, addDays, parseISO, getDay } from 'date-fns';
 import { Session, Patient, ClinicSettings } from '../types';
 import { hasPersistedScheduleOccurrence, isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
+import { normalizeBrazilianWhatsappPhone } from './whatsappPhone.js';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -150,7 +151,7 @@ export function normalizeStr(s: string): string {
 
 export function isValidTime(timeStr: string): boolean {
   if (!timeStr) return false;
-  return /^([0-1]?[0-9]|2[0-3]):(00|30)$/.test(timeStr.trim());
+  return /^(?:[01]?\d|2[0-3]):[0-5]\d$/.test(timeStr.trim());
 }
 
 export function normalizeTime(timeStr: string): string {
@@ -483,11 +484,7 @@ export function getWhatsappReminderPlan({
   
   // Standard phone format helper
   const formatPhoneNumber = (phoneStr: string) => {
-    let clean = phoneStr.replace(/\D/g, '');
-    if (!clean.startsWith('55')) {
-      clean = '55' + clean;
-    }
-    return `${clean}@c.us`;
+    return normalizeBrazilianWhatsappPhone(phoneStr).chatId;
   };
   
   // Candidate sessions after shift/turn filtering

@@ -1,6 +1,7 @@
 import { findWhatsappReminderSuppression } from './whatsappReminderSuppressions.js';
 import { maskPhoneShort, normalizeBrazilianWhatsappPhone } from './whatsappPhone.js';
 import { isWhatsappAutomationBlocked } from '../../shared/whatsappSessionAutomation.js';
+import { getSaoPauloDateKey } from '../../shared/clinicalDate.js';
 
 export function formatPhoneNumber(phoneStr) {
   return normalizeBrazilianWhatsappPhone(phoneStr).chatId;
@@ -26,7 +27,7 @@ function addOneHour(timeStr) {
 }
 
 function formatDateStr(date) {
-  return date.toISOString().split('T')[0];
+  return getSaoPauloDateKey(date);
 }
 
 function sameName(a, b) {
@@ -60,7 +61,7 @@ export function getSelectedReminderContact(patient) {
 }
 
 export function formatLocalDateStr(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return getSaoPauloDateKey(date);
 }
 
 function getFixedScheduleForDate(patient, dateStr, referenceDateStr = formatLocalDateStr(new Date())) {
@@ -156,6 +157,7 @@ export function getSessionsForDate({
 
     processed.push({
       ...s,
+      time: normalizeTime(s.time),
       isVirtual: false,
       isValid: !blockedReason,
       blockedReason: blockedReason || undefined
@@ -192,7 +194,7 @@ export function getSessionsForDate({
             id: `virtual-${p.id}-${dateStr}-${time1}`,
             patientId: p.id,
             date: dateStr,
-            time: time1,
+            time: normalizeTime(time1),
             type: fixedSchedule.doubleSession ? 'Sessão dupla (2 × 50 min)' : 'Sessão simples (50 min)',
             status: 'Agendada',
             notes: '',
@@ -223,7 +225,7 @@ export function getSessionsForDate({
               id: `virtual-${p.id}-${dateStr}-${time2}`,
               patientId: p.id,
               date: dateStr,
-              time: time2,
+              time: normalizeTime(time2),
               type: 'Sessão dupla (2 × 50 min)',
               status: 'Agendada',
               notes: '',
@@ -249,7 +251,8 @@ export function getWhatsappReminderPlan({
   sessions,
   settings,
   suppressions = [],
-  referenceDateStr = formatLocalDateStr(new Date())
+  referenceDateStr = formatLocalDateStr(new Date()),
+  now = new Date(),
 }) {
   const scheduledTimeByType = {
     HOJE_MANHA: '06:30',
@@ -365,7 +368,7 @@ export function getWhatsappReminderPlan({
     const isSent = selectedMap.get(s.patientId).id === s.id;
 
     if (isSent) {
-      if (isWhatsappAutomationBlocked(s, { reminderType: tipo, phase: 'plan' })) {
+      if (isWhatsappAutomationBlocked(s, { patient, reminderType: tipo, phase: 'plan', now })) {
         diagnostics.push({
           id: s.id,
           patientId: s.patientId,
@@ -419,11 +422,12 @@ export function getWhatsappReminderPlan({
       const contact = getSelectedReminderContact(patient);
       const phone = formatPhoneNumber(patient.whatsapp);
       const greeting = tipo === 'HOJE_TARDE' ? 'Boa tarde' : 'Bom dia';
-      const timeFormatted = s.time.endsWith(':00') ? `${s.time.split(':')[0]}h` : `${s.time}h`;
+      const normalizedSessionTime = normalizeTime(s.time);
+      const timeFormatted = normalizedSessionTime.endsWith(':00') ? `${normalizedSessionTime.split(':')[0]}h` : `${normalizedSessionTime}h`;
 
       let message = '';
       if (tipo === 'AMANHA') {
-        message = `${greeting}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${s.time.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
+        message = `${greeting}! Olá, ${patient.guardianName.trim()}, tudo bem?\n\nPassando para lembrar você da sessão de *${patient.name.trim()}* amanhã, às *${normalizedSessionTime.trim()}*.\n\nAguardo sua confirmação,\nAté logo!`;
       } else {
         message = `${greeting}!\nAguardo vocês hoje às *${timeFormatted}*!\nAté logo! 🙏🏼`;
       }
@@ -440,7 +444,7 @@ export function getWhatsappReminderPlan({
         whatsapp: patient.whatsapp,
         phone,
         phoneMasked: contact.phoneMasked,
-        time: s.time,
+        time: normalizedSessionTime,
         timeFormatted,
         message,
         isVirtual: s.isVirtual,

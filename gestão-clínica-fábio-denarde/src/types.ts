@@ -174,6 +174,8 @@ export interface Patient extends PatientRegistrationData {
   activityMediaAuthorization?: ActivityMediaAuthorization;
   packageTolerances?: PackageToleranceRecord[];
   packageContracts?: PackageContractSnapshot[];
+  /** Silêncio global temporário dos lembretes para este atendente; ausente = WhatsApp ativo. */
+  whatsappAutomationControl?: WhatsappAutomationControl;
   lastExternalRegistrationUpdate?: string;
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;
@@ -263,11 +265,23 @@ export interface SessionRescheduleHistoryEntry {
 
 export type WhatsappReminderBlockType = 'AMANHA' | 'HOJE_MANHA' | 'HOJE_TARDE' | 'RETRY';
 
+export type WhatsappSilenceReasonCode =
+  | 'feriado'
+  | 'recesso'
+  | 'solicitacao_responsavel'
+  | 'ausencia_temporaria'
+  | 'ajuste_administrativo'
+  | 'outro';
+
 export interface WhatsappAutomationControl {
   version: 1;
   blockAll: boolean;
   blockedReminderTypes: WhatsappReminderBlockType[];
-  scope: 'session' | 'patient_date';
+  scope: 'session' | 'patient' | 'patient_date';
+  startsAt?: string;
+  silenceUntil?: string;
+  reasonCode?: WhatsappSilenceReasonCode;
+  reasonText?: string;
   updatedAt: string;
   updatedBy: string;
   updatedByRole: string;
@@ -309,6 +323,7 @@ export interface Session {
   fixedScheduleOriginalDate?: string; // mantém a ocorrência fixa original suprimida após mudança de data/horário
   fixedScheduleOriginalTime?: string;
   rescheduleHistory?: SessionRescheduleHistoryEntry[];
+  durationMinutes?: number;
   whatsappAutomationControl?: WhatsappAutomationControl;
 }
 

@@ -16,40 +16,88 @@ import {
   registerSendFailure,
   registerSuccessfulSend,
 } from './src/lib/whatsappAdminMonitor.js';
-import { JsonReminderLedger, createReminderDeliveryService, isGlobalActivationLocked, resolveWhatsappOperationMode, shouldInitializeWhatsappClient, WHATSAPP_OPERATION_MODES } from './src/lib/whatsappReminderOperations.js';
+import { JsonReminderLedger, buildRoutineDeliveryAccounting, createReminderDeliveryService, isGlobalActivationLocked, resolveWhatsappOperationMode, shouldInitializeWhatsappClient, WHATSAPP_OPERATION_MODES } from './src/lib/whatsappReminderOperations.js';
 import { buildReminderPlanContexts, initializeFirebaseAdmin } from './src/lib/whatsappReminderRuntime.js';
 import { loadWhatsappReminderSuppressions } from './src/lib/whatsappReminderSuppressionStore.js';
-import { saveDailyWhatsappOperationalReport } from './src/lib/whatsappOperationalReportRepository.js';
+import { isWhatsappAutomationBlocked } from './shared/whatsappSessionAutomation.js';
+import { emitFirestoreMetric } from './api/_lib/firestoreDiagnostics.js';
+import {
+  buildSanitizedTechnicalAlertSnapshot,
+  buildTechnicalAlertSnapshotHash,
+  saveDailyWhatsappOperationalReport,
+  saveDailyWhatsappTechnicalAlertSnapshot,
+} from './src/lib/whatsappOperationalReportRepository.js';
+import {
+  WHATSAPP_OPERATIONAL_STATES,
+  WHATSAPP_ROBOT_NAME,
+  WHATSAPP_ROBOT_VERSION,
+  WHATSAPP_RUNTIME_PATHS,
+  WhatsappOperationalController,
+  acquireSingleInstanceLock,
+  checkNetworkReadiness,
+  computeProgressiveBackoff,
+  getDiskHealth,
+  inspectSessionDirectory,
+  isSessionInvalidReason,
+} from './src/lib/whatsappOperationalRuntime.js';
 
 const SENDER_NAME = 'RoboClinica';
 const POLL_INTERVAL_MS = Number(process.env.WHATSAPP_SENDER_POLL_INTERVAL_MS || 15000);
 const HEARTBEAT_INTERVAL_MS = Number(process.env.WHATSAPP_HEARTBEAT_INTERVAL_MS || 5 * 60 * 1000);
+const READY_TIMEOUT_MS = Number(process.env.WHATSAPP_SENDER_READY_TIMEOUT_MS || 60 * 1000);
 const mode = resolveWhatsappOperationMode();
 const shouldInitializeWhatsapp = shouldInitializeWhatsappClient(mode);
 const ledger = new JsonReminderLedger();
 const db = initializeFirebaseAdmin();
 const suppressions = loadWhatsappReminderSuppressions();
+const operationalController = new WhatsappOperationalController();
 
 let whatsappReady = false;
 let whatsappQrBlocked = false;
 let client = null;
+let instanceLock = null;
+let recoveryTimer = null;
+let readyTimer = null;
+let recoveryInProgress = false;
+let shuttingDown = false;
 let processing = false;
 let processingAdmin = false;
+let syncingTechnicalAlerts = false;
+let lastTechnicalAlertSnapshotHash = '';
+const TECHNICAL_ALERT_SYNC_INTERVAL_MS = Number(process.env.WHATSAPP_TECHNICAL_ALERT_SYNC_INTERVAL_MS || 60 * 1000);
 
-console.log(`[${SENDER_NAME}] modo operacional: ${mode}.`);
+console.log(`[${SENDER_NAME}] ${WHATSAPP_ROBOT_NAME}; modo operacional: ${mode}.`);
 console.log(`[${SENDER_NAME}] scheduler externo obrigatório; este processo não registra cron.`);
 
+function safeLedgerCall(label, operation, fallback = null) {
+  try {
+    return operation();
+  } catch (error) {
+    console.error(`[${SENDER_NAME}] falha não fatal no ledger (${label}):`, error?.message || error);
+    return fallback;
+  }
+}
+
+function recordIncident(incident) {
+  return safeLedgerCall('append-incident', () => ledger.appendIncident(incident));
+}
+
 function recordHeartbeat(extra = {}) {
-  ledger.appendHeartbeat({
+  const runtime = operationalController.snapshot();
+  return safeLedgerCall('heartbeat', () => ledger.appendHeartbeat({
     process: SENDER_NAME,
     pid: process.pid,
     mode,
+    robotVersion: WHATSAPP_ROBOT_VERSION,
+    operationalState: runtime.operationalState,
+    operationalStateSince: runtime.updatedAt,
+    circuitBreaker: runtime.circuitBreaker,
     whatsappReady,
     qrBlocked: whatsappQrBlocked,
     schedulerRegistered: false,
     scriptPath: path.resolve('./server.js'),
     ...extra,
-  });
+  }));
 }
 
 function reconcileTechnicalIncidents(scope, incidents = []) {
@@ -76,6 +124,52 @@ function resolveSenderTechnicalAlert(scope) {
   return reconcileTechnicalIncidents(scope, []);
 }
 
+async function syncTechnicalAlertsToOperationalReport() {
+  if (syncingTechnicalAlerts) return null;
+
+  const ledgerData = safeLedgerCall('read-technical-alert-snapshot', () => ledger.read(), null);
+  if (!ledgerData) return null;
+
+  const technicalAlerts = buildSanitizedTechnicalAlertSnapshot(ledgerData, {
+    updatedAt: new Date(),
+  });
+  const snapshotHash = buildTechnicalAlertSnapshotHash(technicalAlerts);
+  if (technicalAlerts.length === 0 && !lastTechnicalAlertSnapshotHash) {
+    emitFirestoreMetric({ source: 'whatsapp-write', operation: 'technicalSnapshot', event: 'skipped', attempted: false, persisted: false, skippedSameHash: true, reason: 'empty' });
+    return null;
+  }
+  if (snapshotHash === lastTechnicalAlertSnapshotHash) {
+    emitFirestoreMetric({ source: 'whatsapp-write', operation: 'technicalSnapshot', event: 'skipped', attempted: false, persisted: false, skippedSameHash: true, reason: 'same-hash' });
+    return null;
+  }
+
+  syncingTechnicalAlerts = true;
+  try {
+    emitFirestoreMetric({ source: 'whatsapp-write', operation: 'technicalSnapshot', event: 'attempt', attempted: true, persisted: false, skippedSameHash: false });
+    const persisted = await saveDailyWhatsappTechnicalAlertSnapshot({
+      db,
+      ledgerData,
+      updatedAt: new Date(),
+    });
+    lastTechnicalAlertSnapshotHash = persisted.snapshotHash;
+    emitFirestoreMetric({ source: 'whatsapp-write', operation: 'technicalSnapshot', event: 'completed', attempted: true, persisted: true, skippedSameHash: false });
+    console.log(`[ADMIN REPORT] alertas técnicos sanitizados sincronizados em ${persisted.path}.`);
+    return persisted;
+  } catch (error) {
+    emitFirestoreMetric({ source: 'whatsapp-write', operation: 'technicalSnapshot', event: 'failed', attempted: true, persisted: false, skippedSameHash: false });
+    recordIncident({
+      type: 'technical-alert-report-persistence-error',
+      severity: 'medium',
+      process: SENDER_NAME,
+      message: error?.message || String(error),
+    });
+    console.error(`[${SENDER_NAME}] falha ao persistir alertas técnicos sanitizados:`, error?.message || error);
+    return null;
+  } finally {
+    syncingTechnicalAlerts = false;
+  }
+}
+
 function isCriticalBrowserError(error) {
   const message = error?.message || String(error || '');
   return message.includes('detached') ||
@@ -83,6 +177,37 @@ function isCriticalBrowserError(error) {
     message.includes('closed') ||
     message.includes('session') ||
     message.includes('frame');
+}
+
+function clearReadyTimer() {
+  if (!readyTimer) return;
+  clearTimeout(readyTimer);
+  readyTimer = null;
+}
+
+function armReadyTimer(targetClient, cause) {
+  clearReadyTimer();
+  readyTimer = setTimeout(() => {
+    readyTimer = null;
+    if (shuttingDown || client !== targetClient || whatsappReady) return;
+    recordIncident({
+      type: 'whatsapp-ready-timeout',
+      severity: 'critical',
+      process: SENDER_NAME,
+      message: 'Cliente autenticado não alcançou ready dentro da tolerância.',
+    });
+    queueSenderTechnicalAlert('sender-connectivity', {
+      type: 'whatsapp-connectivity-failure',
+      severity: 'critical',
+      stateCode: 'authenticated-without-ready',
+      message: 'Cliente autenticado sem confirmação ready.',
+    });
+    void destroyClientSafely(targetClient).finally(() => {
+      recoveryInProgress = false;
+      scheduleRecovery(`ready-timeout:${cause}`, null);
+    });
+  }, READY_TIMEOUT_MS);
+  readyTimer.unref();
 }
 
 function createWhatsappClient() {
@@ -96,9 +221,11 @@ function createWhatsappClient() {
   });
 
   whatsappClient.on('qr', () => {
+    if (client !== whatsappClient) return;
     whatsappReady = false;
+    clearReadyTimer();
     whatsappQrBlocked = true;
-    ledger.appendIncident({
+    recordIncident({
       type: 'qr-blocked',
       severity: 'critical',
       process: SENDER_NAME,
@@ -111,28 +238,38 @@ function createWhatsappClient() {
       message: 'A sessão do WhatsApp exige nova autenticação.',
     });
     console.error('[QR BLOQUEADO] Sessão inválida ou expirada. Nenhum QR Code será exibido.');
-    process.exit(1);
+    enterStoppedSafe('authentication-required', whatsappClient);
   });
 
   whatsappClient.on('ready', () => {
+    if (client !== whatsappClient) return;
     whatsappReady = true;
+    clearReadyTimer();
     whatsappQrBlocked = false;
+    operationalController.recordReady('whatsapp-ready');
     console.log(`[${SENDER_NAME}] WhatsApp ready recebido.`);
     resolveSenderTechnicalAlert('sender-connectivity');
     recordHeartbeat({ event: 'ready' });
+    syncTechnicalAlertsToOperationalReport();
   });
 
   whatsappClient.on('authenticated', () => {
-    whatsappReady = true;
+    if (client !== whatsappClient) return;
+    whatsappReady = false;
     whatsappQrBlocked = false;
+    operationalController.transition(WHATSAPP_OPERATIONAL_STATES.RECOVERING, 'session-authenticated');
     console.log(`[${SENDER_NAME}] sessão autenticada existente confirmada.`);
     resolveSenderTechnicalAlert('sender-connectivity');
     recordHeartbeat({ event: 'authenticated' });
+    syncTechnicalAlertsToOperationalReport();
   });
 
   whatsappClient.on('auth_failure', message => {
+    if (client !== whatsappClient) return;
     whatsappReady = false;
-    ledger.appendIncident({
+    clearReadyTimer();
+    whatsappQrBlocked = true;
+    recordIncident({
       type: 'auth-failure',
       severity: 'critical',
       process: SENDER_NAME,
@@ -145,11 +282,14 @@ function createWhatsappClient() {
       message: 'Falha de autenticação do WhatsApp.',
     });
     console.error('[AUTH FAILURE]', message);
+    enterStoppedSafe('auth-failure', whatsappClient);
   });
 
   whatsappClient.on('disconnected', reason => {
+    if (client !== whatsappClient) return;
     whatsappReady = false;
-    ledger.appendIncident({
+    clearReadyTimer();
+    recordIncident({
       type: 'whatsapp-disconnected',
       severity: 'critical',
       process: SENDER_NAME,
@@ -162,15 +302,138 @@ function createWhatsappClient() {
       message: 'Cliente WhatsApp desconectado.',
     });
     console.error('[DESCONECTADO]', reason);
-    process.exit(1);
+    if (isSessionInvalidReason(reason)) {
+      whatsappQrBlocked = true;
+      enterStoppedSafe('session-invalid-disconnected', whatsappClient);
+      return;
+    }
+    scheduleRecovery('temporary-disconnection', whatsappClient);
   });
 
   return whatsappClient;
 }
 
+async function destroyClientSafely(targetClient = client) {
+  if (!targetClient || typeof targetClient.destroy !== 'function') return;
+  try {
+    await targetClient.destroy();
+  } catch (error) {
+    console.warn(`[${SENDER_NAME}] falha não fatal ao encerrar cliente degradado:`, error?.message || error);
+  } finally {
+    if (client === targetClient) client = null;
+  }
+}
+
+function enterStoppedSafe(cause, targetClient = client) {
+  operationalController.recordFailure(cause, { retryable: false });
+  whatsappReady = false;
+  recordHeartbeat({ event: 'stopped-safe', stopCause: cause });
+  destroyClientSafely(targetClient);
+}
+
+function scheduleRecovery(cause, targetClient = client) {
+  if (shuttingDown || operationalController.state === WHATSAPP_OPERATIONAL_STATES.STOPPED_SAFE) return;
+  const current = operationalController.snapshot();
+  const snapshot = current.circuitBreaker.state === 'OPEN'
+    ? current
+    : operationalController.recordFailure(cause, { retryable: true });
+  whatsappReady = false;
+  const circuitDelay = snapshot.circuitBreaker.nextAttemptAt
+    ? Math.max(0, new Date(snapshot.circuitBreaker.nextAttemptAt).getTime() - Date.now())
+    : 0;
+  const delay = Math.max(
+    circuitDelay,
+    computeProgressiveBackoff(snapshot.circuitBreaker.consecutiveFailures, {
+      baseDelayMs: Number(process.env.WHATSAPP_RECOVERY_BASE_DELAY_MS || 5_000),
+      maxDelayMs: Number(process.env.WHATSAPP_RECOVERY_MAX_DELAY_MS || 5 * 60_000),
+    }),
+  );
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(async () => {
+    recoveryTimer = null;
+    if (recoveryInProgress || shuttingDown) return;
+    const network = await checkNetworkReadiness();
+    if (!network.ready) {
+      operationalController.recordNetworkWait(`dns-unavailable:${network.errorCode}`);
+      recordHeartbeat({ event: 'network-wait', networkReady: false });
+      scheduleRecovery('network-unavailable', targetClient);
+      return;
+    }
+    const recovery = operationalController.beginRecovery(cause);
+    if (!recovery.allowed) {
+      scheduleRecovery('circuit-cooldown', targetClient);
+      return;
+    }
+    recoveryInProgress = true;
+    try {
+      await destroyClientSafely(targetClient);
+      await initializeWhatsappClient({ cause: 'automatic-recovery', requireExistingSession: true });
+    } catch (error) {
+      recordIncident({
+        type: 'whatsapp-recovery-error',
+        severity: 'high',
+        process: SENDER_NAME,
+        message: error?.message || String(error),
+      });
+      scheduleRecovery('recovery-initialize-error');
+    } finally {
+      recoveryInProgress = false;
+    }
+  }, delay);
+  recoveryTimer.unref();
+  console.warn(`[${SENDER_NAME}] recuperação controlada agendada em ${delay}ms; causa=${cause}.`);
+}
+
+async function initializeWhatsappClient({ cause = 'startup', requireExistingSession = true } = {}) {
+  const disk = getDiskHealth(process.cwd());
+  if (!disk.canStartCriticalComponents) {
+    operationalController.stopSafe(`disk-${disk.status}`);
+    recordHeartbeat({ event: 'disk-blocked', diskStatus: disk.status });
+    return false;
+  }
+
+  const session = inspectSessionDirectory({ dataPath: WHATSAPP_RUNTIME_PATHS.session });
+  if (requireExistingSession && !session.valid) {
+    whatsappQrBlocked = true;
+    operationalController.stopSafe('session-directory-missing');
+    recordHeartbeat({ event: 'session-missing' });
+    return false;
+  }
+
+  if (!instanceLock) {
+    instanceLock = acquireSingleInstanceLock({ lockPath: WHATSAPP_RUNTIME_PATHS.processLock });
+    if (!instanceLock.acquired) {
+      operationalController.stopSafe('concurrent-client-blocked');
+      recordHeartbeat({ event: 'concurrent-client-blocked' });
+      return false;
+    }
+  }
+
+  const network = await checkNetworkReadiness();
+  if (!network.ready) {
+    operationalController.recordNetworkWait(`dns-unavailable:${network.errorCode}`);
+    recordHeartbeat({ event: 'network-wait', networkReady: false });
+    scheduleRecovery('startup-network-unavailable');
+    return false;
+  }
+
+  operationalController.transition(WHATSAPP_OPERATIONAL_STATES.RECOVERING, cause);
+  const nextClient = createWhatsappClient();
+  client = nextClient;
+  armReadyTimer(nextClient, cause);
+  try {
+    await nextClient.initialize();
+    return true;
+  } catch (error) {
+    clearReadyTimer();
+    if (client === nextClient) client = null;
+    throw error;
+  }
+}
+
 async function sendAdminReport(message, metadata = {}) {
   if (mode !== WHATSAPP_OPERATION_MODES.LIVE) {
-    ledger.appendIncident({
+    recordIncident({
       type: 'admin-report-skipped',
       severity: 'info',
       process: SENDER_NAME,
@@ -188,6 +451,37 @@ async function sendAdminReport(message, metadata = {}) {
   return { status: 'sent', phoneMasked: config.phoneMasked, phoneDigits: config.phoneDigits };
 }
 
+async function resolveSessionAutomationBlock({ accountId, reminder, routine, phase }) {
+  const sessionId = String(reminder?.id || '').trim();
+  if (!accountId || !sessionId) return { blocked: false };
+  try {
+    const snapshot = await db.doc(`users/${accountId}/sessions/${sessionId}`).get();
+    const session = snapshot.exists
+      ? { id: snapshot.id, ...(snapshot.data() || {}) }
+      : { id: sessionId, patientId: reminder?.patientId || '' };
+    const patientId = session.patientId || reminder?.patientId || '';
+    const patientSnapshot = patientId
+      ? await db.doc(`users/${accountId}/patients/${patientId}`).get()
+      : null;
+    const patient = patientSnapshot?.exists
+      ? { id: patientSnapshot.id, ...(patientSnapshot.data() || {}) }
+      : null;
+    if (!snapshot.exists && !patient) return { blocked: false };
+    const blocked = isWhatsappAutomationBlocked(session, {
+      patient,
+      reminderType: routine || reminder?.reminderType,
+      phase,
+      now: new Date(),
+    });
+    return blocked
+      ? { blocked: true, reason: 'mensagem automática bloqueada na Agenda antes do envio' }
+      : { blocked: false };
+  } catch (error) {
+    console.error(`[${SENDER_NAME}] falha ao confirmar bloqueio da sessão ${sessionId}:`, error?.message || error);
+    return { blocked: true, reason: 'envio bloqueado por falha na confirmação de segurança da sessão' };
+  }
+}
+
 async function processClaimedRoutine(routineJob) {
   const startedAt = new Date();
   const routine = routineJob.routine;
@@ -196,6 +490,8 @@ async function processClaimedRoutine(routineJob) {
   let confirmedCount = 0;
   let failedCount = 0;
   let blockedCount = 0;
+  let manualCount = 0;
+  let skippedCount = 0;
 
   ledger.upsertCheckpoint(checkpointId, {
     status: 'started',
@@ -208,8 +504,9 @@ async function processClaimedRoutine(routineJob) {
     const planContexts = await buildReminderPlanContexts({
       db,
       tipo: routine,
-      now: new Date(`${routineJob.date}T12:00:00`),
+      now: new Date(),
       suppressions,
+      invocationReason: 'routine',
     });
     audit.planContexts = planContexts;
     const previewNotificationId = `admin-preview:${routineJob.date}:${routine}`;
@@ -234,6 +531,7 @@ async function processClaimedRoutine(routineJob) {
       maxAttempts: 2,
       retryDelayMs: 15000,
       logger: console,
+      shouldBlockReminder: resolveSessionAutomationBlock,
     });
 
     for (const context of planContexts) {
@@ -259,6 +557,8 @@ async function processClaimedRoutine(routineJob) {
           failedCount += 1;
           registerSendFailure(audit, reminder || result, new Error(result.error || 'Falha no envio'));
         } else if (['manual', 'suppressed', 'expired', 'skipped'].includes(result.status)) {
+          if (result.status === 'manual') manualCount += 1;
+          else skippedCount += 1;
           registerRuntimeSkip(audit, reminder || result, result.skippedReason || result.blockedReason);
         }
       }
@@ -285,7 +585,7 @@ async function processClaimedRoutine(routineJob) {
         } catch {
           adminRecipientDigits = '';
         }
-        ledger.appendIncident({
+        recordIncident({
           type: 'admin-execution-report-error',
           severity: 'high',
           process: SENDER_NAME,
@@ -297,6 +597,7 @@ async function processClaimedRoutine(routineJob) {
 
       if (adminDeliveryStatus === 'sent' || mode === WHATSAPP_OPERATION_MODES.LIVE) {
         try {
+          emitFirestoreMetric({ source: 'whatsapp-write', operation: 'dailyOperationalReport', event: 'attempt', attempted: true, persisted: false });
           const persisted = await saveDailyWhatsappOperationalReport({
             db,
             execution: executionReport,
@@ -305,9 +606,11 @@ async function processClaimedRoutine(routineJob) {
             message: executionMessage,
             updatedAt: new Date(),
           });
+          emitFirestoreMetric({ source: 'whatsapp-write', operation: 'dailyOperationalReport', event: 'completed', attempted: true, persisted: true });
           console.log(`[ADMIN REPORT] resumo sanitizado persistido em ${persisted.path}.`);
         } catch (persistenceError) {
-          ledger.appendIncident({
+          emitFirestoreMetric({ source: 'whatsapp-write', operation: 'dailyOperationalReport', event: 'failed', attempted: true, persisted: false });
+          recordIncident({
             type: 'admin-execution-report-persistence-error',
             severity: 'high',
             process: SENDER_NAME,
@@ -321,16 +624,25 @@ async function processClaimedRoutine(routineJob) {
       console.log(`[ADMIN REPORT] rotina ${routine} sem atividade administrativa relevante; nenhum relatório enviado.`);
     }
 
-    ledger.upsertCheckpoint(checkpointId, {
-      status: failedCount > 0 ? 'completed-with-failures' : 'completed',
-      completedAt: new Date().toISOString(),
-      plannedCount,
+    const accounting = buildRoutineDeliveryAccounting({
+      expectedCount: plannedCount,
+      createdCount: plannedCount,
+      enqueuedCount: plannedCount,
       confirmedCount,
-      blockedCount,
+      manualCount,
+      skippedCount,
       failedCount,
     });
+    ledger.upsertCheckpoint(checkpointId, {
+      status: accounting.deliveryComplete ? 'completed' : 'completed-with-failures',
+      completedAt: new Date().toISOString(),
+      deliveryAccountingVersion: 1,
+      plannedCount,
+      ...accounting,
+      blockedCount,
+    });
   } catch (error) {
-    ledger.appendIncident({
+    recordIncident({
       type: 'sender-routine-error',
       severity: isCriticalBrowserError(error) ? 'critical' : 'high',
       process: SENDER_NAME,
@@ -346,13 +658,13 @@ async function processClaimedRoutine(routineJob) {
       stateCode: isCriticalBrowserError(error) ? 'critical-runtime-error' : 'runtime-error',
       message: 'Falha durante a execução da rotina de lembretes.',
     });
-    ledger.upsertCheckpoint(checkpointId, {
+    safeLedgerCall('routine-failed-checkpoint', () => ledger.upsertCheckpoint(checkpointId, {
       status: 'failed',
       completedAt: new Date().toISOString(),
       failedCount: failedCount + 1,
       error: error?.message || String(error),
-    });
-    if (isCriticalBrowserError(error)) process.exit(1);
+    }));
+    if (isCriticalBrowserError(error)) scheduleRecovery('critical-routine-browser-error');
   }
 }
 
@@ -364,8 +676,9 @@ async function processClaimedAdminNotification(notification) {
       const planContexts = await buildReminderPlanContexts({
         db,
         tipo: notification.routine,
-        now: new Date(`${notification.date}T12:00:00`),
+        now: new Date(),
         suppressions,
+        invocationReason: 'admin-preview',
       });
       previewSnapshot = buildPlanSnapshot({
         tipo: notification.routine,
@@ -398,11 +711,11 @@ async function processClaimedAdminNotification(notification) {
       previewSnapshot: result.status === 'sent' ? previewSnapshot : undefined,
     });
   } catch (error) {
-    ledger.updateAdminNotification(notification.id, {
+    safeLedgerCall('admin-notification-failed', () => ledger.updateAdminNotification(notification.id, {
       status: 'failed',
       error: error?.message || String(error),
-    });
-    ledger.appendIncident({
+    }));
+    recordIncident({
       type: 'admin-notification-error',
       severity: 'high',
       process: SENDER_NAME,
@@ -414,6 +727,7 @@ async function processClaimedAdminNotification(notification) {
 async function pollAdminNotificationQueue() {
   if (processingAdmin) return;
   if (isGlobalActivationLocked()) return;
+  ledger.expireOverdueQueuedAdminNotifications();
   if (mode === WHATSAPP_OPERATION_MODES.DISABLED) return;
   if (mode === WHATSAPP_OPERATION_MODES.LIVE && !whatsappReady) return;
   const notification = ledger.claimNextQueuedAdminNotification({ ownerId: `${SENDER_NAME}:${process.pid}` });
@@ -421,6 +735,7 @@ async function pollAdminNotificationQueue() {
   processingAdmin = true;
   try {
     await processClaimedAdminNotification(notification);
+    await syncTechnicalAlertsToOperationalReport();
   } finally {
     processingAdmin = false;
   }
@@ -447,7 +762,7 @@ async function pollRoutineQueue() {
 }
 
 process.on('unhandledRejection', reason => {
-  ledger.appendIncident({
+  recordIncident({
     type: 'unhandled-rejection',
     severity: isCriticalBrowserError(reason) ? 'critical' : 'high',
     process: SENDER_NAME,
@@ -460,13 +775,57 @@ process.on('unhandledRejection', reason => {
     message: 'Falha não tratada no processo remetente.',
   });
   console.error('[UNHANDLED REJECTION]', reason);
-  if (isCriticalBrowserError(reason)) process.exit(1);
+  if (isCriticalBrowserError(reason)) scheduleRecovery('critical-unhandled-rejection');
 });
 
-if (shouldInitializeWhatsapp) {
-  client = createWhatsappClient();
-  client.initialize().catch(error => {
-    ledger.appendIncident({
+async function startSenderRuntime() {
+  if (shouldInitializeWhatsapp) {
+    try {
+      await initializeWhatsappClient({ cause: 'startup', requireExistingSession: true });
+    } catch (error) {
+      recordIncident({
+        type: 'whatsapp-initialize-error',
+        severity: 'critical',
+        process: SENDER_NAME,
+        message: error?.message || String(error),
+      });
+      queueSenderTechnicalAlert('sender-connectivity', {
+        type: 'whatsapp-connectivity-failure',
+        severity: 'critical',
+        stateCode: 'initialize-error',
+        message: 'Falha ao inicializar a sessão do WhatsApp.',
+      });
+      console.error('[WHATSAPP INIT ERROR]', error?.message || error);
+      scheduleRecovery('initialize-error');
+    }
+  } else {
+    operationalController.transition(WHATSAPP_OPERATIONAL_STATES.STOPPED_SAFE, `mode-${mode}`);
+    console.log(`[${SENDER_NAME}] WhatsApp não inicializado em modo ${mode}.`);
+  }
+}
+
+async function shutdownSafely(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  clearReadyTimer();
+  operationalController.transition(WHATSAPP_OPERATIONAL_STATES.STOPPED_SAFE, `shutdown-${signal}`);
+  recordHeartbeat({ event: 'shutdown', signal });
+  await destroyClientSafely();
+  if (instanceLock?.acquired) instanceLock.release();
+  process.exit(0);
+}
+
+process.once('SIGINT', () => { shutdownSafely('SIGINT'); });
+process.once('SIGTERM', () => { shutdownSafely('SIGTERM'); });
+process.once('exit', () => {
+  if (instanceLock?.acquired) {
+    try { instanceLock.release(); } catch { /* limpeza de lock é best effort */ }
+  }
+});
+
+startSenderRuntime().catch(error => {
+    recordIncident({
       type: 'whatsapp-initialize-error',
       severity: 'critical',
       process: SENDER_NAME,
@@ -479,17 +838,19 @@ if (shouldInitializeWhatsapp) {
       message: 'Falha ao inicializar a sessão do WhatsApp.',
     });
     console.error('[WHATSAPP INIT ERROR]', error?.message || error);
-    process.exit(1);
+    scheduleRecovery('startup-runtime-error');
   });
-} else {
-  console.log(`[${SENDER_NAME}] WhatsApp não inicializado em modo ${mode}.`);
-}
 
 recordHeartbeat({ event: 'startup' });
 setInterval(recordHeartbeat, HEARTBEAT_INTERVAL_MS).unref();
 setInterval(() => {
+  syncTechnicalAlertsToOperationalReport().catch(error => {
+    console.error('[TECHNICAL ALERT SYNC ERROR]', error);
+  });
+}, TECHNICAL_ALERT_SYNC_INTERVAL_MS).unref();
+setInterval(() => {
   pollRoutineQueue().catch(error => {
-    ledger.appendIncident({
+    recordIncident({
       type: 'sender-poll-error',
       severity: 'high',
       process: SENDER_NAME,
@@ -504,7 +865,7 @@ setInterval(() => {
     console.error('[POLL ERROR]', error);
   });
   pollAdminNotificationQueue().catch(error => {
-    ledger.appendIncident({
+    recordIncident({
       type: 'sender-admin-poll-error',
       severity: 'high',
       process: SENDER_NAME,
