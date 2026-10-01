@@ -1,3 +1,5 @@
+import { isWhatsappReminderEnabled } from './whatsappReminderPreferences.js';
+
 export const WHATSAPP_REMINDER_TYPES = Object.freeze(['AMANHA', 'HOJE_MANHA', 'HOJE_TARDE', 'RETRY']);
 export const WHATSAPP_AUTOMATION_CONTROL_VERSION = 1;
 export const WHATSAPP_TIME_ZONE = 'America/Sao_Paulo';
@@ -173,6 +175,9 @@ export function isWhatsappAutomationBlocked(session, {
   phase = 'plan',
   now = new Date(),
 } = {}) {
+  if (session?.removedFromAgenda === true || session?.isBlocked === true) return true;
+  if (session?.status && session.status !== 'Agendada') return true;
+  if (!isWhatsappReminderEnabled(session, patient, reminderType)) return true;
   if (controlBlocksReminder(session?.whatsappAutomationControl, reminderType, phase, now)) return true;
   return controlBlocksReminder(patient?.whatsappAutomationControl, reminderType, phase, now);
 }

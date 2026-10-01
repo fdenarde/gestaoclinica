@@ -1074,6 +1074,9 @@ export async function listGooglePhotosAlbumSessionOptions(context, patientId) {
         ...(consumptionDecision === null ? {} : { consumesPackage: consumptionDecision }),
         packageConsumptionDecisionRecorded: consumptionDecision !== null,
         source: sanitizeText(session.source, 40),
+        noReplacementReasonCode: sanitizeText(session.noReplacementReasonCode, 80),
+        noReplacementReasonText: sanitizeText(session.noReplacementReasonText, 160),
+        noReplacementObservation: sanitizeText(session.noReplacementObservation, 500),
       };
     }),
     queryCount: 1,

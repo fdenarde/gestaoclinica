@@ -1,3 +1,4 @@
+import { PatientPackagesPaymentsDialog } from './Common/PatientPackagesPayments';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, Payment, Expense, PaymentModal } from '../types';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Ban, Calendar as CalendarIcon, CheckCircle2, ChevronDown, CircleDollarSign, Clock3, DollarSign, HandCoins, History, Info, Link, Minus, Plus, Search, ShieldCheck, Sparkles, TimerReset, Trash2, TrendingUp, Wallet } from 'lucide-react';
@@ -194,6 +195,8 @@ function suggestedPaymentAmount(contractValue: number, paidGross: number, instal
 }
 
 export default function Finance({ state, onUpdate, currentUserName }: FinanceProps) {
+  const [packageFlowPatient, setPackageFlowPatient] = useState<string | null>(null);
+  const [selectPaymentPatient, setSelectPaymentPatient] = useState(false);
   const [viewMode, setViewMode] = useState<'Receitas' | 'Despesas'>('Receitas');
   
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -413,48 +416,10 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
   };
 
   const openPaymentModal = (summary?: PackageFinancialSummary) => {
-    resetPaymentForm();
-    setPaymentOperationKey(createPaymentOperationKey());
-
-    if (summary) {
-      const targetPackageNumber = summary.hasNewPackageWithoutPayment && summary.pendingGross <= 0
-        ? summary.packageNumber + 1
-        : summary.packageNumber;
-      const targetPaidGross = targetPackageNumber === summary.packageNumber ? summary.paidGross : 0;
-      const targetContract = resolvePatientPackageContract(summary.patient, targetPackageNumber);
-      const requiresExplicitContract = targetPackageNeedsNewContract(summary, targetPackageNumber);
-      const targetPendingGross = targetPackageNumber === summary.packageNumber
-        ? summary.pendingGross
-        : targetContract.contractValue;
-      const isInstallmentPlan = summary.patient.paymentModal === PaymentModal.PARCELADO;
-      const firstInstallmentTarget = targetContract.contractValue / 2;
-      const suggestedInstallment = isInstallmentPlan
-        ? targetPaidGross < firstInstallmentTarget ? '1ª parcela' : '2ª parcela'
-        : 'Pagamento integral';
-      const suggestedAmount = requiresExplicitContract && targetContract.source === 'legacy_fallback'
-        ? 0
-        : suggestedPaymentAmount(targetContract.contractValue, targetPaidGross, suggestedInstallment);
-
-      setPaymentContext({
-        patientId: summary.patient.id,
-        packageNumber: targetPackageNumber,
-        pendingGross: targetPendingGross,
-        contractValue: targetContract.contractValue,
-        contractSource: targetContract.source,
-        requiresExplicitContract,
-      });
-      setPatientId(summary.patient.id);
-      setPackageContractValueInput(targetContract.source === 'explicit' ? String(targetContract.contractValue) : '');
-      setAmount(suggestedAmount);
-      setInstallment(suggestedInstallment);
-    } else {
-      setPaymentContext(null);
-      setPackageContractValueInput('');
-    }
-
-    setIsPaymentModalOpen(true);
+    if (isSavingPayment) return;
+    if (summary) setPackageFlowPatient(summary.patient.id);
+    else setSelectPaymentPatient(true);
   };
-
   const openToleranceModal = (summary: PackageFinancialSummary) => {
     const offer = getPackageToleranceOffer(summary);
     if (!offer.canOffer || !offer.targetPackageNumber) {
@@ -653,11 +618,12 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
         actor: currentUserName || 'Profissional',
         now: new Date(),
       });
-      await onUpdate({
+      const persisted = await onUpdate({
         payments: prepared.payments,
         expenses: prepared.expenses,
         patients: state.patients.map(item => item.id === selectedPatient.id ? patientAfterPayment : item),
       });
+      if (persisted !== true) throw new Error('Não foi possível confirmar a gravação do pagamento. Tente novamente.');
       showToast(`Pagamento registrado! Repasse de ${formatCurrency(amount * PARTNER_SHARE_RATE)} gerado automaticamente.`);
       closePaymentModal();
     } catch (error) {
@@ -745,6 +711,10 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
   return (
     <div className="flex flex-col gap-6 py-6">
       
+      <PatientPackagesPaymentsDialog patientId={packageFlowPatient} state={state} onUpdate={onUpdate} actor={currentUserName} action="payment" onClose={() => setPackageFlowPatient(null)} />
+      <Modal isOpen={selectPaymentPatient} onClose={() => setSelectPaymentPatient(false)} title="Registrar pagamento">
+        <label className="block text-sm font-bold">Paciente<select aria-label="Paciente do pagamento" value="" onChange={event => { setPackageFlowPatient(event.target.value); setSelectPaymentPatient(false); }} className="mt-2 w-full rounded-lg border border-clinic-border p-3"><option value="">Selecione o paciente</option>{state.patients.filter(patient => patient.status === 'Ativo').map(patient => <option key={patient.id} value={patient.id}>{patient.name}</option>)}</select></label>
+      </Modal>
       {/* Top Filter */}
       <div className="rounded-[20px] border border-clinic-border bg-clinic-surface p-5 shadow-sm">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -976,7 +946,7 @@ export default function Finance({ state, onUpdate, currentUserName }: FinancePro
               />
             </div>
             <button onClick={() => openPaymentModal()} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-clinic-primary text-white font-bold rounded-xl shadow-md hover:bg-clinic-primary-hover transition-all tracking-[0.06em] text-sm">
-              <Plus size={16} /> Nova Receita
+              <Plus size={16} /> + Registrar pagamento
             </button>
           </div>
         ) : (

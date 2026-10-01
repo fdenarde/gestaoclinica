@@ -1,3 +1,4 @@
+import PatientPackagesPayments from './Common/PatientPackagesPayments';
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { AppState, Patient, SessionStatus, PaymentModal, SessionType, Session, Reposition, Payment, Evolution, ExternalRegistrationForm } from '../types';
 import { Plus, Search, MessageCircle, FileText, Trash2, Edit3, DollarSign, Clock, Calendar, Users, CheckCircle, XCircle, RefreshCw, X, ChevronRight, AlertTriangle, Link as LinkIcon, ClipboardCopy, Images, Camera, Eye } from 'lucide-react';
@@ -799,6 +800,8 @@ export default function Patients({ state, onUpdate, selectedPatientId: propSelec
 }
 
 function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, currentUserId, currentUserName, createExternalRegistrationForm, copyExternalRegistrationLink, onNavigateToPatientGallery, initialSubTab, onInitialSubTabApplied }: { key?: string, isOpen: boolean, onClose: () => void, patient: Patient, state: AppState, onUpdate: (s: Partial<AppState>) => Promise<boolean>, currentUserId: string, currentUserName: string, createExternalRegistrationForm: (type: 'new' | 'update', linkedPatient?: Patient) => Promise<string>, copyExternalRegistrationLink: (link: string) => Promise<void>, onNavigateToPatientGallery?: (id: string) => void, initialSubTab?: string | null, onInitialSubTabApplied?: () => void }) {
+  const [savingPackageFlow, setSavingPackageFlow] = useState(false);
+  const [packageFlowInitialAction, setPackageFlowInitialAction] = useState<'payment' | undefined>(undefined);
   const [activeSubTab, setActiveSubTab] = useState(initialSubTab && initialSubTab !== 'atividades' ? initialSubTab : 'dados');
   const [isEditingData, setIsEditingData] = useState(false);
   const [isPhotoExpanded, setIsPhotoExpanded] = useState(false);
@@ -1042,6 +1045,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
 
   const requestClosePatientModal = () => {
+    if (savingPackageFlow) return;
     if (isSavingData) {
       const canceled = cancelPatientPhotoUpload(patient.id);
       showToast(
@@ -1551,32 +1555,9 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   };
 
   const handleRegisterPaymentClick = () => {
-    const currentPackageNumber = packageFinancialSummary.hasNewPackageWithoutPayment
-      && packageFinancialSummary.pendingGross <= 0
-      ? packageFinancialSummary.packageNumber + 1
-      : packageFinancialSummary.packageNumber;
-    const currentPaid = currentPackageNumber === packageFinancialSummary.packageNumber
-      ? packageFinancialSummary.paidGross
-      : 0;
-    const packageContract = resolvePatientPackageContract(patient, currentPackageNumber);
-    const requiresExplicitContract = patientTargetPackageNeedsNewContract(packageFinancialSummary, currentPackageNumber);
-    const installment = patient?.paymentModal === PaymentModal.PIX_FULL
-      ? 'Pagamento integral'
-      : currentPaid < packageContract.contractValue / 2 ? '1ª parcela' : '2ª parcela';
-    setPaymentData({
-      date: format(new Date(), 'yyyy-MM-dd'),
-      installment,
-      amount: requiresExplicitContract && packageContract.source === 'legacy_fallback'
-        ? 0
-        : patientSuggestedPaymentAmount(packageContract.contractValue, currentPaid, installment),
-      method: 'Pix',
-      packageNumber: currentPackageNumber,
-      contractValueInput: packageContract.source === 'explicit' ? String(packageContract.contractValue) : '',
-    });
-    setPaymentOperationKey(createPaymentOperationKey());
-    setPaymentModalOpen(true);
+    setPackageFlowInitialAction('payment');
+    setActiveSubTab('pacotes-pagamentos');
   };
-
   const handleEditPaymentClick = async (payment: Payment) => {
     if (!isPaymentActive(payment) || paymentWriteLockRef.current) return;
     const reason = window.prompt('Informe a justificativa para cancelar este lançamento antes de registrar a correção:');
@@ -1692,11 +1673,12 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
         actor: currentUserName || 'Profissional',
         now: new Date(),
       });
-      await onUpdate({
+      const persisted = await onUpdate({
         payments: prepared.payments,
         expenses: prepared.expenses,
         patients: state.patients.map(item => item.id === patient.id ? patientAfterPayment : item),
       });
+      if (persisted !== true) throw new Error('Não foi possível confirmar a gravação do pagamento. Tente novamente.');
       showToast('Pagamento registrado com sucesso!', 'success');
       setPaymentModalOpen(false);
       setPaymentOperationKey('');
@@ -1863,6 +1845,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
   const tabs = [
     { id: 'dados', label: 'Cadastro', fullLabel: 'Dados Cadastrais', icon: Users },
     { id: 'sessoes', label: 'Sessões', fullLabel: 'Sessões', icon: Calendar },
+    { id: 'pacotes-pagamentos', label: 'Pacotes e pagamentos', fullLabel: 'Pacotes e pagamentos', icon: DollarSign },
     { id: 'pacotes', label: 'Pacotes', fullLabel: 'Histórico de Pacotes', icon: RefreshCw },
     { id: 'financeiro', label: 'Financeiro', fullLabel: 'Financeiro', icon: DollarSign },
     { id: 'anotacoes', label: 'Anotações', fullLabel: 'Anotações Gerais', icon: Edit3 },
@@ -1890,6 +1873,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
       <Modal
         isOpen={isOpen}
         onClose={requestClosePatientModal}
+        closeDisabled={savingPackageFlow}
         title={patient.name}
         width="max-w-5xl"
       >
@@ -2106,6 +2090,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
               </label>
               <select
                 value={activeSubTab}
+                disabled={savingPackageFlow}
                 onChange={event => setActiveSubTab(event.target.value)}
                 className="w-full rounded-lg border border-clinic-border bg-clinic-bg px-3 py-2.5 text-sm font-bold text-clinic-text outline-none focus:border-clinic-primary"
               >
@@ -2121,6 +2106,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                   key={tab.id}
                   type="button"
                   title={tab.fullLabel}
+                  disabled={savingPackageFlow}
                   onClick={() => setActiveSubTab(tab.id)}
                   className={cn(
                     'flex min-w-0 flex-col items-center justify-center gap-1 px-1.5 py-2.5 text-center transition-colors',
@@ -2607,6 +2593,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
               </div>
             )}
 
+            {activeSubTab === 'pacotes-pagamentos' && <PatientPackagesPayments patient={patient} state={state} onUpdate={onUpdate} actor={currentUserName} initialAction={packageFlowInitialAction} onBusyChange={setSavingPackageFlow} />}
             {activeSubTab === 'pacotes' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-top-2">
                 <div className="flex items-center justify-between">
@@ -2717,7 +2704,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                    {patientPayments.length > 0 ? (
                      Object.entries(
                        patientPayments.reduce((acc, p) => {
-                         const pkg = p.packageNumber || getInferredPackageNumber(p.date);
+                         const pkg = p.packageLinkStatus === 'unlinked' ? 0 : p.packageNumber || getInferredPackageNumber(p.date);
                          if (!acc[pkg]) acc[pkg] = [];
                          acc[pkg].push(p);
                          return acc;
@@ -2725,7 +2712,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                      ).sort(([a], [b]) => Number(b) - Number(a)).map(([pkgNum, payments]) => (
                        <div key={pkgNum} className="space-y-3">
                          <h6 className="text-[10px] font-bold text-clinic-text-faint uppercase bg-clinic-border/30 px-3 py-1 rounded-lg inline-block tracking-wider">
-                           Pacote {pkgNum}
+                           {pkgNum === '0' ? 'Pagamentos não vinculados' : 'Pacote ' + pkgNum}
                          </h6>
                          <div className="space-y-2">
                            {payments.map(payment => (
@@ -2739,7 +2726,7 @@ function PatientDetailsModal({ isOpen, onClose, patient, state, onUpdate, curren
                                   </div>
                                </div>
                                <div className="flex items-center gap-2">
-                                  {isPaymentActive(payment) && <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Corrigir pagamento">
+                                  {isPaymentActive(payment) && payment.packageLinkStatus !== 'unlinked' && <button onClick={() => handleEditPaymentClick(payment)} className="p-1.5 text-clinic-text-muted hover:text-clinic-primary hover:bg-clinic-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Corrigir pagamento">
                                      <Edit3 size={14} />
                                   </button>}
                                   {isPaymentActive(payment) && <button onClick={() => handleDeletePaymentClick(payment.id)} className="p-1.5 text-clinic-text-muted hover:text-status-red-text hover:bg-status-red-bg rounded-lg transition-colors opacity-0 group-hover:opacity-100" title="Cancelar pagamento">

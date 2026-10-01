@@ -1,3 +1,10 @@
+import crypto from 'node:crypto';
+import { FieldPath, FieldValue } from 'firebase-admin/firestore';
+import {
+  buildPsychologyChange, capturePsychologyBaseline, validatePsychologyChange,
+  assertPsychologyBaseline, applyPsychologyChanges, psychologyField, psychologyStableJson, psychologyPersistenceError,
+} from '../../shared/psychologyConcurrency.js';
+
 const PSYCHOLOGY_CONTEXT = 'PSICOLOGIA';
 const AGGREGATES = new Set([
   'patients',
@@ -68,10 +75,17 @@ export function psychologyCollectionPath(scope, aggregate) {
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
+const fingerprint = value => crypto.createHash('sha256').update(psychologyStableJson(value)).digest('hex');
+function readRecord(value, raw = value) {
+  const record = clone(value);
+  delete record.__psychologyVersion;
+  return { ...record, __psychologyVersion: fingerprint(raw) };
+}
+
 
 function materializeDocuments(snapshot, runtimeScope) {
   return snapshot.docs
-    .map(documentSnapshot => ({ id: documentSnapshot.id, ...clone(documentSnapshot.data() || {}) }))
+    .map(documentSnapshot => readRecord({ id: documentSnapshot.id, ...clone(documentSnapshot.data() || {}) }, documentSnapshot.data()))
     .filter(item => scopeMatches(item, runtimeScope));
 }
 
@@ -205,6 +219,7 @@ export function buildPsychologyServerEntity({ runtimeScope, aggregate, entity, e
     updatedAt: entity.updatedAt || now(),
     audit: auditMetadata(runtimeScope, existing ? 'update' : 'create', aggregate, documentId, now(), requestId, operation, idempotencyKey),
   };
+  delete value.__psychologyVersion;
   if (aggregate === 'sessions' && ('content' in value || 'clinicalContent' in value)) {
     throw repositoryError('psychology/session-clinical-content', 'Session é administrativa; conteúdo clínico usa session-records.', 422);
   }
@@ -214,84 +229,111 @@ export function buildPsychologyServerEntity({ runtimeScope, aggregate, entity, e
   return value;
 }
 
-function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, operation, idempotencyKey, selectiveMethods = [] }) {
+function createGenericRepository({ db, runtimeScope, aggregate, now, requestId, operation, idempotencyKey, expectedDelete, selectiveMethods = [] }) {
   const collection = db.collection(collectionPath(runtimeScope, aggregate));
-  return {
+  const repository = {
     aggregate,
     scope: runtimeScope,
     async list() {
       const snapshot = await collection.get();
       return snapshot.docs
-        .map(documentSnapshot => ({ id: documentSnapshot.id, ...clone(documentSnapshot.data() || {}) }))
+        .map(documentSnapshot => readRecord({ id: documentSnapshot.id, ...clone(documentSnapshot.data() || {}) }, documentSnapshot.data()))
         .filter(item => scopeMatches(item, runtimeScope));
     },
     async get(id) {
       const documentId = assertId(id);
       const snapshot = await collection.doc(documentId).get();
-      const value = snapshot.exists ? { id: snapshot.id, ...clone(snapshot.data() || {}) } : null;
+      const value = snapshot.exists ? readRecord({ id: snapshot.id, ...clone(snapshot.data() || {}) }, snapshot.data()) : null;
       return value && scopeMatches(value, runtimeScope) ? value : null;
     },
-    async upsert(entity) {
+    async upsert(entity, change, project = value => value) {
       const documentId = assertId(entity?.id);
       assertEntityScope(entity, runtimeScope);
-      const existing = await collection.doc(documentId).get();
-      if (idempotencyKey && existing.exists && existing.data()?.audit?.idempotencyKey === normalize(idempotencyKey, 200)) {
-        return { id: documentId, ...clone(existing.data() || {}) };
-      }
-      const value = buildPsychologyServerEntity({ runtimeScope, aggregate, entity, existing: existing.exists ? existing.data() : undefined, now, requestId, operation, idempotencyKey });
-      await collection.doc(documentId).set(value, { merge: false });
-      return clone(value);
+      const intent = validatePsychologyChange(change || {
+        version: 1, operation: 'create', id: documentId, data: clone(entity),
+      });
+      if (intent.id !== documentId || intent.operation === 'delete') throw psychologyPersistenceError('psychology/invalid-change');
+      const reference = collection.doc(documentId);
+      return db.runTransaction(async transaction => {
+        const snapshot = await transaction.get(reference);
+        const current = snapshot.exists ? clone(snapshot.data()) : null;
+        if (current && !scopeMatches(current, runtimeScope)) throw repositoryError('psychology/scope-conflict', 'O registro não pertence ao escopo resolvido.', 422);
+        if (intent.operation === 'create') {
+          if (current) {
+            if (idempotencyKey && current.audit?.idempotencyKey === normalize(idempotencyKey, 200)
+              && !buildPsychologyChange(aggregate, documentId, entity, capturePsychologyBaseline({ ...current }, current)).changes.length) {
+              return readRecord({ id: documentId, ...current }, current);
+            }
+            throw psychologyPersistenceError('psychology/concurrent-change', 409);
+          }
+          const value = clone(buildPsychologyServerEntity({ runtimeScope, aggregate, entity, now, requestId, operation, idempotencyKey }));
+          if (Buffer.byteLength(JSON.stringify(value)) > 900 * 1024) throw psychologyPersistenceError('psychology/change-too-large');
+          transaction.create(reference, value);
+          return readRecord(value);
+        }
+        if (!current) throw psychologyPersistenceError('psychology/concurrent-change', 409);
+        assertPsychologyBaseline(project(current), intent.changes);
+        if (!intent.changes.length) return readRecord({ id: documentId, ...current }, current);
+        const fields = [];
+        const result = clone(current);
+        for (const item of intent.changes) {
+          // Persist the domain-prepared value (including existing default/clear rules).
+          const value = psychologyField(entity, item.path);
+          let parent = result;
+          for (const key of item.path.slice(0, -1)) {
+            if (!parent[key] || typeof parent[key] !== 'object' || Array.isArray(parent[key])) parent[key] = {};
+            parent = parent[key];
+          }
+          if (value.present) parent[item.path.at(-1)] = value.value;
+          else delete parent[item.path.at(-1)];
+          fields.push(new FieldPath(...item.path), value.present ? value.value : FieldValue.delete());
+        }
+        result.updatedAt = now();
+        result.audit = clone(auditMetadata(runtimeScope, 'update', aggregate, documentId, result.updatedAt, requestId, operation, idempotencyKey));
+        if (Buffer.byteLength(JSON.stringify(result)) > 900 * 1024) throw psychologyPersistenceError('psychology/change-too-large');
+        transaction.update(reference, new FieldPath('updatedAt'), result.updatedAt,
+          new FieldPath('audit'), result.audit, ...fields);
+        return readRecord({ id: documentId, ...result }, result);
+      });
     },
     async update(id, patch) {
-      const documentId = assertId(id);
-      const current = await this.get(documentId);
-      if (!current) return null;
-      for (const key of ['id', 'workspaceId', 'professionalId', 'context', 'createdAt']) {
-        if (key in (patch || {}) && patch[key] !== undefined && patch[key] !== current[key]) {
-          throw repositoryError('psychology/immutable-scope', 'O escopo e a criação são imutáveis.', 422);
-        }
-      }
-      return this.upsert({ ...current, ...clone(patch), id: current.id, createdAt: current.createdAt, updatedAt: now() });
+      const current = await repository.get(assertId(id));
+      return current ? repository.updateKnown(current, patch) : null;
     },
     async delete(id) {
-      const documentId = assertId(id);
-      const current = await this.get(documentId);
-      if (!current) return null;
-      await collection.doc(documentId).delete();
-      return { id: current.id };
+      const current = await repository.get(assertId(id));
+      return current ? repository.deleteKnown(current) : null;
     },
     async deleteKnown(current) {
       const documentId = assertId(current?.id);
       assertEntityScope(current, runtimeScope);
-      await collection.doc(documentId).delete();
-      return { id: documentId };
+      const expected = expectedDelete?.id === documentId ? expectedDelete.fingerprint : current.__psychologyVersion || fingerprint(current);
+      const reference = collection.doc(documentId);
+      return db.runTransaction(async transaction => {
+        const snapshot = await transaction.get(reference);
+        if (!snapshot.exists || fingerprint(snapshot.data()) !== expected) throw psychologyPersistenceError('psychology/concurrent-change', 409);
+        if (!scopeMatches(snapshot.data(), runtimeScope)) throw repositoryError('psychology/scope-conflict', 'O registro não pertence ao escopo resolvido.', 422);
+        transaction.delete(reference);
+        return { id: documentId };
+      });
     },
     async updateKnown(current, patch) {
-      const documentId = assertId(current?.id);
       assertEntityScope(current, runtimeScope);
-      for (const key of ['id', 'workspaceId', 'professionalId', 'context', 'createdAt']) {
+      for (const key of ['id', 'workspaceId', 'professionalId', 'tenantId', 'context', 'createdAt']) {
         if (key in (patch || {}) && patch[key] !== undefined && patch[key] !== current[key]) {
           throw repositoryError('psychology/immutable-scope', 'O escopo e a criação são imutáveis.', 422);
         }
       }
-      const value = buildPsychologyServerEntity({
-        runtimeScope,
-        aggregate,
-        entity: { ...current, ...clone(patch), id: current.id, createdAt: current.createdAt, updatedAt: now() },
-        existing: current,
-        now,
-        requestId,
-        operation,
-        idempotencyKey,
-      });
-      await collection.doc(documentId).set(value, { merge: false });
-      return clone(value);
+      const baseline = capturePsychologyBaseline({ ...current }, current);
+      const intent = buildPsychologyChange(aggregate, assertId(current.id), patch, baseline, true);
+      return repository.upsert(applyPsychologyChanges(current, intent.changes), intent);
     },
     ...createSelectiveMethods({ collection, runtimeScope, methods: selectiveMethods }),
   };
+  return repository;
 }
 
-export function createPsychologyServerRepository({ db, runtimeScope, now = () => new Date().toISOString(), requestId, operation, idempotencyKey }) {
+export function createPsychologyServerRepository({ db, runtimeScope, now = () => new Date().toISOString(), requestId, operation, idempotencyKey, expectedDelete }) {
   assertScope(runtimeScope);
   const selectiveMethodsByAggregate = {
     sessions: ['listByPatientId'],
@@ -310,6 +352,7 @@ export function createPsychologyServerRepository({ db, runtimeScope, now = () =>
     requestId,
     operation,
     idempotencyKey,
+    expectedDelete: expectedDelete?.aggregate === aggregate ? expectedDelete : undefined,
     selectiveMethods: selectiveMethodsByAggregate[aggregate] || [],
   })]));
   const documents = repositories.documents;

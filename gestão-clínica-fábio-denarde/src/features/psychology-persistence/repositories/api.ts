@@ -1,3 +1,7 @@
+import {
+  buildPsychologyChange, buildPsychologyDelete, capturePsychologyBaseline,
+  copyPsychologyBaseline,
+} from '../../../../shared/psychologyConcurrency.js';
 import { auth } from '../../../firebase';
 import type { PsychologyPersistenceScope } from '../scope';
 import type {
@@ -30,12 +34,14 @@ export interface ApiPsychologyRepositoryOptions {
 export class ApiPsychologyError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly persistenceStatus: string;
 
   constructor(code: string, message: string, status = 500) {
     super(message);
     this.name = 'ApiPsychologyError';
     this.code = code;
     this.status = status;
+    this.persistenceStatus = status === 409 ? 'CONFLICT' : status === 422 ? 'VALIDATION_FAILED' : 'PERSISTENCE_FAILED';
   }
 }
 
@@ -117,8 +123,12 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
   const baseUrl = (options.baseUrl || '/api/psychology').replace(/\/$/, '');
   const fetchImpl = options.fetchImpl || globalThis.fetch.bind(globalThis);
   const getToken = options.getToken || defaultToken;
+  let persistenceProtocolReady = false;
 
   async function request<T>(path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, idempotencyKey?: string): Promise<T> {
+    if (method !== 'GET' && !persistenceProtocolReady) {
+      throw new ApiPsychologyError('psychology/persistence-protocol-required', 'A API da Psicologia precisa ser atualizada antes de salvar. O rascunho foi preservado.', 503);
+    }
     const token = await getToken();
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
@@ -131,6 +141,11 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
       ...(method === 'GET' ? { cache: 'no-store' } : {}),
     });
     const payload = await readApiResponse<T>(response);
+    if (method === 'GET') persistenceProtocolReady = response.headers.get('X-Psychology-Persistence-Version') === '1';
+    else if (response.headers.get('X-Psychology-Persistence-Version') !== '1'
+      || (payload as { persistenceStatus?: string }).persistenceStatus !== 'SUCCESS') {
+      throw new ApiPsychologyError('psychology/persistence-unconfirmed', 'A API não confirmou a persistência. O rascunho foi preservado.', 503);
+    }
     adoptResponseScope(scope, payload);
     return payload;
   }
@@ -142,6 +157,17 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
       : aggregate === 'personalAppointments'
         ? 'personal-appointments'
         : aggregate;
+    const snapshots = new Map<string, RecordType>();
+    const remember = (wire: RecordType): RecordType => {
+      const record = capturePsychologyBaseline(withScope(clone(wire), scope) as RecordType, wire);
+      snapshots.set(record.id, record);
+      return record;
+    };
+    const saveResponse = (result: { patient?: RecordType; session?: RecordType; settings?: RecordType; item?: RecordType }): RecordType => {
+      const value = result.patient || result.session || result.settings || result.item;
+      if (!value) throw new ApiPsychologyError('psychology/invalid-response', 'A API não retornou o registro salvo.', 500);
+      return remember(value);
+    };
     const assertRequestedScope = (requestedScope: PsychologyPersistenceScope): void => {
       if (requestedScope.workspaceId !== scope.workspaceId || requestedScope.professionalId !== scope.professionalId || requestedScope.context !== scope.context) {
         throw new ApiPsychologyError('psychology/scope-conflict', 'O escopo da requisição não corresponde ao provider.', 422);
@@ -154,51 +180,56 @@ export function createApiPsychologyRepositories(options: ApiPsychologyRepository
         assertRequestedScope(requestedScope);
         if (aggregate === 'settings') {
           const result = await request<{ settings?: RecordType }>(`/${apiResource}`, 'GET');
-          return result.settings ? [withScope(clone(result.settings), scope) as RecordType] : [];
+          return result.settings ? [remember(result.settings)] : [];
         }
         const result = await request<{ items?: RecordType[] }>(`/${apiResource}`, 'GET');
-        return (result.items || []).map(item => withScope(clone(item), scope) as RecordType);
+        return (result.items || []).map(remember);
       },
       async get(requestedScope, id) {
         assertRequestedScope(requestedScope);
         if (aggregate === 'settings') {
           const result = await request<{ settings?: RecordType }>(`/${apiResource}`, 'GET');
-          return result.settings ? withScope(clone(result.settings), scope) as RecordType : null;
+          return result.settings ? remember(result.settings) : null;
         }
         const result = await request<{ items?: RecordType[] }>(`/${apiResource}/${encodeURIComponent(id)}`, 'GET');
-        return result.items?.[0] ? withScope(clone(result.items[0]), scope) as RecordType : null;
+        return result.items?.[0] ? remember(result.items[0]) : null;
       },
       async upsert(requestedScope, entity) {
         assertRequestedScope(requestedScope);
-        const method = aggregate === 'settings' ? 'PUT' : 'POST';
-        const requestBody = aggregate === 'settings'
-          ? { settings: (entity as unknown as { settings?: unknown }).settings || {} }
-          : withScope(entity, scope);
-        const idempotencyKey = `${aggregate}:${entity.id}:${entity.updatedAt}`;
-        const result = await request<{ patient?: RecordType; session?: RecordType; settings?: RecordType; item?: RecordType }>(`/${apiResource}`, method, requestBody, idempotencyKey);
-        const value = result.patient || result.session || result.settings || result.item;
-        if (!value) throw new ApiPsychologyError('psychology/invalid-response', 'A API não retornou o registro salvo.', 500);
-        return withScope(clone(value), scope) as RecordType;
+        const change = buildPsychologyChange(aggregate, entity.id, entity, snapshots.get(entity.id));
+        const method = aggregate === 'settings' ? 'PUT' : change.operation === 'create' ? 'POST' : 'PATCH';
+        const path = change.operation === 'create' || aggregate === 'settings' ? `/${apiResource}` : `/${apiResource}/${encodeURIComponent(entity.id)}`;
+        const result = await request<{ patient?: RecordType; session?: RecordType; settings?: RecordType; item?: RecordType }>(path, method,
+          { persistence: change }, `${aggregate}:${entity.id}:${entity.updatedAt}`);
+        return saveResponse(result);
       },
       async update(requestedScope, id, patch) {
         assertRequestedScope(requestedScope);
-        if (aggregate === 'settings') {
-          const result = await request<{ settings?: RecordType }>('/settings', 'PUT', patch);
-          return result.settings ? withScope(clone(result.settings), scope) as RecordType : null;
-        }
-        const result = await request<{ patient?: RecordType; session?: RecordType; item?: RecordType }>(`/${apiResource}/${encodeURIComponent(id)}`, 'PATCH', patch);
-        const value = result.patient || result.session || result.item;
-        return value ? withScope(clone(value), scope) as RecordType : null;
+        const baseline = snapshots.get(id);
+        const candidate = aggregate === 'settings'
+          ? copyPsychologyBaseline({ settings: patch }, patch)
+          : patch;
+        const change = buildPsychologyChange(aggregate, id, candidate, baseline, true);
+        const result = await request<{ patient?: RecordType; session?: RecordType; settings?: RecordType; item?: RecordType }>(
+          aggregate === 'settings' ? '/settings' : `/${apiResource}/${encodeURIComponent(id)}`,
+          aggregate === 'settings' ? 'PUT' : 'PATCH', { persistence: change },
+        );
+        return saveResponse(result);
       },
       async delete(requestedScope, id) {
         assertRequestedScope(requestedScope);
-        const result = await request<{ deleted?: boolean; id?: string }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE');
+        const change = buildPsychologyDelete(id, snapshots.get(id));
+        const result = await request<{ deleted?: boolean; id?: string }>(`/${apiResource}/${encodeURIComponent(id)}`, 'DELETE', { persistence: change });
+        if (result.deleted) snapshots.delete(id);
         return result.deleted ? { id: result.id || id } : null;
       },
       ...(aggregate === 'patients' ? {
         deleteSafely: async (requestedScope: PsychologyPersistenceScope, id: string): Promise<PsychologyPatientDeletionResult> => {
           assertRequestedScope(requestedScope);
-          return request<PsychologyPatientDeletionResult>(`/patients/${encodeURIComponent(id)}`, 'DELETE');
+          const change = buildPsychologyDelete(id, snapshots.get(id));
+          const result = await request<PsychologyPatientDeletionResult>(`/patients/${encodeURIComponent(id)}`, 'DELETE', { persistence: change });
+          if (result.deleted) snapshots.delete(id);
+          return result;
         },
       } : {}),
     };

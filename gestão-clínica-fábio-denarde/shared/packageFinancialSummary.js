@@ -94,7 +94,9 @@ export function calculateCanonicalPackageFinancialSummary({
     && consumedSessionTotal % CLINIC_SESSIONS_PER_PACKAGE === 0
     ? naturalCurrentPackageNumber + 1
     : naturalCurrentPackageNumber;
-  const packageNumber = Math.max(1, paidActivatedPackageNumber, toleranceDisplayPackageNumber);
+  const registeredPackageNumber = (patient.packageRecords || []).filter(record => record.startDate <= throughDate)
+    .reduce((highest, record) => Math.max(highest, Number(record.packageNumber) || 0), 0);
+  const packageNumber = Math.max(1, paidActivatedPackageNumber, toleranceDisplayPackageNumber, registeredPackageNumber);
   const previousPackageNumber = packageNumber > 1 ? packageNumber - 1 : null;
   const startIndex = (packageNumber - 1) * CLINIC_SESSIONS_PER_PACKAGE;
   const currentPackageSessions = completedSessions.slice(
@@ -124,7 +126,7 @@ export function calculateCanonicalPackageFinancialSummary({
     packageValueResolver,
   });
   const packageHasStarted = currentPackageSessions.length > 0;
-  const pendingGross = packageHasStarted || paidGross > 0 || packageTolerance.record
+  const pendingGross = packageHasStarted || paidGross > 0 || packageTolerance.record || registeredPackageNumber === packageNumber
     ? current.pendingAmount
     : 0;
   const dueSessionIndex = String(patient.paymentModal || '').includes('Parcelado') ? 4 : 0;
@@ -145,7 +147,7 @@ export function calculateCanonicalPackageFinancialSummary({
   const lastPayment = current.payments.length > 0
     ? current.payments[current.payments.length - 1]
     : null;
-  const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0 || Boolean(packageTolerance.record);
+  const hasCurrentPackage = packageHasStarted || paidGross > 0 || pendingGross > 0 || Boolean(packageTolerance.record) || registeredPackageNumber === packageNumber;
   const packageContract = resolveContract(packageNumber);
   const contractValue = current.packageValue;
 

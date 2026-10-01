@@ -8,6 +8,7 @@ import {
   MAX_ACTIVITY_VIDEO_CHUNK_BYTES,
 } from '../../shared/activityMediaLimits.js';
 import { isActivityMediaFileReadError, sanitizeActivityMediaErrorMessage } from './activityMediaQueue.js';
+import { isReadOnlyActivityPostAction, runReadOnlyActivityPost } from './activityReadRequest';
 
 export const ACTIVITY_UPLOAD_TIMEOUT_MS = 45_000;
 const VIDEO_CHUNK_REQUEST_TIMEOUT_MS = 90_000;
@@ -958,14 +959,21 @@ export function cancelActiveActivityUpload(): boolean {
 }
 
 async function post<T>(body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-  try {
+  const execute = async (requestSignal?: AbortSignal): Promise<T> => {
     const response = await fetch(API_ENDPOINT, {
       method: 'POST',
       headers: { Authorization: `Bearer ${await getToken()}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal,
+      signal: requestSignal || signal,
     });
     return readResponse<T>(response);
+  };
+
+  try {
+    if (isReadOnlyActivityPostAction(body.action)) {
+      return await runReadOnlyActivityPost(body.action, readSignal => execute(readSignal));
+    }
+    return await execute();
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw error;
     if ((error as { code?: string } | null)?.code) throw error;
@@ -1028,13 +1036,26 @@ export async function listActivityMediaPresence(
   sessions: Array<{ sessionId?: string; id?: string; patientId: string }>,
   options: { force?: boolean } = {},
 ): Promise<ActivityMediaPresenceResult> {
+  const incompletePresence = () => Object.assign(
+    new Error('A consulta de presença de mídia retornou dados incompletos. Tente novamente.'),
+    { code: 'activity-records/incomplete-presence' },
+  );
   const normalizedSessions = (Array.isArray(sessions) ? sessions : [])
     .map(item => ({
       sessionId: String(item.sessionId || item.id || '').trim(),
       patientId: String(item.patientId || '').trim(),
     }))
     .filter(item => item.sessionId && item.patientId);
+  if (!Array.isArray(sessions) || normalizedSessions.length !== sessions.length || normalizedSessions.length > 2000) {
+    throw incompletePresence();
+  }
   if (normalizedSessions.length === 0) return { sessionIds: [], statusRecords: [] };
+  const requestedBySessionId = new Map<string, string>();
+  for (const session of normalizedSessions) {
+    const previousPatientId = requestedBySessionId.get(session.sessionId);
+    if (previousPatientId && previousPatientId !== session.patientId) throw incompletePresence();
+    requestedBySessionId.set(session.sessionId, session.patientId);
+  }
 
   const scope = currentActivityUserScope();
   const signature = activityMediaPresenceSignature(normalizedSessions);
@@ -1055,12 +1076,18 @@ export async function listActivityMediaPresence(
     return activityMediaPresenceInFlight.request;
   }
 
-  const request = post<{ sessionIds: string[]; statusRecords?: ActivityGalleryStatusRecord[] }>({
+  const request = post<{ sessionIds?: string[]; statusRecords?: ActivityGalleryStatusRecord[]; documentsRead?: number }>({
     action: 'listActivityMediaPresence',
     sessions: normalizedSessions,
   }).then(result => {
-    const sessionIds = [...new Set(Array.isArray(result.sessionIds) ? result.sessionIds.map(String) : [])].sort();
-    const statusRecords = Array.isArray(result.statusRecords) ? result.statusRecords : [];
+    if (!result || !Array.isArray(result.sessionIds) || !Array.isArray(result.statusRecords)
+      || result.documentsRead !== requestedBySessionId.size) throw incompletePresence();
+    if (result.statusRecords.some(record => (
+      !record || requestedBySessionId.get(String(record.sessionId)) !== String(record.patientId)
+    ))) throw incompletePresence();
+    const sessionIds = [...new Set(result.sessionIds.map(String))].sort();
+    if (sessionIds.some(sessionId => !requestedBySessionId.has(sessionId))) throw incompletePresence();
+    const statusRecords = result.statusRecords;
     const presence = { sessionIds, statusRecords };
     activityMediaPresenceCache = {
       scope,

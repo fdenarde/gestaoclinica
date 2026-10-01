@@ -1,228 +1,160 @@
-import { sessionAllowsActivity } from './sessionScheduling.js';
+import { sessionAllowsActivity, sessionConsumesPackage } from './sessionScheduling.js';
 import { normalizeGooglePhotosAlbumUrl } from './googlePhotosAlbums.js';
+import { isExplicitSessionAbsence } from './neuroFlowState.js';
+import { NO_REPLACEMENT_REASON_OPTIONS, mapLegacyActivityReasonToCanonical } from './noReplacementReasons.js';
+import { ACTIVITY_NO_MEDIA_REASON_OPTIONS, normalizeActivityJustificationReason } from './activityGalleryStatus.js';
 
-function normalizeId(value) {
-  return String(value || '').trim();
+const text = value => String(value || '').trim();
+const orderKey = session => `${text(session.date)}T${text(session.time)}|${text(session.id)}`;
+const ids = card => [...new Set((card?.sessionIds?.length ? card.sessionIds : [card?.sessionId]).map(text).filter(Boolean))];
+
+export function formatActivitySummaryDate(value) {
+  const match = text(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : text(value);
 }
 
-function normalizePackageNumber(value) {
-  const number = Math.floor(Number(value) || 0);
-  return number >= 1 && number <= 10 ? number : 0;
-}
-
-function albumBelongsToPackage(album, packageNumber) {
-  const normalizedPackageNumber = normalizePackageNumber(packageNumber);
-  if (!normalizedPackageNumber) return true;
-  const albumPackageNumber = normalizePackageNumber(album?.packageNumber);
-  return !albumPackageNumber || albumPackageNumber === normalizedPackageNumber;
-}
-
-function patientSessions(sessions, patientId) {
-  const normalizedPatientId = normalizeId(patientId);
+function scopedSessions({ sessions = [], patientId = '', packageNumber = 0 }) {
   const seen = new Set();
-  return (Array.isArray(sessions) ? sessions : []).filter(session => {
-    const id = normalizeId(session?.id);
-    if (!id || seen.has(id) || normalizeId(session?.patientId) !== normalizedPatientId) return false;
+  return sessions.filter(session => {
+    const id = text(session.id);
+    if (!id || seen.has(id) || text(session.patientId) !== text(patientId)) return false;
+    if (packageNumber && session.activityPackageNumber && Number(session.activityPackageNumber) !== Number(packageNumber)) return false;
     seen.add(id);
     return true;
-  });
+  }).slice().sort((a, b) => orderKey(a).localeCompare(orderKey(b)));
 }
 
-function albumSessionIds(album) {
-  const ids = Array.isArray(album?.sessionIds) && album.sessionIds.length > 0
-    ? album.sessionIds
-    : [album?.sessionId];
-  return [...new Set(ids.map(normalizeId).filter(Boolean))];
+function sessionNumber(session, source) {
+  return Number(session.activitySessionNumber || session.logicalSessionNumber || session.sessionNumber || session.packageNumber)
+    || source.findIndex(item => item.id === session.id) + 1;
 }
 
-function formatSummaryDate(value) {
-  const match = normalizeId(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return match ? `${match[3]}/${match[2]}/${match[1]}` : normalizeId(value);
-}
-
-function sessionOrderKey(session) {
-  return `${normalizeId(session?.date)}T${normalizeId(session?.time)}|${normalizeId(session?.id)}`;
-}
-
-function packageSessionNumber(sessions, session) {
-  const localCandidates = [
-    session?.activitySessionNumber,
-    session?.logicalSessionNumber,
-    session?.sessionNumber,
-    session?.packageNumber,
-  ];
-  for (const candidate of localCandidates) {
-    const normalized = Math.floor(Number(candidate) || 0);
-    if (normalized >= 1 && normalized <= 10) return normalized;
-  }
-
-  const ordered = patientSessions(sessions, session?.patientId)
-    .slice()
-    .sort((left, right) => sessionOrderKey(left).localeCompare(sessionOrderKey(right)));
-  const index = ordered.findIndex(item => normalizeId(item?.id) === normalizeId(session?.id));
-  return index >= 0 && index < 10 ? index + 1 : 0;
-}
-
-function joinPortuguese(values) {
-  if (values.length <= 1) return values[0] || '';
-  if (values.length === 2) return `${values[0]} e ${values[1]}`;
-  return `${values.slice(0, -1).join(', ')} e ${values.at(-1)}`;
-}
-
-function formatSummarySessionLabel(numbers) {
-  const normalizedNumbers = [...new Set(numbers
-    .map(value => normalizePackageNumber(value))
-    .filter(Boolean))].sort((left, right) => right - left);
-  if (normalizedNumbers.length === 0) return 'Sessão';
-  if (normalizedNumbers.length === 1) return `Sessão ${normalizedNumbers[0]}`;
-  return `Sessões ${joinPortuguese(normalizedNumbers)}`;
-}
-
-function sessionDateTime(session) {
-  return {
-    date: normalizeId(session?.date),
-    time: normalizeId(session?.time),
-  };
-}
-
-export function isAccumulatedActivitySummarySourceComplete({
-  patientId = '',
-  sessions = [],
-  albums = [],
-  throughSessionId = '',
-  packageNumber = 0,
-} = {}) {
-  const normalizedPatientId = normalizeId(patientId);
-  const source = patientSessions(sessions, normalizedPatientId);
-  const sessionById = new Map(source.map(session => [normalizeId(session.id), session]));
-  const throughSession = sessionById.get(normalizeId(throughSessionId));
-  const throughPosition = throughSession ? packageSessionNumber(source, throughSession) : 0;
-  if (!normalizedPatientId || !throughSession || throughPosition <= 0) return false;
-
-  const coveredSessionIds = new Set();
-  for (const album of Array.isArray(albums) ? albums : []) {
-    if (
-      !album
-      || normalizeId(album.patientId) !== normalizedPatientId
-      || !albumBelongsToPackage(album, packageNumber)
-    ) continue;
-    albumSessionIds(album).forEach(sessionId => coveredSessionIds.add(sessionId));
-  }
-
-  return source.every(session => {
-    const position = packageSessionNumber(source, session);
-    if (
-      position <= 0
-      || position > throughPosition
-      || !sessionAllowsActivity(session)
-    ) return true;
-    return coveredSessionIds.has(normalizeId(session.id));
-  });
-}
-
-/**
- * @param {{card?: object, sessions?: object[]}} options
- */
+/** @param {{card?: object, sessions?: object[]}} options */
 export function getAccumulatedActivitySummaryLimitSessionId({ card, sessions = [] } = {}) {
-  const source = Array.isArray(sessions) ? sessions : [];
-  const sessionById = new Map(source.map(session => [normalizeId(session?.id), session]));
-  const candidates = albumSessionIds(card)
-    .map(id => sessionById.get(id))
-    .filter(Boolean)
-    .sort((left, right) => packageSessionNumber(source, left) - packageSessionNumber(source, right));
-  return normalizeId(candidates.at(-1)?.id || card?.sessionId || card?.sessionIds?.[0]) || null;
+  return sessions.filter(session => ids(card).includes(text(session.id)))
+    .sort((a, b) => orderKey(a).localeCompare(orderKey(b))).at(-1)?.id || null;
 }
 
-export function buildAccumulatedActivitySummary({
-  patientId = '',
-  patientName = '',
-  sessions = [],
-  albums = [],
-  throughSessionId = '',
-  packageNumber = 0,
-} = {}) {
-  const normalizedPatientId = normalizeId(patientId);
-  const source = patientSessions(sessions, normalizedPatientId);
-  const sessionById = new Map(source.map(session => [normalizeId(session.id), session]));
-  const throughSession = sessionById.get(normalizeId(throughSessionId));
-  const throughPosition = throughSession ? packageSessionNumber(source, throughSession) : 0;
-  if (!normalizedPatientId || !throughSession || throughPosition <= 0) return '';
+function activitySummaryReasonOptions(kind) {
+  return kind === 'absence' ? NO_REPLACEMENT_REASON_OPTIONS : ACTIVITY_NO_MEDIA_REASON_OPTIONS;
+}
 
-  const entries = [];
-  const seenActivityIds = new Set();
-  for (const album of Array.isArray(albums) ? albums : []) {
-    if (
-      !album
-      || normalizeId(album.patientId) !== normalizedPatientId
-      || normalizeId(album.status) === 'removed'
-      || !albumBelongsToPackage(album, packageNumber)
-    ) continue;
+/** Shared display/summary resolver. Card visibility applies to card content only,
+ * not to the independent canonical absence or active structured justification. */
+export function resolveActivitySessionDisclosure({ session = {}, cards = [], statusRecord = null } = {}) {
+  const canonicalAbsence = isExplicitSessionAbsence(session);
+  const kind = canonicalAbsence ? 'absence' : 'media';
+  const activeJustification = statusRecord?.justification?.active ? statusRecord.justification : null;
+  const noMediaStructuredReason = activeJustification ? normalizeActivityJustificationReason(activeJustification.reason) : '';
+  const canonicalOption = NO_REPLACEMENT_REASON_OPTIONS.find(option => option.code === text(session.noReplacementReasonCode))
+    || NO_REPLACEMENT_REASON_OPTIONS.find(option => option.label === text(session.noReplacementReasonText));
+  // Reuse the existing legacy mapping only after independent absence authority.
+  const structuredReasonCode = canonicalAbsence ? canonicalOption?.code
+    || (noMediaStructuredReason ? mapLegacyActivityReasonToCanonical(noMediaStructuredReason) : '') : noMediaStructuredReason;
+  const structuredReasonText = (canonicalAbsence ? text(session.noReplacementReasonText) : '')
+    || activitySummaryReasonOptions(kind).find(option => option.code === structuredReasonCode)?.label || '';
+  const sharedCards = cards.filter(card => card.visibleToGuardian === true && card.status !== 'hidden' && card.status !== 'removed');
+  const url = canonicalAbsence ? '' : sharedCards.map(card => normalizeGooglePhotosAlbumUrl(card.url)).find(Boolean) || '';
+  const shareableObservation = (canonicalAbsence ? text(session.noReplacementObservation) : '')
+    || text(activeJustification?.note) || text(sharedCards.find(card => text(card.observation))?.observation);
+  const teamOnlyObservation = [...new Set(cards.filter(card => card.status !== 'removed'
+    && (card.visibleToGuardian !== true || card.status === 'hidden')).map(card => text(card.observation)).filter(Boolean))].join('\n');
+  const result = { kind, canonicalAbsence, url, hasValidMediaLink: Boolean(url), structuredReasonCode,
+    structuredReasonText, shareableObservation, teamOnlyObservation, noMediaStructuredReason };
+  const pendingReason = url || shareableObservation || (canonicalAbsence && structuredReasonText)
+    ? '' : 'Informe o motivo / observação compartilhável.';
+  return { ...result, pendingReason };
+}
 
-    const url = normalizeGooglePhotosAlbumUrl(album.url);
-    if (!url) continue;
+function draftValue(entry, draft, field) {
+  return Object.hasOwn(draft, field) ? text(draft[field]) : text(entry[field]);
+}
 
-    const activityId = normalizeId(album.id || album.sessionGroupKey);
-    if (!activityId || seenActivityIds.has(activityId)) continue;
+function formatSummaryAbsenceExplanation(value) {
+  // Presentation only: the persisted note, status and classification remain untouched.
+  return text(value).replace(/^Sem mídia\s*(?:[—:-]\s*)?/iu, '')
+    .replace(/^Ausência registrada(?: nesta data)?\.?\s*(?:[—:-]\s*)?/iu, '')
+    .replace(/^Falta\s*[—:-]\s*/iu, '')
+    .replace(/\bFalta\b/giu, 'Ausência');
+}
 
-    const linkedSessions = albumSessionIds(album)
-      .map(sessionId => sessionById.get(sessionId))
-      .filter(session => session && sessionAllowsActivity(session))
-      .map(session => ({
-        session,
-        position: packageSessionNumber(source, session),
-        ...sessionDateTime(session),
-      }))
-      .filter(entry => entry.position > 0 && entry.position <= throughPosition)
-      .sort((left, right) => (
-        right.position - left.position
-        || sessionOrderKey(right.session).localeCompare(sessionOrderKey(left.session))
-      ));
+export function validateActivitySummaryDraft(entry, draft = {}) {
+  if (entry.blocked) return entry.problem;
+  if (!entry.url && !draftValue(entry, draft, 'note') && !(entry.kind === 'absence' && entry.structuredReasonText))
+    return 'Informe o motivo / observação compartilhável.';
+  return '';
+}
 
-    if (linkedSessions.length === 0) continue;
-
-    const fallbackDate = normalizeId(album.activityDate);
-    const fallbackTime = normalizeId(album.sessionTime);
-    linkedSessions.forEach(entry => {
-      entry.date = entry.date || fallbackDate;
-      entry.time = entry.time || fallbackTime;
-    });
-
-    entries.push({
-      position: linkedSessions[0].position,
-      sessionNumbers: linkedSessions.map(entry => entry.position),
-      sessions: linkedSessions,
-      url,
-      id: activityId,
-    });
-    seenActivityIds.add(activityId);
-  }
-
-  entries.sort((left, right) => (
-    right.position - left.position
-      || `${right.sessions[0]?.date || ''}T${right.sessions[0]?.time || ''}|${right.id}`
-        .localeCompare(`${left.sessions[0]?.date || ''}T${left.sessions[0]?.time || ''}|${left.id}`)
-  ));
-
-  if (entries.length === 0) return '';
-  const headerName = normalizeId(patientName);
-  const blocks = entries.map(entry => {
-    const dates = [...new Set(entry.sessions.map(item => item.date).filter(Boolean))];
-    const title = formatSummarySessionLabel(entry.sessionNumbers);
-    let temporalLines;
-
-    if (dates.length <= 1) {
-      const date = dates[0] || '';
-      const times = joinPortuguese([...new Set(entry.sessions
-        .map(item => item.time)
-        .filter(Boolean))].sort());
-      temporalLines = `${formatSummaryDate(date)}${times ? ` às ${times}` : ''}`.trim();
-    } else {
-      temporalLines = entry.sessions
-        .map(item => `Sessão ${item.position} — ${formatSummaryDate(item.date)}${item.time ? ` às ${item.time}` : ''}`)
-        .join('\n');
-    }
-
-    return [`*${title}*`, temporalLines, entry.url].join('\n');
+/** The caller supplies the loaded, authoritative package timeline, never a filtered card list. */
+export function buildActivitySummaryPlan({ patientId = '', patientName = '', sessions = [], albums = [], statusBySession = {}, throughSessionId = '', packageNumber = 0, writableAbsenceSessionIds = null } = {}) {
+  const allSessions = scopedSessions({ patientId, sessions, packageNumber });
+  const through = allSessions.find(session => text(session.id) === text(throughSessionId));
+  const source = allSessions.filter(session => sessionConsumesPackage(session));
+  if (!text(patientId) || !through) return { sourceComplete: false, entries: [], pending: [], summary: '' };
+  const entries = source.filter(session => orderKey(session) <= orderKey(through)
+    && (sessionAllowsActivity(session) || isExplicitSessionAbsence(session))).map(session => {
+    const cards = albums.filter(card => text(card.patientId) === text(patientId)
+      && (!packageNumber || Number(card.packageNumber) === Number(packageNumber))
+      && card.status !== 'removed' && ids(card).includes(text(session.id)));
+    const disclosure = resolveActivitySessionDisclosure({ session, cards, statusRecord: statusBySession[session.id] });
+    const { kind, url, structuredReasonCode: reasonCode, shareableObservation: note } = disclosure;
+    const missingAbsenceWriter = kind === 'absence' && writableAbsenceSessionIds !== null
+      && !writableAbsenceSessionIds.includes(text(session.id)) && Boolean(disclosure.pendingReason);
+    const blocked = missingAbsenceWriter || (!url && kind === 'media' && !['Realizada', 'Reposição'].includes(session.status));
+    const problem = missingAbsenceWriter ? 'A ausência não está disponível na fonte canônica local para edição segura.'
+        : blocked ? 'Esta sessão não possui um caminho de gravação de motivo compatível.' : '';
+    const entry = { ...disclosure, sessionId: text(session.id), session, kind, number: sessionNumber(session, source),
+      date: text(session.date), time: text(session.time), url, reasonCode, note, blocked, problem,
+      summaryUrl: url ? cards.find(card => card.visibleToGuardian === true && card.status !== 'hidden'
+        && normalizeGooglePhotosAlbumUrl(card.url) === url)?.url || url : '' };
+    return { ...entry, problem: url ? '' : validateActivitySummaryDraft(entry) };
   });
-  return `*Registro das atividades - ${headerName}*\n\n${blocks.join('\n\n')}`;
+  const pending = entries.filter(entry => entry.problem);
+  const blocks = entries.map(entry => {
+    const title = `*Sessão ${entry.number}*\n_${formatActivitySummaryDate(entry.date)}${entry.time ? ` às ${entry.time}` : ''}_`;
+    if (entry.url) return `${title}\n${entry.summaryUrl}`;
+    if (entry.kind === 'absence') {
+      const explanation = formatSummaryAbsenceExplanation(entry.note) || formatSummaryAbsenceExplanation(entry.structuredReasonText);
+      return `${title}\nAusência${explanation ? ` - ${explanation}` : ''}`;
+    }
+    return `${title}\n${entry.note}`;
+  });
+  const summary = !entries.length || pending.length ? ''
+    : `*Segue abaixo o Registro das atividades - ${text(patientName)}*\n\n${blocks.join('\n\n')}`;
+  return { sourceComplete: entries.length > 0, entries, pending, summary };
+}
+
+export function isAccumulatedActivitySummarySourceComplete(options = {}) {
+  return buildActivitySummaryPlan(options).sourceComplete;
+}
+
+export function buildAccumulatedActivitySummary(options = {}) {
+  return buildActivitySummaryPlan(options).summary;
+}
+
+/** Confirmation and full revalidation are required before the only clipboard call. */
+export async function completeActivitySummary({ plan, drafts, saveEntry, isCurrent, onSaved, revalidate, copy }) {
+  if (!isCurrent() || !plan.sourceComplete) return { ok: false, sessionId: '', error: 'O contexto mudou. Reabra o resumo.' };
+  for (const entry of plan.pending) {
+    const error = validateActivitySummaryDraft(entry, drafts[entry.sessionId]);
+    if (error) return { ok: false, sessionId: entry.sessionId, error };
+  }
+  for (const entry of plan.pending) {
+    if (!isCurrent()) return { ok: false, sessionId: entry.sessionId, error: 'O contexto mudou. Reabra o resumo.' };
+    try {
+      const draft = drafts[entry.sessionId] || {};
+      // The existing writer needs its existing enum; this is not a summary input or requirement.
+      const saved = await saveEntry(entry, { reasonCode: (entry.kind === 'absence' ? text(entry.session.noReplacementReasonCode) : '') || entry.reasonCode || 'other',
+        note: draftValue(entry, draft, 'note') });
+      if (saved !== true) throw new Error('Persistence not confirmed');
+      onSaved(entry.sessionId);
+    } catch {
+      return { ok: false, sessionId: entry.sessionId, error: 'Não foi possível confirmar o salvamento desta sessão.' };
+    }
+  }
+  const confirmed = revalidate();
+  if (!isCurrent() || !confirmed.sourceComplete || confirmed.pending.length || !confirmed.summary)
+    return { ok: false, sessionId: '', error: 'O resumo permanece incompleto. Nada foi copiado.' };
+  await copy(confirmed.summary);
+  return { ok: true, sessionId: '', error: '' };
 }

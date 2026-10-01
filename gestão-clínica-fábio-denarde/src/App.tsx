@@ -7,13 +7,14 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { useAlarms } from './lib/useAlarms';
 import { cn } from './lib/utils';
-import { isPendingExternalRegistrationStatus, sanitizeForFirestore } from './lib/externalRegistration';
+import { isPendingExternalRegistrationStatus } from './lib/externalRegistration';
 import { applyTheme, resolveTheme, storeTheme, type AppTheme, type VisualContext } from './lib/theme';
 import packageJson from '../package.json';
 
 import { auth, db, logout, handleFirestoreError, OperationType } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, onSnapshot, collection, writeBatch, type WriteBatch, query, where } from 'firebase/firestore';
+import { doc, onSnapshot, collection, writeBatch, runTransaction, FieldPath, deleteField, query, where } from 'firebase/firestore';
+import { PersistenceBaselines, persistStateChange, type PersistenceOperation } from './lib/statePersistence';
 import ExternalRegistrationPage from './components/ExternalRegistrationPage';
 import BrandLogo from './components/Common/BrandLogo';
 import AccessPortal from './components/Auth/AccessPortal';
@@ -279,10 +280,12 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
   const [selectedGallerySessionId, setSelectedGallerySessionId] = useState<string | null>(null);
   const [selectedGalleryPackageNumber, setSelectedGalleryPackageNumber] = useState<number | null>(null);
   const [unregisteredActivities, setUnregisteredActivities] = useState<UnregisteredActivityGroup[]>([]);
+  const [unregisteredActivitiesSignature, setUnregisteredActivitiesSignature] = useState('');
   const [unregisteredActivitiesLoading, setUnregisteredActivitiesLoading] = useState(false);
   const [unregisteredActivitiesWarning, setUnregisteredActivitiesWarning] = useState('');
   const [galleryNavigationKey, setGalleryNavigationKey] = useState(0);
   const loadedCollectionsRef = useRef<Set<string>>(new Set());
+  const persistenceBaselinesRef = useRef(new PersistenceBaselines());
   const notificationCursorRef = useRef<string | null>(null);
   const notificationOldestCursorRef = useRef<string | null>(null);
   const notificationLastLoadedAtRef = useRef(0);
@@ -321,6 +324,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     setUnregisteredActivitiesWarning('');
     setActiveTab('dashboard');
     loadedCollectionsRef.current.clear();
+    persistenceBaselinesRef.current.clear();
     notificationCursorRef.current = null;
     notificationOldestCursorRef.current = null;
     notificationInFlightRef.current = null;
@@ -562,12 +566,19 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
   const runUnregisteredActivities = useCallback(async (force = false): Promise<void> => {
     if (psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     setUnregisteredActivitiesLoading(true);
+    setUnregisteredActivities([]);
+    setUnregisteredActivitiesSignature('');
+    setUnregisteredActivitiesWarning('');
     try {
-      const result = await loadUnregisteredActivities(activityRefreshStateRef.current, { force });
+      const sourceState = activityRefreshStateRef.current;
+      const sourceSignature = buildActivityRefreshSignature(sourceState);
+      const result = await loadUnregisteredActivities(sourceState, { force });
       setUnregisteredActivities(result.groups);
+      setUnregisteredActivitiesSignature(sourceSignature);
       setUnregisteredActivitiesWarning(result.warning);
-    } catch (error) {
-      console.error('Falha ao verificar atividades não registradas:', error);
+    } catch {
+      setUnregisteredActivities([]);
+      setUnregisteredActivitiesSignature('');
       setUnregisteredActivitiesWarning('Não foi possível atualizar as atividades não registradas agora.');
     } finally {
       setUnregisteredActivitiesLoading(false);
@@ -592,6 +603,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
   useEffect(() => {
     if (psychologyAuthenticatedRoute || !canAccessInternalSystem) {
       setUnregisteredActivities([]);
+      setUnregisteredActivitiesSignature('');
       setUnregisteredActivitiesWarning('');
       return;
     }
@@ -604,6 +616,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
   useEffect(() => {
     if (psychologyAuthenticatedRoute || !canAccessInternalSystem) return;
     const refresh = () => {
+      setUnregisteredActivitiesSignature('');
       void requestUnregisteredActivityRefresh(true, 1200);
     };
     window.addEventListener(ACTIVITY_GALLERY_CHANGED_EVENT, refresh);
@@ -701,6 +714,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     
     setDataLoading(true);
     loadedCollectionsRef.current.clear();
+    persistenceBaselinesRef.current.clear();
     
     // Subscribe to all collections
     const unsubscribers: (() => void)[] = [];
@@ -743,16 +757,19 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
       onSnapshot(collection(userDocRef, 'settings'), (snapshot) => {
         traceSnapshot('settings', snapshot);
         let settings = DEFAULT_SETTINGS;
+        let rawSettings: Record<string, unknown> | null = null;
         snapshot.forEach(doc => {
           if (doc.id === 'config') {
-            settings = { ...DEFAULT_SETTINGS, ...doc.data() } as ClinicSettings;
+            rawSettings = doc.data();
+            settings = { ...DEFAULT_SETTINGS, ...rawSettings } as ClinicSettings;
           }
         });
         const visualTheme = resolveTheme(settings.visualTheme);
         applyTheme(visualTheme);
         storeTheme(visualTheme);
         markCollectionLoaded('settings');
-        setState(prev => ({ ...prev, settings: { ...settings, visualTheme } }));
+        const nextSettings = persistenceBaselinesRef.current.remember({ ...settings, visualTheme }, 'config', rawSettings);
+        setState(prev => ({ ...prev, settings: nextSettings }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'settings'))
     );
     
@@ -760,7 +777,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'patients'), (snapshot) => {
         traceSnapshot('patients', snapshot);
-        const patients = snapshot.docs.map(doc => doc.data() as Patient);
+        const patients = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as Patient, doc.id, doc.data()));
         markCollectionLoaded('patients');
         setState(prev => ({ ...prev, patients }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'patients'))
@@ -770,7 +787,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'sessions'), { includeMetadataChanges: true }, (snapshot) => {
         traceSnapshot('sessions', snapshot);
-        const sessions = snapshot.docs.map(doc => doc.data() as Session);
+        const sessions = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as Session, doc.id, doc.data()));
         markCollectionLoaded('sessions');
         setState(prev => ({ ...prev, sessions }));
 
@@ -791,7 +808,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'payments'), (snapshot) => {
         traceSnapshot('payments', snapshot);
-        const payments = snapshot.docs.map(doc => doc.data() as Payment);
+        const payments = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as Payment, doc.id, doc.data()));
         markCollectionLoaded('payments');
         setState(prev => ({ ...prev, payments }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'payments'))
@@ -801,7 +818,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'repositions'), (snapshot) => {
         traceSnapshot('repositions', snapshot);
-        const repositions = snapshot.docs.map(doc => doc.data() as Reposition);
+        const repositions = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as Reposition, doc.id, doc.data()));
         markCollectionLoaded('repositions');
         setState(prev => ({ ...prev, repositions }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'repositions'))
@@ -811,7 +828,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'expenses'), (snapshot) => {
         traceSnapshot('expenses', snapshot);
-        const expenses = snapshot.docs.map(doc => doc.data() as Expense);
+        const expenses = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as Expense, doc.id, doc.data()));
         markCollectionLoaded('expenses');
         setState(prev => ({ ...prev, expenses }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'expenses'))
@@ -821,7 +838,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(collection(userDocRef, 'evolutions'), (snapshot) => {
         traceSnapshot('evolutions', snapshot);
-        const evolutions = snapshot.docs.map(doc => doc.data() as Evolution);
+        const evolutions = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as Evolution, doc.id, doc.data()));
         markCollectionLoaded('evolutions');
         setState(prev => ({ ...prev, evolutions }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'evolutions'))
@@ -833,7 +850,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
         traceSnapshot('agenda_pessoal', snapshot);
         const personalAppointments = snapshot.docs.map(doc => {
           const data = doc.data();
-          return {
+          return persistenceBaselinesRef.current.remember({
             id: typeof data.id === 'string' && data.id.trim() ? data.id : doc.id,
             date: data.data || '',
             time: data.hora || '',
@@ -847,7 +864,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
             alarmVolume: data.volume_alarme ?? 80,
             alarmFadeIn: data.fade_in ?? false,
             isDone: data.status === 'concluído'
-          } as PersonalAppointment;
+          } as PersonalAppointment, doc.id, data);
         });
         markCollectionLoaded('agenda_pessoal');
         setState(prev => ({ ...prev, personalAppointments }));
@@ -861,7 +878,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
     unsubscribers.push(
       onSnapshot(query(collection(db, 'externalRegistrationForms'), where('ownerUserId', '==', user.uid)), (snapshot) => {
         traceSnapshot('externalRegistrationForms', snapshot);
-        const externalRegistrationForms = snapshot.docs.map(doc => doc.data() as ExternalRegistrationForm);
+        const externalRegistrationForms = snapshot.docs.map(doc => persistenceBaselinesRef.current.remember(doc.data() as ExternalRegistrationForm, doc.id, doc.data()));
         markCollectionLoaded('externalRegistrationForms');
         setState(prev => ({ ...prev, externalRegistrationForms }));
       }, (error) => handleFirestoreError(error, OperationType.GET, 'externalRegistrationForms'))
@@ -886,162 +903,67 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
       newState.settings
       && newState.settings.activityMediaMonitoringStart !== state.settings.activityMediaMonitoringStart
     );
-    
-    try {
-      // AuthenticatedApp is the legacy Neuro clinical AppState store. Its session
-      // writes must not depend on the separate canonical-professional lookup. The
-      // canonical persistence boundaries remain fail-closed downstream, while
-      // Psychology uses its own explicit scoped persistence route.
-      let stateToPersist = newState;
-
-      let batch = writeBatch(db);
-      let opCount = 0;
-
-      const commitBatch = async () => {
-        if (opCount > 0) {
-          await batch.commit();
-          batch = writeBatch(db);
-          opCount = 0;
-        }
-      };
-
-      const addOp = async (op: (b: WriteBatch) => void) => {
-        op(batch);
-        opCount++;
-        if (opCount >= 400) {
-          await commitBatch();
-        }
-      };
-
-      const hasMeaningfulChange = <T extends { id: string }>(currentItem: T | undefined, nextItem: T) => {
-        if (!currentItem) return true;
-        return JSON.stringify(currentItem) !== JSON.stringify(nextItem);
-      };
-
-      const syncCollection = async <T extends { id: string }>(
-        collectionName: string,
-        currentItems: T[],
-        nextItems: T[],
-        mapToFirestore: (item: T) => unknown = item => item
-      ) => {
-        if (!loadedCollectionsRef.current.has(collectionName)) {
-          throw new Error(`Gravação bloqueada: a coleção "${collectionName}" ainda não concluiu o primeiro carregamento.`);
-        }
-
-        const currentMap = new Map(currentItems.map(item => [item.id, item]));
-        const nextMap = new Map(nextItems.map(item => [item.id, item]));
-        const colRef = collection(userDocRef, collectionName);
-
-        for (const id of currentMap.keys()) {
-          if (!nextMap.has(id)) {
-            await addOp(b => b.delete(doc(colRef, id)));
-          }
-        }
-
-        for (const item of nextItems) {
-          if (hasMeaningfulChange(currentMap.get(item.id), item)) {
-            await addOp(b => b.set(doc(colRef, item.id), mapToFirestore(item)));
-          }
-        }
-      };
-
-      if (stateToPersist.settings) {
-        if (!loadedCollectionsRef.current.has('settings')) {
-          throw new Error('Gravação bloqueada: as configurações ainda não concluíram o primeiro carregamento.');
-        }
-        await addOp(b => b.set(doc(collection(userDocRef, 'settings'), 'config'), stateToPersist.settings!));
+    const reference = (operation: PersistenceOperation) => doc(
+      operation.collection === 'externalRegistrationForms'
+        ? collection(db, operation.collection)
+        : collection(userDocRef, operation.collection),
+      operation.id,
+    );
+    const writeOperation = (writer: {
+      set(ref: ReturnType<typeof reference>, data: Record<string, unknown>): unknown;
+      delete(ref: ReturnType<typeof reference>): unknown;
+      update(ref: ReturnType<typeof reference>, field: FieldPath, value: unknown, ...more: unknown[]): unknown;
+    }, operation: PersistenceOperation) => {
+      const ref = reference(operation);
+      if (operation.kind === 'create') writer.set(ref, operation.data!);
+      else if (operation.kind === 'delete') writer.delete(ref);
+      else {
+        const [first, ...rest] = operation.changes;
+        writer.update(ref, new FieldPath(...first.path), first.after.present ? first.after.value : deleteField(),
+          ...rest.flatMap(change => [new FieldPath(...change.path), change.after.present ? change.after.value : deleteField()]));
       }
-      
-      if (stateToPersist.patients) {
-        await syncCollection('patients', state.patients, stateToPersist.patients, sanitizeForFirestore);
-      }
-      
-      if (stateToPersist.sessions) {
-        await syncCollection('sessions', state.sessions, stateToPersist.sessions);
-      }
-      
-      if (stateToPersist.payments) {
-        await syncCollection('payments', state.payments, stateToPersist.payments);
-      }
-      
-      if (stateToPersist.repositions) {
-        await syncCollection('repositions', state.repositions, stateToPersist.repositions);
-      }
-      
-      if (stateToPersist.expenses) {
-        await syncCollection('expenses', state.expenses, stateToPersist.expenses);
-      }
-      
-      if (stateToPersist.evolutions) {
-        await syncCollection('evolutions', state.evolutions, stateToPersist.evolutions);
-      }
-
-      if (stateToPersist.personalAppointments) {
-        await syncCollection('agenda_pessoal', state.personalAppointments, stateToPersist.personalAppointments, a => ({
-            id: a.id,
-            data: a.date,
-            hora: a.time,
-            tipo_compromisso: a.type,
-            observacao: a.notes,
-            recorrencia: a.recurrence,
-            alarme: a.alarmEnabled,
-            som_alarme: a.alarmSound || null,
-            antecedencia_alarme: a.alarmAdvance || null,
-            volume_alarme: a.alarmVolume ?? 80,
-            fade_in: a.alarmFadeIn ?? false,
-            status: a.isDone ? 'concluído' : 'ativo',
-            criado_em: new Date().toISOString()
-          }));
-      }
-
-      if (stateToPersist.externalRegistrationForms) {
-        if (!loadedCollectionsRef.current.has('externalRegistrationForms')) {
-          throw new Error('Gravação bloqueada: os formulários externos ainda não concluíram o primeiro carregamento.');
-        }
-        const collectionName = 'externalRegistrationForms';
-        const currentItems: ExternalRegistrationForm[] = state.externalRegistrationForms || [];
-        const nextItems: ExternalRegistrationForm[] = stateToPersist.externalRegistrationForms;
-        const currentMap = new Map<string, ExternalRegistrationForm>(currentItems.map(item => [item.id, item]));
-        const nextMap = new Map<string, ExternalRegistrationForm>(nextItems.map(item => [item.id, item]));
-        const colRef = collection(db, collectionName);
-
-        for (const id of currentMap.keys()) {
-          if (!nextMap.has(id)) {
-            await addOp(b => b.delete(doc(colRef, id)));
-          }
-        }
-
-        for (const item of nextItems) {
-          if (hasMeaningfulChange(currentMap.get(item.id), item)) {
-            await addOp(b => b.set(doc(colRef, item.id), sanitizeForFirestore(item)));
-          }
-        }
-      }
-
-      await commitBatch();
-
-      setState(previousState => ({ ...previousState, ...stateToPersist }));
-
-      if (activityGalleryRelevantChange && typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {
-          detail: { reason: 'clinic-data-updated' },
-        }));
-      }
-
-      return true;
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'users/' + user.uid);
+    };
+    const result = await persistStateChange({
+      baseline: state, intended: newState, loaded: loadedCollectionsRef.current,
+      baselines: persistenceBaselinesRef.current,
+    }, {
+      validate: plan => {
+        // Parse ALL payloads with the installed SDK before the transaction.
+        // This batch is intentionally never committed.
+        const validationBatch = writeBatch(db);
+        for (const operation of plan.operations) writeOperation(validationBatch, operation);
+      },
+      run: work => runTransaction(db, transaction => work({
+        get: async operation => {
+          const snapshot = await transaction.get(reference(operation));
+          return snapshot.exists() ? snapshot.data() : null;
+        },
+        write: operation => writeOperation(transaction, operation),
+      })),
+    });
+    if (result.status !== 'SUCCESS') {
+      console.warn('[STATE PERSISTENCE]', result);
       return false;
     }
+    // Existing onSnapshot listeners publish the committed state. Replaying the
+    // caller's full stale arrays here would undo independent concurrent changes.
+    if (activityGalleryRelevantChange && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(ACTIVITY_GALLERY_CHANGED_EVENT, {
+        detail: { reason: 'clinic-data-updated' },
+      }));
+    }
+    return true;
   };
 
   const updateVisualTheme = async (visualTheme: AppTheme): Promise<boolean> => {
     applyTheme(visualTheme);
     storeTheme(visualTheme);
-    setState(prev => ({
-      ...prev,
-      settings: { ...prev.settings, visualTheme },
-    }));
+    setState(prev => {
+      const settings = { ...prev.settings, visualTheme };
+      const baseline = persistenceBaselinesRef.current.get(prev.settings);
+      if (baseline) persistenceBaselinesRef.current.remember(settings, baseline.id, baseline.data);
+      return { ...prev, settings };
+    });
 
     if (psychologyAuthenticatedRoute || !user || !canAccessInternalSystem || !loadedCollectionsRef.current.has('settings')) return false;
 
@@ -1190,7 +1112,11 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
   const notificationAttentionCount = activePortalNotifications.filter(notification => (
     !notification.read || (notification.pendingAction && !notification.completed)
   )).length;
-  const activityAttentionCount = unregisteredActivities.length;
+  const visibleUnregisteredActivities = !unregisteredActivitiesLoading
+    && unregisteredActivitiesSignature === activityRefreshSignature
+      ? unregisteredActivities
+      : [];
+  const activityAttentionCount = visibleUnregisteredActivities.length;
   const packageToleranceAttentionCount = packageToleranceAlerts.length;
   const administrativeAttentionCount = canManagePortalNotifications
     ? notificationAttentionCount + pendingExternalForms
@@ -1552,7 +1478,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
                       <p className="mt-1 text-[11px] text-clinic-text-muted">Prazo {alert.expiresAt.split('-').reverse().join('/')} • {alert.sessionsUsed}/{alert.maxSessions} sessão(ões)</p>
                     </button>
                   ))}
-                  {unregisteredActivities.map(activity => (
+                  {visibleUnregisteredActivities.map(activity => (
                     <button
                       key={activity.id}
                       type="button"
@@ -1567,7 +1493,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
                       <p className="mt-1 text-[11px] text-clinic-text-muted">Pacote {activity.packageNumber} • {activity.times.join(' e ')}</p>
                     </button>
                   ))}
-                  {activePortalNotifications.length === 0 && unregisteredActivities.length === 0 && packageToleranceAlerts.length === 0 && (
+                  {activePortalNotifications.length === 0 && visibleUnregisteredActivities.length === 0 && packageToleranceAlerts.length === 0 && (
                     <p className="px-4 py-6 text-center text-sm text-clinic-text-muted">Nenhuma notificação ativa.</p>
                   )}
                   {canManagePortalNotifications && activePortalNotifications.slice(0, 10).map(notification => {
@@ -1740,7 +1666,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
                   canViewWhatsappReport={accessProfile?.role === 'admin'}
                   whatsappReportState={whatsappOperationalReportState}
                   onOpenMonitoringPreview={() => setActiveTab('monitoramento')}
-                  unregisteredActivities={unregisteredActivities}
+                  unregisteredActivities={visibleUnregisteredActivities}
                   unregisteredActivitiesLoading={unregisteredActivitiesLoading}
                   unregisteredActivitiesWarning={unregisteredActivitiesWarning}
                   onRefreshUnregisteredActivities={() => requestUnregisteredActivityRefresh(true, 0)}
@@ -1761,7 +1687,7 @@ function AuthenticatedApp({ psychologyAuthenticatedRoute = false }: { psychology
               {activeTab === 'agenda' && <Agenda state={state} onUpdate={updateState} onNavigateToPatient={navigateToPatient} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserRole={accessProfile?.role || 'professional'} />}
               {activeTab === 'agenda-pessoal' && <PersonalAgenda state={state} onUpdate={updateState} activeAlarmId={activeAlarmId} activeAlarmLabel={activeAlarmLabel} stopAlarm={stopAlarm} />}
               {activeTab === 'atendentes' && <Patients state={state} onUpdate={updateState} selectedPatientId={selectedPatientId} setSelectedPatientId={setSelectedPatientId} initialPatientSubTab={selectedPatientSubTab} onPatientSubTabConsumed={() => setSelectedPatientSubTab(null)} onNavigateToPatientGallery={navigateToPatientGallery} currentUserName={user.displayName || user.email || 'Usuário'} currentUserId={user.uid} />}
-              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} initialPackageNumber={selectedGalleryPackageNumber} />}
+              {activeTab === 'galeria-atividades' && <ProfessionalGooglePhotosGallery key={`gallery-${galleryNavigationKey}`} patients={state.patients} sessions={state.sessions} payments={state.payments} currentUserName={user.displayName || user.email || 'Usuário'} initialPatientId={selectedGalleryPatientId} initialSessionId={selectedGallerySessionId} initialPackageNumber={selectedGalleryPackageNumber} onUpdate={updateState} />}
               {activeTab === 'pre-cadastros' && <PreRegistrations state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} onNavigateToPatient={navigateToPatient} />}
               {activeTab === 'pagamentos' && <Finance state={state} onUpdate={updateState} currentUserName={user.displayName || user.email || 'Usuário'} />}
               {activeTab === 'relatorios' && <Reports state={state} onUpdate={updateState} isAdmin={accessProfile?.role === 'admin'} whatsappReportState={whatsappOperationalReportState} />}

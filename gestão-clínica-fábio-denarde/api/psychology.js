@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { applyPsychologyChanges, validatePsychologyChange, psychologyPersistenceError } from '../shared/psychologyConcurrency.js';
 import { getAdminDb } from './_lib/firebaseAdmin.js';
 import { resolvePsychologyAccessContext, resolvePsychologyAdminMonitoringContext } from './_lib/psychologyAccess.js';
 import { buildPsychologyAuditEvent, createPsychologyRequestId, logPsychologyAuditEvent } from './_lib/psychologyObservability.js';
@@ -351,6 +352,7 @@ function scopeFields(runtimeScope) {
 function administrativePatientDto(value) {
   return {
     id: value.id,
+    __psychologyVersion: value.__psychologyVersion,
     workspaceId: value.workspaceId,
     professionalId: value.professionalId,
     context: value.context,
@@ -374,6 +376,7 @@ function administrativePatientDto(value) {
 function sessionDto(value) {
   return {
     id: value.id,
+    __psychologyVersion: value.__psychologyVersion,
     workspaceId: value.workspaceId,
     professionalId: value.professionalId,
     context: value.context,
@@ -469,6 +472,7 @@ function settingsDto(record, runtimeScope) {
   return {
     ...scopeFields(runtimeScope),
     id: 'settings',
+    __psychologyVersion: record?.__psychologyVersion,
     settings: record?.settings || {},
     updatedAt: record?.updatedAt || null,
   };
@@ -646,7 +650,9 @@ function sendError(res, error) {
   const message = statusCode === 500
     ? 'A API da Psicologia encontrou um erro inesperado.'
     : error?.message || 'Não foi possível concluir a operação.';
-  return res.status(statusCode).json({ error: { code: error?.code || 'psychology/internal-error', message } });
+  return res.status(statusCode).json({ error: { code: error?.code || 'psychology/internal-error', message },
+    ...(error?.persistenceStatus ? { persistenceStatus: error.persistenceStatus } : {}),
+  });
 }
 
 function preparePatient(body, runtimeScope, now) {
@@ -775,6 +781,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
     const requestId = createPsychologyRequestId(req);
     const idempotencyKey = requestIdempotencyKey(req);
     let runtimeScope;
+    let usesPersistenceContract = false;
     let operation = `${req.method || 'UNKNOWN'}:unknown`;
     setSecurityHeaders(req, res);
     res.setHeader('X-Request-Id', requestId);
@@ -815,7 +822,85 @@ export function createPsychologyApiHandler(dependencies = {}) {
       }
       operation = `${req.method}:${resource}`;
       const db = getDb();
-      const body = parseBody(req);
+      let body = parseBody(req);
+      usesPersistenceContract = Boolean(body.persistence);
+      const persistence = body.persistence ? validatePsychologyChange(body.persistence) : undefined;
+      const aggregate = resource === 'patients' || resource === 'sessions' || resource === 'settings' ? resource
+        : GENERIC_OPERATION_ROUTES[resource]?.aggregate;
+      const isAggregateMutation = aggregate && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+      res.setHeader('X-Psychology-Persistence-Version', '1');
+      const createRepository = resolvedScope => createPsychologyServerRepository({
+        db, runtimeScope: resolvedScope, now, requestId, operation, idempotencyKey,
+        expectedDelete: persistence?.operation === 'delete' ? { aggregate, ...persistence } : undefined,
+      });
+      if (isAggregateMutation && ['PATCH', 'PUT', 'DELETE'].includes(req.method) && !persistence) {
+        throw psychologyPersistenceError('psychology/baseline-required');
+      }
+      if (persistence && isAggregateMutation) {
+        const jsonResponse = res.json.bind(res);
+        res.json = payload => jsonResponse(payload.error ? payload : { ...payload, persistenceStatus: 'SUCCESS' });
+        if (persistence.operation === 'create') {
+          if ((aggregate === 'settings' ? req.method !== 'PUT' || persistence.id !== 'settings' : req.method !== 'POST') || id) throw psychologyPersistenceError('psychology/invalid-change');
+          body = persistence.data;
+        } else if (persistence.operation === 'delete') {
+          if (req.method !== 'DELETE' || persistence.id !== id) throw psychologyPersistenceError('psychology/invalid-change');
+          // Check before cascading; repository repeats this inside the final atomic delete.
+          const permission = aggregate === 'patients' ? 'patients.edit' : aggregate === 'sessions' ? 'agenda.edit'
+            : GENERIC_OPERATION_ROUTES[resource]?.writePermission;
+          if (!permission) throw psychologyPersistenceError('psychology/invalid-change');
+          const deleteScope = await resolveAccess(req, { db, requiredPermissions: [permission] });
+          const deleteRepository = createRepository(deleteScope);
+          const target = FINANCIAL_AGGREGATES.has(aggregate) ? financialRepositoryFor(deleteRepository, aggregate) : deleteRepository[aggregate];
+          const current = await target.get(id);
+          if (!current || current.__psychologyVersion !== persistence.fingerprint) throw psychologyPersistenceError('psychology/concurrent-change', 409);
+        } else if (persistence.operation === 'update') {
+          if ((aggregate === 'settings' ? req.method !== 'PUT' || persistence.id !== 'settings' : req.method !== 'PATCH' || persistence.id !== id)) {
+            throw psychologyPersistenceError('psychology/invalid-change');
+          }
+          const permission = aggregate === 'patients' ? 'patients.edit' : aggregate === 'sessions' ? 'agenda.edit'
+            : aggregate === 'settings' ? 'settings.clinic.manage' : GENERIC_OPERATION_ROUTES[resource]?.writePermission;
+          if (!permission) throw psychologyPersistenceError('psychology/invalid-change');
+          runtimeScope = await resolveAccess(req, { db, requiredPermissions: [permission] });
+          const repository = createRepository(runtimeScope);
+          const target = FINANCIAL_AGGREGATES.has(aggregate) ? financialRepositoryFor(repository, aggregate) : repository[aggregate];
+          const current = await target.get(persistence.id);
+          if (!current) throw psychologyPersistenceError('psychology/concurrent-change', 409);
+          const project = aggregate === 'patients' ? administrativePatientDto : aggregate === 'sessions' ? sessionDto
+            : aggregate === 'settings' ? value => settingsDto(value, runtimeScope) : value => value;
+          const source = applyPsychologyChanges(project(current), persistence.changes);
+          if (aggregate === 'patients') {
+            const allowed = new Set(['name', 'birthDate', 'phone', 'email', 'preferredModality', 'financialSettings', 'administrativeNote', 'administrativeResponsible', 'externalReferences', 'inReview', 'reviewMarkedAt', 'active']);
+            if (persistence.changes.some(item => !allowed.has(item.path[0]))) throw psychologyPersistenceError('psychology/invalid-change');
+          }
+          if (aggregate === 'settings' && persistence.changes.some(item => item.path[0] !== 'settings'
+            || !['professionalProfile', 'agenda', 'services', 'locations', 'colors', 'reminders'].includes(item.path[1]))) {
+            throw psychologyPersistenceError('psychology/invalid-change');
+          }
+          if (aggregate === 'settings') {
+            const keys = {
+              professionalProfile: ['displayName', 'professionalTitle', 'professionalRegistration', 'clinicDisplayName', 'email', 'phone'],
+              agenda: ['defaultDurationMinutes', 'intervalMinutes', 'weeklyAvailability', 'dayParts', 'workingDays', 'availableTimes'],
+              colors: ['ONLINE', 'PRESENTIAL_PRIMARY', 'EXTERNAL_OFFICE', 'PERSONAL', 'MENTORING'],
+              reminders: ['enabled', 'advanceMinutes'],
+            };
+            if (persistence.changes.some(item => item.path.length > 2 && keys[item.path[1]] && !keys[item.path[1]].includes(item.path[2]))) {
+              throw psychologyPersistenceError('psychology/invalid-change');
+            }
+          }
+          const candidate = aggregate === 'patients' ? preparePatient(source, runtimeScope, now())
+            : aggregate === 'sessions' ? prepareSession(source, runtimeScope, now())
+              : aggregate === 'settings' ? prepareSettings(source, runtimeScope, current, now())
+                : prepareGenericRecord(source, runtimeScope, now());
+          if (aggregate === 'sessions' && !await repository.patients.get(candidate.patientId)) throw apiError('psychology/session-patient-not-found', 'O paciente não pertence a este escopo Psicologia.', 422);
+          if (FINANCIAL_AGGREGATES.has(aggregate)) await validateFinancialRecord({ aggregate, record: candidate, repository, existing: current });
+          if (aggregate === 'packages') await validatePackageRecord({ record: candidate, repository });
+          const saved = await target.upsert(candidate, persistence, project);
+          auditHeaders(res, runtimeScope, 'update', aggregate);
+          auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
+          const field = aggregate === 'patients' ? 'patient' : aggregate === 'sessions' ? 'session' : aggregate === 'settings' ? 'settings' : 'item';
+          return res.status(200).json({ scope: scopeFields(runtimeScope), [field]: project(saved) });
+        }
+      }
 
       if (resource === 'monitoring' && req.method === 'GET' && !id) {
         runtimeScope = await resolveAdminMonitoring(req, { db });
@@ -840,7 +925,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
           requiredPermissions: ['patients.clinical_notes.view'],
           ignoreRequestedProfessionalId: true,
         });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const [patients, sessions, personalAppointments, sessionRecords, services, locations, charges, payments, expenses, packages, documents, attachments, settings] = await Promise.all([
           repository.patients.list(),
           repository.sessions.list(),
@@ -888,7 +973,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'patients' && req.method === 'GET') {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.list'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const items = id ? [await repository.patients.get(id)].filter(Boolean) : await repository.patients.list();
         auditHeaders(res, runtimeScope, 'read', 'patients');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -897,7 +982,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'patients' && req.method === 'POST' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.create'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const patient = await repository.patients.upsert(preparePatient(body, runtimeScope, now()));
         auditHeaders(res, runtimeScope, 'create', 'patients');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -906,7 +991,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'patients' && req.method === 'PATCH' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.edit'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const current = await repository.patients.get(id);
         if (!current) throw apiError('psychology/patient-not-found', 'Paciente não encontrado neste escopo.', 404);
         const patient = await repository.patients.upsert(preparePatient({ ...current, ...body, id }, runtimeScope, now()));
@@ -917,7 +1002,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'patients' && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.edit'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const deletion = await deletePsychologyPatientSafely({ repository, patientId: id, now: now() });
         if (!deletion.deleted) throw apiError('psychology/patient-not-found', deletion.reason || 'Paciente não encontrado neste escopo.', 404);
         auditHeaders(res, runtimeScope, 'delete', 'patients');
@@ -930,7 +1015,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
           db,
           requiredAnyPermissions: ['agenda.own.view', 'settings.clinic.manage'],
         });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const current = await repository.settings.get('settings');
         auditHeaders(res, runtimeScope, 'read', 'settings');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -939,9 +1024,9 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'settings' && req.method === 'PUT' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['settings.clinic.manage'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const current = await repository.settings.get('settings');
-        const settings = await repository.settings.upsert(prepareSettings(body, runtimeScope, current, now()));
+        const settings = await repository.settings.upsert(prepareSettings(body, runtimeScope, current, now()), persistence);
         auditHeaders(res, runtimeScope, 'update', 'settings');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
         return res.status(200).json({ scope: scopeFields(runtimeScope), settings: settingsDto(settings, runtimeScope) });
@@ -949,7 +1034,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'sessions' && req.method === 'GET' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.own.view'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const items = await repository.sessions.list();
         auditHeaders(res, runtimeScope, 'read', 'sessions');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -958,7 +1043,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'sessions' && req.method === 'POST' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const session = prepareSession(body, runtimeScope, now());
         if (!await repository.patients.get(session.patientId)) {
           throw apiError('psychology/session-patient-not-found', 'O paciente não pertence a este escopo Psicologia.', 422);
@@ -971,7 +1056,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'sessions' && req.method === 'PATCH' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const current = await repository.sessions.get(id);
         if (!current) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
         const session = prepareSession({ ...current, ...body, id }, runtimeScope, now());
@@ -986,7 +1071,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'sessions' && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['agenda.edit'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const deleted = await repository.sessions.delete(id);
         if (!deleted) throw apiError('psychology/session-not-found', 'Sessão não encontrada neste escopo.', 404);
         auditHeaders(res, runtimeScope, 'delete', 'sessions');
@@ -996,7 +1081,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (resource === 'session-records' && req.method === 'GET' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: ['patients.clinical_notes.view'] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const items = await repository.sessionRecords.list();
         auditHeaders(res, runtimeScope, 'read', 'sessionRecords');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -1006,19 +1091,20 @@ export function createPsychologyApiHandler(dependencies = {}) {
       const genericRoute = GENERIC_OPERATION_ROUTES[resource];
       if (genericRoute && req.method === 'GET') {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.readPermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const aggregateRepository = FINANCIAL_AGGREGATES.has(genericRoute.aggregate)
           ? financialRepositoryFor(repository, genericRoute.aggregate)
           : repository[genericRoute.aggregate];
         const items = id ? [await aggregateRepository.get(id)].filter(Boolean) : await aggregateRepository.list();
         auditHeaders(res, runtimeScope, 'read', genericRoute.aggregate);
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
-        return res.status(200).json({ scope: scopeFields(runtimeScope), items });
+        return res.status(200).json({ scope: scopeFields(runtimeScope), items: genericRoute.writePermission ? items
+          : items.map(({ __psychologyVersion: _version, ...record }) => record) });
       }
 
       if (genericRoute?.writePermission && FINANCIAL_AGGREGATES.has(genericRoute.aggregate) && (req.method === 'POST' || req.method === 'PATCH')) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const financialRepository = financialRepositoryFor(repository, genericRoute.aggregate);
         const current = req.method === 'PATCH' ? await financialRepository.get(id) : undefined;
         if (req.method === 'PATCH' && !current) throw apiError('psychology/resource-not-found', 'Registro financeiro não encontrado neste escopo.', 404);
@@ -1041,7 +1127,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (genericRoute?.writePermission && genericRoute.aggregate === 'packages' && (req.method === 'POST' || req.method === 'PATCH')) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const current = req.method === 'PATCH' ? await repository.packages.get(id) : undefined;
         if (req.method === 'PATCH' && !current) throw apiError('psychology/resource-not-found', 'Pacote não encontrado neste escopo.', 404);
         const candidate = prepareGenericRecord(req.method === 'PATCH' ? { ...current, ...financialRecordSource(body), id } : body, runtimeScope, now());
@@ -1054,7 +1140,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (genericRoute?.writePermission && FINANCIAL_AGGREGATES.has(genericRoute.aggregate) && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const deleted = await deleteFinancialRecord({ aggregate: genericRoute.aggregate, id, repository });
         auditHeaders(res, runtimeScope, 'delete', genericRoute.aggregate);
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -1063,7 +1149,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (genericRoute?.writePermission && genericRoute.aggregate === 'packages' && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const deleted = await deletePackageRecord({ id, repository });
         auditHeaders(res, runtimeScope, 'delete', 'packages');
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -1072,7 +1158,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (genericRoute?.writePermission && req.method === 'POST' && !id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const item = await repository[genericRoute.aggregate].upsert(prepareGenericRecord(body, runtimeScope, now()));
         auditHeaders(res, runtimeScope, 'create', genericRoute.aggregate);
         auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'success', timestamp: now() }));
@@ -1081,7 +1167,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (genericRoute?.writePermission && req.method === 'PATCH' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const current = await repository[genericRoute.aggregate].get(id);
         if (!current) throw apiError('psychology/resource-not-found', 'Registro não encontrado neste escopo.', 404);
         const item = await repository[genericRoute.aggregate].upsert(prepareGenericRecord({ ...current, ...body, id }, runtimeScope, now()));
@@ -1092,7 +1178,7 @@ export function createPsychologyApiHandler(dependencies = {}) {
 
       if (genericRoute?.writePermission && req.method === 'DELETE' && id) {
         const runtimeScope = await resolveAccess(req, { db, requiredPermissions: [genericRoute.writePermission] });
-        const repository = createPsychologyServerRepository({ db, runtimeScope, now, requestId, operation, idempotencyKey });
+        const repository = createRepository(runtimeScope);
         const deleted = await repository[genericRoute.aggregate].delete(id);
         if (!deleted) throw apiError('psychology/resource-not-found', 'Registro não encontrado neste escopo.', 404);
         auditHeaders(res, runtimeScope, 'delete', genericRoute.aggregate);
@@ -1103,7 +1189,10 @@ export function createPsychologyApiHandler(dependencies = {}) {
       throw apiError('psychology/route-not-found', 'Rota Psicologia não encontrada.', 404);
     } catch (error) {
       auditLogger(buildPsychologyAuditEvent({ requestId, runtimeScope, operation, status: 'denied', timestamp: now(), code: error?.code || 'psychology/internal-error' }));
-      return sendError(res, error);
+      return sendError(res, usesPersistenceContract && !error?.persistenceStatus ? {
+        statusCode: error?.statusCode, code: error?.code, message: error?.message,
+        persistenceStatus: Number(error?.statusCode) === 409 ? 'CONFLICT' : Number(error?.statusCode) === 422 ? 'VALIDATION_FAILED' : 'PERSISTENCE_FAILED',
+      } : error);
     }
   };
 }

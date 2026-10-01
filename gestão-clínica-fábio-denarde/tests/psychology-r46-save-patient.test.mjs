@@ -49,6 +49,13 @@ function fakeDb() {
   const records = new Map();
   return {
     records,
+    async runTransaction(work) {
+      const writes = [];
+      const result = await work({ get: reference => reference.get(),
+        create: (reference, value) => writes.push(() => reference.set(value)) });
+      for (const write of writes) await write();
+      return result;
+    },
     collection(path) {
       return {
         doc(id) {
@@ -131,16 +138,17 @@ test('R46 — retorno criado é anexado ao remoteStore sem duplicar atualizaçõ
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     calls.push({ path: new URL(String(url), 'http://localhost').pathname, method: init.method || 'GET' });
-    return new Response(JSON.stringify({ scope, patient }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify(init.method === 'GET' ? { scope, items: [] } : { scope, patient, persistenceStatus: 'SUCCESS' }), { status: init.method === 'GET' ? 200 : 201, headers: { 'Content-Type': 'application/json', 'X-Psychology-Persistence-Version': '1' } });
   };
   const client = createPsychologyRemotePatientClient({ scope, api: { fetchImpl, getToken: async () => 'synthetic-token' } });
+  await client.repositories.patients.list(scope);
   const savedPatient = await client.updatePatient(patient);
   const initialStore = { patients: [], sessions: [], settings: {}, sessionRecords: [], personalCommitments: [], services: [], locations: [], charges: [], payments: [], expenses: [], sessionPackages: [], documents: [], attachments: [] };
   const nextStore = patientStoreWithUpdates(initialStore, [savedPatient]);
   const updatedStore = patientStoreWithUpdates(nextStore, [{ ...savedPatient, name: 'Paciente Sintético Atualizado' }]);
 
   assert.equal(savedPatient.id, patient.id);
-  assert.deepEqual(calls, [{ path: '/api/psychology/patients', method: 'POST' }]);
+  assert.deepEqual(calls, [{ path: '/api/psychology/patients', method: 'GET' }, { path: '/api/psychology/patients', method: 'POST' }]);
   assert.equal(nextStore.patients.length, 1);
   assert.equal(updatedStore.patients.length, 1);
   assert.equal(updatedStore.patients[0].name, 'Paciente Sintético Atualizado');

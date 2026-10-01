@@ -453,7 +453,7 @@ async function sendAdminReport(message, metadata = {}) {
 
 async function resolveSessionAutomationBlock({ accountId, reminder, routine, phase }) {
   const sessionId = String(reminder?.id || '').trim();
-  if (!accountId || !sessionId) return { blocked: false };
+  if (!accountId || !sessionId) return { blocked: true, reason: 'contexto de segurança do lembrete incompleto' };
   try {
     const snapshot = await db.doc(`users/${accountId}/sessions/${sessionId}`).get();
     const session = snapshot.exists
@@ -466,7 +466,9 @@ async function resolveSessionAutomationBlock({ accountId, reminder, routine, pha
     const patient = patientSnapshot?.exists
       ? { id: patientSnapshot.id, ...(patientSnapshot.data() || {}) }
       : null;
-    if (!snapshot.exists && !patient) return { blocked: false };
+    if (!patient || patient.status !== 'Ativo' || (!snapshot.exists && reminder?.isVirtual !== true)) {
+      return { blocked: true, reason: 'atendimento removido ou paciente indisponível na rechecagem' };
+    }
     const blocked = isWhatsappAutomationBlocked(session, {
       patient,
       reminderType: routine || reminder?.reminderType,
@@ -477,7 +479,7 @@ async function resolveSessionAutomationBlock({ accountId, reminder, routine, pha
       ? { blocked: true, reason: 'mensagem automática bloqueada na Agenda antes do envio' }
       : { blocked: false };
   } catch (error) {
-    console.error(`[${SENDER_NAME}] falha ao confirmar bloqueio da sessão ${sessionId}:`, error?.message || error);
+    console.error(`[${SENDER_NAME}] falha ao confirmar segurança do lembrete; envio bloqueado.`);
     return { blocked: true, reason: 'envio bloqueado por falha na confirmação de segurança da sessão' };
   }
 }

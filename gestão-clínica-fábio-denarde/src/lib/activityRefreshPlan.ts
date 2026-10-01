@@ -1,6 +1,7 @@
 import type { AppState, Patient, Payment, Session } from '../types';
 import type { ActivityMediaPackage } from './activityMediaPackages';
 import { sessionAllowsActivity } from '../../shared/sessionScheduling.js';
+import { isExplicitSessionAbsence } from '../../shared/neuroFlowState.js';
 
 export function getActivityMonitoringStartDate(state: Pick<AppState, 'settings'>): string {
   const configured = String(state.settings?.activityMediaMonitoringStart || '').trim().slice(0, 10);
@@ -9,7 +10,11 @@ export function getActivityMonitoringStartDate(state: Pick<AppState, 'settings'>
 export function selectActivityCandidateSessions(state: Pick<AppState, 'settings' | 'sessions'>): Session[] {
   const monitoringStart = getActivityMonitoringStartDate(state);
   if (!monitoringStart) return [];
-  return state.sessions.filter(session => String(session.date || '') >= monitoringStart && sessionAllowsActivity(session));
+  return state.sessions.filter(session => (
+    String(session.date || '') >= monitoringStart
+    && sessionAllowsActivity(session)
+    && !isExplicitSessionAbsence(session)
+  ));
 }
 
 export function selectActivityRefreshPackages(
@@ -38,6 +43,7 @@ function relevantSession(session: Session): unknown {
     time: session.time,
     type: session.type,
     status: session.status,
+    canonicalAbsence: isExplicitSessionAbsence(session),
     packageNumber: session.packageNumber,
     previousPackageNumber: session.previousPackageNumber,
     isBlocked: session.isBlocked,

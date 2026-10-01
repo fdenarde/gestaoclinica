@@ -1,6 +1,6 @@
 import { Payment, Patient, Session, type PackageContractSnapshot } from '../types';
 import type { PackageToleranceResolution } from '../types/packageTolerance';
-import { calculateCanonicalPackageFinancialSummary } from '../../shared/packageFinancialSummary.js';
+import { CLINIC_SESSIONS_PER_PACKAGE, calculateCanonicalPackageFinancialSummary } from '../../shared/packageFinancialSummary.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import { sessionConsumesPackage } from '../../shared/sessionScheduling.js';
 import {
@@ -12,7 +12,7 @@ import {
 export const PACKAGE_GROSS_VALUE = 1000;
 export const PARTNER_SHARE_RATE = 0.2;
 export const PACKAGE_NET_VALUE = PACKAGE_GROSS_VALUE * (1 - PARTNER_SHARE_RATE);
-export const SESSIONS_PER_PACKAGE = 10;
+export const SESSIONS_PER_PACKAGE = CLINIC_SESSIONS_PER_PACKAGE;
 
 export type FinancialStatus = 'QUITADO' | 'PARCIAL' | 'EM ABERTO' | 'ATRASADO' | 'EM TOLERÂNCIA' | 'TOLERÂNCIA VENCIDA' | 'SEM MOVIMENTAÇÃO';
 
@@ -140,4 +140,18 @@ export function calculatePackageFinancialSummary(
       summary.toleranceDisplayPackageNumber || 0,
     ) && completedPackageNumber > 1,
   };
+}
+
+// Derived from the same consumed occurrences and confirmed payments as Finance.
+export function getPackageRenewalNotice(summary: PackageFinancialSummary): string {
+  const total = summary.consumedSessionTotal;
+  if (total <= 0) return '';
+  const lastConsumedPackage = Math.ceil(total / SESSIONS_PER_PACKAGE);
+  const completed = total % SESSIONS_PER_PACKAGE === 0;
+  const unrenewed = summary.paidActivatedPackageNumber <= lastConsumedPackage;
+  if (unrenewed && (completed || lastConsumedPackage > summary.paidActivatedPackageNumber))
+    return 'Pacote encerrado — registre/confirme a renovação em Pagamentos.';
+  const count = summary.completedSessionsInCurrentPackage;
+  return count >= SESSIONS_PER_PACKAGE - 2
+    ? `Pacote chegando ao fim (${count}/${SESSIONS_PER_PACKAGE}) — conferir renovação.` : '';
 }

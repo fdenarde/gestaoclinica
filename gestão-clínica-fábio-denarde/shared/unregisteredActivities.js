@@ -1,3 +1,4 @@
+import { resolveActivitySessionDisclosure } from './activitySummary.js';
 import { getActivitySessionEndAt } from './activityGalleryStatus.js';
 import { buildActivityMediaPackageModel } from './activityMediaPackages.js';
 import {
@@ -6,6 +7,27 @@ import {
   normalizeGooglePhotosSessionIds,
 } from './googlePhotosAlbums.js';
 import { sessionAllowsActivity } from './sessionScheduling.js';
+import { isExplicitSessionAbsence } from './neuroFlowState.js';
+
+export const ACTIVITY_REGISTRATION_STATE = Object.freeze({
+  CONFIRMED_REGISTERED: 'CONFIRMED_REGISTERED',
+  CONFIRMED_UNREGISTERED: 'CONFIRMED_UNREGISTERED',
+  UNKNOWN: 'UNKNOWN',
+});
+
+export function classifyActivityRegistration({
+  mediaReadComplete = false,
+  albumReadComplete = false,
+  hasActivityRecord = false,
+  hasGooglePhotosLink = false,
+  hasActiveJustification = false,
+} = {}) {
+  if (hasActivityRecord || hasGooglePhotosLink || hasActiveJustification) {
+    return ACTIVITY_REGISTRATION_STATE.CONFIRMED_REGISTERED;
+  }
+  if (!mediaReadComplete || !albumReadComplete) return ACTIVITY_REGISTRATION_STATE.UNKNOWN;
+  return ACTIVITY_REGISTRATION_STATE.CONFIRMED_UNREGISTERED;
+}
 
 const SAFE_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -83,6 +105,8 @@ export function buildUnregisteredActivityGroups({
   googlePhotosAlbums = [],
   monitoringStart = '',
   now = new Date(),
+  mediaReadComplete = false,
+  isAlbumReadComplete = (_patientId, _packageNumber) => Boolean(false),
 } = {}) {
   const nowAt = normalizeNow(now);
   const monitoringStartDate = normalizeDate(monitoringStart);
@@ -110,6 +134,7 @@ export function buildUnregisteredActivityGroups({
     for (const pkg of model.packages) {
       const realized = (pkg.sessions || []).filter(session => (
         sessionAllowsActivity(session)
+        && !isExplicitSessionAbsence(session)
         && normalizeDate(session?.date) >= monitoringStartDate
       ));
       const groups = groupGooglePhotosActivitySessions(realized, {
@@ -146,10 +171,22 @@ export function buildUnregisteredActivityGroups({
 
         const hasActivityRecord = records.some(record => recordMatchesGroup(record, group));
         const hasGooglePhotosLink = albums.some(album => albumMatchesGroup(album, group));
-        const hasActiveJustification = statusRecords.some(statusRecord => (
+        const hasSharedExplanation = groupSessions.every(session => {
+          const cards = albums.filter(card => String(card?.patientId || '') === patientId
+            && normalizeGooglePhotosSessionIds(card.sessionIds?.length ? card.sessionIds : [card.sessionId]).includes(String(session.id)));
+          return Boolean(resolveActivitySessionDisclosure({ session, cards }).shareableObservation);
+        });
+        const hasActiveJustification = hasSharedExplanation || statusRecords.some(statusRecord => (
           statusRecord?.justification?.active === true && statusMatchesGroup(statusRecord, group)
         ));
-        if (!hasActivityRecord && !hasGooglePhotosLink && !hasActiveJustification) result.push(group);
+        const registrationState = classifyActivityRegistration({
+          mediaReadComplete,
+          albumReadComplete: isAlbumReadComplete(patientId, pkg.number) === true,
+          hasActivityRecord,
+          hasGooglePhotosLink,
+          hasActiveJustification,
+        });
+        if (registrationState === ACTIVITY_REGISTRATION_STATE.CONFIRMED_UNREGISTERED) result.push(group);
       }
     }
   }

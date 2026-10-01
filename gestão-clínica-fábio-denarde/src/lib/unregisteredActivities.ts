@@ -61,14 +61,25 @@ export async function loadUnregisteredActivities(
       now,
     });
     const packagesToQuery = selectActivityRefreshPackages(packageModel.packages, candidateSessions);
-    const packageResults = await mapWithConcurrency(packagesToQuery, 3, pkg => listGooglePhotosAlbums({
-      patientId,
-      packageNumber: pkg.number,
-      scope: 'manage',
-      force: options.force,
-    }).catch(() => ({ albums: [] as GooglePhotosAlbum[] })));
+    const packageResults = await mapWithConcurrency(packagesToQuery, 3, async pkg => {
+      try {
+        const result = await listGooglePhotosAlbums({
+          patientId,
+          packageNumber: pkg.number,
+          scope: 'manage',
+          force: options.force,
+        });
+        if (!Array.isArray(result?.albums) || result.packageNumber !== pkg.number || result.scope !== 'manage') {
+          throw new Error('Resposta incompleta da galeria.');
+        }
+        return { packageNumber: pkg.number, albums: result.albums, complete: true };
+      } catch {
+        return { packageNumber: pkg.number, albums: [] as GooglePhotosAlbum[], complete: false };
+      }
+    });
     return {
-      albums: packageResults.flatMap(result => Array.isArray(result.albums) ? result.albums : []),
+      patientId,
+      packageResults,
     };
   });
 
@@ -88,7 +99,18 @@ export async function loadUnregisteredActivities(
       status: 'active',
     } as ActivityRecord];
   });
-  const googlePhotosAlbums = patientBundles.flatMap(bundle => bundle.albums) as GooglePhotosAlbum[];
+  const completeAlbumPackages = new Map<string, Set<number>>();
+  let incompleteAlbumReads = 0;
+  const googlePhotosAlbums = patientBundles.flatMap(bundle => bundle.packageResults.flatMap(result => {
+    if (!result.complete) {
+      incompleteAlbumReads += 1;
+      return [];
+    }
+    const packages = completeAlbumPackages.get(bundle.patientId) || new Set<number>();
+    packages.add(result.packageNumber);
+    completeAlbumPackages.set(bundle.patientId, packages);
+    return result.albums;
+  })) as GooglePhotosAlbum[];
   const groups = buildUnregisteredActivityGroups({
     patients: state.patients,
     sessions: state.sessions,
@@ -98,7 +120,17 @@ export async function loadUnregisteredActivities(
     googlePhotosAlbums,
     monitoringStart,
     now,
+    mediaReadComplete: true,
+    isAlbumReadComplete: (patientId: string, packageNumber: number) => (
+      completeAlbumPackages.get(patientId)?.has(packageNumber) === true
+    ),
   });
 
-  return { groups, monitoringStart, warning: '' };
+  return {
+    groups,
+    monitoringStart,
+    warning: incompleteAlbumReads > 0
+      ? 'Não foi possível confirmar o estado de algumas atividades. Elas não foram classificadas como não registradas; tente atualizar.'
+      : '',
+  };
 }

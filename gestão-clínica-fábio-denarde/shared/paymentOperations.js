@@ -68,6 +68,7 @@ export function preparePaymentCreation({
 
   const existing = payments.find(payment => String(payment.operationKey || '') === normalizedOperationKey);
   if (existing) {
+    if (String(existing.patientId || '') !== patientId) throw new Error('A operação já pertence a outro paciente.');
     return {
       payment: existing,
       expense: expenses.find(expense => expense.pagamento_origem_id === existing.id) || null,
@@ -78,50 +79,54 @@ export function preparePaymentCreation({
   }
 
   const amount = normalizeAmount(input.amount);
-  const packageNumber = normalizePackageNumber(input.packageNumber);
+  const unlinked = input.packageLinkStatus === 'unlinked';
+  const packageNumber = unlinked ? undefined : normalizePackageNumber(input.packageNumber);
   const date = requiredText(input.date, 'Data do pagamento').slice(0, 10);
   const nowDate = String(now).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + 'T12:00:00Z')) || new Date(date + 'T12:00:00Z').toISOString().slice(0, 10) !== date) throw new Error('A data do pagamento é inválida.');
   if (date > nowDate) throw new Error('A data do pagamento não pode estar no futuro.');
-  const packageValueResolver = currentPackageNumber => resolvePackageContract(patient, currentPackageNumber).contractValue;
+  if (!unlinked) {
+    const packageValueResolver = currentPackageNumber => resolvePackageContract(patient, currentPackageNumber).contractValue;
 
-  const activatedPackage = getActivatedPackageNumber(payments, {
-    patientId,
-    throughDate: nowDate,
-    packageValueResolver,
-  });
-  const toleranceRecord = getLatestPackageTolerance(patient, packageNumber);
-  const hasExplicitTolerance = Boolean(toleranceRecord && toleranceRecord.status !== 'closed');
-  if (packageNumber > activatedPackage + 1 && !hasExplicitTolerance) {
-    throw new Error('O pagamento não pode ser associado a um pacote futuro sem liberação temporária registrada.');
-  }
-  if (packageNumber > 1) {
-    const previousSummary = getPackagePaymentSummary(payments, packageNumber - 1, {
+    const activatedPackage = getActivatedPackageNumber(payments, {
       patientId,
       throughDate: nowDate,
       packageValueResolver,
     });
-    if (previousSummary.pendingAmount > 0 && !hasExplicitTolerance) {
-      throw new Error('O pacote anterior ainda possui saldo pendente.');
+    const toleranceRecord = getLatestPackageTolerance(patient, packageNumber);
+    const hasExplicitTolerance = Boolean(toleranceRecord && toleranceRecord.status !== 'closed');
+    if (packageNumber > activatedPackage + 1 && !hasExplicitTolerance) {
+      throw new Error('O pagamento não pode ser associado a um pacote futuro sem liberação temporária registrada.');
     }
-  }
-  const summary = getPackagePaymentSummary(payments, packageNumber, {
-    patientId,
-    throughDate: nowDate,
-    packageValueResolver,
-  });
-  if (amount > summary.pendingAmount) {
-    throw new Error(`O valor ultrapassa o saldo pendente de R$ ${summary.pendingAmount.toFixed(2)}.`);
-  }
-  if (
-    String(patient.paymentModal || '').includes('Parcelado')
-    && (input.installment === '1ª parcela' || input.installment === '2ª parcela')
-    && amount > summary.packageValue / 2
-  ) {
-    throw new Error('O valor ultrapassa o saldo permitido para esta parcela.');
+    if (packageNumber > 1) {
+      const previousSummary = getPackagePaymentSummary(payments, packageNumber - 1, {
+        patientId,
+        throughDate: nowDate,
+        packageValueResolver,
+      });
+      if (previousSummary.pendingAmount > 0 && !hasExplicitTolerance) {
+        throw new Error('O pacote anterior ainda possui saldo pendente.');
+      }
+    }
+    const summary = getPackagePaymentSummary(payments, packageNumber, {
+      patientId,
+      throughDate: nowDate,
+      packageValueResolver,
+    });
+    if (amount > summary.pendingAmount) {
+      throw new Error(`O valor ultrapassa o saldo pendente de R$ ${summary.pendingAmount.toFixed(2)}.`);
+    }
+    if (
+      String(patient.paymentModal || '').includes('Parcelado')
+      && (input.installment === '1ª parcela' || input.installment === '2ª parcela')
+      && amount > summary.packageValue / 2
+    ) {
+      throw new Error('O valor ultrapassa o saldo permitido para esta parcela.');
+    }
   }
   const candidate = {
     patientId,
-    packageNumber,
+    ...(unlinked ? { packageLinkStatus: 'unlinked' } : { packageNumber }),
     amount,
     date,
     installment: requiredText(input.installment, 'Parcela'),

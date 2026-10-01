@@ -21,7 +21,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { Patient, Payment, Session } from '../../types';
+import type { AppState, Patient, Payment, Session } from '../../types';
 import {
   ACTIVITY_RECORD_CATEGORIES,
   type ActivityRecordCategory,
@@ -74,13 +74,20 @@ import {
   resolveProfessionalGalleryPatientIdentity,
 } from '../../../shared/galleryPatientCards.js';
 import {
-  buildAccumulatedActivitySummary,
+  buildActivitySummaryPlan,
+  completeActivitySummary,
+  validateActivitySummaryDraft,
+  formatActivitySummaryDate,
   getAccumulatedActivitySummaryLimitSessionId,
   isAccumulatedActivitySummarySourceComplete,
 } from '../../../shared/activitySummary.js';
 import { buildActivityGalleryMediaPresentation } from '../../../shared/activityGalleryPresentation.js';
+import { buildPackageTimeline, isExplicitSessionAbsence } from '../../../shared/neuroFlowState.js';
+import { buildCanonicalAbsencePatch } from '../../../shared/noReplacementReasons.js';
 
 interface Props {
+  active?: boolean;
+  navigationKey?: number;
   patients: Patient[];
   sessions: Session[];
   payments: Payment[];
@@ -88,6 +95,7 @@ interface Props {
   initialPatientId?: string | null;
   initialSessionId?: string | null;
   initialPackageNumber?: number | null;
+  onUpdate: (newState: Partial<AppState>) => Promise<boolean>;
 }
 
 const EMPTY_PERMISSIONS: GooglePhotosAlbumCapabilities = {
@@ -113,6 +121,9 @@ const buildPackageKey = buildGooglePhotosAlbumPackageKey as (options: {
 const normalizeAlbumUrl = normalizeGooglePhotosAlbumUrl as (value: string) => string | null;
 const getAlbumDisplayTitle = getGooglePhotosAlbumDisplayTitle as (album: GooglePhotosAlbum) => string;
 type SaveStatus = 'idle' | 'dirty' | 'saving' | 'invalid' | 'error';
+type SummaryPlan = ReturnType<typeof buildActivitySummaryPlan>;
+type SummaryEntry = SummaryPlan['entries'][number];
+type SummaryDraft = { note: string };
 
 function todayIsoDate(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
@@ -304,6 +315,8 @@ function buildEditorInitialCard(card: GooglePhotosAlbum): GooglePhotosAlbum {
 }
 
 export default function ProfessionalGooglePhotosGallery({
+  active = true,
+  navigationKey = 0,
   patients,
   sessions,
   payments,
@@ -311,6 +324,7 @@ export default function ProfessionalGooglePhotosGallery({
   initialPatientId = null,
   initialSessionId = null,
   initialPackageNumber = null,
+  onUpdate,
 }: Props) {
   const [patientOptions, setPatientOptions] = useState<Array<{ id: string; name: string }>>(() => patients.map(patient => ({ id: patient.id, name: patient.name || patient.fullName })));
   const [remoteSessions, setRemoteSessions] = useState<Session[]>([]);
@@ -331,12 +345,19 @@ export default function ProfessionalGooglePhotosGallery({
   const [creatingCardIds, setCreatingCardIds] = useState<string[]>([]);
   const [quickCreateCardId, setQuickCreateCardId] = useState('');
   const [copyingSummaryCardId, setCopyingSummaryCardId] = useState('');
+  const [summaryTarget, setSummaryTarget] = useState<{ patientId: string; packageNumber: number; throughSessionId: string; generation: number; pending: SummaryEntry[] } | null>(null);
+  const [summaryDrafts, setSummaryDrafts] = useState<Record<string, SummaryDraft>>({});
+  const [summaryResults, setSummaryResults] = useState<Record<string, string>>({});
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const summaryBusyRef = useRef(false);
+  const summaryContextRef = useRef('');
   const [cardsLoadedForPackage, setCardsLoadedForPackage] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [activityStatusBySession, setActivityStatusBySession] = useState<Record<string, ActivityGalleryStatusRecord>>({});
   const [activityMonitoringStart, setActivityMonitoringStart] = useState<string | null>(null);
   const [activityStatusLoading, setActivityStatusLoading] = useState(false);
+  const [activityStatusError, setActivityStatusError] = useState(false);
   const [noMediaTarget, setNoMediaTarget] = useState<{ card: GooglePhotosAlbum; sessionId: string; status: ActivityGalleryStatusRecord | null } | null>(null);
   const [noMediaReason, setNoMediaReason] = useState<ActivityGalleryJustificationReasonCode>('responsible_accompanied');
   const [noMediaNote, setNoMediaNote] = useState('');
@@ -352,6 +373,8 @@ export default function ProfessionalGooglePhotosGallery({
   const initialSessionHandledRef = useRef(false);
   const editorBaselineRef = useRef<Record<string, GooglePhotosAlbum>>({});
   const copyingSummaryCardIdRef = useRef('');
+  const loadGenerationRef = useRef(0);
+  const activityStatusContextRef = useRef('');
 
   useEffect(() => {
     if (patients.length > 0) {
@@ -390,7 +413,11 @@ export default function ProfessionalGooglePhotosGallery({
 
   const sessionSource = useMemo(() => {
     const local = sessions.filter(session => session.patientId === selectedPatientId);
-    return local.length > 0 ? local : remoteSessions.filter(session => session.patientId === selectedPatientId);
+    const merged = new Map(local.map(session => [session.id, session]));
+    remoteSessions
+      .filter(session => session.patientId === selectedPatientId)
+      .forEach(session => merged.set(session.id, { ...merged.get(session.id), ...session }));
+    return [...merged.values()];
   }, [remoteSessions, selectedPatientId, sessions]);
 
   const packageModel = useMemo(() => buildActivityMediaPackageModel({
@@ -418,21 +445,31 @@ export default function ProfessionalGooglePhotosGallery({
 
   useEffect(() => {
     if (!selectedPatientId || !currentPackageNumber) {
+      activityStatusContextRef.current = '';
       setActivityStatusBySession({});
       setActivityMonitoringStart(null);
+      setActivityStatusLoading(false);
+      setActivityStatusError(false);
       return undefined;
     }
     let active = true;
+    const contextKey = JSON.stringify([selectedPatientId, currentPackageNumber]);
     setActivityStatusLoading(true);
+    setActivityStatusError(false);
+    if (activityStatusContextRef.current !== contextKey) {
+      setActivityStatusBySession({});
+      setActivityMonitoringStart(null);
+    }
     void getProfessionalActivityGallery({
       patientId: selectedPatientId,
       status: 'all',
       archive: 'all',
       page: 1,
       pageSize: 50,
-    })
+    }, { force: false })
       .then(result => {
         if (!active) return;
+          activityStatusContextRef.current = contextKey;
           const records = result.items.flatMap(item => item.sessions);
           setActivityMonitoringStart(result.monitoringStart);
           setActivityStatusBySession(Object.fromEntries(
@@ -453,7 +490,7 @@ export default function ProfessionalGooglePhotosGallery({
         ));
       })
       .catch(() => {
-        // A status read failure must not block the existing Google Photos flow.
+        if (active) setActivityStatusError(true);
       })
       .finally(() => {
         if (active) setActivityStatusLoading(false);
@@ -474,8 +511,8 @@ export default function ProfessionalGooglePhotosGallery({
   }, [availablePackageNumbers, initialPackageNumber, naturalCurrentPackageNumber, selectedPatientId]);
 
   const packageSessions = useMemo(
-    () => (currentPackage?.sessions || []).slice().sort((left, right) => sessionSortKey(left).localeCompare(sessionSortKey(right))),
-    [currentPackage?.sessions],
+    () => buildPackageTimeline(sessionSource, selectedPatientId, currentPackageNumber) as Session[],
+    [currentPackageNumber, selectedPatientId, sessionSource],
   );
 
   const virtualCards = useMemo(() => (
@@ -499,7 +536,7 @@ export default function ProfessionalGooglePhotosGallery({
   ), [draftCards, persistedCards, removedCardIds, virtualCards]);
 
   const summaryReadyByCard = useMemo(() => new Map(
-    allCards.map(card => [card.id, cardsLoadedForPackage && isAccumulatedActivitySummarySourceComplete({
+    allCards.map(card => [card.id, cardsLoadedForPackage && !loadingSessions && !activityStatusLoading && !activityStatusError && !error && isAccumulatedActivitySummarySourceComplete({
       patientId: selectedPatientId,
       sessions: packageSessions,
       albums: allCards,
@@ -509,7 +546,21 @@ export default function ProfessionalGooglePhotosGallery({
         sessions: packageSessions,
       }),
     })]),
-  ), [allCards, cardsLoadedForPackage, currentPackageNumber, packageSessions, selectedPatientId]);
+  ), [allCards, cardsLoadedForPackage, currentPackageNumber, packageSessions, selectedPatientId, loadingSessions, activityStatusLoading, activityStatusError, error]);
+
+  // Only confirmed cards may supply shared links/observations; editor drafts are not evidence.
+  const summaryCards = useMemo(() => mergeGooglePhotosAlbumCards({
+    virtualCards: virtualCards, persistedCards, draftCards: [], removedCardIds: [],
+  }) as GooglePhotosAlbum[], [virtualCards, persistedCards]);
+  const summarySourcesReady = cardsLoadedForPackage && !loading && !loadingSessions
+    && !activityStatusLoading && !activityStatusError && !error;
+  const summarySourcesRef = useRef({ packageSessions, summaryCards, activityStatusBySession, sessions, ready: summarySourcesReady });
+  summarySourcesRef.current = { packageSessions, summaryCards, activityStatusBySession, sessions, ready: summarySourcesReady };
+  summaryContextRef.current = JSON.stringify([selectedPatientId, currentPackageNumber, navigationKey, active]);
+
+  useEffect(() => {
+    if (!summaryBusyRef.current) setSummaryTarget(null);
+  }, [selectedPatientId, currentPackageNumber, navigationKey, active]);
 
   const effectiveSessionHistory = useMemo(() => buildEffectiveSessionHistory(sessionSource, {
     patientId: selectedPatientId,
@@ -669,30 +720,32 @@ export default function ProfessionalGooglePhotosGallery({
     permissionsRef.current = permissions;
   }, [currentPackageNumber, permissions, selectedPatientId]);
 
-  const loadSessionsIfNeeded = useCallback(async () => {
-    if (!selectedPatientId) return;
-    const hasLocal = sessions.some(session => session.patientId === selectedPatientId);
-    const hasRemote = remoteSessions.some(session => session.patientId === selectedPatientId);
-    if (hasLocal || hasRemote || loadingSessions) return;
-    setLoadingSessions(true);
-    try {
-      const loaded = await listGooglePhotosAlbumSessionOptions(selectedPatientId) as unknown as Session[];
-      setRemoteSessions(current => [
-        ...current.filter(session => session.patientId !== selectedPatientId),
-        ...loaded,
-      ]);
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível carregar as sessões do atendente.');
-    } finally {
-      setLoadingSessions(false);
-    }
-  }, [loadingSessions, remoteSessions, selectedPatientId, sessions]);
-
   useEffect(() => {
-    void loadSessionsIfNeeded();
-  }, [loadSessionsIfNeeded]);
+    if (!selectedPatientId) {
+      setLoadingSessions(false);
+      return undefined;
+    }
+    let active = true;
+    setLoadingSessions(true);
+    void listGooglePhotosAlbumSessionOptions(selectedPatientId)
+      .then(loaded => {
+        if (!active) return;
+        setRemoteSessions(current => [
+          ...current.filter(session => session.patientId !== selectedPatientId),
+          ...(loaded as unknown as Session[]),
+        ]);
+      })
+      .catch(caughtError => {
+        if (active) setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível carregar as sessões do atendente.');
+      })
+      .finally(() => {
+        if (active) setLoadingSessions(false);
+      });
+    return () => { active = false; };
+  }, [selectedPatientId]);
 
   const loadCards = useCallback(async (force = false) => {
+    const generation = ++loadGenerationRef.current;
     if (!selectedPatientId || !currentPackageNumber) {
       setPersistedCards([]);
       setCardsLoadedForPackage(false);
@@ -708,6 +761,7 @@ export default function ProfessionalGooglePhotosGallery({
         scope: 'manage',
         force,
       });
+      if (generation !== loadGenerationRef.current) return;
       setPersistedCards(result.albums);
       setCardsLoadedForPackage(true);
       setPermissions(result.permissions);
@@ -742,9 +796,12 @@ export default function ProfessionalGooglePhotosGallery({
       editorBaselineRef.current = {};
       setSaveStatus('idle');
     } catch (caughtError) {
+      if (generation !== loadGenerationRef.current) return;
       setError(caughtError instanceof Error ? caughtError.message : 'Não foi possível carregar os cards do pacote.');
     } finally {
-      setLoading(false);
+      if (generation === loadGenerationRef.current) {
+        setLoading(false);
+      }
     }
   }, [currentPackageNumber, selectedPatientId]);
 
@@ -752,56 +809,128 @@ export default function ProfessionalGooglePhotosGallery({
     void loadCards();
   }, [loadCards]);
 
+  const makeSummaryPlan = (patientId: string, packageNumber: number, throughSessionId: string) => {
+    const source = summarySourcesRef.current;
+    return buildActivitySummaryPlan({ patientId, patientName: selectedPatientName, packageNumber, throughSessionId,
+      sessions: source.packageSessions, albums: source.summaryCards, statusBySession: source.activityStatusBySession,
+      writableAbsenceSessionIds: source.sessions.filter(session => isExplicitSessionAbsence(session)).map(session => session.id) });
+  };
+
   const copyAccumulatedSummary = async (card: GooglePhotosAlbum) => {
-    if (copyingSummaryCardId || copyingSummaryCardIdRef.current || !selectedPatientId) return;
-    const patientId = selectedPatientId;
+    if (copyingSummaryCardIdRef.current || summaryBusyRef.current || !summarySourcesRef.current.ready || !summaryReadyByCard.get(card.id)) return;
+    const throughSessionId = getAccumulatedActivitySummaryLimitSessionId({ card, sessions: packageSessions });
+    if (!throughSessionId) return;
+    const context = summaryContextRef.current;
+    const plan = makeSummaryPlan(selectedPatientId, currentPackageNumber, throughSessionId);
+    if (!plan.sourceComplete) return;
+    if (plan.pending.length) {
+      setSummaryDrafts(Object.fromEntries(plan.pending.map(entry => [entry.sessionId, { note: entry.note }])));
+      setSummaryResults({});
+      setSummaryTarget({ patientId: selectedPatientId, packageNumber: currentPackageNumber, throughSessionId,
+        generation: loadGenerationRef.current, pending: plan.pending });
+      return;
+    }
     copyingSummaryCardIdRef.current = card.id;
     setCopyingSummaryCardId(card.id);
     try {
-      const throughSessionId = getAccumulatedActivitySummaryLimitSessionId({
-        card,
-        sessions: packageSessions,
-      });
-      if (!throughSessionId) {
-        showToast('Não foi possível identificar a sessão selecionada.', 'error');
-        return;
-      }
-      if (!isAccumulatedActivitySummarySourceComplete({
-        patientId,
-        sessions: packageSessions,
-        albums: allCards,
-        packageNumber: currentPackageNumber,
-        throughSessionId,
-      })) {
-        showToast('O resumo ainda não está completo nesta galeria. Aguarde o carregamento dos cards.', 'error');
-        return;
-      }
-      const summary = buildAccumulatedActivitySummary({
-        patientId,
-        patientName: selectedPatientName,
-        sessions: packageSessions,
-        albums: allCards,
-        packageNumber: currentPackageNumber,
-        throughSessionId,
-      });
-      if (!summary) {
-        showToast('Nenhum link válido de atividade foi encontrado até esta sessão.', 'error');
-        return;
-      }
-      await copyTextToClipboard(summary);
-      showToast('Resumo copiado', 'success');
-    } catch (caughtError) {
-      console.error('Falha ao copiar resumo acumulado de atividades:', caughtError);
-      showToast('Não foi possível copiar o resumo. Tente novamente ou copie o texto manualmente.', 'error');
+      if (context !== summaryContextRef.current) return;
+      await copyTextToClipboard(plan.summary);
+      showToast('Resumo completo copiado', 'success');
+    } catch {
+      showToast('Não foi possível copiar o resumo.', 'error');
     } finally {
-      if (copyingSummaryCardIdRef.current === card.id) {
-        copyingSummaryCardIdRef.current = '';
-        setCopyingSummaryCardId('');
+      copyingSummaryCardIdRef.current = '';
+      setCopyingSummaryCardId('');
+    }
+  };
+
+  const saveAndCopySummary = async () => {
+    if (!summaryTarget || summaryBusyRef.current || !permissions.canEdit || saving || noMediaBusy) return;
+    const target = summaryTarget;
+    const context = summaryContextRef.current;
+    const isCurrent = () => context === summaryContextRef.current && target.patientId === selectedPatientIdRef.current
+      && target.packageNumber === currentPackageNumberRef.current && target.generation === loadGenerationRef.current
+      && summarySourcesRef.current.ready && permissionsRef.current.canEdit;
+    if (!isCurrent()) { setSummaryTarget(null); return; }
+    summaryBusyRef.current = true;
+    setSummaryBusy(true);
+    setSummaryResults(current => ({ ...current, general: '' }));
+    // Keep confirmations separate from renders/refreshes while the operation is in flight.
+    const confirmedSessions = new Map<string, Session>();
+    const confirmedStatuses: Record<string, ActivityGalleryStatusRecord> = {};
+    const revalidate = () => {
+      const source = summarySourcesRef.current;
+      return buildActivitySummaryPlan({ patientId: target.patientId, patientName: selectedPatientName, packageNumber: target.packageNumber,
+        throughSessionId: target.throughSessionId, albums: source.summaryCards,
+        writableAbsenceSessionIds: source.sessions.filter(session => isExplicitSessionAbsence(session)).map(session => session.id),
+        sessions: source.packageSessions.map(session => confirmedSessions.has(session.id)
+          ? { ...session, ...confirmedSessions.get(session.id) } : session),
+        statusBySession: { ...source.activityStatusBySession, ...confirmedStatuses } });
+    };
+    try {
+      const result = await completeActivitySummary({
+        plan: revalidate(), drafts: summaryDrafts, isCurrent, revalidate, copy: copyTextToClipboard,
+        onSaved: (sessionId: string) => setSummaryResults(current => ({ ...current, [sessionId]: 'Salvo e confirmado' })),
+        saveEntry: async (entry: SummaryEntry, draft: SummaryDraft & { reasonCode: string }) => {
+          if (entry.kind === 'absence') {
+            const source = summarySourcesRef.current;
+            const local = confirmedSessions.get(entry.sessionId) || source.sessions.find(session => session.id === entry.sessionId);
+            if (!local || local.patientId !== target.patientId || !isExplicitSessionAbsence(local)) throw new Error('Canonical source unavailable');
+            if (String(local.noReplacementObservation || '').trim() && String(local.noReplacementObservation).trim() !== draft.note)
+              throw new Error('Existing observation changed');
+            if (local.noReplacementReasonCode && local.noReplacementReasonCode !== draft.reasonCode)
+              throw new Error('Existing reason changed');
+            const patch = buildCanonicalAbsencePatch(local, { reasonCode: draft.reasonCode, observation: draft.note,
+              changedBy: currentUserName || 'Profissional', status: local.status });
+            // Do not change status, package consumption or existing clinical/private fields.
+            const confirmed = { ...local, noReplacementObservation: patch.noReplacementObservation,
+              noReplacementRecordedAt: patch.noReplacementRecordedAt, noReplacementRecordedBy: patch.noReplacementRecordedBy,
+              noReplacementHistory: patch.noReplacementHistory } as Session;
+            const update = source.sessions.map(session => confirmedSessions.get(session.id) || session)
+              .map(session => session.id === entry.sessionId ? confirmed : session);
+            if (await onUpdate({ sessions: update }) !== true) throw new Error('Persistence not confirmed');
+            confirmedSessions.set(entry.sessionId, confirmed);
+            if (isCurrent()) {
+              setRemoteSessions(current => current.some(session => session.id === entry.sessionId)
+                ? current.map(session => session.id === entry.sessionId ? confirmed : session) : [...current, confirmed]);
+              summarySourcesRef.current = { ...summarySourcesRef.current,
+                sessions: update,
+                packageSessions: summarySourcesRef.current.packageSessions.map(session => session.id === entry.sessionId ? { ...session, ...confirmed } : session) };
+            }
+          } else {
+            const status = await saveActivitySessionNoMediaJustification({ patientId: target.patientId,
+              sessionId: entry.sessionId, reason: draft.reasonCode as ActivityGalleryJustificationReasonCode, note: draft.note });
+            if (status.sessionId !== entry.sessionId || status.patientId !== target.patientId || !status.justification?.active
+              || status.justification.reason !== draft.reasonCode || status.justification.note.trim() !== draft.note.trim())
+              throw new Error('Persistence not confirmed');
+            confirmedStatuses[entry.sessionId] = status;
+            if (isCurrent()) {
+              setActivityStatusBySession(current => ({ ...current, [entry.sessionId]: status }));
+              summarySourcesRef.current = { ...summarySourcesRef.current,
+                activityStatusBySession: { ...summarySourcesRef.current.activityStatusBySession, [entry.sessionId]: status } };
+            }
+          }
+          return true;
+        },
+      });
+      if (result.ok) {
+        setSummaryTarget(null);
+        showToast('Resumo completo copiado', 'success');
+      } else {
+        setSummaryResults(current => ({ ...current, [result.sessionId || 'general']: result.error }));
       }
+    } catch {
+      setSummaryResults(current => ({ ...current, general: 'Não foi possível copiar. As confirmações de salvamento foram preservadas.' }));
+    } finally {
+      summaryBusyRef.current = false;
+      setSummaryBusy(false);
+      if (!isCurrent()) setSummaryTarget(null);
     }
   };
 
   const selectPatient = (patientId: string) => {
+    loadGenerationRef.current += 1;
+    activityStatusContextRef.current = '';
     setSelectedPatientId(patientId);
     setSelectedPackageNumber(0);
     setQuickCreateCardId('');
@@ -823,6 +952,8 @@ export default function ProfessionalGooglePhotosGallery({
     if (!availablePackageNumbers.includes(packageNumber) || packageNumber === currentPackageNumber) return;
     if (hasLocalChanges && !window.confirm('Existem alterações não salvas neste pacote. Deseja descartá-las e trocar de pacote?')) return;
     setSelectedPackageNumber(packageNumber);
+    loadGenerationRef.current += 1;
+    activityStatusContextRef.current = '';
     setQuickCreateCardId('');
     setPersistedCards([]);
     setCardsLoadedForPackage(false);
@@ -1177,6 +1308,8 @@ export default function ProfessionalGooglePhotosGallery({
     if (savingRef.current) return;
     if (!confirmDiscardChanges()) return;
     setSelectedPatientId('');
+    loadGenerationRef.current += 1;
+    activityStatusContextRef.current = '';
     setQuickCreateCardId('');
     setPersistedCards([]);
     setDraftCards({});
@@ -1771,6 +1904,44 @@ export default function ProfessionalGooglePhotosGallery({
           <div><p className="font-black">Economia e privacidade</p><p className="mt-1">Cards vazios ficam apenas na tela. O salvamento grava um único documento do pacote e não carrega fotos, vídeos, miniaturas ou metadados remotos.</p></div>
         </div>
       </section>}
+
+      <Modal
+        isOpen={Boolean(summaryTarget)}
+        onClose={() => !summaryBusyRef.current && setSummaryTarget(null)}
+        title="Complete as sessões antes de copiar"
+        width="max-w-2xl"
+        closeDisabled={summaryBusy}
+      >
+        {summaryTarget && <div className="space-y-4">
+          <p className="text-sm text-clinic-text-muted">Algumas sessões não possuem link nem motivo / observação compartilhável. Preencha a explicação destinada ao responsável. Conteúdo Somente equipe não será compartilhado.</p>
+          <p role="status" className="text-sm font-bold">{summaryTarget.pending.filter(entry =>
+            summaryResults[entry.sessionId] !== 'Salvo e confirmado' && validateActivitySummaryDraft(entry, summaryDrafts[entry.sessionId])).length} sessões precisam de revisão</p>
+          {summaryTarget.pending.map(entry => {
+            const draft = summaryDrafts[entry.sessionId] || { note: '' };
+            const confirmed = summaryResults[entry.sessionId] === 'Salvo e confirmado';
+            return <div key={entry.sessionId} className="space-y-3 rounded-xl border border-clinic-border p-4">
+              <p className="font-bold">Sessão {entry.number} — {formatActivitySummaryDate(entry.date)} • {entry.time}</p>
+              <p className="text-xs text-clinic-text-muted">{entry.problem}</p>
+              <label className="block text-sm font-bold">Motivo / observação
+                <textarea aria-label={`Observação compartilhável da sessão ${entry.number}`} value={draft.note} maxLength={1000}
+                  disabled={summaryBusy || confirmed || entry.blocked}
+                  onChange={event => setSummaryDrafts(current => ({ ...current, [entry.sessionId]: { ...draft, note: event.target.value } }))}
+                  placeholder="Somente informação adequada ao responsável."
+                  className="mt-1 min-h-24 w-full rounded-lg border border-clinic-border bg-clinic-bg p-3" />
+              </label>
+              {summaryResults[entry.sessionId] && <p role="status" className="text-sm font-bold">{summaryResults[entry.sessionId]}</p>}
+            </div>;
+          })}
+          {summaryResults.general && <p role="alert" className="text-sm font-bold text-status-red-text">{summaryResults.general}</p>}
+          <div className="flex flex-wrap justify-end gap-3">
+            <button type="button" disabled={summaryBusy} onClick={() => setSummaryTarget(null)} className="rounded-lg border border-clinic-border px-4 py-3 text-sm font-bold">Cancelar</button>
+            <button type="button" onClick={() => void saveAndCopySummary()}
+              disabled={summaryBusy || saving || noMediaBusy || !summarySourcesReady || !permissions.canEdit || summaryTarget.pending.some(entry =>
+                summaryResults[entry.sessionId] !== 'Salvo e confirmado' && Boolean(validateActivitySummaryDraft(entry, summaryDrafts[entry.sessionId])))}
+              className="rounded-lg bg-purple-700 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">{summaryBusy ? 'Salvando e confirmando...' : 'Salvar e copiar resumo'}</button>
+          </div>
+        </div>}
+      </Modal>
 
       <Modal
         isOpen={Boolean(noMediaTarget)}

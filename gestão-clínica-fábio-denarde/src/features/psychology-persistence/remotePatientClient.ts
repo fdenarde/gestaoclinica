@@ -1,3 +1,4 @@
+import { capturePsychologyBaseline } from '../../../shared/psychologyConcurrency.js';
 import {
   createPsychologyScope,
   normalizePsychologyStore,
@@ -131,12 +132,28 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
       locations: effectiveLocations,
       settings: { ...(settings?.settings || {}), services: effectiveServices, locations: effectiveLocations },
     }, psychologyScope);
-    return {
+    const result = {
       ...next,
       services: effectiveServices,
       locations: effectiveLocations,
       settings: { ...next.settings, services: effectiveServices, locations: effectiveLocations },
     };
+    // Normalized defaults are UI state, not user edits. Keep the original wire
+    // baseline while comparing later edits with the normalized form snapshot.
+    const collections = [
+      [result.patients, patients], [result.sessions, sessions],
+      [result.personalCommitments, personalAppointments], [result.charges, charges],
+      [result.payments, payments], [result.expenses, expenses],
+      [result.sessionPackages, packages], [result.services, services], [result.locations, locations],
+    ] as Array<[Array<{ id: string }>, ReadonlyArray<{ id: string }>]>;
+    for (const [uiRecords, wireRecords] of collections) {
+      for (const record of uiRecords) {
+        const wire = wireRecords.find(item => item.id === record.id);
+        if (wire) capturePsychologyBaseline(record, wire);
+      }
+    }
+    if (settings) capturePsychologyBaseline(result.settings, settings, { settings: result.settings });
+    return result;
   }
 
   async function loadBackupSnapshot(): Promise<PsychologyStore> {
@@ -177,7 +194,8 @@ export function createPsychologyRemotePatientClient(options: PsychologyRemotePat
   async function updateSettings(patch: Partial<PsychologySettings>): Promise<PsychologySettings> {
     const saved = await repositories.settings.update(scope, 'settings', patch as never);
     if (!saved) throw new Error('Os Ajustes da Psicologia não foram encontrados no provider remoto.');
-    return normalizePsychologySettings(saved.settings, createPsychologyScope(scope.professionalId), now());
+    const normalized = normalizePsychologySettings(saved.settings, createPsychologyScope(scope.professionalId), now());
+    return capturePsychologyBaseline(normalized, saved, { settings: normalized });
   }
 
   async function updateService(service: PsychologyService): Promise<PsychologyService> {

@@ -83,7 +83,9 @@ function buildPackageAllocations(rawPayments, options = {}) {
       return Number.isFinite(resolved) && resolved > 0 ? resolved : normalizedPackageValue;
     }
     : () => normalizedPackageValue;
-  const payments = getEligiblePayments(rawPayments, options);
+  // Explicitly unlinked receipts remain revenue, but never activate or fund a package.
+  // Missing metadata retains the legacy allocation contract.
+  const payments = getEligiblePayments(rawPayments, options).filter(payment => payment.packageLinkStatus !== 'unlinked');
   const allocations = new Map();
   const paymentIdsByPackage = new Map();
   let highestExplicitPackage = 0;

@@ -1,3 +1,4 @@
+import { PatientPackagesPaymentsDialog } from './Common/PatientPackagesPayments';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, SessionStatus, PaymentModal, Session, Reposition } from '../types';
 import { Users, Calendar, DollarSign, Clock, AlertTriangle, Info, CheckCircle, Check, X, ChevronDown, Monitor, ClipboardList, RefreshCw, Images, ShieldCheck, TimerReset } from 'lucide-react';
@@ -8,7 +9,7 @@ import { motion } from 'motion/react';
 import { showToast } from './Common/Toast';
 import { getSessionCycleLabel, getSessionCycleNumber, getSessionPresentationStatus, mergeSessionSequenceSource, sessionConsumesPackage } from '../lib/sessionSequence';
 import { isSessionRemovedFromAgenda } from '../../shared/sessionRemoval.js';
-import { calculatePackageFinancialSummary } from '../lib/financePackages';
+import { calculatePackageFinancialSummary, getPackageRenewalNotice } from '../lib/financePackages';
 import AccessRequestsAdminCard from './Auth/AccessRequestsAdminCard';
 import type { WhatsappOperationalReportState } from '../lib/whatsappOperationalReport';
 import WhatsappOperationalReportPanel from './WhatsApp/WhatsappOperationalReportPanel';
@@ -51,6 +52,7 @@ export default function Dashboard({
   packageToleranceAlerts = [],
   onOpenFinance,
 }: DashboardProps) {
+  const [packageFlow, setPackageFlow] = useState<{ patientId: string; action: 'package' | 'payment' } | null>(null);
   const virtualActionLocksRef = useRef<Set<string>>(new Set());
   const manualActionLocksRef = useRef<Set<string>>(new Set());
   const [whatsappReportOpen, setWhatsappReportOpen] = useState(false);
@@ -365,7 +367,7 @@ export default function Dashboard({
     return { activePatients, weeklySessions, monthlyPayments, pendingRepositions };
   }, [state]);
 
-  type AlertItem = { message: string; patientId?: string };
+  type AlertItem = { message: string; patientId?: string; renewal?: boolean };
   const alerts = useMemo(() => {
     const high: AlertItem[] = [];
     const medium: AlertItem[] = [];
@@ -395,8 +397,9 @@ export default function Dashboard({
       }
 
       // Rule: Package end suggestion
-      if (count >= 8 && count <= 10) {
-        medium.push({ message: `Pacote de ${patient.name} chegando ao fim (${count}/10) - sugerir renovação.`, patientId: patient.id });
+      const renewalNotice = getPackageRenewalNotice(financialSummary);
+      if (renewalNotice) {
+        medium.push({ message: `${patient.name}: ${renewalNotice}`, patientId: patient.id, renewal: renewalNotice.startsWith('Pacote encerrado') });
       }
 
       // Rule: Inactivity
@@ -541,6 +544,7 @@ export default function Dashboard({
 
   return (
     <div className="flex flex-col gap-6 py-6">
+      <PatientPackagesPaymentsDialog patientId={packageFlow?.patientId || null} state={state} onUpdate={onUpdate} actor="Administrador" action={packageFlow?.action} onClose={() => setPackageFlow(null)} />
       {absenceDecisionModal && (
         <PackageConsumptionDecisionModal
           isOpen={true}
@@ -673,7 +677,7 @@ export default function Dashboard({
           </div>
         )}
 
-        {unregisteredActivities.length > 0 && (
+        {!unregisteredActivitiesLoading && unregisteredActivities.length > 0 && (
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             {unregisteredActivities.map(activity => (
               <article key={activity.id} className="flex flex-col gap-3 rounded-xl border border-clinic-border bg-clinic-bg/55 p-3 sm:flex-row sm:items-center">
@@ -902,7 +906,8 @@ export default function Dashboard({
                 <span className="text-status-orange-text font-black text-[10px] tracking-tighter uppercase">Atenção</span>
                 <span className="text-clinic-text text-sm font-medium">{alert.message}</span>
               </div>
-              {alert.patientId && onNavigateToPatient && (
+              {alert.patientId && alert.renewal && <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setPackageFlow({ patientId: alert.patientId!, action: 'package' })} className="rounded-lg bg-clinic-primary px-3 py-2 text-xs font-bold text-white">Novo pacote</button><button type="button" onClick={() => setPackageFlow({ patientId: alert.patientId!, action: 'payment' })} className="rounded-lg border border-clinic-border px-3 py-2 text-xs font-bold">Registrar pagamento</button></div>}
+              {alert.patientId && !alert.renewal && onNavigateToPatient && (
                 <button onClick={() => onNavigateToPatient(alert.patientId!)} className="text-status-orange-text font-bold text-xs underline decoration-2 underline-offset-2 hover:opacity-70 transition-opacity">Visualizar</button>
               )}
             </div>

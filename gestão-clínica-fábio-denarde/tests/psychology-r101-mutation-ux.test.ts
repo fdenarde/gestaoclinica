@@ -47,7 +47,7 @@ const settings = { scope: { professionalId: scope.professionalId, context: scope
 Object.defineProperty(auth, 'currentUser', { configurable: true, get: () => ({ uid: 'r101-ux-user', getIdToken: async () => 'synthetic-token' }) });
 
 function response(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify({ ...(body as object), ...(status === 201 ? { persistenceStatus: 'SUCCESS' } : {}) }), { status, headers: { 'Content-Type': 'application/json', 'X-Psychology-Persistence-Version': '1' } });
 }
 
 function textContent(node: TestRenderer.ReactTestInstance): string {
@@ -67,6 +67,8 @@ test('R101 sessão atrasada mostra processamento, impede duplo envio e libera a 
     const method = String(init.method || 'GET');
     requests.push({ method, path: parsed.pathname });
     if (method === 'GET' && parsed.pathname.endsWith('/patients')) return response({ scope, items: [patient] });
+    if (method === 'GET' && parsed.pathname.endsWith('/services')) return response({ scope, items: [service] });
+    if (method === 'GET' && parsed.pathname.endsWith('/locations')) return response({ scope, items: [location] });
     if (method === 'GET' && parsed.pathname.endsWith('/sessions')) return response({ scope, items: [] });
     if (method === 'GET' && parsed.pathname.endsWith('/personal-appointments')) return response({ scope, items: [] });
     if (method === 'GET' && parsed.pathname.endsWith('/packages')) return response({ scope, items: [] });

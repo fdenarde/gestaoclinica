@@ -5,7 +5,8 @@ export interface PaymentCreationInput {
   expenses?: any[];
   input: {
     patientId: string;
-    packageNumber: number;
+    packageNumber?: number;
+    packageLinkStatus?: 'unlinked' | 'linked';
     amount: number;
     date: string;
     installment: string;

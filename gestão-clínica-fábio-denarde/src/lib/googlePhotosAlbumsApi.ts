@@ -336,6 +336,9 @@ export async function listGooglePhotosAlbumSessionOptions(patientId: string): Pr
   consumesPackage?: boolean;
   packageConsumptionDecisionRecorded?: boolean;
   source?: string;
+  noReplacementReasonCode?: string;
+  noReplacementReasonText?: string;
+  noReplacementObservation?: string;
 }>> {
   const params = new URLSearchParams({ mode: 'sessions', patientId });
   const result = await request<{ sessions: Array<{
@@ -350,6 +353,9 @@ export async function listGooglePhotosAlbumSessionOptions(patientId: string): Pr
     consumesPackage?: boolean;
     packageConsumptionDecisionRecorded?: boolean;
     source?: string;
+    noReplacementReasonCode?: string;
+    noReplacementReasonText?: string;
+    noReplacementObservation?: string;
   }> }>('GET', `?${params.toString()}`);
   return result.sessions;
 }

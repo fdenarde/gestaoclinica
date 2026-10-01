@@ -174,8 +174,11 @@ export interface Patient extends PatientRegistrationData {
   activityMediaAuthorization?: ActivityMediaAuthorization;
   packageTolerances?: PackageToleranceRecord[];
   packageContracts?: PackageContractSnapshot[];
+  /** Explicit registrations; legacy packages keep their existing numbering. */
+  packageRecords?: { id: string; packageNumber: number; sessionCount: number; startDate: string; operationKey: string; createdAt: string; createdBy: string }[];
   /** Silêncio global temporário dos lembretes para este atendente; ausente = WhatsApp ativo. */
   whatsappAutomationControl?: WhatsappAutomationControl;
+  whatsappReminderPreferences?: { dayBefore: boolean; sameDay: boolean };
   lastExternalRegistrationUpdate?: string;
   externalRegistrationHistory?: ExternalRegistrationHistoryItem[];
   reportPdfUrl?: string;
@@ -325,6 +328,7 @@ export interface Session {
   rescheduleHistory?: SessionRescheduleHistoryEntry[];
   durationMinutes?: number;
   whatsappAutomationControl?: WhatsappAutomationControl;
+  whatsappReminderPreferences?: { dayBefore: boolean; sameDay: boolean };
 }
 
 export interface Reposition {
@@ -343,6 +347,8 @@ export interface Payment {
   installment: '1ª parcela' | '2ª parcela' | 'Pagamento integral';
   method: 'Pix' | 'Dinheiro' | 'Transferência' | 'Outro';
   packageNumber?: number;
+  packageLinkStatus?: 'unlinked' | 'linked';
+  packageLinkHistory?: { packageNumber: number; operationKey: string; linkedAt: string; linkedBy: string }[];
   status?: 'active' | 'voided';
   operationKey?: string;
   createdAt?: string;

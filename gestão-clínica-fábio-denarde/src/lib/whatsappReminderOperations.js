@@ -1521,6 +1521,25 @@ export function createReminderDeliveryService({
   logger = console,
   shouldBlockReminder = null,
 } = {}) {
+  // Reuse the existing ledger across morning/afternoon and schedule changes.
+  // Never change its IDs, retry budget, windows or terminal-state semantics.
+  function modalityAlreadyHandled(candidate) {
+    const modality = type => type === 'AMANHA' ? 'dayBefore'
+      : ['HOJE_MANHA', 'HOJE_TARDE'].includes(type) ? 'sameDay' : '';
+    const key = modality(candidate.reminderType);
+    if (!key || !candidate.patientId) return false;
+    return Object.values(ledger.read().reminders || {}).some(entry => (
+      entry.id !== candidate.id && entry.accountId === candidate.accountId
+      && entry.patientId === candidate.patientId && entry.sessionDate === candidate.sessionDate
+      && modality(entry.reminderType || entry.routine) === key
+      && [REMINDER_LEDGER_STATUSES.CONFIRMED, REMINDER_LEDGER_STATUSES.ATTEMPTING, REMINDER_LEDGER_STATUSES.MANUAL].includes(entry.status)
+    ));
+  }
+  function skipHandledModality(candidate, attempts = 0) {
+    return ledger.upsertReminder(candidate.id, { ...candidate, status: REMINDER_LEDGER_STATUSES.SKIPPED,
+      blockedReason: 'modalidade de lembrete já tratada para este paciente nesta data', attempts });
+  }
+
   async function processReminder({ accountId, reminder, routine, routineDate, window, source = 'automatic' }) {
     const ledgerBase = normalizeReminderForLedger({ accountId, reminder, routine, routineDate, window, source });
     const previous = ledger.getReminder(ledgerBase.id);
@@ -1531,6 +1550,8 @@ export function createReminderDeliveryService({
         skippedReason: `status terminal existente: ${previous.status}`,
       };
     }
+
+    if (modalityAlreadyHandled(ledgerBase)) return skipHandledModality(ledgerBase, previous?.attempts || 0);
 
     ledger.upsertReminder(ledgerBase.id, {
       ...ledgerBase,
@@ -1649,6 +1670,11 @@ export function createReminderDeliveryService({
           ...entry.previous,
           skippedReason: `status terminal existente: ${entry.previous.status}`,
         });
+        continue;
+      }
+
+      if (modalityAlreadyHandled(entry.ledgerBase)) {
+        resultById.set(entry.ledgerBase.id, skipHandledModality(entry.ledgerBase, entry.previous?.attempts || 0));
         continue;
       }
 

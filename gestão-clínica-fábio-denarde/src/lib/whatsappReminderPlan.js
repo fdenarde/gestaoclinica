@@ -1,3 +1,4 @@
+import { hasPersistedScheduleOccurrence } from '../../shared/sessionRemoval.js';
 import { findWhatsappReminderSuppression } from './whatsappReminderSuppressions.js';
 import { maskPhoneShort, normalizeBrazilianWhatsappPhone } from './whatsappPhone.js';
 import { isWhatsappAutomationBlocked } from '../../shared/whatsappSessionAutomation.js';
@@ -141,6 +142,8 @@ export function getSessionsForDate({
       blockedReason = 'feriado/recesso';
     } else if (patient.status !== 'Ativo') {
       blockedReason = 'paciente inativo';
+    } else if (s.removedFromAgenda === true) {
+      blockedReason = 'sessão removida';
     } else if (s.status === 'Cancelada') {
       blockedReason = 'sessão cancelada';
     } else if (s.status !== 'Agendada') {
@@ -176,9 +179,7 @@ export function getSessionsForDate({
 
       if (fixedDayNorm === targetDayNorm && fixedSchedule.fixedTime) {
         const time1 = fixedSchedule.fixedTime;
-        const hasManual1 = dbSessions.some(
-          s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time1)
-        );
+        const hasManual1 = hasPersistedScheduleOccurrence(sessions, { patientId: p.id, date: dateStr, time: time1 });
         if (!hasManual1) {
           let blockedReason = null;
           if (!p.whatsapp || !p.whatsapp.trim()) {
@@ -207,9 +208,7 @@ export function getSessionsForDate({
 
         if (fixedSchedule.doubleSession) {
           const time2 = addOneHour(fixedSchedule.fixedTime);
-          const hasManual2 = dbSessions.some(
-            s => s.patientId === p.id && normalizeTime(s.time) === normalizeTime(time2)
-          );
+          const hasManual2 = hasPersistedScheduleOccurrence(sessions, { patientId: p.id, date: dateStr, time: time2 });
           if (!hasManual2) {
             let blockedReason = null;
             if (!p.whatsapp || !p.whatsapp.trim()) {
@@ -297,6 +296,16 @@ export function getWhatsappReminderPlan({
   const reminders = [];
   const diagnostics = [];
   const candidates = [];
+  // One same-day occurrence per patient across both existing routines.
+  const sameDayFirstByPatient = new Map();
+  if (tipo === 'HOJE_MANHA' || tipo === 'HOJE_TARDE') {
+    for (const session of daySessions) {
+      const patient = patients.find(item => item.id === session.patientId);
+      const routine = Number(session.time.split(':')[0]) < 12 ? 'HOJE_MANHA' : 'HOJE_TARDE';
+      if (!session.isValid || isWhatsappAutomationBlocked(session, { patient, reminderType: routine, phase: 'plan', now })) continue;
+      if (!sameDayFirstByPatient.has(session.patientId)) sameDayFirstByPatient.set(session.patientId, session.id);
+    }
+  }
 
   for (const s of daySessions) {
     const patient = patients.find(p => p.id === s.patientId);
@@ -353,6 +362,7 @@ export function getWhatsappReminderPlan({
       continue;
     }
 
+    if (sameDayFirstByPatient.size && sameDayFirstByPatient.get(s.patientId) !== s.id) continue;
     candidates.push(s);
   }
 

@@ -48,6 +48,13 @@ function fakeDb() {
   const records = new Map();
   return {
     records,
+    async runTransaction(work) {
+      const writes = [];
+      const result = await work({ get: reference => reference.get(),
+        create: (reference, value) => writes.push(() => reference.set(value)) });
+      for (const write of writes) await write();
+      return result;
+    },
     collection(path) {
       return {
         doc(id) {
@@ -95,13 +102,15 @@ test('R51 — duas tentativas sequenciais partem de estado novo e preservam os p
     api: {
       getToken: async () => 'synthetic-token',
       fetchImpl: async (_url, init = {}) => {
-        payloads.push(JSON.parse(init.body));
+        if (init.method === 'GET') return new Response(JSON.stringify({ scope, items: [] }), { status: 200, headers: { 'X-Psychology-Persistence-Version': '1' } });
+        payloads.push(JSON.parse(init.body).persistence.data);
         const body = payloads.at(-1);
-        return new Response(JSON.stringify({ scope, patient: body }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ scope, patient: body, persistenceStatus: 'SUCCESS' }), { status: 201, headers: { 'Content-Type': 'application/json', 'X-Psychology-Persistence-Version': '1' } });
       },
     },
   });
 
+  await client.repositories.patients.list(scope);
   await client.updatePatient(storeA.patients[0]);
   await client.updatePatient(storeB.patients[0]);
 
@@ -158,7 +167,7 @@ test('R51 — backend preserva semanticamente os telefones A e B sem troca', asy
 
 test('R51 — origem dos campos do modal é o estado atual e o submit envia esse estado', () => {
   assert.match(pilotSource, /const \[form, setForm\] = useState<PsychologyPatientInput>\(\{ name: value\?\.name[\s\S]*phone: value\?\.phone/);
-  assert.match(pilotSource, /onSave\(\{ \.\.\.form, dateOfBirth: String\(form\.dateOfBirth \|\| form\.birthDate \|\| ''\), birthDate: undefined \}\)/);
+  assert.match(pilotSource, /onSave\(pinPsychologyEdit\(\{ \.\.\.form, dateOfBirth: String\(form\.dateOfBirth \|\| form\.birthDate \|\| ''\), birthDate: undefined \}, editBaseline\.current\)\)/);
   assert.match(pilotSource, /remoteClient\.updatePatient\(nextPatient\)/);
   assert.match(pilotSource, /setPatientDialog\(null\)/);
   assert.match(pilotSource, /setSubmitError\(''\)/);
