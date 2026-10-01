@@ -215,11 +215,11 @@ test('rechecagem real do remetente falha fechada com registro removido, cancelam
         const value = isPatient ? { ...patient, ...(scenario === 'inactive-patient' ? { status: 'Inativo' } : {}), ...(scenario === 'preferences-disabled' ? { whatsappReminderPreferences: { dayBefore: false, sameDay: false } } : {}) }
           : occurrence({ ...(scenario === 'cancelled' ? { status: 'Cancelada' } : {}), ...(scenario === 'removed' ? { removedFromAgenda: true } : {}) });
         return { exists: isPatient ? scenario !== 'missing-patient' : !['missing-session', 'virtual'].includes(scenario), id: value.id, data: () => value };
-      } }) },
+      } }), collection: () => ({ where: () => ({ get: async () => ({ docs: [] }) }) }) },
     });
-    const result = await check({ accountId: 'fixture-account', reminder: { id: 'fixture-session', patientId: patient.id, isVirtual: scenario === 'virtual' }, routine: 'HOJE_TARDE', phase: 'send' });
+    const result = await check({ accountId: 'fixture-account', reminder: { id: 'fixture-session', patientId: patient.id, time: '15:40', isVirtual: scenario === 'virtual' }, routine: 'HOJE_TARDE', routineDate: '2026-09-30', phase: 'send' });
     assert.equal(result.blocked, !['valid', 'virtual'].includes(scenario), scenario);
-    assert.ok(reads <= 2, 'apenas os dois get existentes');
+    assert.ok(reads <= 2, 'a consulta extra só ocorre para sessão virtual');
     assert.equal((await check({ accountId: '', reminder: {}, routine: 'AMANHA' })).blocked, true);
   }
 });

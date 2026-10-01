@@ -1,16 +1,26 @@
-// Optional preferences: missing fields preserve both legacy reminder modalities.
+// A wholly absent configuration retains the established legacy default. Once a
+// preference object exists, missing or invalid fields must not authorize sends.
+function preferenceFlag(owner, key) {
+  if (!owner || !Object.hasOwn(owner, 'whatsappReminderPreferences')) return undefined;
+  const preferences = owner.whatsappReminderPreferences;
+  if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) return false;
+  if (!Object.hasOwn(preferences, key)) return undefined;
+  return preferences[key] === true;
+}
+
 export function resolveWhatsappReminderPreferences(session = null, patient = null) {
-  const value = session?.whatsappReminderPreferences || patient?.whatsappReminderPreferences;
-  return { dayBefore: value?.dayBefore !== false, sameDay: value?.sameDay !== false };
+  const legacyDefault = !Object.hasOwn(session || {}, 'whatsappReminderPreferences')
+    && !Object.hasOwn(patient || {}, 'whatsappReminderPreferences');
+  const resolveFlag = key => preferenceFlag(session, key) ?? preferenceFlag(patient, key) ?? legacyDefault;
+  return { dayBefore: resolveFlag('dayBefore'), sameDay: resolveFlag('sameDay') };
 }
 
 export function isWhatsappReminderEnabled(session, patient, reminderType = '') {
   const preferences = resolveWhatsappReminderPreferences(session, patient);
   if (reminderType === 'AMANHA') return preferences.dayBefore;
   if (reminderType === 'HOJE_MANHA' || reminderType === 'HOJE_TARDE') return preferences.sameDay;
-  // Retry must retain the original routine type; an unknown type fails closed
-  // when all reminders have been disabled.
-  return preferences.dayBefore || preferences.sameDay;
+  // Unknown or unbound reminder types are never authorized for dispatch.
+  return false;
 }
 
 export function getWhatsappReminderPreferencesLabel(session = null, patient = null) {

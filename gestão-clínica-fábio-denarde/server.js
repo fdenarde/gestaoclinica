@@ -451,25 +451,46 @@ async function sendAdminReport(message, metadata = {}) {
   return { status: 'sent', phoneMasked: config.phoneMasked, phoneDigits: config.phoneDigits };
 }
 
-async function resolveSessionAutomationBlock({ accountId, reminder, routine, phase }) {
+async function resolveSessionAutomationBlock({ accountId, reminder, routine, routineDate, phase }) {
   const sessionId = String(reminder?.id || '').trim();
-  if (!accountId || !sessionId) return { blocked: true, reason: 'contexto de segurança do lembrete incompleto' };
+  const patientId = String(reminder?.patientId || '').trim();
+  const sessionDate = String(routineDate || '').trim();
+  const sessionTime = String(reminder?.time || '').trim();
+  if (!accountId || !sessionId || !patientId || !/^\d{4}-\d{2}-\d{2}$/.test(sessionDate)
+    || !/^\d{2}:\d{2}$/.test(sessionTime)) {
+    return { blocked: true, reason: 'contexto de segurança do lembrete incompleto' };
+  }
   try {
     const snapshot = await db.doc(`users/${accountId}/sessions/${sessionId}`).get();
-    const session = snapshot.exists
-      ? { id: snapshot.id, ...(snapshot.data() || {}) }
-      : { id: sessionId, patientId: reminder?.patientId || '' };
-    const patientId = session.patientId || reminder?.patientId || '';
-    const patientSnapshot = patientId
-      ? await db.doc(`users/${accountId}/patients/${patientId}`).get()
-      : null;
-    const patient = patientSnapshot?.exists
+    let session = snapshot.exists ? { id: snapshot.id, ...(snapshot.data() || {}) } : null;
+    if (!session && reminder?.isVirtual === true) {
+      // A virtual plan may have been materialized by Save after planning.
+      // Recheck the current occurrence before applying patient defaults.
+      const daySnapshot = await db.collection(`users/${accountId}/sessions`).where('date', '==', sessionDate).get();
+      const samePatient = daySnapshot.docs.map(doc => ({ id: doc.id, ...(doc.data() || {}) }))
+        .filter(item => String(item.patientId || '').trim() === patientId);
+      const sameTime = samePatient.filter(item => String(item.time || '').trim() === sessionTime);
+      if (samePatient.length && sameTime.length !== 1) {
+        return { blocked: true, reason: 'plano virtual desatualizado antes do envio' };
+      }
+      session = sameTime[0] || null;
+    }
+    if (!session && reminder?.isVirtual !== true) {
+      return { blocked: true, reason: 'atendimento removido antes do envio' };
+    }
+    if (session && (String(session.patientId || '').trim() !== patientId
+      || String(session.date || '').trim() !== sessionDate
+      || String(session.time || '').trim() !== sessionTime)) {
+      return { blocked: true, reason: 'atendimento alterado após o planejamento' };
+    }
+    const patientSnapshot = await db.doc(`users/${accountId}/patients/${patientId}`).get();
+    const patient = patientSnapshot.exists
       ? { id: patientSnapshot.id, ...(patientSnapshot.data() || {}) }
       : null;
-    if (!patient || patient.status !== 'Ativo' || (!snapshot.exists && reminder?.isVirtual !== true)) {
-      return { blocked: true, reason: 'atendimento removido ou paciente indisponível na rechecagem' };
+    if (!patient || patient.status !== 'Ativo') {
+      return { blocked: true, reason: 'paciente indisponível na rechecagem' };
     }
-    const blocked = isWhatsappAutomationBlocked(session, {
+    const blocked = isWhatsappAutomationBlocked(session || { id: sessionId, patientId }, {
       patient,
       reminderType: routine || reminder?.reminderType,
       phase,
