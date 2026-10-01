@@ -62,6 +62,7 @@ import {
 } from '../../../shared/activityGalleryStatus.js';
 import {
   buildGooglePhotosAlbumGroupKey,
+  createEmptyGooglePhotosAlbumCard as createEmptyGooglePhotosAlbumCardRaw,
   buildGooglePhotosAlbumPackageKey,
   buildGooglePhotosVirtualAlbumCards,
   getGooglePhotosAlbumDisplayTitle,
@@ -120,6 +121,15 @@ const buildPackageKey = buildGooglePhotosAlbumPackageKey as (options: {
 
 const normalizeAlbumUrl = normalizeGooglePhotosAlbumUrl as (value: string) => string | null;
 const getAlbumDisplayTitle = getGooglePhotosAlbumDisplayTitle as (album: GooglePhotosAlbum) => string;
+const createEmptyGooglePhotosAlbumCard = createEmptyGooglePhotosAlbumCardRaw as unknown as (options: {
+  patientId: string;
+  patientName: string;
+  packageNumber: number;
+  activityDate: string;
+  sessionIds: string[];
+  sessionTime: string;
+  title: string;
+}) => GooglePhotosAlbum;
 type SaveStatus = 'idle' | 'dirty' | 'saving' | 'invalid' | 'error';
 type SummaryPlan = ReturnType<typeof buildActivitySummaryPlan>;
 type SummaryEntry = SummaryPlan['entries'][number];
@@ -263,26 +273,24 @@ type ActivityMediaPresentationEntry = {
   justification: ActivityGalleryStatusRecord['justification'];
 };
 
-function formatActivityMediaStatusLabel(
-  entry: ActivityMediaPresentationEntry,
-  activityStatusLoading: boolean,
-  plural: boolean,
-): string {
-  if (activityStatusLoading) return 'Consultando estado da mídia...';
-  if (entry.state === 'sent') return plural ? 'Mídia registrada para estas sessões.' : 'Mídia registrada para esta sessão.';
-  if (entry.state === 'excused' && entry.justification?.active) {
-    return `SEM MÍDIA · ${getActivityJustificationReasonLabel(entry.justification.reason)}`;
-  }
-  if (entry.state === 'overdue') return 'Mídia pendente em atraso.';
-  if (entry.state === 'waiting') return 'Mídia pendente dentro do prazo.';
-  return 'Sem registro de mídia.';
+function formatActivityMediaActionLabel(entry: ActivityMediaPresentationEntry): string {
+  return entry.state === 'excused' && entry.justification?.active
+    ? 'Alterar motivo'
+    : 'Registrar sem mídia';
 }
 
-function formatActivityMediaActionLabel(entry: ActivityMediaPresentationEntry): string {
-  const sessionLabel = entry.sessionNumber > 0 ? `Sessão ${entry.sessionNumber}` : 'Sessão vinculada';
-  return entry.state === 'excused' && entry.justification?.active
-    ? `${sessionLabel} · Alterar motivo`
-    : `${sessionLabel} · Registrar sem mídia`;
+function formatCompactMediaStatus(entry: ActivityMediaPresentationEntry): string {
+  if (entry.state === 'excused' && entry.justification?.active) {
+    return `Sem mídia — ${getActivityJustificationReasonLabel(entry.justification.reason)}`;
+  }
+  return entry.state === 'overdue' ? 'Mídia pendente em atraso' : 'Mídia pendente';
+}
+
+function getAbsenceSubjectLabel(session: Session | undefined): string {
+  const reasonCode = String(session?.noReplacementReasonCode || '').trim();
+  if (session?.status === 'Falta.Prof' || reasonCode === 'professional_absence') return 'Ausência do profissional';
+  if (reasonCode === 'patient_absence') return 'Ausência do paciente/responsável';
+  return '';
 }
 
 function toPackageInput(card: GooglePhotosAlbum): GooglePhotosAlbumInput {
@@ -515,16 +523,36 @@ export default function ProfessionalGooglePhotosGallery({
     [currentPackageNumber, selectedPatientId, sessionSource],
   );
 
-  const virtualCards = useMemo(() => (
-    buildGooglePhotosVirtualAlbumCards(sessionSource, {
+  const absenceCards = useMemo(() => packageSessions
+    .filter(session => isExplicitSessionAbsence(session))
+    .map(session => ({
+      ...createEmptyGooglePhotosAlbumCard({
+        patientId: selectedPatientId,
+        patientName: selectedPatientName,
+        packageNumber: currentPackageNumber,
+        activityDate: session.date,
+        sessionTime: session.time,
+        sessionIds: [session.id],
+        title: 'Ausência registrada',
+      }),
+      observation: String(session.noReplacementObservation || '').trim(),
+    }) as GooglePhotosAlbum),
+  [currentPackageNumber, packageSessions, selectedPatientId, selectedPatientName]);
+
+  const virtualCards = useMemo(() => {
+    return buildGooglePhotosVirtualAlbumCards(sessionSource, {
       patientId: selectedPatientId,
       patientName: selectedPatientName,
       patientDoubleSession: Boolean(selectedPatient?.doubleSession),
       packageNumber: currentPackageNumber,
       payments,
       packageTolerances: selectedPatient?.packageTolerances || [],
-    }) as GooglePhotosAlbum[]
-  ), [currentPackageNumber, payments, selectedPatient?.doubleSession, selectedPatient?.packageTolerances, selectedPatientId, selectedPatientName, sessionSource]);
+    }) as GooglePhotosAlbum[];
+  }, [currentPackageNumber, payments, selectedPatient?.doubleSession, selectedPatient?.packageTolerances, selectedPatientId, selectedPatientName, sessionSource]);
+
+  const galleryVirtualCards = useMemo(() => virtualCards.filter(card => !card.sessionIds.some(sessionId => (
+      isExplicitSessionAbsence(sessionSource.find(session => session.id === sessionId))
+    ))), [sessionSource, virtualCards]);
 
   const allCards = useMemo(() => (
     mergeGooglePhotosAlbumCards({
@@ -535,8 +563,17 @@ export default function ProfessionalGooglePhotosGallery({
     }) as GooglePhotosAlbum[]
   ), [draftCards, persistedCards, removedCardIds, virtualCards]);
 
-  const summaryReadyByCard = useMemo(() => new Map(
-    allCards.map(card => [card.id, cardsLoadedForPackage && !loadingSessions && !activityStatusLoading && !activityStatusError && !error && isAccumulatedActivitySummarySourceComplete({
+  const galleryCards = useMemo(() => (
+    mergeGooglePhotosAlbumCards({
+      virtualCards: [...galleryVirtualCards, ...absenceCards],
+      persistedCards,
+      draftCards: Object.values(draftCards),
+      removedCardIds,
+    }) as GooglePhotosAlbum[]
+  ), [absenceCards, draftCards, galleryVirtualCards, persistedCards, removedCardIds]);
+
+  const summaryReadyByCard = useMemo(() => {
+    const isSourceComplete = (card: GooglePhotosAlbum) => cardsLoadedForPackage && !loadingSessions && !activityStatusLoading && !activityStatusError && !error && isAccumulatedActivitySummarySourceComplete({
       patientId: selectedPatientId,
       sessions: packageSessions,
       albums: allCards,
@@ -545,8 +582,12 @@ export default function ProfessionalGooglePhotosGallery({
         card,
         sessions: packageSessions,
       }),
-    })]),
-  ), [allCards, cardsLoadedForPackage, currentPackageNumber, packageSessions, selectedPatientId, loadingSessions, activityStatusLoading, activityStatusError, error]);
+    });
+    return new Map([
+      ...allCards.map(card => [card.id, isSourceComplete(card)] as const),
+      ...absenceCards.map(card => [card.id, isSourceComplete(card)] as const),
+    ]);
+  }, [allCards, absenceCards, cardsLoadedForPackage, currentPackageNumber, packageSessions, selectedPatientId, loadingSessions, activityStatusLoading, activityStatusError, error]);
 
   // Only confirmed cards may supply shared links/observations; editor drafts are not evidence.
   const summaryCards = useMemo(() => mergeGooglePhotosAlbumCards({
@@ -579,12 +620,13 @@ export default function ProfessionalGooglePhotosGallery({
   )), [allCards, currentPackageNumber, selectedPatientId, sessionSource]);
 
   const canCreateAlbum = permissions.canCreate || permissions.canEdit;
-  const creatableCards = useMemo(() => allCards.filter(card => (
+  const creatableCards = useMemo(() => galleryCards.filter(card => (
     !normalizeAlbumUrl(card.url)
     && card.status !== 'removed'
     && Array.isArray(card.sessionIds)
     && card.sessionIds.length > 0
-  )), [allCards]);
+    && !card.sessionIds.some(sessionId => isExplicitSessionAbsence(sessionSource.find(session => session.id === sessionId)))
+  )), [galleryCards, sessionSource]);
   const quickCreateCard = useMemo(
     () => creatableCards.find(card => card.id === quickCreateCardId) || null,
     [creatableCards, quickCreateCardId],
@@ -1323,7 +1365,7 @@ export default function ProfessionalGooglePhotosGallery({
     setError('');
   }, [confirmDiscardChanges]);
 
-  const cardsWithLinksCount = allCards.filter(card => card.url.trim()).length;
+  const cardsWithLinksCount = galleryCards.filter(card => card.url.trim()).length;
   const saveLabel = saveStatus === 'saving'
     ? 'Salvando...'
     : saveStatus === 'dirty'
@@ -1542,7 +1584,7 @@ export default function ProfessionalGooglePhotosGallery({
                   {quickCreateCard && creatingCardIds.includes(quickCreateCard.id) ? 'Criando álbum...' : 'Criar álbum no Google Fotos'}
                 </button>
               </div>
-            ) : allCards.length === 0 ? (
+            ) : galleryCards.length === 0 ? (
               <div className="rounded-xl border border-clinic-border bg-clinic-bg px-4 py-3 text-sm font-bold text-clinic-text-muted">
                 Nenhuma sessão realizada ou em andamento está disponível para criar álbum neste pacote.
               </div>
@@ -1567,7 +1609,7 @@ export default function ProfessionalGooglePhotosGallery({
             <p className="text-xs text-clinic-text-muted">
               {loadingSessions
                 ? 'Carregando sessões autorizadas...'
-                : `${cardsWithLinksCount} de ${allCards.length} atividades com álbum vinculado.`}
+                : `${cardsWithLinksCount} de ${galleryCards.length} atividades com álbum vinculado.`}
               {hasLocalChanges ? ' Há alterações locais ainda não salvas.' : ''}
             </p>
           </div>
@@ -1611,7 +1653,7 @@ export default function ProfessionalGooglePhotosGallery({
 
         {loading && <div className="flex min-h-40 items-center justify-center gap-2 text-sm font-bold text-clinic-text-muted"><Loader2 size={20} className="animate-spin" /> Carregando links do pacote...</div>}
 
-        {!loading && allCards.length === 0 && (
+        {!loading && galleryCards.length === 0 && (
           <div className="mt-5 rounded-xl border border-dashed border-clinic-border bg-clinic-bg p-8 text-center">
             <Images size={32} className="mx-auto text-clinic-text-faint" />
             <p className="mt-3 font-black text-clinic-text">Nenhuma atividade disponível neste pacote</p>
@@ -1619,9 +1661,9 @@ export default function ProfessionalGooglePhotosGallery({
           </div>
         )}
 
-        {!loading && allCards.length > 0 && (
+        {!loading && galleryCards.length > 0 && (
           <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-            {allCards.map(card => {
+            {galleryCards.map(card => {
               const normalizedUrl = normalizeAlbumUrl(card.url);
               const hasValidLink = Boolean(normalizedUrl);
               const cardHasInvalidLink = invalidCardIdSet.has(card.id);
@@ -1631,6 +1673,12 @@ export default function ProfessionalGooglePhotosGallery({
               const publishedAtDisplay = isSafeIsoDate(card.publishedAt) ? isoToDisplayDate(card.publishedAt) : card.publishedAt || '';
               const observationExpanded = expandedObservationIds.includes(card.id);
               const datePickerId = `google-photos-published-at-${encodeURIComponent(card.id)}`;
+              const absenceOnly = card.sessionIds.length > 0
+                && card.sessionIds.every(sessionId => isExplicitSessionAbsence(packageSessions.find(session => session.id === sessionId)));
+              const absenceSession = absenceOnly ? packageSessions.find(session => session.id === card.sessionIds[0]) : undefined;
+              const absenceReason = String(absenceSession?.noReplacementReasonText || absenceSession?.noReplacementReasonCode || '').trim();
+              const absenceObservation = String(absenceSession?.noReplacementObservation || '').trim();
+              const absenceSubject = getAbsenceSubjectLabel(absenceSession);
               const mediaEntries = card.sessionIds.map((sessionId, sessionIndex) => {
                 const activityStatus = getCardSessionActivityStatus(card, sessionId);
                 const justification = activityStatus.statusRecord?.justification || null;
@@ -1648,153 +1696,129 @@ export default function ProfessionalGooglePhotosGallery({
               });
               const mediaPresentation = buildActivityGalleryMediaPresentation(mediaEntries) as unknown as {
                 entries: ActivityMediaPresentationEntry[];
-                hasMultipleSessions: boolean;
                 canShareStatus: boolean;
-                canCompactSchedule: boolean;
-                sessionLabel: string;
-                commonDate: string;
-                chronologicalTimes: string;
               };
               const orderedMediaEntries = mediaPresentation.entries;
+              const hasActiveNoMediaJustification = orderedMediaEntries.some(entry => entry.state === 'excused' && entry.justification?.active);
+              const canOfferMediaCreation = !activityStatusLoading && !activityStatusError && !hasActiveNoMediaJustification;
+              const compactMediaEntries = orderedMediaEntries.filter(entry => (
+                (entry.state === 'excused' && entry.justification?.active)
+                || (!hasValidLink && (entry.state === 'waiting' || entry.state === 'overdue'))
+              ));
+              const observations = [...new Set((absenceOnly
+                ? [absenceObservation]
+                : [card.observation, ...orderedMediaEntries
+                  .filter(entry => entry.state === 'excused' && entry.justification?.active)
+                  .map(entry => entry.justification?.note || '')]
+              ).map(value => String(value || '').trim()).filter(Boolean))];
+              const displayTitle = getAlbumDisplayTitle(card) || 'Atividade de Intervenção';
               const renderMediaAction = (entry: ActivityMediaPresentationEntry) => {
-                if (entry.state === 'sent') return null;
+                if (activityStatusLoading || activityStatusError || entry.state === 'sent' || entry.state === 'absence') return null;
+                if (hasValidLink && !(entry.state === 'excused' && entry.justification?.active)) return null;
                 return (
                   <button
                     type="button"
                     onClick={() => openNoMediaEditor(card, entry.sessionId)}
                     disabled={noMediaBusy}
-                    aria-label={formatActivityMediaActionLabel(entry)}
-                    className="rounded-lg border border-purple-300 bg-white px-2.5 py-1.5 text-[10px] font-black uppercase text-purple-900 disabled:opacity-50"
+                    aria-label={`${entry.sessionNumber > 0 ? `Sessão ${entry.sessionNumber}` : 'Sessão vinculada'}: ${formatActivityMediaActionLabel(entry)}`}
+                    className="inline-flex min-h-[38px] max-w-full items-center justify-center rounded-xl border border-purple-300 bg-white px-3 py-2 text-xs font-black text-purple-900 disabled:opacity-50"
                   >
                     {formatActivityMediaActionLabel(entry)}
                   </button>
                 );
               };
-              const renderIndividualMediaEntry = (entry: ActivityMediaPresentationEntry) => (
-                <div key={entry.sessionId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="min-w-0 flex-1">
-                    <p className="font-black text-purple-900">{entry.descriptor}</p>
-                    <p className={`font-bold ${entry.state === 'overdue' ? 'text-status-red-text' : entry.state === 'sent' ? 'text-status-green-text' : 'text-purple-900'}`}>
-                      {formatActivityMediaStatusLabel(entry, activityStatusLoading, false)}
-                    </p>
-                  </div>
-                  {renderMediaAction(entry)}
-                </div>
-              );
-              const renderMediaActions = (entries: ActivityMediaPresentationEntry[]) => {
-                const actionableEntries = entries.filter(entry => entry.state !== 'sent');
-                if (actionableEntries.length === 0) return null;
-                return (
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {actionableEntries.map(entry => (
-                      <div key={entry.sessionId}>
-                        {renderMediaAction(entry)}
-                      </div>
-                    ))}
-                  </div>
-                );
-              };
               return (
-                <article id={`google-photos-card-${encodeURIComponent(card.id)}`} key={card.id} className={`rounded-2xl border p-3 shadow-sm sm:p-4 ${cardHasInvalidLink ? 'border-status-orange-text/40 bg-status-orange-bg/70 ring-2 ring-status-orange-text/15' : card.status === 'hidden' ? 'border-amber-300 bg-amber-50/70' : hasValidLink ? 'border-clinic-border bg-white' : 'border-dashed border-clinic-border bg-clinic-bg/70'}`}>
+                <article id={`google-photos-card-${encodeURIComponent(card.id)}`} key={card.id} className={`rounded-2xl border p-3 shadow-sm sm:p-4 ${absenceOnly ? 'border-clinic-border bg-clinic-bg/70' : cardHasInvalidLink ? 'border-status-orange-text/40 bg-status-orange-bg/70 ring-2 ring-status-orange-text/15' : card.status === 'hidden' ? 'border-amber-300 bg-amber-50/70' : hasValidLink ? 'border-clinic-border bg-white' : 'border-dashed border-clinic-border bg-clinic-bg/70'}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap gap-2">
-                        <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${cardHasInvalidLink ? 'bg-status-orange-bg text-status-orange-text' : hasValidLink ? 'bg-status-green-bg text-status-green-text' : 'bg-clinic-bg text-clinic-text-muted'}`}>
-                          {cardHasInvalidLink ? 'Link inválido' : hasValidLink ? 'Com link' : 'Sem link'}
-                        </span>
-                        <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${card.status === 'hidden' ? 'bg-amber-100 text-amber-800' : 'bg-status-blue-bg text-status-blue-text'}`}>{cardStatusLabel(card)}</span>
-                        <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${card.visibleToGuardian ? 'bg-status-green-bg text-status-green-text' : 'bg-clinic-bg text-clinic-text-muted'}`}>{card.visibleToGuardian ? 'Visível ao responsável' : 'Somente equipe'}</span>
+                        {absenceOnly && <span className="rounded-full bg-clinic-bg px-2.5 py-1 text-[9px] font-black uppercase text-clinic-text-muted">Ausência registrada</span>}
+                        {!absenceOnly && cardHasInvalidLink && <span className="rounded-full bg-status-orange-bg px-2.5 py-1 text-[9px] font-black uppercase text-status-orange-text">Link inválido</span>}
+                        {card.status === 'hidden' && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[9px] font-black uppercase text-amber-800">Oculto</span>}
                       </div>
-                      <h3 className="mt-3 break-words text-base font-bold text-clinic-text">{getAlbumDisplayTitle(card) || 'Atividade de Intervenção'}</h3>
-                      <p className="mt-1 text-xs font-bold text-clinic-primary">{formatLinkedSessionSubtitle(card, packageSessions)}</p>
+                      <h3 className="mt-2 break-words text-base font-bold text-clinic-text">{displayTitle}</h3>
+                      <p className="mt-0.5 text-xs font-bold text-clinic-primary">{formatLinkedSessionSubtitle(card, packageSessions)}</p>
+                      {absenceSubject && <p className="mt-0.5 text-xs font-black text-purple-900">{absenceSubject}</p>}
                     </div>
-                    <span className="rounded-xl bg-clinic-bg p-2 text-clinic-primary"><CalendarDays size={17} /></span>
+                    <span className="rounded-xl bg-clinic-bg p-1.5 text-clinic-primary"><CalendarDays size={17} /></span>
                   </div>
 
-                  <dl className="mt-3 grid gap-2 text-sm">
-                    <div><dt className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Categoria</dt><dd className="font-semibold text-clinic-text">{card.category}</dd></div>
-                    {card.observation && <div><dt className="text-[10px] font-black uppercase text-clinic-text-faint">Observação</dt><dd className="whitespace-pre-wrap text-clinic-text-muted">{card.observation}</dd></div>}
-                    {hasValidLink && <div><dt className="text-[10px] font-black uppercase text-clinic-text-faint">Publicado em</dt><dd className="text-clinic-text-muted">{safeFormatDate(card.publishedAt, 'dd/MM/yyyy')} • por {card.createdByName || card.updatedByName || currentUserName}</dd></div>}
+                  <dl className="mt-2 grid gap-1.5 text-sm">
+                    {!absenceOnly && String(card.category || '').trim() !== displayTitle && <div><dt className="text-[10px] font-black uppercase tracking-wide text-clinic-text-faint">Categoria</dt><dd className="font-semibold text-clinic-text">{card.category}</dd></div>}
+                    {absenceOnly && absenceReason && <div><dt className="text-[10px] font-black uppercase text-clinic-text-faint">Motivo da ausência</dt><dd className="whitespace-pre-wrap break-words text-clinic-text-muted">{absenceReason}</dd></div>}
+                    {observations.map((observation, index) => <div key={`${card.id}-observation-${index}`}><dt className="text-[10px] font-black uppercase text-clinic-text-faint">{absenceOnly ? 'Observação da ausência' : 'Observação'}</dt><dd className="whitespace-pre-wrap break-words text-clinic-text-muted">{observation}</dd></div>)}
                   </dl>
 
-                  <div className="mt-3 flex flex-wrap gap-2 border-t border-clinic-border pt-3">
-                    {hasValidLink ? (
-                      <a href={normalizedUrl || card.url} target="_blank" rel="noopener noreferrer" className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2.5 text-xs font-black text-white">
+                  {(hasValidLink || !card.visibleToGuardian) && (
+                    <p className="mt-1.5 break-words text-[10px] leading-relaxed text-clinic-text-faint">
+                      {hasValidLink && <>Publicado em {safeFormatDate(card.publishedAt, 'dd/MM/yyyy')} por {card.createdByName || card.updatedByName || currentUserName}<span aria-hidden="true"> · </span></>}
+                      {card.visibleToGuardian ? 'Visível ao responsável' : 'Somente equipe'}
+                    </p>
+                  )}
+
+                  {!absenceOnly && !activityStatusLoading && !activityStatusError && compactMediaEntries.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1.5" aria-label="Estado da mídia">
+                      {(mediaPresentation.canShareStatus ? compactMediaEntries.slice(0, 1) : compactMediaEntries).map(entry => (
+                        <span key={entry.sessionId} title={entry.descriptor} className={`rounded-lg px-2 py-1 text-xs font-semibold ${entry.state === 'overdue' ? 'bg-status-orange-bg text-status-orange-text' : 'bg-purple-50 text-purple-900'}`}>
+                          {formatCompactMediaStatus(entry)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="mt-2 flex flex-wrap items-start justify-between gap-2 border-t border-clinic-border/60 pt-2">
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                    {absenceOnly ? (
+                      <button type="button" onClick={() => openNoMediaEditor(card, card.sessionIds[0])} disabled={noMediaBusy} className="inline-flex min-h-[38px] max-w-full items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black text-clinic-primary disabled:opacity-50">Alterar motivo</button>
+                    ) : hasValidLink ? (
+                      <a href={normalizedUrl || card.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-[38px] max-w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2 text-xs font-black text-white">
                         Abrir álbum <ExternalLink size={15} />
                       </a>
-                    ) : (
+                    ) : canOfferMediaCreation ? (
                       <>
                         {canCreateAlbum && (
                           <button
                             type="button"
                             onClick={() => void createAlbumForCard(card)}
                             disabled={creatingAlbum || saving}
-                            className="inline-flex flex-[2] items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2.5 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                            className="inline-flex min-h-[38px] max-w-full items-center justify-center gap-2 rounded-xl bg-clinic-primary px-3 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {creatingAlbum ? <Loader2 size={15} className="animate-spin" /> : <FolderPlus size={15} />}
                             {creatingAlbum ? 'Criando álbum...' : 'Criar álbum no Google Fotos'}
                           </button>
                         )}
                         {permissions.canEdit ? (
-                          <button type="button" onClick={() => openEditor(card)} disabled={creatingAlbum} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2.5 text-xs font-black text-clinic-primary disabled:opacity-50">
+                           <button type="button" onClick={() => openEditor(card)} disabled={creatingAlbum} className="inline-flex min-h-[38px] max-w-full items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-black text-clinic-primary disabled:opacity-50">
                             {cardHasInvalidLink ? 'Corrigir link' : 'Adicionar link'} <Link2 size={15} />
                           </button>
                         ) : !canCreateAlbum ? (
-                          <span className="inline-flex flex-1 items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2.5 text-xs font-black text-clinic-text-muted">
+                           <span className="inline-flex min-h-[38px] max-w-full items-center justify-center rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2 text-xs font-black text-clinic-text-muted">
                             Somente leitura
                           </span>
                         ) : null}
                       </>
-                    )}
+                    ) : null}
+                    {!absenceOnly && orderedMediaEntries.map(entry => <React.Fragment key={entry.sessionId}>{renderMediaAction(entry)}</React.Fragment>)}
                     <button
                       type="button"
                       onClick={() => void copyAccumulatedSummary(card)}
                       disabled={Boolean(copyingSummaryCardId) || loading || saving || !summaryReady}
                       title={summaryReady ? 'Copiar resumo acumulado' : 'Resumo indisponível até os cards necessários terminarem de carregar'}
-                      className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-clinic-primary/25 bg-clinic-bg px-3 py-2.5 text-xs font-black text-clinic-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex min-h-[38px] max-w-full items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-semibold text-clinic-text-muted disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {copyingSummaryCardId === card.id ? <Loader2 size={15} className="animate-spin" /> : <Copy size={15} />}
                       {copyingSummaryCardId === card.id ? 'Copiando resumo...' : loading ? 'Preparando resumo...' : summaryReady ? 'Copiar resumo até aqui' : 'Resumo indisponível'}
                     </button>
-                    {hasValidLink && permissions.canEdit && <button type="button" onClick={() => editing ? closeEditor(card.id) : openEditor(card)} className="rounded-xl border border-clinic-border bg-white p-2.5 text-clinic-primary" aria-label={editing ? 'Fechar edição' : 'Editar card'} title={editing ? 'Fechar edição' : 'Editar card'}>{editing ? <X size={16} /> : <Pencil size={16} />}</button>}
-                    {hasValidLink && card.status === 'active' && permissions.canHide && <button type="button" onClick={() => updateCard(card, { status: 'hidden' })} className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-amber-800" aria-label="Ocultar card"><EyeOff size={16} /></button>}
-                    {hasValidLink && card.status === 'hidden' && permissions.canReactivate && <button type="button" onClick={() => updateCard(card, { status: 'active' })} className="rounded-xl border border-status-green-text/20 bg-status-green-bg p-2.5 text-status-green-text" aria-label="Reativar card"><RotateCcw size={16} /></button>}
-                    {hasValidLink && permissions.canRemove && <button type="button" onClick={() => clearCardLink(card)} className="rounded-xl border border-status-red-text/20 bg-status-red-bg p-2.5 text-status-red-text" aria-label="Remover vínculo"><Trash2 size={16} /></button>}
-                  </div>
-
-                  {card.sessionIds.length > 0 && (
-                    <div className="mt-3 space-y-2 rounded-xl border border-purple-200 bg-purple-50/60 p-2.5">
-                      <p className="text-[10px] font-black uppercase tracking-wide text-purple-900">{mediaPresentation.hasMultipleSessions ? 'Registro de mídia das sessões' : 'Registro de mídia da sessão'}</p>
-                      {mediaPresentation.canCompactSchedule ? (
-                        <>
-                          <div className="space-y-0.5 text-xs">
-                            <p className="font-black text-purple-900">{mediaPresentation.sessionLabel}{mediaPresentation.commonDate ? ` — ${safeFormatDate(mediaPresentation.commonDate, 'dd/MM/yyyy')}` : ''}</p>
-                            <p className={`font-bold ${orderedMediaEntries[0]?.state === 'overdue' ? 'text-status-red-text' : orderedMediaEntries[0]?.state === 'sent' ? 'text-status-green-text' : 'text-purple-900'}`}>
-                              {[mediaPresentation.chronologicalTimes, formatActivityMediaStatusLabel(orderedMediaEntries[0], activityStatusLoading, true)].filter(Boolean).join(' · ')}
-                            </p>
-                          </div>
-                          {renderMediaActions(orderedMediaEntries)}
-                        </>
-                      ) : mediaPresentation.canShareStatus ? (
-                        <>
-                          <div className="space-y-1 text-xs">
-                            <p className="font-black text-purple-900">{mediaPresentation.sessionLabel}</p>
-                            <div className="space-y-0.5 text-purple-900">
-                              {orderedMediaEntries.map(entry => <p key={entry.sessionId}>{entry.descriptor}</p>)}
-                            </div>
-                            <p className={`font-bold ${orderedMediaEntries[0]?.state === 'overdue' ? 'text-status-red-text' : orderedMediaEntries[0]?.state === 'sent' ? 'text-status-green-text' : 'text-purple-900'}`}>
-                              {formatActivityMediaStatusLabel(orderedMediaEntries[0], activityStatusLoading, true)}
-                            </p>
-                          </div>
-                          {renderMediaActions(orderedMediaEntries)}
-                        </>
-                      ) : (
-                        <div className="space-y-2">
-                          {orderedMediaEntries.map(renderIndividualMediaEntry)}
-                        </div>
-                      )}
                     </div>
-                  )}
+                    {hasValidLink && (permissions.canEdit || permissions.canHide || permissions.canReactivate || permissions.canRemove) && (
+                      <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5" aria-label="Ações secundárias">
+                        {permissions.canEdit && <button type="button" onClick={() => editing ? closeEditor(card.id) : openEditor(card)} className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border border-clinic-border bg-white text-clinic-primary" aria-label={editing ? 'Fechar edição' : 'Editar card'} title={editing ? 'Fechar edição' : 'Editar card'}>{editing ? <X size={16} /> : <Pencil size={16} />}</button>}
+                        {card.status === 'active' && permissions.canHide && <button type="button" onClick={() => updateCard(card, { status: 'hidden' })} className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border border-amber-300 bg-amber-50 text-amber-800" aria-label="Ocultar card"><EyeOff size={16} /></button>}
+                        {card.status === 'hidden' && permissions.canReactivate && <button type="button" onClick={() => updateCard(card, { status: 'active' })} className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border border-status-green-text/20 bg-status-green-bg text-status-green-text" aria-label="Reativar card"><RotateCcw size={16} /></button>}
+                        {permissions.canRemove && <button type="button" onClick={() => clearCardLink(card)} className="inline-flex h-[38px] w-[38px] items-center justify-center rounded-xl border border-status-red-text/20 bg-status-red-bg text-status-red-text" aria-label="Remover vínculo"><Trash2 size={16} /></button>}
+                      </div>
+                    )}
+                  </div>
 
                   {editing && (
                     <div className="mt-3 space-y-2 rounded-xl border border-clinic-border bg-white p-2.5">

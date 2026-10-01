@@ -90,16 +90,14 @@ test('razões diferentes não são compactadas como se fossem o mesmo estado vis
 
 test('o agrupamento visual é limitado aos sessionIds do card e preserva ações por sessionId', () => {
   const source = fs.readFileSync(new URL('../src/components/GooglePhotosAlbums/ProfessionalGooglePhotosGallery.tsx', import.meta.url), 'utf8');
-  const mediaStart = source.indexOf('{card.sessionIds.length > 0');
-  const mediaEnd = source.indexOf('{editing &&', mediaStart);
-  const mediaBlock = source.slice(mediaStart, mediaEnd);
 
   assert.match(source, /const mediaEntries = card\.sessionIds\.map/);
-  assert.match(mediaBlock, /Registro de mídia das sessões/);
-  assert.match(mediaBlock, /Registro de mídia da sessão/);
+  assert.match(source, /const compactMediaEntries = orderedMediaEntries\.filter/);
+  assert.match(source, /aria-label="Estado da mídia"/);
   assert.match(source, /openNoMediaEditor\(card, entry\.sessionId\)/);
   assert.match(source, /formatActivityMediaActionLabel/);
-  assert.match(source, /\$\{sessionLabel\} · Registrar sem mídia/);
-  assert.doesNotMatch(mediaBlock, /Registrar ambas/);
-  assert.doesNotMatch(mediaBlock, /saveGooglePhotosAlbumPackage|createAlbumForCard|updateCard\(/);
+  assert.match(source, /\? 'Alterar motivo'\s+: 'Registrar sem mídia'/);
+  assert.match(source, /orderedMediaEntries\.map\(entry => <React\.Fragment key=\{entry\.sessionId\}>\{renderMediaAction\(entry\)\}<\/React\.Fragment>\)/);
+  assert.doesNotMatch(source, /Registro de mídia das sessões|Registro de mídia da sessão/);
+  assert.doesNotMatch(source, /Registrar ambas/);
 });
