@@ -491,7 +491,7 @@ test('implementação é isolada, sob demanda, por pacote e sem leitura por card
 
   assert.match(professionalSource, /await listGooglePhotosAlbums\(\{/);
   assert.match(repositorySource, /GOOGLE_PHOTOS_ALBUM_PACKAGE_COLLECTION/);
-  assert.match(repositorySource, /packageCollection\(context\)\.doc\(packageKey\)/);
+  assert.match(repositorySource, /packageCollection\(context, db\)\.doc\(packageKey\)/);
   assert.match(repositorySource, /cardsMap/);
   assert.doesNotMatch(repositorySource, /activityRecords/);
   assert.doesNotMatch(endpointSource, /fetch\s*\(/);

@@ -21,8 +21,11 @@ import {
 import { buildActivityMediaPackageModel } from '../../shared/activityMediaPackages.js';
 import { getActivatedPackageNumber } from '../../shared/packagePayments.js';
 import { getHighestRecordedTolerancePackageNumber } from '../../shared/packageTolerance.js';
-import { normalizePackageConsumptionDecision } from '../../shared/sessionScheduling.js';
+import { normalizePackageConsumptionDecision, isSessionRemovedOrBlocked } from '../../shared/sessionScheduling.js';
 import { createEmptyGooglePhotosAlbum } from './googlePhotosClient.js';
+import { isExplicitSessionAbsence } from '../../shared/neuroFlowState.js';
+import { EXPLICIT_ALBUM_REOPEN, resolveAlbumReopenSessions, findBoundSessionAlbum } from '../../shared/googlePhotosAlbumReopen.js';
+import { buildGooglePhotosVirtualAlbumCards } from '../../shared/googlePhotosAlbums.js';
 
 const MAX_CARDS_PER_PACKAGE = 24;
 const MAX_PATIENTS = 500;
@@ -61,16 +64,16 @@ function todayIsoDate() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
 }
 
-function packageCollection(context) {
-  return getAdminDb().collection(`users/${context.ownerUserId}/${GOOGLE_PHOTOS_ALBUM_PACKAGE_COLLECTION}`);
+function packageCollection(context, db = getAdminDb()) {
+  return db.collection(`users/${context.ownerUserId}/${GOOGLE_PHOTOS_ALBUM_PACKAGE_COLLECTION}`);
 }
 
-function packageRef(context, patientId, packageNumber) {
+function packageRef(context, patientId, packageNumber, db = getAdminDb()) {
   const packageKey = buildGooglePhotosAlbumPackageKey({ patientId, packageNumber });
   if (!packageKey) {
     throw albumError('google-photos-albums/invalid-package', 'Não foi possível identificar o pacote da galeria.');
   }
-  return packageCollection(context).doc(packageKey);
+  return packageCollection(context, db).doc(packageKey);
 }
 
 function effectiveRole(context) {
@@ -142,6 +145,7 @@ function serializeAlbumCard(rawCard, fallback = {}) {
     providerAlbumId: sanitizeText(card.providerAlbumId, 512),
     createdViaApi: card.createdViaApi === true,
     creationOperationId: sanitizeText(card.creationOperationId, 128),
+    albumBindingIntent: card.albumBindingIntent === EXPLICIT_ALBUM_REOPEN ? EXPLICIT_ALBUM_REOPEN : null,
   };
 }
 
@@ -180,9 +184,9 @@ function serializePackage(snapshot, fallback = {}) {
   };
 }
 
-async function getPatient(context, patientId) {
+async function getPatient(context, patientId, db = getAdminDb()) {
   const normalizedPatientId = assertActivityPatientAccess(context, patientId);
-  const snapshot = await getAdminDb().doc(`users/${context.ownerUserId}/patients/${normalizedPatientId}`).get();
+  const snapshot = await db.doc(`users/${context.ownerUserId}/patients/${normalizedPatientId}`).get();
   if (!snapshot.exists) {
     throw albumError('google-photos-albums/patient-not-found', 'O atendente informado não foi encontrado.', 404);
   }
@@ -194,26 +198,30 @@ async function getPatient(context, patientId) {
   };
 }
 
-async function listPatientSessions(context, patientId) {
-  const snapshot = await getAdminDb().collection(`users/${context.ownerUserId}/sessions`)
+async function listPatientSessions(context, patientId, db = getAdminDb()) {
+  const snapshot = await db.collection(`users/${context.ownerUserId}/sessions`)
     .where('patientId', '==', patientId)
     .limit(MAX_SESSIONS_PER_PATIENT)
     .get();
-  return snapshot.docs
-    .map(item => ({ id: item.id, ...(item.data() || {}) }))
+  const sessions = snapshot.docs
+    .map(item => ({ id: item.id, ...(item.data() || {}), canonicalDocumentId: item.id }))
     .filter(session => !session.isBlocked && isSafeGooglePhotosAlbumDate(session.date))
     .sort((left, right) => normalizeSessionSortKey(left).localeCompare(normalizeSessionSortKey(right)));
+  Object.defineProperty(sessions, 'truncated', { value: snapshot.docs.length >= MAX_SESSIONS_PER_PATIENT });
+  return sessions;
 }
 
-async function listPatientPayments(context, patientId) {
-  const snapshot = await getAdminDb().collection(`users/${context.ownerUserId}/payments`)
+async function listPatientPayments(context, patientId, db = getAdminDb()) {
+  const snapshot = await db.collection(`users/${context.ownerUserId}/payments`)
     .where('patientId', '==', patientId)
     .limit(MAX_PAYMENTS_PER_PATIENT)
     .get();
-  return snapshot.docs.map(item => ({ id: item.id, ...(item.data() || {}) }));
+  const payments = snapshot.docs.map(item => ({ id: item.id, ...(item.data() || {}) }));
+  Object.defineProperty(payments, 'truncated', { value: snapshot.docs.length >= MAX_PAYMENTS_PER_PATIENT });
+  return payments;
 }
 
-function resolvePackageForSave(sessions, payments, patient, packageNumber) {
+function resolvePackageForSave(sessions, payments, patient, packageNumber, explicitSessions = []) {
   const patientId = String(patient?.id || '');
   const model = buildActivityMediaPackageModel(sessions, {
     patientId,
@@ -232,7 +240,10 @@ function resolvePackageForSave(sessions, payments, patient, packageNumber) {
       409,
     );
   }
-  const targetPackage = model.packages.find(pkg => pkg.number === targetPackageNumber);
+  const targetPackage = model.packages.find(pkg => pkg.number === targetPackageNumber)
+    || (explicitSessions.length && targetPackageNumber <= model.currentPackageNumber ? {
+      number: targetPackageNumber, sessions: [], startDate: '', endDate: '',
+    } : null);
   if (!targetPackage) {
     throw albumError(
       'google-photos-albums/package-not-started',
@@ -278,6 +289,7 @@ function normalizePackageCardInput({
   packageNumber,
   existingByGroupKey,
   selectableById,
+  existingExplicitById = new Map(),
   permissions,
   now,
 }) {
@@ -299,7 +311,13 @@ function normalizePackageCardInput({
     );
   }
 
-  const selectedSessions = sessionIds.map(sessionId => selectableById.get(sessionId));
+  const boundKey = buildGooglePhotosAlbumGroupKey({ patientId: patient.id, activityDate: card?.activityDate, sessionIds });
+  const boundExisting = existingByGroupKey.get(boundKey);
+  const preserveExplicitBinding = boundExisting?.albumBindingIntent === EXPLICIT_ALBUM_REOPEN
+    && boundExisting.url === url && boundExisting.activityDate === card?.activityDate
+    && JSON.stringify(normalizeGooglePhotosSessionIds(boundExisting.sessionIds)) === JSON.stringify(sessionIds);
+  const selectedSessions = sessionIds.map(sessionId => selectableById.get(sessionId)
+    || (preserveExplicitBinding ? existingExplicitById.get(sessionId) : null));
   if (selectedSessions.some(session => !session)) {
     throw albumError(
       'google-photos-albums/invalid-session-binding',
@@ -387,6 +405,7 @@ function normalizePackageCardInput({
     providerAlbumId: sanitizeText(existing?.providerAlbumId, 512),
     createdViaApi: existing?.createdViaApi === true,
     creationOperationId: sanitizeText(existing?.creationOperationId, 128),
+    albumBindingIntent: existing?.albumBindingIntent === EXPLICIT_ALBUM_REOPEN ? EXPLICIT_ALBUM_REOPEN : null,
   };
 }
 
@@ -478,18 +497,23 @@ export async function listGooglePhotosAlbums(context, { patientId, packageNumber
   };
 }
 
-export async function saveGooglePhotosAlbumPackage(context, input) {
+export async function saveGooglePhotosAlbumPackage(context, input, { db = getAdminDb() } = {}) {
   const permissions = assertCapability(context, 'canEdit');
-  const patient = await getPatient(context, input?.patientId);
+  const patient = await getPatient(context, input?.patientId, db);
   const packageNumber = normalizeGooglePhotosPackageNumber(input?.packageNumber);
-  const ref = packageRef(context, patient.id, packageNumber);
+  const ref = packageRef(context, patient.id, packageNumber, db);
   const [sessions, payments, existingSnapshot] = await Promise.all([
-    listPatientSessions(context, patient.id),
-    listPatientPayments(context, patient.id),
+    listPatientSessions(context, patient.id, db),
+    listPatientPayments(context, patient.id, db),
     ref.get(),
   ]);
-  const packageContext = resolvePackageForSave(sessions, payments, patient, packageNumber);
   const existingByGroupKey = buildExistingCardMap(existingSnapshot);
+  const existingExplicitSessions = [...existingByGroupKey.values()]
+    .filter(card => card.albumBindingIntent === EXPLICIT_ALBUM_REOPEN)
+    .flatMap(card => resolveAlbumReopenSessions({ card, sessions }) || [])
+    .filter(session => session.id === session.canonicalDocumentId);
+  const existingExplicitById = new Map(existingExplicitSessions.map(session => [session.id, session]));
+  const packageContext = resolvePackageForSave(sessions, payments, patient, packageNumber, existingExplicitSessions);
   const packageKey = ref.id;
   const now = FieldValue.serverTimestamp();
   const cards = Array.isArray(input?.cards) ? input.cards.slice(0, MAX_CARDS_PER_PACKAGE) : [];
@@ -505,6 +529,7 @@ export async function saveGooglePhotosAlbumPackage(context, input) {
       packageNumber,
       existingByGroupKey,
       selectableById: packageContext.selectableById,
+      existingExplicitById,
       permissions,
       now,
     });
@@ -578,8 +603,107 @@ export async function saveGooglePhotosAlbumPackage(context, input) {
 }
 
 
-function creationOperationCollection(context) {
-  return getAdminDb().collection(`users/${context.ownerUserId}/${GOOGLE_PHOTOS_ALBUM_CREATION_COLLECTION}`);
+function creationOperationCollection(context, db = getAdminDb()) {
+  return db.collection(`users/${context.ownerUserId}/${GOOGLE_PHOTOS_ALBUM_CREATION_COLLECTION}`);
+}
+
+function invalidReopen(message = 'A sessão ou autorização de reabertura não é válida. Atualize a galeria.') {
+  return albumError('google-photos-albums/invalid-session-binding', message, 409);
+}
+
+function reopenBinding(context, normalized) {
+  return JSON.stringify([context.ownerUserId, context.userId, normalized.patientId,
+    normalized.packageNumber, normalized.activityDate, normalized.sessionGroupKey, normalized.sessionIds.slice().sort()]);
+}
+
+function sessionFingerprint(session) {
+  return JSON.stringify([session.id, session.patientId, session.date, session.time, session.status,
+    session.isBlocked, session.removedFromAgenda, session.consumesPackage,
+    session.packageConsumptionDecisionRecorded, session.noReplacementReasonCode,
+    session.noReplacementReasonText, session.noReplacementObservation]);
+}
+
+async function explicitPackageContext(context, input, patient, sessions, payments, db) {
+  if (input?.creationIntent !== EXPLICIT_ALBUM_REOPEN || input?.recreateDeletedAlbum) throw invalidReopen();
+  // A truncated query cannot establish canonical package position or uniqueness.
+  if (sessions.truncated || payments.truncated || (patient.data.id && patient.data.id !== patient.id)) throw invalidReopen();
+  const selected = resolveAlbumReopenSessions({ card: input, sessions });
+  if (!selected || selected.some(session => session.id !== session.canonicalDocumentId)) throw invalidReopen();
+  const statusRefs = selected.map(session => db.doc(`users/${context.ownerUserId}/activityUploadStatus/${session.id}`));
+  const statuses = await Promise.all(statusRefs.map(ref => ref.get()));
+  const hasAbsence = selected.some(isExplicitSessionAbsence);
+  if (!hasAbsence) {
+    const virtual = buildGooglePhotosVirtualAlbumCards(sessions, {
+      patientId: patient.id, patientName: patient.name, packageNumber: input.packageNumber,
+      patientDoubleSession: Boolean(patient.data.doubleSession), payments,
+      packageTolerances: patient.data.packageTolerances || [],
+    });
+    if (!virtual.some(card => card.sessionGroupKey === input.sessionGroupKey)) throw invalidReopen();
+    if (!statuses.some(snapshot => snapshot.exists && snapshot.data()?.patientId === patient.id
+      && snapshot.data()?.justification?.active === true && !snapshot.data()?.hasMedia
+      && !(Number(snapshot.data()?.mediaCount) > 0))) throw invalidReopen();
+  }
+  const packageContext = resolvePackageForSave(sessions, payments, patient, input.packageNumber, selected);
+  packageContext.selectableById = new Map(packageContext.selectableById);
+  selected.forEach(session => packageContext.selectableById.set(session.id, session));
+  return { packageContext, selected, hasAbsence, statusRefs };
+}
+
+async function assertLiveReopenSessions(transaction, context, explicit, patient, intent, db) {
+  for (let index = 0; index < explicit.selected.length; index += 1) {
+    const session = explicit.selected[index];
+    const snapshot = await transaction.get(db.doc(`users/${context.ownerUserId}/sessions/${session.id}`));
+    const live = { id: snapshot.id, ...snapshot.data() };
+    if (!snapshot.exists || live.id !== snapshot.id || isSessionRemovedOrBlocked(live)
+      || sessionFingerprint(live) !== intent?.sessionFingerprints?.[index]
+      || sessionFingerprint(session) !== intent?.sessionFingerprints?.[index]) throw invalidReopen();
+  }
+  if (!explicit.hasAbsence) {
+    const snapshots = await Promise.all(explicit.statusRefs.map(ref => transaction.get(ref)));
+    if (!snapshots.some(snapshot => snapshot.data()?.patientId === patient.id
+      && snapshot.data()?.justification?.active === true && !snapshot.data()?.hasMedia
+      && !(Number(snapshot.data()?.mediaCount) > 0))) throw invalidReopen();
+  }
+}
+
+function existingReopenAlbum(snapshot, normalized) {
+  const result = findBoundSessionAlbum(Object.values(snapshot.data()?.cards || {}), normalized.sessionIds, normalized.activityDate);
+  if (result.kind === 'ambiguous') throw invalidReopen('Vínculo de álbum ambíguo. Confira a galeria antes de criar.');
+  if (result.kind === 'existing' && (result.card.patientId !== normalized.patientId
+    || Number(result.card.packageNumber) !== normalized.packageNumber || result.card.activityDate !== normalized.activityDate
+    || result.card.sessionGroupKey !== buildGooglePhotosAlbumGroupKey(result.card))) throw invalidReopen();
+  return result.kind === 'existing' ? serializeAlbumCard(result.card) : null;
+}
+
+export async function prepareGooglePhotosAlbumReopen(context, input, { db = getAdminDb() } = {}) {
+  const permissions = assertCapability(context, 'canCreate');
+  const patient = await getPatient(context, input?.patientId, db);
+  const packageNumber = normalizeGooglePhotosPackageNumber(input?.packageNumber);
+  const ref = packageRef(context, patient.id, packageNumber, db);
+  const [sessions, payments] = await Promise.all([listPatientSessions(context, patient.id, db), listPatientPayments(context, patient.id, db)]);
+  const explicit = await explicitPackageContext(context, input, patient, sessions, payments, db);
+  const normalized = normalizeAlbumCreationInput({ context, input, patient, packageKey: ref.id, packageNumber, packageContext: explicit.packageContext });
+  const operationId = buildGooglePhotosAlbumCreationOperationId(normalized);
+  const operationRef = creationOperationCollection(context, db).doc(operationId);
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const result = await db.runTransaction(async transaction => {
+    const operation = await transaction.get(operationRef);
+    const snapshot = await transaction.get(ref);
+    const existing = existingReopenAlbum(snapshot, normalized);
+    if (existing) return { existing, snapshot };
+    if (['creating', 'unknown', 'completed'].includes(operation.data()?.status)) throw creationInProgressError('unknown');
+    transaction.set(operationRef, { reopenIntent: {
+      tokenHash, binding: reopenBinding(context, normalized), expiresAt: Date.now() + 10 * 60 * 1000,
+      used: false, sessionFingerprints: explicit.selected.map(sessionFingerprint),
+    } }, { merge: true });
+    return {};
+  });
+  if (result.existing) return { reopenToken: null, existing: creationResponse({
+    context, permissions, packageSnapshot: result.snapshot, patient, packageNumber,
+    createdAlbum: { id: result.existing.providerAlbumId, productUrl: result.existing.url, title: normalized.providerAlbumTitle }, idempotent: true,
+  }) };
+  return { reopenToken: token, existing: null };
 }
 
 export function buildGooglePhotosProviderAlbumTitle(patientName = '', activityDate = '') {
@@ -789,17 +913,19 @@ function creationResponse({
 export async function createGooglePhotosAlbumForPackage(
   context,
   input,
-  { createAlbum = createEmptyGooglePhotosAlbum } = {},
+  { createAlbum = createEmptyGooglePhotosAlbum, db = getAdminDb() } = {},
 ) {
   const permissions = assertCapability(context, 'canCreate');
-  const patient = await getPatient(context, input?.patientId);
+  const patient = await getPatient(context, input?.patientId, db);
   const packageNumber = normalizeGooglePhotosPackageNumber(input?.packageNumber);
-  const ref = packageRef(context, patient.id, packageNumber);
+  const ref = packageRef(context, patient.id, packageNumber, db);
   const [sessions, payments] = await Promise.all([
-    listPatientSessions(context, patient.id),
-    listPatientPayments(context, patient.id),
+    listPatientSessions(context, patient.id, db),
+    listPatientPayments(context, patient.id, db),
   ]);
-  const packageContext = resolvePackageForSave(sessions, payments, patient, packageNumber);
+  const explicit = input?.creationIntent || input?.reopenToken
+    ? await explicitPackageContext(context, input, patient, sessions, payments, db) : null;
+  const packageContext = explicit?.packageContext || resolvePackageForSave(sessions, payments, patient, packageNumber);
   const normalized = normalizeAlbumCreationInput({
     context,
     input,
@@ -808,18 +934,34 @@ export async function createGooglePhotosAlbumForPackage(
     packageNumber,
     packageContext,
   });
+  if (explicit) normalized.albumBindingIntent = EXPLICIT_ALBUM_REOPEN;
+  if (!explicit) {
+    const statuses = await Promise.all(normalized.sessionIds.map(id => db.doc(`users/${context.ownerUserId}/activityUploadStatus/${id}`).get()));
+    if (statuses.some(snapshot => snapshot.data()?.justification?.active === true
+      && !snapshot.data()?.hasMedia && !(Number(snapshot.data()?.mediaCount) > 0))) throw invalidReopen('A criação comum permanece bloqueada para sessão justificada sem mídia.');
+  }
   const operationId = buildGooglePhotosAlbumCreationOperationId({
     patientId: patient.id,
     packageNumber,
     sessionGroupKey: normalized.sessionGroupKey,
   });
-  const operationRef = creationOperationCollection(context).doc(operationId);
-  const db = getAdminDb();
+  const operationRef = creationOperationCollection(context, db).doc(operationId);
 
   const reservation = await db.runTransaction(async transaction => {
     const operationSnapshot = await transaction.get(operationRef);
     const packageSnapshot = await transaction.get(ref);
-    const existingCard = existingCardFromPackageSnapshot(packageSnapshot, normalized.sessionGroupKey, {
+    if (explicit) {
+      const patientSnapshot = await transaction.get(db.doc(`users/${context.ownerUserId}/patients/${patient.id}`));
+      if (!patientSnapshot.exists || (patientSnapshot.data()?.id && patientSnapshot.data().id !== patient.id)) throw invalidReopen();
+      const intent = operationSnapshot.data()?.reopenIntent;
+      const token = String(input?.reopenToken || '');
+      if (!/^[a-f0-9]{64}$/.test(token) || !intent
+        || intent.tokenHash !== crypto.createHash('sha256').update(token).digest('hex')
+        || intent.binding !== reopenBinding(context, normalized) || intent.expiresAt <= Date.now()) throw invalidReopen();
+      await assertLiveReopenSessions(transaction, context, explicit, patient, intent, db);
+    }
+    const existingCard = explicit ? existingReopenAlbum(packageSnapshot, normalized)
+      : existingCardFromPackageSnapshot(packageSnapshot, normalized.sessionGroupKey, {
       patientId: patient.id,
       patientName: patient.name,
       packageKey: ref.id,
@@ -835,6 +977,7 @@ export async function createGooglePhotosAlbumForPackage(
         },
       };
     }
+    if (explicit && operationSnapshot.data()?.reopenIntent?.used) throw invalidReopen();
 
     let recreateFromCompletedOperation = null;
     if (operationSnapshot.exists) {
@@ -863,6 +1006,7 @@ export async function createGooglePhotosAlbumForPackage(
 
     const now = Timestamp.now();
     transaction.set(operationRef, {
+      ...(explicit ? { reopenIntent: { ...operationSnapshot.data().reopenIntent, used: true } } : {}),
       id: operationId,
       schemaVersion: 1,
       provider: GOOGLE_PHOTOS_PROVIDER,
@@ -936,7 +1080,9 @@ export async function createGooglePhotosAlbumForPackage(
     await db.runTransaction(async transaction => {
       const operationSnapshot = await transaction.get(operationRef);
       const packageSnapshot = await transaction.get(ref);
-      const existingCard = existingCardFromPackageSnapshot(packageSnapshot, normalized.sessionGroupKey, {
+      if (explicit) await assertLiveReopenSessions(transaction, context, explicit, patient, operationSnapshot.data()?.reopenIntent, db);
+      const existingCard = explicit ? existingReopenAlbum(packageSnapshot, normalized)
+        : existingCardFromPackageSnapshot(packageSnapshot, normalized.sessionGroupKey, {
         patientId: patient.id,
         patientName: patient.name,
         packageKey: ref.id,

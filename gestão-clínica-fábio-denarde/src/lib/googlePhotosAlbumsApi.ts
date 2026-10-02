@@ -319,6 +319,22 @@ export async function createGooglePhotosAlbum(
   return result;
 }
 
+export async function prepareGooglePhotosAlbumReopen(payload: CreateGooglePhotosAlbumInput): Promise<{
+  reopenToken: string | null;
+  existing: CreateGooglePhotosAlbumResponse | null;
+}> {
+  const result = await request<{ reopenToken: string | null; existing: CreateGooglePhotosAlbumResponse | null }>(
+    'POST', '', { action: 'prepareAlbumReopen', album: payload },
+  );
+  if (result.existing) {
+    invalidateGooglePhotosAlbumsCache({ ownerUserId: result.existing.ownerUserId, patientId: payload.patientId,
+      packageNumber: payload.packageNumber, packageKey: result.existing.packageKey });
+    storeGooglePhotosAlbumsCache({ patientId: payload.patientId, packageNumber: payload.packageNumber, scope: 'manage' }, result.existing);
+    emitGooglePhotosAlbumsChanged(result.existing, payload.patientId);
+  }
+  return result;
+}
+
 export async function listGooglePhotosAlbumPatientOptions(): Promise<Array<{ id: string; name: string }>> {
   const result = await request<{ patients: Array<{ id: string; name: string }> }>('GET', '?mode=patients');
   return result.patients;

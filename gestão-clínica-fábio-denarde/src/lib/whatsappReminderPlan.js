@@ -3,6 +3,7 @@ import { findWhatsappReminderSuppression } from './whatsappReminderSuppressions.
 import { maskPhoneShort, normalizeBrazilianWhatsappPhone } from './whatsappPhone.js';
 import { isWhatsappAutomationBlocked } from '../../shared/whatsappSessionAutomation.js';
 import { getSaoPauloDateKey } from '../../shared/clinicalDate.js';
+import { isWhatsappTimingSlotEnabled, resolveWhatsappReminderTiming } from '../../shared/whatsappReminderPreferences.js';
 
 export function formatPhoneNumber(phoneStr) {
   return normalizeBrazilianWhatsappPhone(phoneStr).chatId;
@@ -25,10 +26,6 @@ function addOneHour(timeStr) {
   const [hour, min] = timeStr.split(':').map(Number);
   const newHour = (hour + 1) % 24;
   return `${String(newHour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-}
-
-function formatDateStr(date) {
-  return getSaoPauloDateKey(date);
 }
 
 function sameName(a, b) {
@@ -246,6 +243,8 @@ export function getSessionsForDate({
 export function getWhatsappReminderPlan({
   runDateStr,
   tipo,
+  scheduledTime = '',
+  customOnly = false,
   patients,
   sessions,
   settings,
@@ -258,11 +257,13 @@ export function getWhatsappReminderPlan({
     AMANHA: '09:00',
     HOJE_TARDE: '12:30'
   };
+  const slotTime = scheduledTime || scheduledTimeByType[tipo];
+  const relativeDay = tipo === 'AMANHA' ? 'dayBefore' : 'sameDay';
   let dateStr = runDateStr;
   if (tipo === 'AMANHA') {
-    const d = new Date(`${runDateStr}T12:00:00`);
-    d.setDate(d.getDate() + 1);
-    dateStr = formatDateStr(d);
+    const d = new Date(`${runDateStr}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    dateStr = d.toISOString().slice(0, 10);
   }
 
   const holiday = (settings.holidays || []).find(h => h.date === dateStr);
@@ -301,7 +302,12 @@ export function getWhatsappReminderPlan({
   if (tipo === 'HOJE_MANHA' || tipo === 'HOJE_TARDE') {
     for (const session of daySessions) {
       const patient = patients.find(item => item.id === session.patientId);
-      const routine = Number(session.time.split(':')[0]) < 12 ? 'HOJE_MANHA' : 'HOJE_TARDE';
+      const timing = resolveWhatsappReminderTiming(session, patient);
+      if (!isWhatsappTimingSlotEnabled(session, patient, { relativeDay, time: slotTime })
+        || (customOnly && timing.timingMode !== 'custom')) continue;
+      if (timing.timingMode === 'custom' && slotTime >= normalizeTime(session.time)) continue;
+      const routine = timing.timingMode === 'custom' ? tipo
+        : Number(session.time.split(':')[0]) < 12 ? 'HOJE_MANHA' : 'HOJE_TARDE';
       if (!session.isValid || isWhatsappAutomationBlocked(session, { patient, reminderType: routine, phase: 'plan', now })) continue;
       if (!sameDayFirstByPatient.has(session.patientId)) sameDayFirstByPatient.set(session.patientId, session.id);
     }
@@ -309,6 +315,10 @@ export function getWhatsappReminderPlan({
 
   for (const s of daySessions) {
     const patient = patients.find(p => p.id === s.patientId);
+    const timing = resolveWhatsappReminderTiming(s, patient);
+    if (!isWhatsappTimingSlotEnabled(s, patient, { relativeDay, time: slotTime })
+      || (customOnly && timing.timingMode !== 'custom')) continue;
+    if (relativeDay === 'sameDay' && timing.timingMode === 'custom' && slotTime >= normalizeTime(s.time)) continue;
 
     if (!s.isValid) {
       diagnostics.push({
@@ -328,7 +338,7 @@ export function getWhatsappReminderPlan({
     }
 
     const [hour] = s.time.split(':').map(Number);
-    if (tipo === 'HOJE_MANHA' && hour >= 12) {
+    if (timing.timingMode !== 'custom' && tipo === 'HOJE_MANHA' && hour >= 12) {
       diagnostics.push({
         id: s.id,
         time: s.time,
@@ -345,7 +355,7 @@ export function getWhatsappReminderPlan({
       continue;
     }
 
-    if (tipo === 'HOJE_TARDE' && hour < 12) {
+    if (timing.timingMode !== 'custom' && tipo === 'HOJE_TARDE' && hour < 12) {
       diagnostics.push({
         id: s.id,
         time: s.time,
@@ -376,6 +386,7 @@ export function getWhatsappReminderPlan({
   for (const s of candidates) {
     const patient = patients.find(p => p.id === s.patientId);
     const isSent = selectedMap.get(s.patientId).id === s.id;
+    const timing = resolveWhatsappReminderTiming(s, patient);
 
     if (isSent) {
       if (isWhatsappAutomationBlocked(s, { patient, reminderType: tipo, phase: 'plan', now })) {
@@ -404,7 +415,7 @@ export function getWhatsappReminderPlan({
         patient,
         session: s,
         runDateStr,
-        scheduledTime: scheduledTimeByType[tipo],
+        scheduledTime: slotTime,
         dateStr,
         tipo
       });
@@ -460,6 +471,11 @@ export function getWhatsappReminderPlan({
         isVirtual: s.isVirtual,
         type: s.type,
         reminderType: tipo,
+        runDateStr,
+        scheduledTime: slotTime,
+        timingMode: timing.timingMode,
+        relativeDay,
+        customOnly,
         sessionAutomationControl: s.whatsappAutomationControl || null,
       });
     } else {

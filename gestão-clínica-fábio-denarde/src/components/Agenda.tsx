@@ -1,9 +1,9 @@
-import { resolveWhatsappReminderPreferences, prepareWhatsappReminderPreferencesUpdate } from '../../shared/whatsappReminderPreferences.js';
+import { DEFAULT_WHATSAPP_REMINDER_TIMES, normalizeWhatsappCustomTimes, resolveWhatsappReminderPreferences, resolveWhatsappReminderTiming, prepareWhatsappReminderPreferencesUpdate } from '../../shared/whatsappReminderPreferences.js';
 import PatientPackagesPayments from './Common/PatientPackagesPayments';
 import React, { useEffect, useState, useMemo, useRef, useId } from 'react';
 import { AppState, NoReplacementReasonCode, Session, SessionStatus, SessionType, Reposition } from '../types';
 import { AVAILABLE_TIMES, SCHEDULE_CONFIG } from '../constants';
-import { AlertCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, User, Users, Images } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, DollarSign, FileText, MessageCircle, Phone, Trash2, User, Users, X, Images } from 'lucide-react';
 import { format, addDays, startOfWeek, addWeeks, subWeeks, getDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import Modal from './Common/Modal';
@@ -31,6 +31,16 @@ const getHourBase = (timeStr: string): string => {
   const [hour] = timeStr.split(':');
   return `${hour}:00`;
 };
+
+type ReminderTime = { relativeDay: 'dayBefore' | 'sameDay'; time: string };
+type ReminderPreferencesDraft = {
+  dayBefore: boolean;
+  sameDay: boolean;
+  timingMode: 'default' | 'custom';
+  customTimes: ReminderTime[];
+};
+
+const sessionActionButtonClass = 'flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-[13px] font-semibold leading-tight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/40 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 
 const NO_REPLACEMENT_STATUS_LABEL = 'Falta — sem reposição';
 const NO_REPLACEMENT_PORTAL_REASON = 'Aviso tardio ou cancelamento fora do prazo';
@@ -327,6 +337,8 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   // Session Action Modal state (safe click/tap on card)
   const [actionSession, setActionSession] = useState<ProcessedSession | null>(null);
+  const [presenceActivityPrompt, setPresenceActivityPrompt] = useState<{ patientId: string; sessionId: string; date: string } | null>(null);
+  const presenceSaveLockRef = useRef(false);
   const [whatsappSilenceDraft, setWhatsappSilenceDraft] = useState<{
     scope: 'session' | 'patient';
     duration: 'session' | '1h' | 'hours' | 'endOfDay' | '1d' | 'days' | '1w' | 'weeks' | 'custom' | 'manual';
@@ -339,14 +351,23 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   const [savingSessionFinance, setSavingSessionFinance] = useState(false);
   const whatsappTabId = useId();
   const [sessionTab, setSessionTab] = useState<'summary' | 'agenda' | 'whatsapp' | 'finance' | 'actions'>('summary');
-  const [reminderPreferencesDraft, setReminderPreferencesDraft] = useState({ dayBefore: true, sameDay: true });
+  const [reminderPreferencesDraft, setReminderPreferencesDraft] = useState<ReminderPreferencesDraft>({ dayBefore: true, sameDay: true, timingMode: 'default', customTimes: [] });
+  const [reminderTimingTouched, setReminderTimingTouched] = useState(false);
+  const [reminderTimeDay, setReminderTimeDay] = useState<ReminderTime['relativeDay']>('dayBefore');
+  const [reminderTimeValue, setReminderTimeValue] = useState('');
   const [savingReminderPreferences, setSavingReminderPreferences] = useState(false);
   const [editingWhatsappReminders, setEditingWhatsappReminders] = useState(false);
   const [editingWhatsappSilence, setEditingWhatsappSilence] = useState(false);
   const [reminderPreferencesScope, setReminderPreferencesScope] = useState<'session' | 'patient'>('session');
   const whatsappWriteLockRef = useRef(false);
   useEffect(() => {
-    if (actionSession) setReminderPreferencesDraft(resolveWhatsappReminderPreferences(actionSession, state.patients.find(item => item.id === actionSession.patientId)));
+    if (!actionSession) return;
+    const patient = state.patients.find(item => item.id === actionSession.patientId);
+    const flags = resolveWhatsappReminderPreferences(actionSession, patient);
+    const timing = resolveWhatsappReminderTiming(actionSession, patient);
+    setReminderPreferencesDraft({ ...flags, timingMode: timing.timingMode === 'default' ? 'default' : 'custom',
+      customTimes: timing.timingMode === 'custom' ? timing.customTimes.map((item: ReminderTime) => ({ ...item })) : [] });
+    setReminderTimingTouched(false);
   }, [actionSession]);
   const [rescheduleModal, setRescheduleModal] = useState<{
     session: ProcessedSession;
@@ -444,7 +465,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     if (savingSessionFinance || savingWhatsappBlock || savingReminderPreferences) return;
     const selected = state.patients.find(item => item.id === actionSession?.patientId);
     const preferences = resolveWhatsappReminderPreferences(actionSession, selected);
-    const hasDraft = (isEditingActionGeneralNotes && actionGeneralNotesDraft !== (selected?.clinicalNotes || '')) || reminderPreferencesDraft.dayBefore !== preferences.dayBefore || reminderPreferencesDraft.sameDay !== preferences.sameDay;
+    const timing = resolveWhatsappReminderTiming(actionSession, selected);
+    const hasDraft = (isEditingActionGeneralNotes && actionGeneralNotesDraft !== (selected?.clinicalNotes || ''))
+      || reminderPreferencesDraft.dayBefore !== preferences.dayBefore || reminderPreferencesDraft.sameDay !== preferences.sameDay
+      || reminderPreferencesDraft.timingMode !== timing.timingMode
+      || (timing.timingMode === 'custom' && JSON.stringify(reminderPreferencesDraft.customTimes) !== JSON.stringify(timing.customTimes));
     if (hasDraft && !window.confirm('Há alterações não salvas. Fechar e descartar estas alterações?')) return;
     setActionSession(null);
   };
@@ -622,17 +647,17 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     newStatus: SessionStatus,
     successMessage: string,
     extraSessionData: Partial<Session> = {},
-  ): Promise<boolean> => {
+  ): Promise<Session | null> => {
     const actionKey = getVirtualActionKey(session);
     if (virtualActionLocksRef.current.has(actionKey)) {
       showToast('Este atendimento já está sendo registrado. Aguarde a atualização da Agenda.', 'error');
-      return false;
+      return null;
     }
 
     const result = createRealFromVirtual(session, newStatus, extraSessionData);
     if (!result) {
       showToast('A sessão fixa já foi registrada ou não está mais disponível. Atualize a tela e confira a Agenda.', 'error');
-      return false;
+      return null;
     }
 
     virtualActionLocksRef.current.add(actionKey);
@@ -645,12 +670,12 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       });
       if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast(successMessage);
-      return true;
+      return result.session;
     } catch (error) {
       virtualActionLocksRef.current.delete(actionKey);
       console.error('Falha ao registrar atendimento fixo/virtual:', error);
       showToast('Não foi possível registrar o atendimento. Nenhuma confirmação foi gravada. Tente novamente.', 'error');
-      return false;
+      return null;
     }
   };
 
@@ -836,13 +861,24 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
   // ── Action handlers for the modal ─────────────────────────────
   const handleActionOk = async (session: ProcessedSession) => {
-    if (session.isVirtual) {
-      const patientName = state.patients.find(p => p.id === session.patientId)?.name || 'Atendimento';
-      await persistVirtualAction(session, SessionStatus.REALIZADA, `${patientName} - Presença registrada.`);
-    } else {
-      await markAsRealized(session);
+    if (presenceSaveLockRef.current || session.status === SessionStatus.REALIZADA) return;
+    presenceSaveLockRef.current = true;
+    try {
+      let savedSession: Session | null = null;
+      if (session.isVirtual) {
+        const patientName = state.patients.find(p => p.id === session.patientId)?.name || 'Atendimento';
+        savedSession = await persistVirtualAction(session, SessionStatus.REALIZADA, `${patientName} - Presença registrada.`);
+      } else if (await markAsRealized(session)) {
+        savedSession = session;
+      }
+      if (!savedSession) return;
+      setActionSession(null);
+      if (onNavigateToPatientGallery && state.patients.some(patient => patient.id === savedSession.patientId)) {
+        setPresenceActivityPrompt({ patientId: savedSession.patientId, sessionId: savedSession.id, date: savedSession.date });
+      }
+    } finally {
+      presenceSaveLockRef.current = false;
     }
-    setActionSession(null);
   };
 
   const handleActionFalta = (session: ProcessedSession) => {
@@ -1226,7 +1262,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     }
   };
 
-  const markAsRealized = async (session: Session) => {
+  const markAsRealized = async (session: Session): Promise<boolean> => {
     const updatedSessions = state.sessions.map(s => 
       s.id === session.id ? { ...s, status: SessionStatus.REALIZADA } : s
     );
@@ -1235,9 +1271,11 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
       const persisted = await onUpdate({ sessions: updatedSessions, repositions: updatedRepositions });
       if (persisted !== true) throw new Error('A persistência retornou false.');
       showToast(`${state.patients.find(p => p.id === session.patientId)?.name} - Presença registrada.`);
+      return true;
     } catch (error) {
       console.error('Falha ao registrar presença:', error);
       showToast('Não foi possível registrar a presença.', 'error');
+      return false;
     }
   };
 
@@ -1516,6 +1554,20 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
   const canManageWhatsappAutomation = currentUserRole === 'admin' || currentUserRole === 'professional';
   const canManagePatientWhatsappSilence = currentUserRole === 'admin';
 
+  const addReminderTime = () => {
+    try {
+      const customTimes = normalizeWhatsappCustomTimes([
+        ...reminderPreferencesDraft.customTimes,
+        { relativeDay: reminderTimeDay, time: reminderTimeValue },
+      ], { strict: true }) as ReminderTime[];
+      setReminderPreferencesDraft(current => ({ ...current, timingMode: 'custom', customTimes }));
+      setReminderTimingTouched(true);
+      setReminderTimeValue('');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Horário inválido.', 'error');
+    }
+  };
+
   const persistReminderPreferences = async (session: ProcessedSession, scope: 'session' | 'patient' | 'default') => {
     if (!canManageWhatsappAutomation || whatsappWriteLockRef.current || savingWhatsappBlock) return;
     const patient = state.patients.find(item => item.id === session.patientId);
@@ -1524,8 +1576,12 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
     whatsappWriteLockRef.current = true;
     setSavingReminderPreferences(true);
     try {
+      const ownerPreferences = scope === 'patient' ? patient.whatsappReminderPreferences : session.whatsappReminderPreferences;
+      const includeTiming = reminderTimingTouched || (ownerPreferences && Object.hasOwn(ownerPreferences, 'timingMode'));
+      const preferences = includeTiming ? reminderPreferencesDraft
+        : { dayBefore: reminderPreferencesDraft.dayBefore, sameDay: reminderPreferencesDraft.sameDay };
       const update = prepareWhatsappReminderPreferencesUpdate({ session, patient, sessions: state.sessions, patients: state.patients,
-        scope, preferences: reminderPreferencesDraft, generatedId: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) });
+        scope, preferences, generatedId: globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2) });
       if (Object.keys(update).length && await onUpdate(update) !== true) throw new Error('Gravação não confirmada.');
       showToast('Preferências de lembrete confirmadas.');
       setActionSession(null);
@@ -1944,6 +2000,37 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
         </div>
       </div>
 
+      <Modal
+        isOpen={Boolean(presenceActivityPrompt)}
+        onClose={() => setPresenceActivityPrompt(null)}
+        title="Presença registrada"
+        width="max-w-sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-clinic-text">Deseja registrar a atividade desta sessão agora?</p>
+          <div className="grid gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const target = presenceActivityPrompt;
+                setPresenceActivityPrompt(null);
+                if (target) onNavigateToPatientGallery?.(target.patientId, target.sessionId);
+              }}
+              className="min-h-[40px] rounded-lg border border-clinic-primary/30 bg-clinic-primary/10 px-3 py-2 text-[13px] font-semibold text-clinic-primary transition-colors hover:bg-clinic-primary/15"
+            >
+              Registrar atividade agora
+            </button>
+            <button
+              type="button"
+              onClick={() => setPresenceActivityPrompt(null)}
+              className="min-h-[40px] rounded-lg border border-clinic-border bg-white px-3 py-2 text-[13px] font-semibold text-clinic-text-muted transition-colors hover:bg-clinic-bg"
+            >
+              Agora não
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {/* ── Session Action Modal ── */}
       {actionSession && (() => {
         const patient = state.patients.find(p => p.id === actionSession.patientId);
@@ -2170,13 +2257,46 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                       <label className="flex items-center gap-2 py-1 text-sm"><input className={whatsappFocus} type="checkbox" checked={reminderPreferencesDraft.dayBefore} onChange={event => setReminderPreferencesDraft(current => ({ ...current, dayBefore: event.target.checked }))} />Dia anterior</label>
                       <label className="flex items-center gap-2 py-1 text-sm"><input className={whatsappFocus} type="checkbox" checked={reminderPreferencesDraft.sameDay} onChange={event => setReminderPreferencesDraft(current => ({ ...current, sameDay: event.target.checked }))} />Dia do atendimento</label>
                     </div>
+                    <fieldset className="space-y-2 rounded-xl border border-clinic-border p-3">
+                      <legend className="px-1 text-xs font-bold">Horários dos lembretes</legend>
+                      <p className="text-xs font-bold uppercase text-clinic-primary">{reminderPreferencesDraft.timingMode === 'custom' ? 'PERSONALIZADO' : 'PADRÃO'}</p>
+                      <label className="flex items-center gap-2 text-sm"><input className={whatsappFocus} type="radio" name={whatsappTabId + '-timing-mode'} checked={reminderPreferencesDraft.timingMode === 'default'} onChange={() => { setReminderTimingTouched(true); setReminderPreferencesDraft(current => ({ ...current, timingMode: 'default', customTimes: [] })); }} />Usar padrão</label>
+                      <label className="flex items-center gap-2 text-sm"><input className={whatsappFocus} type="radio" name={whatsappTabId + '-timing-mode'} checked={reminderPreferencesDraft.timingMode === 'custom'} onChange={() => { setReminderTimingTouched(true); setReminderPreferencesDraft(current => ({ ...current, timingMode: 'custom' })); }} />Personalizar</label>
+                      {reminderPreferencesDraft.timingMode === 'default' ? (
+                        <ul className="space-y-1 text-sm text-clinic-text-muted">
+                          {DEFAULT_WHATSAPP_REMINDER_TIMES.map((slot: ReminderTime) => <li key={slot.relativeDay + slot.time}>{slot.relativeDay === 'dayBefore' ? 'Dia anterior' : 'Dia do atendimento'} — {slot.time}</li>)}
+                        </ul>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="flex flex-wrap items-end gap-2">
+                            <label className="text-xs font-semibold">Referência
+                              <select value={reminderTimeDay} onChange={event => setReminderTimeDay(event.target.value as ReminderTime['relativeDay'])} className="mt-1 block rounded-lg border border-clinic-border bg-white p-2 text-sm">
+                                <option value="dayBefore">Dia anterior</option><option value="sameDay">Dia do atendimento</option>
+                              </select>
+                            </label>
+                            <label className="text-xs font-semibold">Horário
+                              <input type="time" value={reminderTimeValue} onChange={event => setReminderTimeValue(event.target.value)} className={cn('mt-1 block rounded-lg border border-clinic-border p-2 text-sm', whatsappFocus)} />
+                            </label>
+                            <button type="button" onClick={addReminderTime} className={cn('rounded-lg border border-clinic-primary px-3 py-2 text-sm font-semibold text-clinic-primary', whatsappFocus)}>Adicionar</button>
+                          </div>
+                          {reminderPreferencesDraft.customTimes.length === 0 && <p className="text-xs text-amber-800">Adicione pelo menos um horário para salvar.</p>}
+                          <ul className="space-y-1">
+                            {reminderPreferencesDraft.customTimes.map((slot, index) => <li key={slot.relativeDay + slot.time} className="flex items-center justify-between gap-2 rounded-lg bg-clinic-primary/5 px-3 py-2 text-sm">
+                              <span>{slot.relativeDay === 'dayBefore' ? 'Dia anterior' : 'Dia do atendimento'} — {slot.time}</span>
+                              <button type="button" onClick={() => { setReminderTimingTouched(true); setReminderPreferencesDraft(current => ({ ...current, customTimes: current.customTimes.filter((_, itemIndex) => itemIndex !== index) })); }} className="font-semibold text-clinic-primary">Remover</button>
+                            </li>)}
+                          </ul>
+                        </div>
+                      )}
+                      <button type="button" onClick={() => { setReminderTimingTouched(true); setReminderPreferencesDraft(current => ({ ...current, timingMode: 'default', customTimes: [] })); }} className="text-sm font-semibold text-clinic-primary">Restaurar horários padrão</button>
+                    </fieldset>
                     <fieldset className="min-w-0 space-y-2">
                       <legend className="text-xs font-semibold text-clinic-text-muted">Aplicar alteração a</legend>
                       <label className="flex items-center gap-2 py-1 text-sm"><input className={whatsappFocus} type="radio" name={whatsappTabId + '-reminder-scope'} checked={reminderPreferencesScope === 'session'} onChange={() => setReminderPreferencesScope('session')} />Somente esta sessão</label>
                       {canManagePatientWhatsappSilence && <label className="flex items-center gap-2 py-1 text-sm"><input className={whatsappFocus} type="radio" name={whatsappTabId + '-reminder-scope'} checked={reminderPreferencesScope === 'patient'} onChange={() => setReminderPreferencesScope('patient')} />Padrão para as próximas sessões</label>}
                     </fieldset>
                     <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                      <button type="button" onClick={() => void persistReminderPreferences(actionSession, reminderPreferencesScope)} className={cn('rounded-lg bg-clinic-primary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50', whatsappFocus)}>{savingReminderPreferences ? 'Salvando...' : 'Salvar alterações'}</button>
+                      <button type="button" disabled={reminderPreferencesDraft.timingMode === 'custom' && reminderPreferencesDraft.customTimes.length === 0} onClick={() => void persistReminderPreferences(actionSession, reminderPreferencesScope)} className={cn('rounded-lg bg-clinic-primary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50', whatsappFocus)}>{savingReminderPreferences ? 'Salvando...' : 'Salvar alterações'}</button>
                       <button type="button" onClick={() => void persistReminderPreferences(actionSession, 'default')} className={cn('rounded-lg px-3 py-2 text-sm font-semibold text-clinic-primary hover:bg-clinic-primary/5 disabled:opacity-50', whatsappFocus)}>Restaurar padrão do paciente</button>
                     </div>
                   </fieldset>
@@ -2273,54 +2393,64 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
               {/* ── Botões de ação ── */}
               {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel || actions.canReopen || actions.canReschedule) && (
-                <div className="space-y-2.5">
-                  <p className="text-[10px] font-black text-clinic-text-faint uppercase tracking-widest">⚡ Ações Rápidas</p>
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-clinic-text-muted">Ações da sessão</p>
 
                   {(actions.canOk || actions.canFalta || actions.canFaltaProf || actions.canNoReplacement || actions.canCancel || actions.canReschedule) && (
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                       {actions.canOk && (
                         <button
                           onClick={() => handleActionOk(actionSession)}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-emerald-400 to-emerald-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className={cn(sessionActionButtonClass, 'border-[#D7E7D9] bg-[#F1F7F2] text-[#306343] hover:bg-[#E7F1E9]')}
                         >
-                          <span className="text-base">✅</span>
-                          <span className="text-xs font-black uppercase">OK / Presença</span>
+                          <Check size={16} aria-hidden="true" className="shrink-0" />
+                          <span>OK / Presença</span>
                         </button>
                       )}
                       {actions.canFalta && (
                         <button
                           onClick={() => handleActionFalta(actionSession)}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-red-400 to-red-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className={cn(sessionActionButtonClass, 'border-[#ECD9D4] bg-[#FAF3F1] text-[#874D46] hover:bg-[#F5EAE7]')}
                         >
-                          <span className="text-base">❌</span>
-                          <span className="text-xs font-black uppercase">Falta</span>
+                          <AlertCircle size={16} aria-hidden="true" className="shrink-0" />
+                          <span>Falta</span>
                         </button>
                       )}
                       {actions.canFaltaProf && (
                         <button
                           onClick={() => handleActionFaltaProf(actionSession)}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-amber-400 to-amber-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className={cn(sessionActionButtonClass, 'border-[#EDE4D1] bg-[#FBF8F1] text-[#806645] hover:bg-[#F5F0E5]')}
                         >
-                          <span className="text-base">🟠</span>
-                          <span className="text-xs font-black uppercase">Falta Prof.</span>
+                          <User size={16} aria-hidden="true" className="shrink-0" />
+                          <span>Falta Prof.</span>
                         </button>
                       )}
                       {actions.canNoReplacement && (
                         <button
                           onClick={() => openNoReplacementModal(actionSession)}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 border border-[#A94444]/30 bg-[#FFF4F4] text-[#A94444] font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className={cn(sessionActionButtonClass, 'border-[#EFDEDA] bg-[#FCF6F5] text-[#9B625A] hover:bg-[#F8EFED]')}
                         >
-                          <AlertTriangle size={16} />
-                          <span className="text-xs font-black uppercase">Registrar falta sem reposição</span>
+                          <AlertTriangle size={16} aria-hidden="true" className="shrink-0" />
+                          <span>Registrar falta sem reposição</span>
+                        </button>
+                      )}
+                      {actions.canReschedule && (
+                        <button
+                          type="button"
+                          onClick={() => openRescheduleModal(actionSession)}
+                          className={cn(sessionActionButtonClass, 'border-clinic-border bg-white text-clinic-text-muted hover:bg-[#F8F3EE]')}
+                        >
+                          <Clock size={16} aria-hidden="true" className="shrink-0" />
+                          <span>Reagendar sessão</span>
                         </button>
                       )}
                       {actions.canCancel && (
                         <button
                           onClick={() => handleActionCancel(actionSession)}
-                          className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-b from-slate-400 to-slate-600 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                          className={cn(sessionActionButtonClass, 'border-[#DFE3E7] bg-[#F6F7F8] text-[#58636C] hover:bg-[#EEF1F3]')}
                         >
-                          <span className="text-base">🚫</span>
-                          <span className="text-xs font-black uppercase">Cancelar</span>
+                          <X size={16} aria-hidden="true" className="shrink-0" />
+                          <span>Cancelar</span>
                         </button>
                       )}
                     </div>
@@ -2343,7 +2473,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                             }
                             setActionSession(null);
                           }}
-                          className="w-full rounded-xl border border-[#A94444]/30 bg-[#FFF4F4] px-4 py-2.5 text-xs font-black uppercase tracking-wide text-[#A94444]"
+                          className={cn(sessionActionButtonClass, 'border-[#EFDEDA] bg-[#FCF6F5] text-[#9B625A] hover:bg-[#F8EFED]')}
                         >
                           Alterar contabilização da falta
                         </button>
@@ -2352,10 +2482,10 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
                         type="button"
                         onClick={() => void handleActionReopen(actionSession)}
                         disabled={isReopening}
-                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-800 text-white font-bold rounded-xl shadow-sm hover:-translate-y-0.5 active:scale-95 transition-all duration-150"
+                        className={cn(sessionActionButtonClass, 'border-clinic-border bg-white text-clinic-text-muted hover:bg-[#F8F3EE]')}
                       >
-                        <span>↻</span>
-                        <span className="text-sm font-black uppercase tracking-wide">{isReopening ? 'Reabrindo...' : 'Reabrir como Agendada'}</span>
+                        <Clock size={16} aria-hidden="true" className="shrink-0" />
+                        <span>{isReopening ? 'Reabrindo...' : 'Reabrir como Agendada'}</span>
                       </button>
                     </div>
                   )}
@@ -2364,12 +2494,14 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
 
               {/* Remover sessão */}
               {actions.canDelete && !actionSession.isVirtual && (
-                <button
-                  onClick={() => handleActionDelete(actionSession)}
-                  className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-rose-50 text-rose-600 border border-rose-200 font-bold rounded-xl hover:bg-rose-100 active:scale-95 transition-all duration-150 text-sm"
-                >
-                  🗑 Remover Sessão
-                </button>
+                <div className="border-t border-clinic-border/50 pt-2.5">
+                  <button
+                    onClick={() => handleActionDelete(actionSession)}
+                    className="flex min-h-[38px] w-full items-center justify-center gap-1.5 rounded-lg border border-[#E9D5D2] bg-transparent px-3 py-1.5 text-[13px] font-semibold text-[#9A6760] transition-colors hover:bg-[#FBF5F4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/40 focus-visible:ring-offset-2"
+                  >
+                    <Trash2 size={15} aria-hidden="true" className="shrink-0" /> Remover Sessão
+                  </button>
+                </div>
               )}
 
               {!actions.canOk && !actions.canFalta && !actions.canFaltaProf && !actions.canNoReplacement && !actions.canCancel && !actions.canReopen && !actions.canReschedule && !actions.canDelete && (
@@ -2379,7 +2511,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               )}
 
               </div>
-              {(sessionTab === 'agenda' || sessionTab === 'actions') && <div>
+              {sessionTab === 'agenda' && <div>
                       {actions.canReschedule && (
                         <button
                           type="button"
@@ -2394,7 +2526,7 @@ export default function Agenda({ state, onUpdate, onNavigateToPatient, onNavigat
               <button
                 onClick={closeActionSession}
                 disabled={savingSessionFinance || savingWhatsappBlock || savingReminderPreferences}
-                className="w-full py-2.5 bg-clinic-bg text-clinic-text-muted font-bold rounded-xl hover:bg-clinic-border transition-all uppercase tracking-widest text-xs"
+                className={cn('w-full rounded-xl bg-clinic-bg text-clinic-text-muted hover:bg-clinic-border disabled:cursor-not-allowed disabled:opacity-50', sessionTab === 'actions' ? 'min-h-[40px] rounded-lg py-1.5 text-[13px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-clinic-primary/40' : 'py-2.5 font-bold uppercase tracking-widest text-xs')}
               >
                 Fechar
               </button>

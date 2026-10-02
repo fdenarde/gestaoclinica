@@ -20,6 +20,7 @@ import { JsonReminderLedger, buildRoutineDeliveryAccounting, createReminderDeliv
 import { buildReminderPlanContexts, initializeFirebaseAdmin } from './src/lib/whatsappReminderRuntime.js';
 import { loadWhatsappReminderSuppressions } from './src/lib/whatsappReminderSuppressionStore.js';
 import { isWhatsappAutomationBlocked } from './shared/whatsappSessionAutomation.js';
+import { isWhatsappTimingSlotEnabled, resolveWhatsappReminderTiming } from './shared/whatsappReminderPreferences.js';
 import { emitFirestoreMetric } from './api/_lib/firestoreDiagnostics.js';
 import {
   buildSanitizedTechnicalAlertSnapshot,
@@ -496,7 +497,13 @@ async function resolveSessionAutomationBlock({ accountId, reminder, routine, rou
       phase,
       now: new Date(),
     });
-    return blocked
+    const timingBlocked = reminder?.scheduledTime && reminder?.relativeDay && reminder?.timingMode
+      ? (!isWhatsappTimingSlotEnabled(session, patient, {
+        relativeDay: reminder.relativeDay,
+        time: reminder.scheduledTime,
+      }) || resolveWhatsappReminderTiming(session, patient).timingMode !== reminder.timingMode)
+      : false;
+    return blocked || timingBlocked
       ? { blocked: true, reason: 'mensagem automática bloqueada na Agenda antes do envio' }
       : { blocked: false };
   } catch (error) {
@@ -527,6 +534,10 @@ async function processClaimedRoutine(routineJob) {
     const planContexts = await buildReminderPlanContexts({
       db,
       tipo: routine,
+      scheduledTime: routineJob.scheduledTime,
+      customOnly: routineJob.customOnly === true,
+      routineDateStr: routineJob.date,
+      accountIds: routineJob.customOnly === true ? routineJob.accountIds : [],
       now: new Date(),
       suppressions,
       invocationReason: 'routine',
@@ -589,7 +600,7 @@ async function processClaimedRoutine(routineJob) {
 
     finishExecutionAudit(audit, new Date());
     const executionReport = buildExecutionReportData(audit);
-    const executionMessage = formatExecutionReportMessage(executionReport);
+    const executionMessage = routineJob.customOnly ? '' : formatExecutionReportMessage(executionReport);
     let adminDeliveryStatus = 'not-required';
     let adminRecipientDigits = '';
 

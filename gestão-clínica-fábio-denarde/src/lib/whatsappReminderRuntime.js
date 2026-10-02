@@ -49,13 +49,19 @@ function countPlanReminders(plan) {
 export async function buildReminderPlanContexts({
   db = initializeFirebaseAdmin(),
   tipo,
+  scheduledTime = '',
+  customOnly = false,
+  routineDateStr = '',
+  accountIds = [],
   now = new Date(),
   suppressions = loadWhatsappReminderSuppressions(),
   invocationReason = 'unknown',
 } = {}) {
   const contexts = [];
-  const runDateStr = formatLocalDateStr(now);
-  const targetDateStr = getTargetDateForRoutine({ runDate: now, tipo });
+  const runDateStr = routineDateStr || formatLocalDateStr(now);
+  const targetDateStr = routineDateStr
+    ? (() => { const date = new Date(`${runDateStr}T12:00:00Z`); if (tipo === 'AMANHA') date.setUTCDate(date.getUTCDate() + 1); return date.toISOString().slice(0, 10); })()
+    : getTargetDateForRoutine({ runDate: now, tipo });
   const safeInvocationReason = normalizeInvocationReason(invocationReason);
   const safeRoutine = ['HOJE_MANHA', 'AMANHA', 'HOJE_TARDE'].includes(tipo) ? tipo : 'unknown';
   const startedAt = Date.now();
@@ -73,10 +79,15 @@ export async function buildReminderPlanContexts({
   });
 
   try {
-    const settingsConfigSnapshot = await db.collectionGroup('settings').get();
-    configSnapshotCount = settingsConfigSnapshot.docs.length;
+    const safeAccountIds = customOnly && Array.isArray(accountIds)
+      ? [...new Set(accountIds.filter(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)))]
+      : [];
+    const settingsDocs = customOnly
+      ? await Promise.all(safeAccountIds.map(id => db.doc(`users/${id}/settings/config`).get()))
+      : (await db.collectionGroup('settings').get()).docs;
+    configSnapshotCount = settingsDocs.length;
 
-    for (const configDoc of settingsConfigSnapshot.docs) {
+    for (const configDoc of settingsDocs) {
       const userId = configDoc.ref.parent.parent.id;
       const settingsSnapshot = configDoc.id === 'config'
         ? configDoc
@@ -96,6 +107,8 @@ export async function buildReminderPlanContexts({
       const plan = getWhatsappReminderPlan({
         runDateStr,
         tipo,
+        scheduledTime,
+        customOnly,
         patients,
         sessions,
         settings,

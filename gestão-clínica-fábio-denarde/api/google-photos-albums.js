@@ -1,6 +1,7 @@
 import { resolveAccessContext } from './_lib/accessContext.js';
 import {
   createGooglePhotosAlbumForPackage,
+  prepareGooglePhotosAlbumReopen,
   listGooglePhotosAlbumPatientOptions,
   listGooglePhotosAlbumSessionOptions,
   listGooglePhotosAlbums,
@@ -82,6 +83,9 @@ export default async function handler(req, res) {
     }
 
     const body = parseBody(req);
+    if (body.action === 'prepareAlbumReopen') {
+      return res.status(200).json(await prepareGooglePhotosAlbumReopen(context, body.album));
+    }
     if (body.action === 'savePackage') {
       return res.status(200).json(await saveGooglePhotosAlbumPackage(context, body.package));
     }

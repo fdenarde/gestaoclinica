@@ -8,6 +8,75 @@ function preferenceFlag(owner, key) {
   return preferences[key] === true;
 }
 
+export const DEFAULT_WHATSAPP_REMINDER_TIMES = Object.freeze([
+  Object.freeze({ relativeDay: 'dayBefore', time: '09:00' }),
+  Object.freeze({ relativeDay: 'sameDay', time: '06:30' }),
+  Object.freeze({ relativeDay: 'sameDay', time: '12:30' }),
+]);
+
+const VALID_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const VALID_DAYS = new Set(['dayBefore', 'sameDay']);
+
+export function normalizeWhatsappCustomTimes(value, { strict = false } = {}) {
+  if (!Array.isArray(value) || value.length === 0) {
+    if (strict) throw new Error('Adicione pelo menos um horário personalizado.');
+    return null;
+  }
+  const seen = new Set();
+  const times = [];
+  for (const item of value) {
+    const relativeDay = item?.relativeDay;
+    const time = item?.time;
+    if (!VALID_DAYS.has(relativeDay) || typeof time !== 'string' || !VALID_TIME.test(time)) {
+      if (strict) throw new Error('Informe Dia anterior ou Dia do atendimento e um horário HH:mm válido.');
+      return null;
+    }
+    const key = `${relativeDay}:${time}`;
+    if (seen.has(key)) {
+      if (strict) throw new Error('Este horário já foi adicionado para o mesmo dia.');
+      return null;
+    }
+    seen.add(key);
+    times.push({ relativeDay, time });
+  }
+  return times.sort((a, b) => (a.relativeDay === b.relativeDay
+    ? a.time.localeCompare(b.time)
+    : a.relativeDay === 'dayBefore' ? -1 : 1));
+}
+
+// Timing is independently inherited from the session, patient and legacy default.
+// An explicitly malformed timing object fails closed instead of enabling default sends.
+export function resolveWhatsappReminderTiming(session = null, patient = null) {
+  const owners = [session, patient];
+  for (const owner of owners) {
+    if (!owner || !Object.hasOwn(owner, 'whatsappReminderPreferences')) continue;
+    const preferences = owner.whatsappReminderPreferences;
+    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) {
+      return { timingMode: 'invalid', customTimes: [], valid: false };
+    }
+    if (!Object.hasOwn(preferences, 'timingMode') && !Object.hasOwn(preferences, 'customTimes')) continue;
+    if (preferences.timingMode === 'default' && !Object.hasOwn(preferences, 'customTimes')) {
+      return { timingMode: 'default', customTimes: DEFAULT_WHATSAPP_REMINDER_TIMES, valid: true };
+    }
+    if (preferences.timingMode === 'custom') {
+      const customTimes = normalizeWhatsappCustomTimes(preferences.customTimes);
+      return customTimes
+        ? { timingMode: 'custom', customTimes, valid: true }
+        : { timingMode: 'invalid', customTimes: [], valid: false };
+    }
+    return { timingMode: 'invalid', customTimes: [], valid: false };
+  }
+  return { timingMode: 'default', customTimes: DEFAULT_WHATSAPP_REMINDER_TIMES, valid: true };
+}
+
+export function isWhatsappTimingSlotEnabled(session, patient, { relativeDay, time } = {}) {
+  const timing = resolveWhatsappReminderTiming(session, patient);
+  if (!timing.valid || !VALID_DAYS.has(relativeDay) || !VALID_TIME.test(time || '')) return false;
+  const flags = resolveWhatsappReminderPreferences(session, patient);
+  if (!flags[relativeDay]) return false;
+  return timing.customTimes.some(slot => slot.relativeDay === relativeDay && slot.time === time);
+}
+
 export function resolveWhatsappReminderPreferences(session = null, patient = null) {
   const legacyDefault = !Object.hasOwn(session || {}, 'whatsappReminderPreferences')
     && !Object.hasOwn(patient || {}, 'whatsappReminderPreferences');
@@ -38,10 +107,22 @@ export function prepareWhatsappReminderPreferencesUpdate({ session, patient, ses
   if (scope !== 'default' && (typeof preferences?.dayBefore !== 'boolean' || typeof preferences?.sameDay !== 'boolean')) {
     throw new Error('Selecione as modalidades de lembrete.');
   }
+  let nextPreferences = preferences;
+  if (scope !== 'default') {
+    if (!Object.hasOwn(preferences, 'timingMode') && !Object.hasOwn(preferences, 'customTimes')) {
+      nextPreferences = { dayBefore: preferences.dayBefore, sameDay: preferences.sameDay };
+    } else {
+      const timingMode = preferences.timingMode;
+      if (!['default', 'custom'].includes(timingMode)) throw new Error('Modo de horários inválido.');
+      nextPreferences = timingMode === 'custom'
+        ? { dayBefore: preferences.dayBefore, sameDay: preferences.sameDay, timingMode, customTimes: normalizeWhatsappCustomTimes(preferences.customTimes, { strict: true }) }
+        : { dayBefore: preferences.dayBefore, sameDay: preferences.sameDay, timingMode };
+    }
+  }
   const update = item => {
     const next = { ...item };
     if (scope === 'default') delete next.whatsappReminderPreferences;
-    else next.whatsappReminderPreferences = { ...preferences };
+    else next.whatsappReminderPreferences = { ...nextPreferences };
     return next;
   };
   if (scope === 'patient') return { patients: patients.map(item => item.id === patient.id ? update(item) : item) };

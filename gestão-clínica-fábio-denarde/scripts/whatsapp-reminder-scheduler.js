@@ -1,6 +1,8 @@
 import cron from 'node-cron';
 import path from 'node:path';
 import { DEFAULT_SCHEDULER_RECOVERY_DELAY_MS, JsonReminderLedger, ROUTINE_DEFINITIONS, createMemoryReminderLedger, createRoutineCheckpointId, createRoutineWindow, detectMissedRoutineCheckpoints, findRecoverableRoutineCheckpoints, formatLocalDateStr, isGlobalActivationLocked, resolveWhatsappOperationMode, WHATSAPP_OPERATION_MODES } from '../src/lib/whatsappReminderOperations.js';
+import { initializeFirebaseAdmin } from '../src/lib/whatsappReminderRuntime.js';
+import { addReminderCalendarDays, collectDueCustomReminderSlots, getSaoPauloReminderClock } from '../src/lib/whatsappCustomSchedule.js';
 
 const PROCESS_NAME = 'RoboClinicaScheduler';
 const TIMEZONE = 'America/Sao_Paulo';
@@ -47,26 +49,33 @@ function recordHeartbeat(extra = {}) {
   }));
 }
 
-function queueRoutine(routine, now = new Date(), { source = 'scheduler', recoveredAt = '' } = {}) {
+function queueRoutine(routine, now = new Date(), { source = 'scheduler', recoveredAt = '', scheduledTime = '', customOnly = false, accountIds = [] } = {}) {
+  if (customOnly && (accountIds.length !== 1 || !/^[A-Za-z0-9_-]{1,128}$/.test(accountIds[0]))) {
+    throw new Error('Conta do horário personalizado inválida.');
+  }
   if (isGlobalActivationLocked()) {
     console.log(`[${PROCESS_NAME}] trava global ativa; rotina ${routine} não será enfileirada.`);
     return null;
   }
-  const dateStr = formatLocalDateStr(now);
+  const dateStr = customOnly ? getSaoPauloReminderClock(now).date : formatLocalDateStr(now);
   const definition = ROUTINE_DEFINITIONS[routine];
   if (!definition) throw new Error(`Rotina desconhecida: ${routine}`);
-  if (definition.skipWeekdays.includes(now.getDay())) {
+  const weekday = customOnly ? new Date(`${dateStr}T12:00:00Z`).getUTCDay() : now.getDay();
+  if (definition.skipWeekdays.includes(weekday)) {
     console.log(`[${PROCESS_NAME}] rotina ${routine} pulada pela regra semanal em ${dateStr}.`);
     return null;
   }
 
-  const window = createRoutineWindow({ dateStr, routine });
-  const checkpointId = createRoutineCheckpointId({ dateStr, routine });
+  const window = createRoutineWindow({ dateStr, routine, scheduledTime });
+  const checkpointId = createRoutineCheckpointId({ dateStr, routine,
+    accountId: customOnly ? accountIds[0] : 'all', scheduledTime: customOnly ? scheduledTime : '' });
 
   if (mode === WHATSAPP_OPERATION_MODES.DISABLED || mode === WHATSAPP_OPERATION_MODES.DRY_RUN) {
     return ledger.upsertCheckpoint(checkpointId, {
       date: dateStr,
       routine,
+      customOnly,
+      accountIds: customOnly ? accountIds : undefined,
       scheduledTime: window.scheduledTime,
       expectedWindowStart: window.start,
       expectedWindowEnd: window.end,
@@ -80,6 +89,8 @@ function queueRoutine(routine, now = new Date(), { source = 'scheduler', recover
   const queued = ledger.queueRoutine(checkpointId, {
     date: dateStr,
     routine,
+    customOnly,
+    accountIds: customOnly ? accountIds : undefined,
     scheduledTime: window.scheduledTime,
     expectedWindowStart: window.start,
     expectedWindowEnd: window.end,
@@ -94,6 +105,94 @@ function queueRoutine(routine, now = new Date(), { source = 'scheduler', recover
     : '';
   console.log(`[${PROCESS_NAME}] rotina ${routine} enfileirada para ${dateStr} ${window.scheduledTime}${suffix}.`);
   return queued;
+}
+
+// The existing scheduler keeps one minute cron. Firestore listeners update a
+// small in-memory schedule; there is no per-patient timer or per-minute read.
+function startCustomScheduleWatch() {
+  const db = initializeFirebaseAdmin();
+  const accounts = new Map();
+  const stopAccount = account => {
+    account.patientUnsubscribe?.();
+    for (const item of account.sessions.values()) item.unsubscribe();
+  };
+  const watchDates = (account, dateKey) => {
+    const required = [0, 1, 2].map(offset => addReminderCalendarDays(dateKey, offset));
+    for (const [date, item] of account.sessions) {
+      if (!required.includes(date)) { item.unsubscribe(); account.sessions.delete(date); }
+    }
+    for (const date of required) {
+      if (account.sessions.has(date)) continue;
+      const item = { ready: false, rows: [], unsubscribe: () => {} };
+      account.sessions.set(date, item);
+      item.unsubscribe = db.collection(`users/${account.id}/sessions`).where('date', '==', date).onSnapshot(
+        snapshot => { item.rows = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); item.ready = true; },
+        () => { item.rows = []; item.ready = false; console.error(`[${PROCESS_NAME}] observação de sessões personalizadas indisponível; horários customizados bloqueados.`); },
+      );
+    }
+  };
+  const watchAccount = id => {
+    const account = { id, patients: [], patientReady: false, patientUnsubscribe: null, sessions: new Map() };
+    accounts.set(id, account);
+    account.patientUnsubscribe = db.collection(`users/${id}/patients`).onSnapshot(
+      snapshot => { account.patients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); account.patientReady = true; },
+      () => { account.patients = []; account.patientReady = false; console.error(`[${PROCESS_NAME}] observação de preferências indisponível; horários customizados bloqueados.`); },
+    );
+    watchDates(account, getSaoPauloReminderClock().date);
+  };
+  db.collectionGroup('settings').onSnapshot(
+    snapshot => {
+      const ids = new Set(snapshot.docs.map(doc => doc.ref.parent.parent?.id).filter(Boolean));
+      for (const [id, account] of accounts) {
+        if (!ids.has(id)) { stopAccount(account); accounts.delete(id); }
+      }
+      for (const id of ids) if (!accounts.has(id)) {
+        try { watchAccount(id); }
+        catch { const account = accounts.get(id); if (account) stopAccount(account); accounts.delete(id);
+          console.error(`[${PROCESS_NAME}] configuração de horário personalizado indisponível para uma conta.`); }
+      }
+    },
+    () => { for (const account of accounts.values()) stopAccount(account); accounts.clear();
+      console.error(`[${PROCESS_NAME}] lista de contas indisponível; horários customizados bloqueados.`); },
+  );
+  cron.schedule('* * * * *', () => {
+    const now = new Date();
+    const clock = getSaoPauloReminderClock(now);
+    const due = new Map();
+    // The small in-memory lookback covers listener startup or a brief reconnect.
+    // A slot is never queued after its safe window and never requeues a checkpoint.
+    for (let minutesBack = 0; minutesBack < 5; minutesBack += 1) {
+      const candidateTime = new Date(now.getTime() - minutesBack * 60_000);
+      const candidateClock = getSaoPauloReminderClock(candidateTime);
+      for (const account of accounts.values()) {
+        const tomorrow = addReminderCalendarDays(candidateClock.date, 1);
+        const todayRows = account.sessions.get(candidateClock.date);
+        const tomorrowRows = account.sessions.get(tomorrow);
+        if (!account.patientReady || !todayRows?.ready || !tomorrowRows?.ready) continue;
+        const sessions = [...todayRows.rows, ...tomorrowRows.rows];
+        try {
+          for (const slot of collectDueCustomReminderSlots({ patients: account.patients, sessions, now: candidateTime })) {
+            const window = createRoutineWindow({ dateStr: candidateClock.date, routine: slot.routine, scheduledTime: slot.scheduledTime });
+            if (new Date(window.end).getTime() <= now.getTime()) continue;
+            const key = `${account.id}:${candidateClock.date}:${slot.routine}:${slot.scheduledTime}`;
+            due.set(key, { ...slot, candidateTime, date: candidateClock.date, accountIds: [account.id] });
+          }
+        } catch { console.error(`[${PROCESS_NAME}] leitura em memória de horários personalizados indisponível.`); }
+      }
+    }
+    for (const slot of due.values()) {
+      const checkpointId = createRoutineCheckpointId({ dateStr: slot.date, routine: slot.routine,
+        accountId: slot.accountIds[0], scheduledTime: slot.scheduledTime });
+      if (ledger.getCheckpoint(checkpointId)) continue;
+      try { queueRoutine(slot.routine, slot.candidateTime, { source: 'scheduler-custom', scheduledTime: slot.scheduledTime,
+        customOnly: true, accountIds: slot.accountIds }); }
+      catch (error) { console.error(`[${PROCESS_NAME}] falha ao enfileirar horário personalizado:`, error); }
+    }
+    for (const account of accounts.values()) {
+      try { watchDates(account, clock.date); }
+      catch { account.patientReady = false; console.error(`[${PROCESS_NAME}] atualização de horários personalizados indisponível.`); }
+    }
+  }, { timezone: TIMEZONE });
 }
 
 function queuePreventivePreview(routine, now = new Date()) {
@@ -268,6 +367,10 @@ if (isSelfCheck) {
 
 recordStartupMissedRoutines();
 for (const routine of Object.keys(ROUTINE_DEFINITIONS)) registerRoutineCron(routine);
+if (mode === WHATSAPP_OPERATION_MODES.LIVE) {
+  try { startCustomScheduleWatch(); }
+  catch { console.error(`[${PROCESS_NAME}] horários personalizados indisponíveis; rotinas padrão preservadas.`); }
+}
 recordHeartbeat({ event: 'startup' });
 recoverRoutinesWithinSafeWindow(new Date());
 setInterval(recordHeartbeat, HEARTBEAT_INTERVAL_MS).unref();

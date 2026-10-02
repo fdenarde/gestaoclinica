@@ -37,6 +37,7 @@ import type {
 } from '../../types/activityGallery';
 import {
   createGooglePhotosAlbum,
+  prepareGooglePhotosAlbumReopen,
   listGooglePhotosAlbumPatientOptions,
   listGooglePhotosAlbumSessionOptions,
   listGooglePhotosAlbums,
@@ -85,6 +86,7 @@ import {
 import { buildActivityGalleryMediaPresentation } from '../../../shared/activityGalleryPresentation.js';
 import { buildPackageTimeline, isExplicitSessionAbsence } from '../../../shared/neuroFlowState.js';
 import { buildCanonicalAbsencePatch } from '../../../shared/noReplacementReasons.js';
+import { canReopenSessionAlbum, EXPLICIT_ALBUM_REOPEN } from '../../../shared/googlePhotosAlbumReopen.js';
 
 interface Props {
   active?: boolean;
@@ -370,6 +372,7 @@ export default function ProfessionalGooglePhotosGallery({
   const [noMediaReason, setNoMediaReason] = useState<ActivityGalleryJustificationReasonCode>('responsible_accompanied');
   const [noMediaNote, setNoMediaNote] = useState('');
   const [noMediaBusy, setNoMediaBusy] = useState(false);
+  const [reopenTarget, setReopenTarget] = useState<GooglePhotosAlbum | null>(null);
   const noMediaBusyRef = useRef(false);
   const savingRef = useRef(false);
   const creatingCardIdsRef = useRef(new Set<string>());
@@ -620,13 +623,25 @@ export default function ProfessionalGooglePhotosGallery({
   )), [allCards, currentPackageNumber, selectedPatientId, sessionSource]);
 
   const canCreateAlbum = permissions.canCreate || permissions.canEdit;
+  const canReopenCard = useCallback((card: GooglePhotosAlbum) => card.patientId === selectedPatientId
+    && card.packageNumber === currentPackageNumber && canReopenSessionAlbum({
+      card, sessions: sessionSource, albums: persistedCards,
+      ready: summarySourcesReady && !saving && !creatingCardIdsRef.current.has(card.id),
+      canCreate: permissions.canCreate,
+      hasNoMediaJustification: card.sessionIds.some(id => activityStatusBySession[id]?.justification?.active
+        && !activityStatusBySession[id]?.hasMedia),
+    }), [activityStatusBySession, currentPackageNumber, permissions.canCreate, persistedCards,
+      saving, selectedPatientId, sessionSource, summarySourcesReady]);
+  useEffect(() => { setReopenTarget(null); }, [selectedPatientId, currentPackageNumber, navigationKey, active]);
   const creatableCards = useMemo(() => galleryCards.filter(card => (
     !normalizeAlbumUrl(card.url)
     && card.status !== 'removed'
     && Array.isArray(card.sessionIds)
     && card.sessionIds.length > 0
     && !card.sessionIds.some(sessionId => isExplicitSessionAbsence(sessionSource.find(session => session.id === sessionId)))
-  )), [galleryCards, sessionSource]);
+    && !card.sessionIds.some(sessionId => activityStatusBySession[sessionId]?.justification?.active
+      && !activityStatusBySession[sessionId]?.hasMedia && !(activityStatusBySession[sessionId]?.mediaCount > 0))
+  )), [activityStatusBySession, galleryCards, sessionSource]);
   const quickCreateCard = useMemo(
     () => creatableCards.find(card => card.id === quickCreateCardId) || null,
     [creatableCards, quickCreateCardId],
@@ -1153,8 +1168,12 @@ export default function ProfessionalGooglePhotosGallery({
     .map(card => toPackageInput({ ...card, url: normalizeAlbumUrl(card.url) || '' }))
     .sort((left, right) => String(left.id || left.sessionGroupKey).localeCompare(String(right.id || right.sessionGroupKey))), []);
 
-  const createAlbumForCard = useCallback(async (card: GooglePhotosAlbum): Promise<void> => {
+  const createAlbumForCard = useCallback(async (card: GooglePhotosAlbum, explicitReopen = false): Promise<void> => {
     if (!(permissionsRef.current.canCreate || permissionsRef.current.canEdit) || normalizeAlbumUrl(card.url)) return;
+    if (explicitReopen && !canReopenCard(card)) {
+      setError('O contexto da sessão mudou ou o vínculo não foi confirmado. Atualize a galeria.');
+      return;
+    }
     if (creatingCardIdsRef.current.has(card.id)) return;
     if (savingRef.current) {
       setError('Aguarde o salvamento atual terminar antes de criar o álbum.');
@@ -1186,9 +1205,14 @@ export default function ProfessionalGooglePhotosGallery({
         category: card.category,
         observation: card.observation,
         publishedAt: card.publishedAt || card.activityDate,
+        ...(explicitReopen ? { creationIntent: EXPLICIT_ALBUM_REOPEN as 'explicit-session-reopen' } : {}),
       };
-      let result = await createGooglePhotosAlbum(creationPayload);
-      if (result.createdAlbum.idempotent && result.createdAlbum.recreationAvailable) {
+      const prepared = explicitReopen ? await prepareGooglePhotosAlbumReopen(creationPayload) : null;
+      if (explicitReopen && !prepared?.existing && !prepared?.reopenToken) throw new Error('Não foi possível autorizar a reabertura do álbum.');
+      let result = prepared?.existing || await createGooglePhotosAlbum({ ...creationPayload,
+        ...(prepared?.reopenToken ? { reopenToken: prepared.reopenToken } : {}),
+      });
+      if (!explicitReopen && result.createdAlbum.idempotent && result.createdAlbum.recreationAvailable) {
         const confirmed = typeof window !== 'undefined' && window.confirm(
           'O sistema encontrou o registro de uma criação anterior, mas este card está sem link. '
           + 'Use esta opção somente se o álbum anterior foi excluído manualmente no Google Fotos. '
@@ -1239,7 +1263,7 @@ export default function ProfessionalGooglePhotosGallery({
       creatingCardIdsRef.current.delete(card.id);
       setCreatingCardIds(current => current.filter(id => id !== card.id));
     }
-  }, [buildSavableInputs, draftStorageKey, ownerUserId]);
+  }, [buildSavableInputs, canReopenCard, draftStorageKey, ownerUserId]);
 
   const validateEditedCards = useCallback((): string => {
     if (hasInvalidLinks) return 'Use um link HTTPS válido de photos.app.goo.gl antes de salvar.';
@@ -1798,6 +1822,15 @@ export default function ProfessionalGooglePhotosGallery({
                         ) : null}
                       </>
                     ) : null}
+                    {absenceOnly && hasValidLink && (
+                      <a href={normalizedUrl || card.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-[38px] items-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-semibold text-clinic-primary">Abrir álbum <ExternalLink size={15} /></a>
+                    )}
+                    {canReopenCard(card) && (
+                      <button type="button" onClick={() => setReopenTarget(card)} disabled={creatingAlbum || saving}
+                        className="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-xl border border-clinic-border bg-white px-3 py-2 text-xs font-semibold text-clinic-text-muted disabled:opacity-50">
+                        <FolderPlus size={15} /> Reabrir álbum
+                      </button>
+                    )}
                     {!absenceOnly && orderedMediaEntries.map(entry => <React.Fragment key={entry.sessionId}>{renderMediaAction(entry)}</React.Fragment>)}
                     <button
                       type="button"
@@ -1967,6 +2000,21 @@ export default function ProfessionalGooglePhotosGallery({
         </div>}
       </Modal>
 
+      <Modal isOpen={Boolean(reopenTarget)} onClose={() => setReopenTarget(null)} title="Reabrir criação do álbum?" width="max-w-md">
+        {reopenTarget && <div className="space-y-4 p-4 text-sm text-clinic-text">
+          <p>Deseja abrir a criação de álbum para esta sessão?</p>
+          <p className="font-semibold">{formatLinkedSessionSubtitle(reopenTarget, packageSessions)}</p>
+          <p className="text-clinic-text-muted">O status da sessão e o motivo atual não serão alterados.</p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => setReopenTarget(null)} className="min-h-[38px] rounded-xl border border-clinic-border px-3 py-2">Cancelar</button>
+            <button type="button" disabled={!canReopenCard(reopenTarget)} onClick={() => {
+              const card = reopenTarget;
+              setReopenTarget(null);
+              void createAlbumForCard(card, true);
+            }} className="min-h-[38px] rounded-xl border border-clinic-border bg-clinic-bg px-3 py-2 font-semibold disabled:opacity-50">Abrir criação do álbum</button>
+          </div>
+        </div>}
+      </Modal>
       <Modal
         isOpen={Boolean(noMediaTarget)}
         onClose={() => !noMediaBusy && setNoMediaTarget(null)}

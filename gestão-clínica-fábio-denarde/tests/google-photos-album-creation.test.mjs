@@ -152,9 +152,9 @@ test('backend exige permissão, vínculo e reserva antes de chamar o Google', ()
   const endpointSource = fs.readFileSync(new URL('../api/google-photos-albums.js', import.meta.url), 'utf8');
 
   assert.match(repositorySource, /assertCapability\(context, 'canCreate'\)/);
-  assert.match(repositorySource, /const patient = await getPatient\(context, input\?\.patientId\)/);
+  assert.match(repositorySource, /const patient = await getPatient\(context, input\?\.patientId, db\)/);
   assert.match(repositorySource, /assertActivityPatientAccess\(context, patientId\)/);
-  assert.match(repositorySource, /creationOperationCollection\(context\)\.doc\(operationId\)/);
+  assert.match(repositorySource, /creationOperationCollection\(context, db\)\.doc\(operationId\)/);
   assert.match(repositorySource, /status: 'creating'/);
   assert.match(repositorySource, /operation\.status === 'creating' \|\| operation\.status === 'unknown'/);
   assert.match(repositorySource, /await db\.runTransaction/);

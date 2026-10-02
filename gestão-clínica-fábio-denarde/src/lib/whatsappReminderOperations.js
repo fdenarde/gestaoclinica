@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { saoPauloLocalDateTimeToIso } from '../../shared/whatsappSessionAutomation.js';
 
 export const WHATSAPP_OPERATION_MODES = Object.freeze({
   DISABLED: 'disabled',
@@ -418,6 +419,8 @@ export function buildReminderLedgerId({
   sessionTime,
   reminderType,
   routine,
+  scheduledTime = '',
+  timingMode = 'default',
 }) {
   const raw = [
     accountId || 'unknown-account',
@@ -428,6 +431,7 @@ export function buildReminderLedgerId({
     sessionTime || '',
     reminderType || '',
     routine || reminderType || '',
+    ...(timingMode === 'custom' ? [scheduledTime] : []),
   ].join('|');
 
   return crypto.createHash('sha256').update(raw).digest('hex');
@@ -1173,6 +1177,12 @@ export function normalizeReminderForLedger({ accountId, reminder, routine, routi
   const sessionDate = reminder.sessionDate || routineDate;
   const sessionTime = reminder.time || reminder.sessionTime || '';
   const reminderType = reminder.reminderType || routine;
+  if (reminder.timingMode === 'custom' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(reminder.scheduledTime || '')) {
+    throw new Error('Horário personalizado ausente ou inválido.');
+  }
+  const effectiveWindow = reminder.timingMode === 'custom'
+    ? createRoutineWindow({ dateStr: reminder.runDateStr || routineDate, routine, scheduledTime: reminder.scheduledTime })
+    : window;
   const id = buildReminderLedgerId({
     accountId,
     patientId: reminder.patientId,
@@ -1182,6 +1192,8 @@ export function normalizeReminderForLedger({ accountId, reminder, routine, routi
     sessionTime,
     reminderType,
     routine,
+    scheduledTime: reminder.scheduledTime || effectiveWindow?.scheduledTime || '',
+    timingMode: reminder.timingMode || 'default',
   });
 
   return {
@@ -1199,8 +1211,10 @@ export function normalizeReminderForLedger({ accountId, reminder, routine, routi
     sessionTime,
     reminderType,
     routine,
-    expectedWindowStart: window?.start || '',
-    expectedWindowEnd: window?.end || '',
+    scheduledTime: reminder.scheduledTime || effectiveWindow?.scheduledTime || '',
+    timingMode: reminder.timingMode || 'default',
+    expectedWindowStart: effectiveWindow?.start || '',
+    expectedWindowEnd: effectiveWindow?.end || '',
     source,
     ruleVersion: 'whatsapp-reminder-ledger-v1',
   };
@@ -1223,7 +1237,7 @@ export function createReminderGroupingKey({ accountId, reminder, routine, routin
     || 'unknown-responsible';
   const phoneHash = hashPhone(reminder?.phone || reminder?.whatsapp);
   const sessionDate = reminder?.sessionDate || routineDate || '';
-  const batch = routine || reminder?.reminderType || '';
+  const batch = `${routine || reminder?.reminderType || ''}${reminder?.timingMode === 'custom' ? `:${reminder.scheduledTime}:custom` : ''}`;
 
   return [
     accountId || 'unknown-account',
@@ -1284,8 +1298,8 @@ export function isTerminalLedgerStatus(status) {
   ].includes(status);
 }
 
-export function createRoutineCheckpointId({ dateStr, routine, accountId = 'all' }) {
-  return `${dateStr}:${routine}:${accountId}`;
+export function createRoutineCheckpointId({ dateStr, routine, accountId = 'all', scheduledTime = '' }) {
+  return `${dateStr}:${routine}:${accountId}${scheduledTime ? `:${scheduledTime}` : ''}`;
 }
 
 export function buildRoutineDeliveryAccounting({
@@ -1363,16 +1377,27 @@ export function detectRoutineDeliveryGaps({ ledger, now = new Date() } = {}) {
   });
 }
 
-export function createRoutineWindow({ dateStr, routine }) {
+export function createRoutineWindow({ dateStr, routine, scheduledTime = '' }) {
   const definition = ROUTINE_DEFINITIONS[routine];
   if (!definition) throw new Error(`Rotina desconhecida: ${routine}`);
-  const start = new Date(`${dateStr}T${definition.scheduledTime}:00`);
-  const end = new Date(start.getTime() + definition.windowMinutes * 60 * 1000);
+  const slotTime = scheduledTime || definition.scheduledTime;
+  if (scheduledTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime)) throw new Error('Horário de rotina inválido.');
+  const start = scheduledTime
+    ? new Date(saoPauloLocalDateTimeToIso(`${dateStr}T${slotTime}`))
+    : new Date(`${dateStr}T${slotTime}:00`);
+  const windowMinutes = scheduledTime ? 5 : definition.windowMinutes;
+  let end = new Date(start.getTime() + windowMinutes * 60 * 1000);
+  if (scheduledTime) {
+    const nextDate = new Date(`${dateStr}T12:00:00Z`);
+    nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+    const boundary = new Date(saoPauloLocalDateTimeToIso(`${nextDate.toISOString().slice(0, 10)}T00:00`));
+    if (end > boundary) end = boundary;
+  }
   return {
     start: start.toISOString(),
     end: end.toISOString(),
-    scheduledTime: definition.scheduledTime,
-    windowMinutes: definition.windowMinutes,
+    scheduledTime: slotTime,
+    windowMinutes: scheduledTime ? (end.getTime() - start.getTime()) / 60000 : windowMinutes,
   };
 }
 
@@ -1532,12 +1557,26 @@ export function createReminderDeliveryService({
       entry.id !== candidate.id && entry.accountId === candidate.accountId
       && entry.patientId === candidate.patientId && entry.sessionDate === candidate.sessionDate
       && modality(entry.reminderType || entry.routine) === key
+      && (candidate.timingMode !== 'custom' || entry.timingMode !== 'custom'
+        || entry.scheduledTime === candidate.scheduledTime)
       && [REMINDER_LEDGER_STATUSES.CONFIRMED, REMINDER_LEDGER_STATUSES.ATTEMPTING, REMINDER_LEDGER_STATUSES.MANUAL].includes(entry.status)
     ));
   }
   function skipHandledModality(candidate, attempts = 0) {
     return ledger.upsertReminder(candidate.id, { ...candidate, status: REMINDER_LEDGER_STATUSES.SKIPPED,
       blockedReason: 'modalidade de lembrete já tratada para este paciente nesta data', attempts });
+  }
+  function outsideCustomWindow(candidate) {
+    if (candidate.timingMode !== 'custom') return false;
+    const at = now().getTime();
+    const start = new Date(candidate.expectedWindowStart).getTime();
+    const end = new Date(candidate.expectedWindowEnd).getTime();
+    return !Number.isFinite(at) || !Number.isFinite(start) || !Number.isFinite(end)
+      || end <= start || at < start || at >= end;
+  }
+  function skipOutsideCustomWindow(candidate, attempts = 0) {
+    return ledger.upsertReminder(candidate.id, { ...candidate, status: REMINDER_LEDGER_STATUSES.SKIPPED,
+      blockedReason: 'fora da janela do horário personalizado', attempts });
   }
 
   async function processReminder({ accountId, reminder, routine, routineDate, window, source = 'automatic' }) {
@@ -1600,6 +1639,7 @@ export function createReminderDeliveryService({
           });
         }
       }
+      if (outsideCustomWindow(ledgerBase)) return skipOutsideCustomWindow(ledgerBase, attempt - 1);
       const attemptStartedAt = now().toISOString();
       ledger.upsertReminder(ledgerBase.id, {
         ...ledgerBase,
@@ -1731,6 +1771,10 @@ export function createReminderDeliveryService({
           continue;
         }
       }
+      if (outsideCustomWindow(entry.ledgerBase)) {
+        resultById.set(entry.ledgerBase.id, skipOutsideCustomWindow(entry.ledgerBase, entry.previous?.attempts || 0));
+        continue;
+      }
       sendable.push(entry);
     }
 
@@ -1744,6 +1788,11 @@ export function createReminderDeliveryService({
     let lastError = null;
 
     for (let attempt = attemptsAlreadyUsed + 1; attempt <= maxAttempts; attempt += 1) {
+      if (sendable.some(entry => outsideCustomWindow(entry.ledgerBase))) {
+        for (const entry of sendable) resultById.set(entry.ledgerBase.id,
+          skipOutsideCustomWindow(entry.ledgerBase, attempt - 1));
+        return entries.map(entry => resultById.get(entry.ledgerBase.id));
+      }
       const attemptStartedAt = now().toISOString();
       for (const entry of sendable) {
         ledger.upsertReminder(entry.ledgerBase.id, {

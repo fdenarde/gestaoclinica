@@ -93,6 +93,8 @@ export interface CreateGooglePhotosAlbumInput {
   observation: string;
   publishedAt: string;
   recreateDeletedAlbum?: boolean;
+  creationIntent?: 'explicit-session-reopen';
+  reopenToken?: string;
 }
 
 export interface CreateGooglePhotosAlbumResponse extends GooglePhotosAlbumsResponse {
